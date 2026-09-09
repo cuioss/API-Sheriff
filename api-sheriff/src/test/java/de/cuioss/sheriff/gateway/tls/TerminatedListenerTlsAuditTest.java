@@ -19,10 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -60,10 +62,12 @@ import org.junit.jupiter.api.Test;
  * leaves the listener with nothing to terminate with. Deliberately, it does <em>not</em> clear the
  * certificate keys: leaving real certificate paths in the configuration is what keeps
  * {@link #emitsNoStorePath()} non-vacuous, since a record that leaked a store path would have a path
- * available to leak. The profile must also set {@code quarkus.http.insecure-requests=enabled},
- * because {@code VertxHttpRecorder.initializeMainHttpServer} refuses to start a key-material-less
- * listener under any other exposure strategy; that boot refusal is a separate deliverable's subject,
- * and this test steps around it rather than depending on it.
+ * available to leak. The profile must also set {@code quarkus.http.insecure-requests=enabled}: that
+ * is the explicit plain-HTTP opt-in
+ * ({@link ServerTlsDeclarationGate}), and without it both this
+ * boot's key-less bucket selection and {@code VertxHttpRecorder.initializeMainHttpServer} refuse to
+ * start the listener at all. Declaring it is this test saying, in the one key that means it, that
+ * plain HTTP is the state it wants to observe.
  */
 @QuarkusTest
 @TestProfile(TerminatedListenerTlsAuditTest.KeyLessMainListenerProfile.class)
@@ -72,9 +76,18 @@ import org.junit.jupiter.api.Test;
 class TerminatedListenerTlsAuditTest {
 
     private static final String NAMED_BUCKET = "named-server-tls";
+    private static final int HTTP_PORT = 8080;
+    private static final int HTTPS_PORT = 8443;
 
     @Inject
     Event<StartupEvent> startupEvent;
+
+    /**
+     * The bound gateway document, taken from the live boot rather than hand-built: the audit reads
+     * it only for the ADR-0017 topology fragment, which is not what these cases are about.
+     */
+    @Inject
+    GatewayConfig gatewayConfig;
 
     /**
      * Points the main listener at the shipped key-less TLS bucket so it really resolves to plain
@@ -199,6 +212,84 @@ class TerminatedListenerTlsAuditTest {
                     () -> assertTrue(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
                                     null, false),
                             "no bucket and no certificate leaves nothing to terminate with"));
+        }
+    }
+
+    /**
+     * The legacy certificate leg, exercised through the audit's own injection points.
+     * <p>
+     * These cases pin the false positive the audit carried: it injected
+     * {@code quarkus.http.ssl.certificate.files} alone, while
+     * {@code TlsUtils.computeKeyStoreOptions} accepts three further spellings. A deployment
+     * supplying a keystore file, a PEM key without a chain file, or a credentials provider therefore
+     * terminated TLS perfectly well and was reported as a plain-HTTP downgrade —
+     * {@code ApiSheriff-121} against a gateway that was doing exactly the right thing.
+     * <p>
+     * The audit is constructed directly here rather than booted, because the subject is which
+     * <em>injected values</em> the constructor folds into its verdict; a profile could only present
+     * one such deployment per boot, and four boots to assert four spellings would be paying a
+     * container start for a constructor question. {@link #warnsThroughTheRealStartupEventPath()}
+     * above remains the proof that the observer path itself works.
+     */
+    @Nested
+    @DisplayName("Declared certificate spellings — the false positive removed")
+    class DeclaredCertificateSpellings {
+
+        @Test
+        @DisplayName("Each of the four spellings alone means HTTPS, so none of them warns")
+        void eachSpellingAloneMeansHttps() {
+            assertAll("every spelling TlsUtils.computeKeyStoreOptions accepts supplies key material",
+                    () -> assertFalse(auditWith(Optional.of(List.of("localhost.crt")),
+                                    Optional.empty(), Optional.empty(), Optional.empty())
+                                    .auditTerminatedListenerTls(),
+                            "quarkus.http.ssl.certificate.files — the spelling that already worked"),
+                    () -> assertFalse(auditWith(Optional.empty(),
+                                    Optional.of(List.of("localhost.key")), Optional.empty(), Optional.empty())
+                                    .auditTerminatedListenerTls(),
+                            "quarkus.http.ssl.certificate.key-files alone: a deployment can supply "
+                                    + "the chain through the registry and the key here, and reading "
+                                    + "only .files reported it as plain HTTP"),
+                    () -> assertFalse(auditWith(Optional.empty(), Optional.empty(),
+                                    Optional.of("/etc/certs/keystore.p12"), Optional.empty())
+                                    .auditTerminatedListenerTls(),
+                            "quarkus.http.ssl.certificate.key-store-file: a keystore carries chain "
+                                    + "AND key, so a deployment using it declares no .files at all — "
+                                    + "this is the reported false positive"),
+                    () -> assertFalse(auditWith(Optional.empty(), Optional.empty(), Optional.empty(),
+                                    Optional.of("vault"))
+                                    .auditTerminatedListenerTls(),
+                            "quarkus.http.ssl.certificate.credentials-provider: the keystore password "
+                                    + "arrives from a provider, and the block is still consumed"));
+        }
+
+        @Test
+        @DisplayName("With no spelling declared the listener really is plain HTTP — the positive control")
+        void noSpellingDeclaredMeansPlainHttp() {
+            assertTrue(auditWith(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty())
+                            .auditTerminatedListenerTls(),
+                    "without this control the four assertions above would pass equally against an "
+                            + "audit that had simply stopped warning altogether");
+        }
+
+        @Test
+        @DisplayName("A blank or empty value is no declaration, so it still means plain HTTP")
+        void blankValuesAreNoDeclaration() {
+            assertTrue(auditWith(Optional.of(List.of()), Optional.of(List.of()),
+                            Optional.of(""), Optional.of(""))
+                            .auditTerminatedListenerTls(),
+                    "an empty list and a key cleared to the empty string are both the shape a "
+                            + "compose file's bare VAR= produces; neither supplies material, and "
+                            + "reading them as declarations would silence the warning for a gateway "
+                            + "that really is serving cleartext");
+        }
+
+        private TerminatedListenerTlsAudit auditWith(Optional<List<String>> certificateFiles,
+                Optional<List<String>> certificateKeyFiles,
+                Optional<String> certificateKeyStoreFile,
+                Optional<String> certificateCredentialsProvider) {
+            return new TerminatedListenerTlsAudit(registry(null, null), gatewayConfig,
+                    Optional.empty(), certificateFiles, certificateKeyFiles, certificateKeyStoreFile,
+                    certificateCredentialsProvider, HTTP_PORT, HTTPS_PORT);
         }
     }
 

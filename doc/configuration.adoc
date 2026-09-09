@@ -731,36 +731,51 @@ an undocumented exception would be a silent trim.
 | *deployment-bound*
 | *exception 2 -- retained*
 | Same class: a port/exposure knob the deployment owns, not TLS policy. It stays declared in
-  `application.properties` as the shipped `redirect` default.
+  `application.properties` as the shipped `redirect` default, and a deployment's own
+  `QUARKUS_HTTP_INSECURE_REQUESTS` (environment source, ordinal 300) outranks it. Nothing in this
+  gateway projects this key: no configuration source contributes a value for it, so what an operator
+  sets is what is in force.
   +
-  One further source reaches this key: the *no-certificate plain-HTTP degrade*, which projects
-  `enabled` at *ordinal 275* and only when the deployment declares no server key material by any of
-  the three routes (`quarkus.http.tls-configuration-name`, a default `quarkus.tls.key-store.*`
-  bucket, or `quarkus.http.ssl.certificate.*`). Without it that state does not serve plain HTTP at
-  all -- it refuses to boot.
+  *`enabled` is the explicit plain-HTTP opt-in, and plain HTTP is never reached any other way.* A
+  deployment that means to serve cleartext -- behind a TLS-terminating ingress, for instance -- sets
+  this key to `enabled` and is obeyed without comment. A deployment that does not set it is asking
+  for HTTPS, and a boot that cannot deliver HTTPS is *refused* rather than quietly downgraded.
   +
-  275 sits strictly inside the band between `application.properties` (250) and the environment
-  source (300), and both bounds are load-bearing: above the properties file so the shipped `redirect`
-  can be overridden, and deliberately *below* the environment so a deployment's own
-  `QUARKUS_HTTP_INSECURE_REQUESTS` still wins. Outranking the deployment on a deployment-bound knob
-  is the operator surprise the ordinal rule exists to prevent, which is why this source sits below
-  the environment while the policy source sits above it.
+  The refusal comes from the terminated-listener `HttpServerOptionsCustomizer`, which runs before the
+  listener is built and changes no option. It replaces the runtime's own message
+  (`Cannot set quarkus.http.insecure-requests without enabling SSL.`, which names `enabled` to an
+  operator who set `redirect` and offers no remedy) in two states, and each refusal names the
+  offending key and *both* ways out:
   +
-  The degrade keys on *declared* key material -- all a config source can observe while the
-  configuration system is still being built. The *resolved* view is reported by `ApiSheriff-121` and
-  is authoritative wherever the two disagree; the degrade reports itself as `ApiSheriff-123`. See the
-  third-seam amendment in
+  --
+  * *No key material is declared anywhere* -- no `quarkus.http.tls-configuration-name`, no default
+    `quarkus.tls.key-store.*` bucket, and none of
+    `quarkus.http.ssl.certificate.{files,key-files,key-store-file,credentials-provider}` -- *and*
+    `quarkus.http.insecure-requests` is not `enabled`. Remedy: declare a certificate through any one
+    of those routes, or set `quarkus.http.insecure-requests=enabled` to serve plain HTTP
+    deliberately.
+  * *`quarkus.http.tls-configuration-name` selects a bucket for which no `quarkus.tls.<name>.*` key
+    material is declared.* The verdict is reached from declared keys only, because the gate has to
+    act before the listener is built. Remedy: give that bucket material
+    (`quarkus.tls.<name>.key-store.p12.path`, `.jks.path`, or a
+    `quarkus.tls.<name>.key-store.pem.<id>.cert` / `.key` pair), point the key at a bucket that has
+    some, remove it and use the `quarkus.http.ssl.certificate.*` route, or set
+    `quarkus.http.insecure-requests=enabled`.
+  --
+  +
+  An explicit `enabled` stands *both* refusals down and produces no warning about the exposure
+  itself: the posture was declared, not inferred.
+  +
+  *Why absence is never read as intent.* A missing certificate cannot distinguish a gateway
+  deliberately placed behind a TLS-terminating boundary from one whose certificate failed to mount,
+  so cleartext is never chosen on the operator's behalf. All four `ssl.certificate.*` spellings count
+  as declared material, because the runtime accepts all four -- a keystore-file deployment carries no
+  `.files` key at all and is terminating TLS perfectly well. See the seam amendment in
   link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
   +
-  That divergence has one operator-visible failure mode worth stating outright, because
-  `quarkus.http.tls-configuration-name` is a *declaration-only* route: any non-blank value counts as
-  declared key material, with no check that the named bucket exists or that it carries a key. A name
-  pointing at a missing or key-less bucket therefore *suppresses* the degrade, the shipped `redirect`
-  at 250 stands, and the boot *refuses* rather than serving plain HTTP -- a missing bucket fails while
-  the TLS configuration is resolved, and a key-less one fails with
-  `Cannot set quarkus.http.insecure-requests without enabling SSL.` A deployment that meant to serve
-  plain HTTP by supplying no key material must therefore leave this key *unset*, not set it to a name
-  that resolves to nothing.
+  The gate reads *declared* keys; `ApiSheriff-121` reports the *resolved* state of the listener at
+  startup and is the authoritative record wherever the two disagree -- a declared path that resolves
+  to no usable key is accepted by the gate and reported by the audit.
 |===
 
 Certificate, key and trust *material* is deployment-bound by the same rule and is likewise never

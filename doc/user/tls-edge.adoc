@@ -55,30 +55,41 @@ Operating rules:
   disposition of every key that used to live there is recorded in
   link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
-== No-certificate mode
+== Serving plain HTTP
 
-If the deployment supplies *no server key material at all* for the terminated listener, the gateway
-enters *no-certificate mode*: it serves *plain HTTP* on the plain port rather than refusing to start.
-That is the whole of the vocabulary an operator needs, and both halves of it are reported at boot:
+*Plain HTTP is something you declare, never something the gateway infers.* Set
+`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` and the terminated listener serves cleartext, deliberately
+and without argument -- that is the supported deployment behind a TLS-terminating ingress. Expose
+that port only behind such a boundary.
 
-* `ApiSheriff-121` reports the *resolved* state -- the listener really is serving plain HTTP -- and is
-  the authoritative record wherever the two disagree.
-* `ApiSheriff-123` reports that no-certificate mode is what is live, on the *declared* view: no key
-  material was configured, so the *plain-HTTP degrade* supplied the permissive exposure strategy and
-  the boot proceeded.
+If you supply *no server key material* and do *not* set that variable, the gateway *refuses to
+start*. It does not fall back to cleartext. A missing certificate cannot tell "this gateway is
+deliberately behind a TLS terminator" apart from "the certificate did not get mounted", and guessing
+cleartext would turn the second into a silently unencrypted gateway. So the gateway asks instead of
+guessing, and the refusal names both ways out:
 
-Two operating consequences follow, and neither is a policy setting on this page:
+* *Declare a certificate* -- through `QUARKUS_HTTP_TLS_CONFIGURATION_NAME`, a default
+  `quarkus.tls.key-store.*` bucket, or any of
+  `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` (with `..._KEY_FILES`), `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_STORE_FILE`,
+  or `QUARKUS_HTTP_SSL_CERTIFICATE_CREDENTIALS_PROVIDER`. All four count; a keystore-based deployment
+  carries no `..._FILES` key at all and is perfectly valid.
+* *Or declare plain HTTP* with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`.
 
-* *It is a WARN, never a refusal.* A plain-HTTP listener behind a TLS-terminating boundary is a
-  legitimate deployment. Expose that port only behind such a boundary.
-* *A deployment that sets the exposure strategy itself keeps the last word.*
-  `QUARKUS_HTTP_INSECURE_REQUESTS` outranks the degrade, because exposure is a deployment-bound knob
-  rather than TLS policy.
+A second refusal catches the same mistake one level in: if `QUARKUS_HTTP_TLS_CONFIGURATION_NAME`
+names a TLS bucket that carries no key material -- almost always a typo in the name, or a bucket
+nobody populated -- the boot is refused naming that bucket, rather than starting a listener with
+nothing to terminate with. Setting `QUARKUS_HTTP_INSECURE_REQUESTS=enabled` stands this refusal down
+too, because you have then said what posture you want.
 
-Restore HTTPS by supplying key material through exactly one of the three routes the two records name.
-The mechanism -- which source projects what, at which ordinal, and why the ordinal sits where it does
--- is in link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts] and in the
-third-seam amendment to
+What you see at boot when the listener really is on plain HTTP is `ApiSheriff-121`, which reports the
+*resolved* state of the listener -- the key material that actually reached it, whatever route
+supplied it. It is a `WARN` and never a refusal: at that point the cleartext is the cleartext you
+asked for, and the record is there so it is never a surprise in a log nobody read.
+
+The mechanism -- which seam refuses, why it has to act before the listener is built, and why
+inference was rejected -- is in
+link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts] and in the seam
+amendment to
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
 
 == Passthrough SNI

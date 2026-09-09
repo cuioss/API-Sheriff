@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +36,7 @@ import io.vertx.core.net.PemKeyCertOptions;
 import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -114,10 +116,75 @@ class ManagementPlainHttpAuditTest {
                         + "posture for a TLS-terminated management port, which must not warn");
     }
 
+    /**
+     * The management leg of the certificate-spelling false positive.
+     * <p>
+     * The audit injected {@code quarkus.management.ssl.certificate.files} alone, while the
+     * management recorder falls through to the same legacy block as the main listener and accepts
+     * three further spellings. A management interface whose certificate arrives as a keystore file,
+     * as a PEM key without a chain file, or through a credentials provider was therefore reported as
+     * plain HTTP — {@code ApiSheriff-115} against a properly terminated port.
+     */
+    @Nested
+    @DisplayName("Declared certificate spellings — the false positive removed")
+    class DeclaredCertificateSpellings {
+
+        @Test
+        @DisplayName("Each of the four spellings alone means HTTPS, so none of them warns")
+        void eachSpellingAloneMeansHttps() {
+            assertAll("the management block accepts the same four spellings as the main listener's",
+                    () -> assertFalse(auditWith(Optional.of(List.of("management.crt")),
+                                    Optional.empty(), Optional.empty(), Optional.empty())
+                                    .auditManagementTls(),
+                            "quarkus.management.ssl.certificate.files — the spelling that already "
+                                    + "worked"),
+                    () -> assertFalse(auditWith(Optional.empty(),
+                                    Optional.of(List.of("management.key")), Optional.empty(),
+                                    Optional.empty()).auditManagementTls(),
+                            "quarkus.management.ssl.certificate.key-files alone"),
+                    () -> assertFalse(auditWith(Optional.empty(), Optional.empty(),
+                                    Optional.of("/etc/certs/management.p12"), Optional.empty())
+                                    .auditManagementTls(),
+                            "quarkus.management.ssl.certificate.key-store-file: a keystore carries "
+                                    + "chain AND key, so such a deployment declares no .files at all "
+                                    + "— this is the reported false positive"),
+                    () -> assertFalse(auditWith(Optional.empty(), Optional.empty(), Optional.empty(),
+                                    Optional.of("vault")).auditManagementTls(),
+                            "quarkus.management.ssl.certificate.credentials-provider"));
+        }
+
+        @Test
+        @DisplayName("With no spelling declared the port really is plain HTTP — the positive control")
+        void noSpellingDeclaredMeansPlainHttp() {
+            assertTrue(auditWith(Optional.empty(), Optional.empty(), Optional.empty(),
+                            Optional.empty()).auditManagementTls(),
+                    "without this control the four assertions above would pass equally against an "
+                            + "audit that had simply stopped warning altogether");
+        }
+
+        @Test
+        @DisplayName("A blank or empty value is no declaration, so it still means plain HTTP")
+        void blankValuesAreNoDeclaration() {
+            assertTrue(auditWith(Optional.of(List.of()), Optional.of(List.of()),
+                            Optional.of(""), Optional.of("")).auditManagementTls(),
+                    "an empty list and a key cleared to the empty string are both the shape a "
+                            + "compose file's bare VAR= produces, and neither supplies material");
+        }
+
+        private ManagementPlainHttpAudit auditWith(Optional<List<String>> certificateFiles,
+                Optional<List<String>> certificateKeyFiles,
+                Optional<String> certificateKeyStoreFile,
+                Optional<String> certificateCredentialsProvider) {
+            return new ManagementPlainHttpAudit(defaultBucketRegistry(keyLessConfiguration()),
+                    Optional.empty(), certificateFiles, certificateKeyFiles, certificateKeyStoreFile,
+                    certificateCredentialsProvider, MANAGEMENT_PORT);
+        }
+    }
+
     private static ManagementPlainHttpAudit auditOver(TlsConfigurationRegistry registry,
             Optional<List<String>> certificateFiles) {
         return new ManagementPlainHttpAudit(registry, Optional.empty(), certificateFiles,
-                MANAGEMENT_PORT);
+                Optional.empty(), Optional.empty(), Optional.empty(), MANAGEMENT_PORT);
     }
 
     /**

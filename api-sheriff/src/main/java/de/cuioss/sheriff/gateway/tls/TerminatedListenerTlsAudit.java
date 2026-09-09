@@ -22,7 +22,7 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
-import de.cuioss.sheriff.gateway.config.PlainHttpDegradeConfigSourceFactory;
+import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.tools.logging.CuiLogger;
@@ -31,8 +31,6 @@ import io.quarkus.tls.TlsConfigurationRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.Config;
-import org.eclipse.microprofile.config.ConfigValue;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jspecify.annotations.Nullable;
 
@@ -52,21 +50,20 @@ import org.jspecify.annotations.Nullable;
  * plain options. A configuration key can be renamed, superseded, or silently ignored, and an audit
  * keyed on one would then report a comfortable fiction; resolved material cannot.
  * <p>
- * <strong>This audit is the authoritative report where declared and resolved disagree.</strong> The
- * no-certificate plain-HTTP degrade is keyed on <em>declared</em> key material, because the seam it
- * must act at runs while the configuration system is still being built and the
- * {@link TlsConfigurationRegistry} does not yet exist. This audit is keyed on <em>resolved</em> key
+ * <strong>This audit is the authoritative report where declared and resolved disagree.</strong>
+ * {@link ServerTlsDeclarationGate} refuses a boot whose <em>declared</em> configuration would leave
+ * this listener with nothing to terminate with and no plain-HTTP opt-in; it must act from the
+ * {@code HttpServerOptionsCustomizer} hook, before the listener is built, so it can only read
+ * declared keys. This audit runs at {@code StartupEvent} and is keyed on <em>resolved</em> key
  * material. The two can disagree — a declared path that resolves to no usable key, or an
  * {@code HttpServerOptionsCustomizer} that supplies material the configuration never declared — and
  * where they do, what this audit reports is what the listener is actually doing.
  * <p>
- * <strong>It is also where the degrade reports itself.</strong> A {@code ConfigSource} cannot safely
- * log while the configuration system is being built, so
- * {@link de.cuioss.sheriff.gateway.config.PlainHttpDegradeConfigSourceFactory} stays silent and this
- * startup path emits {@code WARN ApiSheriff-123} on its behalf when the degrade is what supplied
- * {@code quarkus.http.insecure-requests}. Putting both records on one path is deliberate: the
- * declared and the resolved view of the same listener are then reported from one place, in one boot
- * log, where an operator can see them disagree.
+ * <strong>It reads every certificate spelling the runtime honours.</strong> The declared-material
+ * question is asked through the shared {@link DeclaredKeyMaterialKeys} vocabulary rather than
+ * through {@code ssl.certificate.files} alone: a deployment supplying a keystore file, or a PEM key
+ * without a chain file, or a credentials provider, terminates TLS perfectly well, and an audit that
+ * read one spelling reported a plain-HTTP downgrade against it.
  * <p>
  * <strong>Why a WARN and never a boot refusal.</strong> A plain-HTTP main listener is a legitimate
  * deployment behind a TLS-terminating boundary, and the gateway must not block it. What must not
@@ -109,61 +106,55 @@ public class TerminatedListenerTlsAudit {
     private final GatewayConfig gatewayConfig;
     private final @Nullable String tlsConfigurationName;
     private final boolean certificateConfigured;
-    private final boolean plainHttpDegradeActive;
     private final int httpPort;
     private final int httpsPort;
 
     /**
-     * @param registry             the live TLS registry, resolved exactly as the main-listener
-     *                             recorder resolves it
-     * @param gatewayConfig        the bound global gateway document, read for the live ADR-0017
-     *                             topology — the same {@code tls.passthrough_sni} signal
-     *                             {@link TlsEdgeProducer} decides on
-     * @param config               the resolved configuration, consulted only for which source
-     *                             supplied {@code quarkus.http.insecure-requests} — the one
-     *                             question that distinguishes an entered plain-HTTP degrade from an
-     *                             operator who set the same exposure themselves
-     * @param tlsConfigurationName the selected named TLS bucket, empty when the deployment selects
-     *                             none
-     * @param certificateFiles     the main listener's certificate chain, empty when the deployment
-     *                             supplies none
-     * @param httpPort             the plain HTTP port, reported in the warning
-     * @param httpsPort            the terminated HTTPS port, reported on the quiet path
+     * @param registry                      the live TLS registry, resolved exactly as the
+     *                                      main-listener recorder resolves it
+     * @param gatewayConfig                 the bound global gateway document, read for the live
+     *                                      ADR-0017 topology — the same {@code tls.passthrough_sni}
+     *                                      signal {@link TlsEdgeProducer} decides on
+     * @param tlsConfigurationName          the selected named TLS bucket, empty when the deployment
+     *                                      selects none
+     * @param certificateFiles              the main listener's PEM certificate chain, empty when the
+     *                                      deployment supplies none
+     * @param certificateKeyFiles           the PEM private keys matching that chain, empty when the
+     *                                      deployment supplies none
+     * @param certificateKeyStoreFile       the keystore file carrying chain and key, empty when the
+     *                                      deployment supplies none
+     * @param certificateCredentialsProvider the credentials provider supplying the keystore
+     *                                      password, empty when the deployment supplies none
+     * @param httpPort                      the plain HTTP port, reported in the warning
+     * @param httpsPort                     the terminated HTTPS port, reported on the quiet path
      */
     @Inject
+    @SuppressWarnings("java:S107") // one parameter per certificate spelling: @ConfigProperty needs a compile-time constant name each
     public TerminatedListenerTlsAudit(
             TlsConfigurationRegistry registry,
             GatewayConfig gatewayConfig,
-            Config config,
-            @ConfigProperty(name = "quarkus.http.tls-configuration-name") Optional<String> tlsConfigurationName,
-            @ConfigProperty(name = "quarkus.http.ssl.certificate.files") Optional<List<String>> certificateFiles,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME) Optional<String> tlsConfigurationName,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES) Optional<List<String>> certificateFiles,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_FILES) Optional<List<String>> certificateKeyFiles,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_STORE_FILE) Optional<String> certificateKeyStoreFile,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER) Optional<String> certificateCredentialsProvider,
             @ConfigProperty(name = "quarkus.http.port", defaultValue = "8080") int httpPort,
             @ConfigProperty(name = "quarkus.http.ssl-port", defaultValue = "8443") int httpsPort) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.tlsConfigurationName = Objects.requireNonNull(tlsConfigurationName, "tlsConfigurationName")
                 .orElse(null);
-        this.certificateConfigured = certificateFiles.filter(files -> !files.isEmpty()).isPresent();
-        this.plainHttpDegradeActive = degradeSuppliedTheExposureStrategy(
-                Objects.requireNonNull(config, "config"));
+        // Each leg keeps the "blank/empty counts as no declaration" semantics: an empty list and a
+        // key cleared to the empty string are both the shape a compose file's bare VAR= produces,
+        // and neither supplies material. The disjunction is what removes the false positive a
+        // files-only predicate produced against a keystore or key-files deployment.
+        this.certificateConfigured =
+                certificateFiles.filter(files -> !files.isEmpty()).isPresent()
+                        || certificateKeyFiles.filter(files -> !files.isEmpty()).isPresent()
+                        || certificateKeyStoreFile.filter(value -> !value.isBlank()).isPresent()
+                        || certificateCredentialsProvider.filter(value -> !value.isBlank()).isPresent();
         this.httpPort = httpPort;
         this.httpsPort = httpsPort;
-    }
-
-    /**
-     * Answers whether the plain-HTTP degrade — rather than the shipped default or the deployment —
-     * is what supplied {@code quarkus.http.insecure-requests}.
-     * <p>
-     * The question is asked by <em>source name</em> and not by value on purpose. The effective value
-     * {@code enabled} is reachable by three routes — the degrade, a deployment-supplied
-     * {@code QUARKUS_HTTP_INSECURE_REQUESTS}, and a test profile — and only one of them means the
-     * gateway is in no-certificate mode. Keying on the value would report the degrade for a
-     * deployment that chose plain HTTP deliberately with a certificate configured.
-     */
-    private static boolean degradeSuppliedTheExposureStrategy(Config config) {
-        ConfigValue value = config.getConfigValue(PlainHttpDegradeConfigSourceFactory.INSECURE_REQUESTS);
-        return value != null
-                && PlainHttpDegradeConfigSourceFactory.SOURCE_NAME.equals(value.getSourceName());
     }
 
     /**
@@ -182,12 +173,11 @@ public class TerminatedListenerTlsAudit {
     /**
      * Resolves the terminated main listener's effective TLS state and warns when it is plain HTTP.
      * <p>
-     * Two records can fire here, and they answer different questions. {@code ApiSheriff-121} reports
-     * the <em>resolved</em> state of the listener. {@code ApiSheriff-123} reports that the
-     * plain-HTTP degrade entered no-certificate mode on the <em>declared</em> view, which is what
-     * turned a boot refusal into a running gateway. They are emitted independently rather than
-     * nested, because the declared and the resolved view can disagree and folding one into the other
-     * would silence whichever record the disagreement made true.
+     * One record fires here: {@code ApiSheriff-121}, reporting the <em>resolved</em> state of the
+     * listener. Reaching a plain-HTTP verdict at all now means the operator declared the plain-HTTP
+     * opt-in deliberately, or supplied material that did not resolve —
+     * {@link ServerTlsDeclarationGate} refuses every other
+     * route to this state before the listener is built.
      *
      * @return {@code true} when the terminated main listener resolved to plain HTTP
      */
@@ -200,9 +190,6 @@ public class TerminatedListenerTlsAudit {
         } else {
             LOGGER.debug("Terminated main listener resolved to HTTPS on port %s — topology: %s",
                     httpsPort, topology);
-        }
-        if (plainHttpDegradeActive) {
-            LOGGER.warn(ConfigLogMessages.WARN.TLS_DEGRADED_TO_PLAIN_HTTP, httpPort);
         }
         return plain;
     }
