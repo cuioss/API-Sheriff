@@ -222,10 +222,19 @@ derived by de-duplicating the `api-sheriff-parent` attribution the inventory car
 which is why no row double-counts.
 
 *The declared surface moved from 135 files / 1368 methods to 155 / 1632.* Both halves grew: the
-integration lane from 42 files to 56 (52 of which declare a test method -- the other four are the
-support classes named in <<pro-forma-audit>>), and `api-sheriff` from 93 to 103 marker-relevant
-files. The marker union grew from 58 files / 267 occurrences to 69 / 299. <<backlog>> is recomputed
-from these numbers rather than edited.
+integration lane from 42 test-declaring files to 52, and `api-sheriff` from 93 to 103 -- both counts
+are *declared-surface* counts, so 52 + 103 = 155 and the total above closes. The marker union grew
+from 58 files / 267 occurrences to 69 / 299. <<backlog>> is recomputed from these numbers rather than
+edited.
+
+[NOTE]
+====
+*Two lane counts are in play and they are not interchangeable.* The lane holds *56* `.java` files at
+`497c592`; *52* of them declare a test method, and the other four are the support classes named in
+<<pro-forma-audit>>. The like-for-like predecessor of 52 is 42 (44 `.java` files at `ec6f7e4`, 42
+declaring). Only the test-declaring count is a term in the 155-file declared surface; the 56 is the
+population <<pro-forma-audit>> read in full, and it is the number the exhaustive-pass prose uses.
+====
 
 [NOTE]
 ====
@@ -1252,10 +1261,17 @@ classified.* That is the standing backlog, and it is the honest measure of what 
 not cover between them.
 
 *This table is corpus-wide, and that scope is load-bearing.* Its population is the whole D1 surface,
-not the integration lane <<pro-forma-audit>> read -- so the growth from 93 to 103 marker-relevant
-`api-sheriff` files recorded in <<recensus-497c592>> lands *in the backlog*, because no pass has read
-those files. A reader must not take the exhaustive integration-lane pass as coverage of the rows
-below: every one of them is under `api-sheriff/src/test/**`, and none was opened.
+not the integration lane <<pro-forma-audit>> read -- so the *43* marker-carrying `api-sheriff` files
+recorded in <<recensus-497c592>>, less the 14 read in full by the earlier passes, land *in the
+backlog*, because no pass has read the remaining 29. A reader must not take the exhaustive
+integration-lane pass as coverage of the rows below: every one of them is under
+`api-sheriff/src/test/**`, and none was opened.
+
+The growth from 93 to 103 `api-sheriff` files recorded in the same recensus is a *declared-surface*
+figure, not a marker-carrying one, so it does not size this table: a file can declare tests and carry
+no `assertDoesNotThrow` / `assertNotNull` marker at all, and the recensus counts 103 declared-surface
+against only 43 marker-carrying `api-sheriff` files. The backlog is derived from the marker census
+below and from nothing else.
 
 Derivation, recomputed from <<recensus-497c592>> at `497c592` rather than edited:
 

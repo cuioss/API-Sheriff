@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -1680,29 +1681,38 @@ class ConfigValidatorTest {
         }
 
         /**
-         * Matched positive/negative controls straddling the 4096-byte browser guarantee, every case
-         * inside the accepted {@code 40..8192} range so the boot never fails and the warning is the
-         * only variable.
+         * Matched positive/negative controls straddling the browser-safe <em>value</em> budget
+         * ({@code SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET}, 4019 = the 4096-byte
+         * RFC 6265 6.1 header guarantee less the 77 bytes of cookie name and attributes the codec
+         * always emits), every case inside the accepted {@code 40..8192} range so the boot never
+         * fails and the warning is the only variable.
          * <p>
          * <strong>Both legs are required.</strong> The fire-only cases alone would pass against a
          * validator that warned unconditionally — which is the failure this record exists to avoid,
          * since a boot warning on every cookie-mode gateway is a warning operators learn to ignore.
-         * The silent cases are what pin the threshold, and 4096 / 4097 straddle it exactly, so
-         * moving the comparison off {@code DEFAULT_COOKIE_VALUE_BUDGET} in either direction — or
-         * flipping it from {@code >} to {@code >=} — turns at least one case red.
+         * The silent cases are what pin the threshold, and 4019 / 4020 straddle it exactly, so
+         * moving the comparison off {@code BROWSER_SAFE_COOKIE_VALUE_BUDGET} in either direction —
+         * or flipping it from {@code >} to {@code >=} — turns at least one case red.
+         * <p>
+         * <strong>4096 is a firing case, and that is the regression control.</strong> Comparing the
+         * value budget against {@code DEFAULT_COOKIE_VALUE_BUDGET} (4096) left the band
+         * {@code 4020..4096} silent while the gateway emitted a {@code Set-Cookie} header past the
+         * guarantee — the same silent, browser-side, unobservable drop the record exists to
+         * announce. Restoring that comparison turns this row red.
          */
         static Stream<Arguments> browserGuaranteeThresholdControls() {
             return Stream.of(
                     Arguments.of("the floor is far below the browser guarantee", 40, false),
-                    Arguments.of("one byte below the guarantee", 4095, false),
-                    Arguments.of("exactly the guarantee", 4096, false),
-                    Arguments.of("one byte above the guarantee", 4097, true),
+                    Arguments.of("one byte below the browser-safe value budget", 4018, false),
+                    Arguments.of("exactly the browser-safe value budget", 4019, false),
+                    Arguments.of("one byte above the browser-safe value budget", 4020, true),
+                    Arguments.of("the codec default value budget derives an over-guarantee header", 4096, true),
                     Arguments.of("the validated ceiling is above the guarantee", 8192, true));
         }
 
         @ParameterizedTest(name = "{0} (max_cookie_size = {1})")
         @MethodSource("browserGuaranteeThresholdControls")
-        @DisplayName("Should warn only when an accepted max_cookie_size exceeds the browser guarantee")
+        @DisplayName("Should warn only when the header derived from an accepted max_cookie_size exceeds the browser guarantee")
         void shouldWarnOnlyAboveTheBrowserGuarantee(String label, int maxCookieSize, boolean expectWarning) {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
                     .session(OidcConfig.Session.builder()
@@ -1718,10 +1728,15 @@ class ConfigValidatorTest {
             if (expectWarning) {
                 LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, identifier);
                 LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, String.valueOf(maxCookieSize));
+                // The DERIVED header size is what the guarantee governs, so the message must name it
+                // — a template carrying only the value budget is the drift this control pins.
+                LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, String.valueOf(
+                        maxCookieSize + SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD));
             } else {
                 assertTrue(TestLoggerFactory.getTestHandler()
                                 .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
-                        () -> maxCookieSize + " is at or below the browser guarantee and must not emit " + identifier);
+                        () -> maxCookieSize + " derives a header inside the browser guarantee and must not emit "
+                                + identifier);
             }
         }
     }

@@ -117,9 +117,62 @@ public final class SealedSessionCookieCodec {
     /**
      * The default sealed cookie-value size budget in bytes (~4 KB). Browsers are only required to
      * accept 4096 bytes per cookie, so a larger value risks being silently dropped by the browser —
-     * which is why the default sits exactly there rather than at the gateway's transport ceiling.
+     * which is why the default sits at that figure rather than at the gateway's transport ceiling.
+     * <p>
+     * <strong>It is a VALUE budget, and the browser's 4096 is a HEADER budget.</strong> The two are
+     * not the same number and must not be compared to each other directly: a value sealing to
+     * exactly this budget is emitted as a {@code Set-Cookie} header of
+     * {@code 4096 + }{@link #DEFAULT_SET_COOKIE_HEADER_OVERHEAD} bytes, which is already past what
+     * RFC 6265 6.1 guarantees. {@link #BROWSER_SAFE_COOKIE_VALUE_BUDGET} is the value budget that
+     * corresponds to the guarantee, and it is the number any browser-deliverability comparison
+     * belongs against. This default is deliberately left where it is — it is the documented,
+     * schema-described default and moving it is a separate decision from stating it accurately.
      */
     public static final int DEFAULT_COOKIE_VALUE_BUDGET = 4096;
+
+    /**
+     * The per-cookie budget RFC 6265 6.1 asks a user agent to honour, in bytes.
+     * <p>
+     * It governs the <em>whole</em> {@code Set-Cookie} header — the cookie's name, its value
+     * <em>and</em> its attributes summed together — never the value in isolation. Every
+     * browser-deliverability comparison in this codebase goes through this constant plus
+     * {@link #DEFAULT_SET_COOKIE_HEADER_OVERHEAD} rather than against
+     * {@link #DEFAULT_COOKIE_VALUE_BUDGET}, because the latter measures a different quantity.
+     */
+    public static final int BROWSER_PER_COOKIE_HEADER_GUARANTEE = 4096;
+
+    /**
+     * The bytes {@link #toSetCookieHeader} wraps around the sealed value under the default cookie
+     * name. Derived from the header this codec actually formats, never measured from a capture:
+     * <ul>
+     *   <li><strong>23</strong> for {@code __Host-sheriff-session=} — 22 name bytes
+     *       ({@code SessionCookieCodec.DEFAULT_COOKIE_NAME}) plus the {@code =} separator;</li>
+     *   <li><strong>54</strong> for the attribute run
+     *       {@code ; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax} — 50 invariant bytes plus
+     *       the four {@code Max-Age} digits a 3600-second session TTL produces.</li>
+     * </ul>
+     * Both inputs are configurable ({@code session.cookie_name}, {@code session.ttl_seconds}), so
+     * this is the <em>default-configuration</em> overhead rather than a universal one, and a guard
+     * built on it is approximate by exactly the configured deviation: a longer cookie name or a TTL
+     * past 9999 seconds raises the real overhead, so the guard under-warns by that many bytes; a
+     * shorter name lowers it, so the guard warns that many bytes early. The residual is single-digit
+     * for every name in this codebase and is accepted deliberately — resolving it exactly would put
+     * a second copy of the header-assembly arithmetic in the configuration validator, which is the
+     * kind of duplication that produced the contradiction this constant exists to remove.
+     */
+    public static final int DEFAULT_SET_COOKIE_HEADER_OVERHEAD = 77;
+
+    /**
+     * The largest sealed cookie-<em>value</em> budget whose emitted {@code Set-Cookie} header still
+     * fits {@link #BROWSER_PER_COOKIE_HEADER_GUARANTEE}: {@code 4096 - 77 = 4019}.
+     * <p>
+     * This is the threshold a browser-deliverability warning belongs on. Warning on
+     * {@link #DEFAULT_COOKIE_VALUE_BUDGET} instead leaves a 77-byte band — a value budget in
+     * {@code 4020..4096} — in which the gateway emits a header the browser is not obliged to keep
+     * and nothing anywhere says so.
+     */
+    public static final int BROWSER_SAFE_COOKIE_VALUE_BUDGET =
+            BROWSER_PER_COOKIE_HEADER_GUARANTEE - DEFAULT_SET_COOKIE_HEADER_OVERHEAD;
 
     /**
      * The smallest configurable budget: the encoded length of a sealed value carrying an

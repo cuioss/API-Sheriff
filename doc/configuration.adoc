@@ -367,12 +367,15 @@ oidc:                              # only used by the BFF variants (2 and 3)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
                                    #   generate a key on startup (sessions die on restart)
-    max_cookie_size: 4096          # cookie mode only: sealed cookie-value size budget in bytes.
+    max_cookie_size: 4019          # cookie mode only: sealed cookie-VALUE size budget in bytes.
                                    #   40..8192, default 4096. Drives BOTH the seal budget and the
                                    #   gateway's pre-route Cookie header-value cap
-                                   #   A value above 4096 still boots, but warns (ApiSheriff-124):
-                                   #   only 4096 is guaranteed to survive a browser, which drops an
-                                   #   oversized cookie silently
+                                   #   A value above 4019 still boots, but warns (ApiSheriff-124):
+                                   #   RFC 6265's ~4096 is a HEADER budget (name + value +
+                                   #   attributes), and this cookie's name and attributes cost a
+                                   #   fixed 77 bytes -- so 4019 is the largest value budget whose
+                                   #   emitted header a browser is obliged to keep. Above it the
+                                   #   browser drops the cookie silently
     ttl_seconds: 3600              # absolute session lifetime from login
     csrf:
       trusted_origins: [https://app.example.com]   # app origins allowed on unsafe methods;
@@ -1800,12 +1803,23 @@ ignored when no route's effective auth is `require: session`.
   with a message naming this key: below the floor no structurally valid sealed value could ever be
   emitted, and above the ceiling the derived header cap would exceed what the inbound
   request-header block (16 KiB, shared with every other header) will carry.
-  A value *inside* the range but above `4096` boots and is warned rather than refused
+
+  *This key is a VALUE budget; the browser's ~4096 is a HEADER budget.* RFC 6265 6.1 budgets a
+  cookie's name, value and attributes together. Under the default cookie name that costs 77 bytes
+  (23 for `+__Host-sheriff-session=+`, 54 for
+  `+; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax+`), so the largest value budget whose
+  emitted header still fits the guarantee is *4019*, not 4096. A custom `session.cookie_name` or a
+  TTL past 9999 seconds shifts the overhead by its own length difference; the warning threshold below
+  is fixed at the default-name figure and is approximate by exactly that much.
+
+  A value *inside* the range but above `4019` boots and is warned rather than refused
   (`ApiSheriff-124`), because the range's upper half is only reachable safely by a client that keeps
-  whatever it is sent: a browser is required to keep 4096 bytes and discards anything larger
+  whatever it is sent: a browser is required to keep 4096 header bytes and discards anything larger
   silently, with no error on either side, so raising this budget moves the failure out of the
   gateway -- where `ApiSheriff-114` would have refused the seal loudly -- and into the browser,
-  where nothing observes it.
+  where nothing observes it. The warning is a no-op when the key is omitted, so the `4096` default
+  -- itself 77 bytes into the overhead -- is not warned about; warning there would fire on every
+  cookie-mode gateway.
 
   This is *one declared number driving two limits*. It is both the seal-time budget -- a sealed
   value over it fails the seal with a logged warning, never a silent truncation -- *and* the source

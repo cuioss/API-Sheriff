@@ -29,15 +29,29 @@ session a real browser client could not hold.
 
 In cookie mode the session *is* the cookie. Storing the refresh token alongside the access and ID
 tokens grew the sealed value to 5123 bytes
-(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164`), and browsers are
-only required to accept 4096 bytes per cookie
+(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164` *as that file stood
+before this note's remediation*), and browsers are only required to accept 4096 bytes per cookie
 (`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:118-122`).
 A browser therefore drops the `Set-Cookie` silently: no error, no session, an anonymous SPA. The
-same change raised the instance budget to 8192
-(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:171`), so the gateway's own
-seal-time guard -- `if (encoded.length() > maxCookieValueBytes)` at
+same change had raised the instance budget to 8192 (`:171` in that same pre-remediation file), so the
+gateway's own seal-time guard -- `if (encoded.length() > maxCookieValueBytes)` at
 `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:211`
 -- no longer fired either.
+
+[NOTE]
+.Every `gateway.yaml` citation here is historical, deliberately
+====
+The `gateway.yaml` figures and line numbers in this note describe the cookie instance *as it was when
+the blindness was found*: `max_cookie_size: 8192` declared at `:171`, and the comment block at
+`:159-164` explaining the three-token seal that made it necessary.
+
+The remediation this note motivated has since landed on the same instance. It deleted the
+`max_cookie_size` override outright and set `refresh.enabled: false`, so the instance now seals
+access + ID only, declares no budget, and keeps the codec default. Neither cited line survives that
+edit -- `:171` is now `enabled: false`, and `:159-164` is the replacement "No max_cookie_size
+override" comment. Read every `gateway.yaml` citation below as history rather than as the present
+tree; re-derive the numbers from the pre-remediation revision of the file if you need to check one.
+====
 
 [IMPORTANT]
 .Two sizes are in play, and it matters which one the budget applies to
@@ -229,10 +243,13 @@ Storing the refresh token is what moved the payload. `CallbackEndpoint` now seed
 `.refreshToken(result.refreshToken())` into the session record
 (`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java:239`, with
 the mechanism documented in the comment at `:231-238`), and in cookie mode the session is the cookie
--- so access + ID + refresh seal to 5123 bytes on this instance
-(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164`), which the codec
-emits as a 5200-byte `Set-Cookie` header once the name and attributes are counted. The same change
-raised `max_cookie_size` to 8192 (`:171`), which is what kept the gateway's own guard quiet.
+-- so access + ID + refresh sealed to 5123 bytes on this instance
+(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164`, pre-remediation),
+which the codec emits as a 5200-byte `Set-Cookie` header once the name and attributes are counted.
+The same change had raised `max_cookie_size` to 8192 (`:171`, pre-remediation), which is what kept
+the gateway's own guard quiet. Both figures are historical in the sense set out at the top of this
+note: the instance now runs with refresh disabled and no budget override, so it seals two tokens
+rather than three.
 
 So the suite became blind at one identifiable instant, without a line of test code being touched.
 
@@ -271,9 +288,12 @@ budget sits in the table alongside the other five rather than outside it.
 
 | Per-cookie size budget (~4096 bytes)
 | The browser, by silently refusing to store an over-budget value.
-| *Not covered*
-| Nowhere in the IT lane. The gateway's own seal-time guard
-  (`SealedSessionCookieCodec.java:211`) fires against the *configured* budget, not the browser's.
+| *Size asserted, policy unobservable*
+| `BffKeycloakLoginFlow.assertCookiesFitBrowserBudget` measures the *emitted header* against the
+  test's own `BROWSER_COOKIE_BUDGET_BYTES` constant at the single login seam every `Bff*IT` funnels
+  through (`:158`, called at `:309`) -- added by this plan's emitted-header deliverable. The
+  gateway's own seal-time guard (`SealedSessionCookieCodec.java:211`) is *not* that assertion: it
+  fires against the *configured* budget, not the browser's.
 
 | `SameSite`
 | The browser, by withholding a `Lax` cookie on a cross-site send.
@@ -315,16 +335,19 @@ Of the six properties enumerated:
 * *Three* carry an attribute assertion in the IT lane -- `SameSite`, the `__Host-` combination, and
   the `Secure` flag. All three live in one test, `sealedSessionCookieIsHardened`
   (`BffCookieSessionIT.java:97-113`).
-* *Three* carry no assertion at all -- the per-cookie budget, per-domain count, and aggregate size.
+* *One* carries a size assertion -- the per-cookie budget, closed by this plan's emitted-header
+  assertion at the shared login seam (`BffKeycloakLoginFlow.java:309`).
+* *Two* carry no assertion at all -- per-domain count and aggregate size.
 * *Zero* have their browser-side enforcement exercised anywhere in the integration lane.
 
-The last line is the finding. The gap between *asserting* an attribute and *enforcing* the policy
-behind it is total here, not partial: three of six are asserted and none of six is enforced. A green
-`Bff*IT` run is evidence about what the gateway emitted, never about what a browser does with it.
+The last line is the finding. The gap between *asserting* what the gateway emitted and *enforcing*
+the policy behind it is total here, not partial: four of six are asserted and none of six is
+enforced. A green `Bff*IT` run is evidence about what the gateway emitted, never about what a
+browser does with it.
 
-*Standing backlog: three properties with no assertion, and six with no enforcement observation, in
-the integration lane.* One of the three -- the per-cookie budget -- is closed by this plan's
-emitted-header assertion. The other two, and the enforcement half of all six, remain open and are
+*Standing backlog: two properties with no assertion, and six with no enforcement observation, in the
+integration lane.* The per-cookie budget was the third, and it is closed by this plan's
+emitted-header assertion. The remaining two, and the enforcement half of all six, remain open and are
 recorded here rather than in a rival index.
 
 === The one lane that does cover the class

@@ -151,10 +151,11 @@ class BffCookieSessionIT {
         Session session = BffKeycloakLoginFlow.login(SESSION_ROUTE, COOKIE_ORIGIN);
 
         // Act + Assert — two sequential mediated requests both reach the upstream through the same
-        // sealed session. The transparent near-expiry refresh (leeway_seconds: 30) re-seals only when
-        // the mediated token is within its leeway of expiry; the integration realm's 900s access-token
-        // lifespan keeps it well inside validity here, so this asserts the always-available continuity
-        // path rather than forcing a refresh with a wall-clock wait.
+        // sealed session. This instance runs with oidc.session.refresh.enabled: false (the cookie
+        // instance keeps its seal to access + ID so it stays inside the browser-safe budget), so no
+        // re-seal can occur between the two requests at all: what is asserted here is the plain
+        // continuity path — one sealed value, unsealed and replayed on every request. Refresh
+        // behaviour belongs to the api-sheriff-refresh instance and is exercised there.
         for (int request = 0; request < 2; request++) {
             Response response = BffKeycloakLoginFlow.gateway(session.gatewayCookies(), COOKIE_ORIGIN)
                     .when().get(SESSION_ROUTE)

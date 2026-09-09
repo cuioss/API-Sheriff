@@ -119,7 +119,8 @@ to *run* the finished gateway).
   every attribute), the three candidate maskers checked and ruled out, the per-test verdict under a
   policy-applying client (seven of the nine go red, two stay green and are named), the exact instant
   the suite stopped being honest and why that makes it a missing invariant rather than a test defect,
-  the six-property surface with a verdict each -- three attribute-asserted, three unasserted, none
+  the six-property surface with a verdict each -- three attribute-asserted, one size-asserted (the
+  per-cookie budget, closed by this plan's emitted-header assertion), two unasserted, none
   enforcement-observed -- and the boundary rule that puts what the gateway *emits* on the pull
   request and what the browser *applies* in the browser lane.
 

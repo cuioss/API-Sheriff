@@ -156,13 +156,16 @@ oidc:
     # lets a second instance unseal a cookie this one sealed: the instances share only this key.
     encryption_key: ${SESSION_ENCRYPTION_KEY}
     ttl_seconds: 3600
-    # No max_cookie_size override: this instance keeps the browser-safe 4096 default. The tension
-    # is real and belongs to the product, not to the test — a cookie-mode session that ALSO
-    # refreshes does not fit in the ~4 KB a browser guarantees per cookie, because in cookie mode
-    # the session IS the cookie and access + id + refresh seals past that budget. Raising the
-    # budget does not solve it, it only moves the failure into the browser, which drops the
-    # oversized Set-Cookie silently. The deployment-level answer is server mode, a smaller claim
-    # set, or an authorization server that issues no refresh token — never a larger default.
+    # No max_cookie_size override: this instance keeps the 4096 default VALUE budget. Note the two
+    # figures are not the same measure — 4096 here bounds the sealed cookie value, while the ~4 KB
+    # a browser guarantees covers the whole Set-Cookie header (name + value + attributes, a further
+    # 77 bytes for this cookie), so the browser-safe value budget is 4019. The tension is real and
+    # belongs to the product, not to the test — a cookie-mode session that ALSO refreshes does not
+    # fit in that budget at all, because in cookie mode the session IS the cookie and access + id +
+    # refresh seals far past it. Raising the budget does not solve it, it only moves the failure
+    # into the browser, which drops the oversized Set-Cookie silently. The deployment-level answer
+    # is server mode, a smaller claim set, or an authorization server that issues no refresh
+    # token — never a larger default.
     refresh:
       # OFF so the seal carries access + id only and stays inside the browser-safe default above.
       # leeway_seconds stays declared: declared-limit-assertion-coverage.adoc cites it as a ×4 row

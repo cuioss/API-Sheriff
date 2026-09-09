@@ -46,7 +46,7 @@ oidc:
     mode: cookie                              # sealed cookie, no store (this variant)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}    # optional -- see "Key material" below
-    max_cookie_size: 4096                     # seal-time budget; see "Cookie size budget"
+    max_cookie_size: 4019                     # seal-time VALUE budget; see "Cookie size budget"
     ttl_seconds: 3600                         # absolute lifetime from login
     csrf:
       trusted_origins: [https://app.example.com]
@@ -116,13 +116,28 @@ Because the session travels in the cookie, its sealed value has a size budget --
 cookie, so a larger value risks being *silently dropped* by the browser, leaving a session that can
 never be resolved.
 
+[IMPORTANT]
+.The budget key and the browser's 4 KB measure different things
+====
+`max_cookie_size` is a *value* budget -- the sealed cookie value alone. The ~4096 bytes RFC 6265
+6.1 asks a browser to keep is a *header* budget: the cookie's name, its value *and* its attributes
+summed together. Under the default cookie name the difference is 77 bytes -- 23 for
+`+__Host-sheriff-session=+` plus 54 for the attributes the gateway always appends
+(`+; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax+`).
+
+So the largest value budget that still emits a browser-safe header is *4019* (4096 - 77), not 4096.
+That is the number `ApiSheriff-124` warns above, and the number to declare when you declare the key
+at all. A custom `session.cookie_name` moves the overhead by its own length difference; the warning
+threshold stays at the default-name figure.
+====
+
 The gateway therefore refuses to seal an over-budget session rather than truncating it, and logs a
 warning naming the offending length. If you hit the budget, *reduce the token set* -- trim `scopes`
 so the IdP issues a smaller access token, and cut `user_info.allowed_claims` -- or *run the
 link:../variants/02-bff-session.adoc[server-session variant]*, where token size is irrelevant
 because nothing crosses to the browser.
 
-Raising the budget above 4096 is permitted -- the validated range runs to 8192 -- and the gateway
+Raising the budget above 4019 is permitted -- the validated range runs to 8192 -- and the gateway
 warns once at boot when you do (`ApiSheriff-124`). Treat that boot line as the last signal you will
 get: it fires precisely because raising the budget switches off the seal refusal described above,
 and what the refusal was protecting you from then happens in the browser instead, which reports
@@ -133,13 +148,14 @@ nothing to anyone.
 *Enabling `session.refresh` in this variant costs a third token in the seal.* The refresh token is
 stored in the session -- it has to be, because it is the only thing that re-contacts the IdP -- and
 in cookie mode the session *is* the cookie. Access + ID + refresh together commonly exceed the 4096
-default -- which is why the integration suite's own cookie instance runs with `session.refresh`
-disabled, keeping its seal inside the browser-safe default rather than declaring a larger budget.
+default *value* budget -- which is why the integration suite's own cookie instance runs with
+`session.refresh` disabled, keeping its seal inside the default rather than declaring a larger
+budget.
 
 The failure is honest but blunt: the seal is refused and login answers `500`. Raising
-`max_cookie_size` above 4096 makes it work against this gateway while moving the risk into the
-browser, which is only required to accept 4 KB per cookie -- so treat a raised budget as viable for
-a controlled client, not as a general answer. Where both refresh and browser-safe cookies are
+`max_cookie_size` above 4019 makes it work against this gateway while moving the risk into the
+browser, which is only required to accept 4 KB per *header* -- so treat a raised budget as viable
+for a controlled client, not as a general answer. Where both refresh and browser-safe cookies are
 required, use the link:../variants/02-bff-session.adoc[server-session variant].
 ====
 

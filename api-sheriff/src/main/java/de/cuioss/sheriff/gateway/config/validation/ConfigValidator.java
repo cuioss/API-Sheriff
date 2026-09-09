@@ -1229,15 +1229,28 @@ public final class ConfigValidator {
      * above the inbound header-block limit would produce a value the seal accepts but the transport
      * rejects with {@code 431}. A no-op when the key is omitted (the codec default applies).
      * <p>
-     * <strong>An in-range budget above the browser guarantee is warned, never refused.</strong> The
-     * validated range stays {@code 40..8192} exactly as it is, but only the first ~4096 bytes of it
-     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}) are bytes RFC 6265 guarantees a
-     * browser will keep. A budget above that is a legitimate posture for a client that keeps
-     * whatever it is sent, so it boots — and it emits
+     * <strong>An in-range budget whose emitted header outgrows the browser guarantee is warned,
+     * never refused.</strong> The validated range stays {@code 40..8192} exactly as it is. The
+     * warning threshold is {@link SealedSessionCookieCodec#BROWSER_SAFE_COOKIE_VALUE_BUDGET}
+     * (4019) rather than {@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET} (4096),
+     * because the two numbers measure different things: this key is a sealed <em>value</em> budget,
+     * while the ~4096 bytes RFC 6265 6.1 guarantees govern the whole {@code Set-Cookie}
+     * header — name, value and attributes together, which for this cookie is a further
+     * {@link SealedSessionCookieCodec#DEFAULT_SET_COOKIE_HEADER_OVERHEAD} bytes. Comparing the value
+     * budget against the header guarantee left the band {@code 4020..4096} silent while the gateway
+     * emitted a header no browser is obliged to keep — the same false guarantee this record exists
+     * to announce. A budget above the threshold is still a legitimate posture for a client that
+     * keeps whatever it is sent, so it boots — and it emits
      * {@link ConfigLogMessages.WARN#COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE}, because raising the
-     * budget past 4096 silences the {@code ApiSheriff-114} seal refusal without removing the
-     * problem: the browser then drops the oversized {@code Set-Cookie} with no error on either side,
-     * and no later signal exists for the gateway to report.
+     * budget that far silences the {@code ApiSheriff-114} seal refusal without removing the problem:
+     * the browser then drops the oversized {@code Set-Cookie} with no error on either side, and no
+     * later signal exists for the gateway to report.
+     * <p>
+     * <strong>Residual, stated rather than hidden.</strong> The rule is a no-op when the key is
+     * omitted, and the codec default that then applies (4096) is itself above the browser-safe value
+     * budget. Warning on the omitted case would fire on every cookie-mode gateway, which is the one
+     * outcome that reliably teaches operators to ignore the record, so the residual is left in place
+     * and recorded here.
      */
     private static void validateSessionMaxCookieSize(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig.Session session = oidcSession(gateway);
@@ -1253,8 +1266,10 @@ public final class ConfigValidator {
                                     SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, size)));
             return;
         }
-        if (size > SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET) {
-            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, size);
+        if (size > SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET) {
+            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, size,
+                    size + SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD,
+                    SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET);
         }
     }
 
