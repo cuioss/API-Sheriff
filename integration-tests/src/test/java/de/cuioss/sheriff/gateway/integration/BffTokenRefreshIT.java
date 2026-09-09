@@ -145,7 +145,7 @@ class BffTokenRefreshIT {
     void mediatedTokenCarriesTheDeclaredLifespan() {
         Session session = loginToRefreshInstance();
 
-        String bearer = mediatedBearer(session);
+        String bearer = authorizationOf(mediatedCall(session));
         JsonPath claims = decodeJwtPayload(bearer);
         long issuedAt = claims.getLong("iat");
         long expiresAt = claims.getLong("exp");
@@ -249,10 +249,6 @@ class BffTokenRefreshIT {
                 .when().get(MEDIATED_PATH)
                 .then().statusCode(200)
                 .extract().response();
-    }
-
-    private static String mediatedBearer(Session session) {
-        return authorizationOf(mediatedCall(session));
     }
 
     /**
