@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
-import java.util.Objects;
 import java.util.Optional;
 
 
@@ -93,8 +92,6 @@ final class ResolvedServerTlsMaterial {
      */
     static boolean resolvesToPlainHttp(TlsConfigurationRegistry registry,
             @Nullable String tlsConfigurationName, boolean certificateConfigured) {
-        Objects.requireNonNull(registry, "registry");
-
         if (tlsConfigurationName != null) {
             Optional<TlsConfiguration> named = registry.get(tlsConfigurationName);
             return named.isEmpty() || named.get().getKeyStoreOptions() == null;

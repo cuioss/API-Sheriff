@@ -147,7 +147,7 @@ public class DefaultTrustSourceAudit {
      * @return {@code true} when an operator-supplied store is in effect on at least one tier
      */
     public boolean auditDefaultTrustSource() {
-        Optional<String> rawTierStorePath = configuredTrustStorePath();
+        Optional<String> rawTierStorePath = trimmedProperty(TRUST_STORE_PROPERTY);
         Optional<String> registryTierTrustKind = defaultBucketTrustKind();
 
         String rawTier = rawTierStorePath
@@ -181,13 +181,6 @@ public class DefaultTrustSourceAudit {
             return TIERS_AGREE;
         }
         return rawTierMoved ? ONLY_RAW_TIER_MOVED : ONLY_REGISTRY_TIER_MOVED;
-    }
-
-    /**
-     * @return the operator-supplied default trust store's path, empty when the deployment sets none
-     */
-    private static Optional<String> configuredTrustStorePath() {
-        return trimmedProperty(TRUST_STORE_PROPERTY);
     }
 
     /**
