@@ -158,10 +158,9 @@ leeway is measured *against*, never the leeway itself.
 `asset_defaults.content_types`, G1, G11). Citing this overlay per row would add a *fifth* line number
 to each of the seven `×4` rows and a *second* to six of the seven base-only rows -- *thirteen* rows,
 restating one fact thirteen times where it is better stated once: *derive it from the base citation.*
-The three remaining `gateway.yaml` rows in the matrix cite an overlay only
-(`sheriff-config-cookie/gateway.yaml`, `sheriff-config-mtls/gateway.yaml`,
-`sheriff-config-ws-admission/gateway.yaml`) and declare keys the base does not, so they are outside
-this derivation entirely.
+The two remaining `gateway.yaml` rows in the matrix cite an overlay only
+(`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`) and declare keys
+the base does not, so they are outside this derivation entirely.
 
 The thirteenth-versus-fourteenth row is not an off-by-one: the base-only row that would gain *no*
 citation is `tls.passthrough_sni` itself, the one key this overlay does **not** carry -- and that
@@ -254,7 +253,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `PipelineVerbIT` (405 plus four positive controls)
 
 | `oidc.session.csrf.trusted_origins`
-  `gateway.yaml` ×4 -- base:295, cookie:176, mtls:156, ws:135
+  `gateway.yaml` ×4 -- base:295, cookie:174, mtls:156, ws:135
 | BFF CSRF origin gate
 | COVERED
 | `BffCsrfIT` (403 / 403 with a 401 control)
@@ -304,7 +303,7 @@ declaration's *existence* is proven while its *boundary* is not.
   built-in; no served-asset content type is asserted at runtime
 
 | `oidc.session.refresh.leeway_seconds: 30`
-  `gateway.yaml` ×4 -- base:293, cookie:174, mtls:154, ws:133
+  `gateway.yaml` ×4 -- base:293, cookie:172, mtls:154, ws:133
 | Session refresh scheduling
 | COVERED
 | `BffTokenRefreshIT` on the dedicated `api-sheriff-refresh` instance -- the only place the boundary
@@ -327,27 +326,6 @@ declaration's *existence* is proven while its *boundary* is not.
   session *continuity* without ever forcing a refresh, so the leeway was declared, parsed, and
   never acted on. Closing it required a dedicated instance and a short-lifespan client -- not a new
   assertion on the existing suite.
-
-| `oidc.session.max_cookie_size: 8192`
-  `sheriff-config-cookie/gateway.yaml:171`
-| `SealedSessionCookieCodec` seal-time budget *and* the derived pre-route `Cookie` header cap --
-  one declared number driving both ends of the round trip
-| PARTIAL
-| *Proven -- the key acts.* The nine cookie-mode ITs (`BffCookieSessionIT` ×6,
-  `BffCookieStatelessnessIT` ×3) are a deleted-key control, by construction rather than by naming
-  the number: this instance seals access + id + refresh into 5123 bytes, so at the 4096 default the
-  codec refuses the seal (`ApiSheriff-114`) and every one of the nine fails `302` vs `500` at login.
-  Delete the key and all nine go red -- exactly the deletion discriminator this note's own
-  methodology asks for. The negative control is the *other* seven instances, which declare no budget
-  and keep the 4096 default without ever approaching it.
-
-  *Not proven -- the declared VALUE at its boundary.* What those nine exercise is the *4096
-  default's* refusal, never the *8192 declaration's* admission. The seal is 5123 bytes, 3069 clear
-  of 8192, so nothing here approaches the declared cap: lower the 8192 to any value at or above 5123
-  and all nine stay green. By this note's `COVERED` definition -- asserted *at its boundary* with a
-  matched positive control -- that is one leg, so the row is `PARTIAL` rather than `COVERED`.
-  Closing it means a fixture that seals to just under and just over 8192; padding this row would be
-  worse than recording the honest half.
 
 | *G1* `security_defaults.max_authorization_header_value_length: 8192`
   `sheriff-config/gateway.yaml:50`
@@ -444,7 +422,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | none
 
 | *G10* `oidc.user_info.allowed_claims`
-  `gateway.yaml` ×4 -- base:298, cookie:179, mtls:159, ws:138
+  `gateway.yaml` ×4 -- base:298, cookie:177, mtls:159, ws:138
 | user_info claim projection
 | PARTIAL
 | `BffUserInfoIT` asserts the `default_view` projection; no negative leg proves a claim *outside*

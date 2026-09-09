@@ -127,8 +127,8 @@ because nothing crosses to the browser.
 *Enabling `session.refresh` in this variant costs a third token in the seal.* The refresh token is
 stored in the session -- it has to be, because it is the only thing that re-contacts the IdP -- and
 in cookie mode the session *is* the cookie. Access + ID + refresh together commonly exceed the 4096
-default: the integration suite's own cookie instance seals to 5123 bytes with a modest claim set,
-and had to declare `max_cookie_size: 8192` to boot at all.
+default -- which is why the integration suite's own cookie instance runs with `session.refresh`
+disabled, keeping its seal inside the browser-safe default rather than declaring a larger budget.
 
 The failure is honest but blunt: the seal is refused and login answers `500`. Raising
 `max_cookie_size` above 4096 makes it work against this gateway while moving the risk into the
