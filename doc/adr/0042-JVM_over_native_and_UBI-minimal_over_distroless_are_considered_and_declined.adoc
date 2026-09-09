@@ -1,0 +1,220 @@
+= ADR-0042: JVM over native and UBI-minimal over distroless are considered and declined
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: A distroless native image carries no update-ca-trust and captures its trust material at build time, so every trust change an operator makes is a whole-bundle REPLACEMENT delivered as command-line -D arguments rather than an addition to an extendable OS store. A JVM artifact on a UBI-minimal base would restore that extendable store and is the obvious remedy; it is considered and DECLINED for now. The native-on-distroless artifact stays, and the operator gap is closed with documentation and boot-time reporting instead, because the attack surface and the ADR-0039 self-answering health check both rest on the current base while the -D route is measured to work. What would reverse the decision is recorded rather than left to judgement.
+// tags: tls-trust, trust-store, distroless, native-image, base-image, artifact-format, attack-surface, operator-experience, container-health, image-artifact
+// affects: api-sheriff, integration-tests, deployment
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Context
+
+Trust material is deployment-bound: `gateway.yaml` names TLS policy in neutral terms, while
+certificate, key and trust material stay deployment-supplied
+(link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]).
+That ruling settles *who* supplies the material. It does not settle *how* the artifact lets them,
+and on this artifact the answer is unusually narrow.
+
+The published image is a GraalVM native executable on a distroless base. Two properties of that
+combination bound the operator's options, and neither is visible from any configuration file:
+
+* **The base carries no `update-ca-trust`, and nothing else that could extend an OS trust store.**
+  It carries no package manager and no shell at all -- the same property
+  link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]
+  had to design around for the health check. There is no writable system anchor directory to drop a
+  PEM into and no command that would rebuild the bundle if there were.
+* **A native image captures its trust material at build time.** Nothing at container start extends
+  what the executable was built with.
+
+The consequence is a single supported runtime route, and its shape is what makes this a decision
+rather than a detail: the JDK's `-Djavax.net.ssl.trustStore` triple, passed as command-line
+arguments to the native runner. `JAVA_TOOL_OPTIONS` is not honoured by a native executable, so the
+one variable an operator would reach for first is silently ignored.
+
+**That route REPLACES the whole trust bundle rather than adding to it.** An operator who needs one
+private certificate authority must assemble a store that also contains every public root they still
+want, because naming a store discards the platform bundle wholesale. A store built from the private
+CA alone works against that CA and stops trusting everything else -- silently, surfacing later as an
+opaque handshake failure. The full operator route and the recipe that keeps the public roots are in
+link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+platform bundle].
+
+An obvious remedy exists and has to be weighed rather than dismissed: **ship a JVM artifact on a
+UBI-minimal base.** That base has a package manager and `update-ca-trust`, so trust becomes an
+*extendable* OS store -- drop a PEM into the anchors directory, run one command, and the private CA
+is added to the public roots rather than substituted for them. It is the shape every operator already
+knows, and it removes the replacement hazard at its root rather than documenting around it.
+
+The question this record answers is therefore not "is the current operator experience good" -- it is
+not -- but "is it worth the artifact change that would fix it".
+
+== Decision
+
+**The native executable stays on the distroless base. The trust-material gap is closed with
+documentation and boot-time reporting instead of with an artifact change.** The JVM-on-UBI-minimal
+alternative is considered and *declined for now*, not rejected on principle.
+
+*Three things carry the decision, and they are load-bearing in different ways.*
+
+*The attack surface is the property the base exists to provide.* A UBI-minimal base restores a
+package manager and a shell into every running production container, permanently, to serve a change
+an operator makes rarely. That is the same trade
+link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]
+declined when it needed a health probe, and declining it twice for the same reason is consistency
+rather than repetition.
+
+*The self-answering health check rests on the current base.* ADR-0039's mechanism -- the application
+binary answering its own `HEALTHCHECK` before the framework boots -- was designed *because* the
+image carries exactly one executable. Changing the base does not break it, but it removes the
+constraint that made it the right answer, so the artifact change is not confined to the artifact: it
+reopens a delivered decision. A change with that reach is not one to make as a side effect of a trust
+ergonomics fix.
+
+*The `-D` route is measured to work, not assumed to.* Every gateway instance in the integration stack
+supplies its trust store exactly this way -- the triple on the runner's command line, appended to the
+exec-form `ENTRYPOINT` -- and the stack exercises the leg that depends on it, the BFF's own
+back-channel to the identity provider. The route is therefore proven on the real artifact rather than
+inferred from documentation, which is what makes "document it" a sufficient answer rather than a
+deferral.
+
+*What the documentation-and-reporting answer consists of.* The gap is an operator-knowledge gap, and
+it is closed where operator knowledge lives:
+
+* The hazard is stated *before* the recipe, in the configuration reference and again as an
+  operator-facing pointer on the TLS-edge topic, together with the `keytool` sequence that starts
+  from the platform bundle so the public roots survive.
+* The *effective* trust source is reported at boot rather than left to be derived: `ApiSheriff-17`
+  names the store actually in force per tier, and `ApiSheriff-122` fires whenever an
+  operator-supplied store is in effect, stating the replacement hazard and naming which half of the
+  outbound surface was left behind when the two tiers disagree.
+
+Reporting is what makes the decision defensible. The replacement is still silent in the sense that
+nothing refuses it -- but it is no longer *unobserved*, and the split-tier state an operator could
+not have computed is named in the one place they will look.
+
+*This record contradicts neither ADR it depends on.* ADR-0025's ruling is unchanged: material stays
+deployment-supplied and is never promoted into `gateway.yaml`; this record is about the mechanism the
+deployment uses, not about who owns the material. ADR-0039's mechanism is unchanged and its
+constraint is preserved by keeping the base.
+
+== What would reverse this decision
+
+The decision is declined *for now*, so the reversal conditions are recorded rather than left to
+judgement. Any one of the following makes the trade come out the other way:
+
+. **A second operator-visible defect traced to the same root.** The base's absent trust tooling is
+  currently one documented hazard. A second independent operator problem caused by the reduced base
+  -- not by the native format generally -- means the documentation answer is patching symptoms.
+. **The `-D` route stops being sufficient.** If a leg appears that the default `TrustManager` does
+  not reach, or a runtime change makes the triple unreliable on a native executable, the one
+  supported route is gone and there is nothing left to document.
+. **A trust change becomes routine rather than rare.** The acceptance rests on the change being
+  infrequent enough that a documented, replacement-shaped procedure is tolerable. A deployment
+  pattern that rotates anchors on a schedule inverts that.
+. **The ADR-0039 constraint is retired for an independent reason.** If the health check stops
+  depending on the single-executable property, one of the three supports is gone and the remaining
+  two are weaker than they read here.
+. **The attack-surface cost of UBI-minimal falls materially** -- for example a variant with the
+  anchor tooling but no shell and no package manager. That would let the extendable store be bought
+  without the surface it currently comes bundled with.
+
+A reversal on any of these is an *artifact* change, so it needs its own record superseding this one;
+it is not a change to make quietly.
+
+== Consequences
+
+=== Positive
+
+* The attack surface the distroless base provides is unchanged -- no shell, no package manager, no
+  second binary -- and the property survives this requirement rather than being spent on it.
+* ADR-0039's health-check mechanism keeps the constraint that made it correct, so no delivered
+  decision is reopened as a side effect.
+* The route the operator is told to use is the route the integration stack actually exercises, so the
+  documentation describes a measured behaviour rather than an intended one.
+* The trade-off is now *written down*. A future contributor who proposes a JVM artifact is arguing
+  against a recorded position with stated reversal conditions rather than rediscovering the question.
+
+=== Negative
+
+* **The operator experience for trust material stays worse than the industry norm.** Everyone else
+  adds an anchor; here an operator assembles a bundle. That is the whole cost of the decision, stated
+  plainly rather than argued away.
+* **The replacement hazard survives.** Documentation and a boot record make it observable; neither
+  makes it impossible. An operator who does not read either can still ship a store that removed the
+  public roots.
+* **The two trust tiers remain independently settable**, so a half-moved posture is reachable. It is
+  reported when it happens, and nothing refuses it.
+
+=== Risks
+
+* Boot-time reporting is only as good as the log an operator reads. In a deployment that ships
+  container output nowhere, `ApiSheriff-122` is emitted into nothing and the control degrades to the
+  documentation alone.
+* The reversal conditions above are conditions someone has to *notice*. Nothing fires when one is
+  met, and the most likely way this record goes stale is the first condition accumulating quietly.
+
+== Alternatives Considered
+
+**Ship a JVM artifact on a UBI-minimal base.** The remedy this record is about. It restores an
+extendable OS trust store, makes `update-ca-trust` available, and removes the replacement hazard at
+its root rather than documenting around it. Declined for now on the three supports above -- the
+permanent attack-surface cost paid for a rare operation, the reach into ADR-0039's delivered
+decision, and the fact that the current route is measured to work. It is the alternative most likely
+to be adopted later, which is why its reversal conditions are enumerated rather than implied.
+
+**Keep the native executable but move it to UBI-minimal.** Buys `update-ca-trust` without giving up
+the native format's start-up and footprint properties, and is a strictly smaller change than
+switching artifact format. Declined because it pays the surface cost in full while buying less than
+it appears to: a native image still captures trust material at build time, so an OS store extended
+after the image was built is not automatically what the executable's default `TrustManager` resolves.
+The route that actually reaches it would still be the `-D` triple, which is the route that already
+works today.
+
+**Bake the private CA into the image at build time.** Removes the runtime question entirely, and the
+native build already captures trust material at that point. Rejected because it contradicts ADR-0025
+directly: it makes trust material an artifact property rather than a deployment-supplied one, so
+every deployment with a different CA needs its own image, and the published artifact would carry an
+anchor specific to whoever built it.
+
+**Add a small trust-assembly step to the entry point** -- have the binary read a mounted anchors
+directory and build the store itself. Keeps the base and gives the operator the additive experience
+they expect. Rejected because it puts trust-chain assembly inside the security-critical binary, at
+start-up, on a path that would have to fail closed and would be exercised only in the deployments
+that use it. It also invents a second trust-configuration surface alongside the JDK's own, which is
+the divergence ADR-0025's single-source rule exists to prevent.
+
+**Do nothing and leave the gap undocumented.** The status quo before this plan. Rejected because it
+is the option under which the hazard is both silent *and* unwritten: an operator following the
+one-line instruction to "bind those anchors into the JVM default trust store" produces the failing
+store and has nothing that says why.
+
+== Generalisation
+
+When a deliberately reduced runtime makes a legitimate operation awkward, the choice is between
+restoring the capability and *making the awkwardness legible*. Restoring it is right when the
+operation is frequent, or when the reduced form is unreliable; making it legible is right when the
+operation is rare and the narrow route is proven.
+
+The discipline is that "make it legible" only counts as an answer when it is paid for in full --
+the hazard stated before the recipe, and the resulting state *reported at runtime* rather than left
+to be derived. Documentation alone would be a deferral wearing a decision's clothes. The boot record
+is what turns it into a control.
+
+The second half is the reversal conditions. A decision declined *for now* without written conditions
+is indistinguishable a year later from one declined on principle, and the cost of that confusion is
+paid by whoever next has to argue the question from scratch.
+
+== References
+
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] -- the ruling that trust material is deployment-supplied, which this record implements the mechanism for rather than revisits
+* link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039] -- the delivered decision that rests on the single-executable property this record preserves
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022] -- the adopt-and-document posture this record's answer follows
+* link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the platform bundle] -- the operator route, the hazard and the recipe
+* link:../security-threat-model.adoc[Security threat model] -- GW-06's trust-root replacement entry and its accepted residual risk
