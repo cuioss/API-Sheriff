@@ -18,11 +18,11 @@ package de.cuioss.sheriff.gateway.tls;
 import java.util.Objects;
 import java.util.Optional;
 
-import org.jspecify.annotations.Nullable;
 
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
 import lombok.experimental.UtilityClass;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The single discriminator both server-TLS audits ask: does <em>resolved</em> key material reach a

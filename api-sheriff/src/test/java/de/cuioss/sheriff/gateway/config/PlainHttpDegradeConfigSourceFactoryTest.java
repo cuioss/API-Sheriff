@@ -383,7 +383,7 @@ class PlainHttpDegradeConfigSourceFactoryTest {
                         "the request was spoken in cleartext against the main listener and answered; "
                                 + "against a TLS listener it would not have completed at all"),
                 () -> assertTrue(response.headers().firstValue("location")
-                        .filter(location -> location.startsWith("https")).isEmpty(),
+                                .filter(location -> location.startsWith("https")).isEmpty(),
                         "enabled serves the request; redirect would answer it with a 30x pointing at "
                                 + "an HTTPS port that does not exist in no-certificate mode"));
     }

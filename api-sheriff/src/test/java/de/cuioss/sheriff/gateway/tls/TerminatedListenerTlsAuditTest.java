@@ -134,7 +134,7 @@ class TerminatedListenerTlsAuditTest {
             TlsConfigurationRegistry registry = registry(keyBearingConfiguration(), null);
 
             assertFalse(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                    NAMED_BUCKET, false),
+                            NAMED_BUCKET, false),
                     "a named bucket that carries key material terminates TLS, so the legacy "
                             + "certificate keys are never consulted");
         }
@@ -145,7 +145,7 @@ class TerminatedListenerTlsAuditTest {
             TlsConfigurationRegistry registry = registry(keyLessConfiguration(), null);
 
             assertTrue(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                    NAMED_BUCKET, true),
+                            NAMED_BUCKET, true),
                     "selecting a key-less bucket REPLACES the deployment's certificate rather than "
                             + "adding to it, so the listener ends up with no key material");
         }
@@ -156,7 +156,7 @@ class TerminatedListenerTlsAuditTest {
             TlsConfigurationRegistry registry = registry(null, null);
 
             assertTrue(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                    NAMED_BUCKET, true),
+                            NAMED_BUCKET, true),
                     "the recorder's own ConfigurationException has already failed the boot before any "
                             + "startup observer runs, so the audit reports rather than throwing again");
         }
@@ -179,10 +179,10 @@ class TerminatedListenerTlsAuditTest {
 
             assertAll("a default bucket without key material is not a fallback the recorder takes",
                     () -> assertFalse(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                            null, true),
+                                    null, true),
                             "the legacy certificate still terminates TLS"),
                     () -> assertTrue(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                            null, false),
+                                    null, false),
                             "with no legacy certificate either, nothing is left to terminate with"));
         }
 
@@ -193,11 +193,11 @@ class TerminatedListenerTlsAuditTest {
 
             assertAll("the shipped posture supplies its certificate through the legacy keys",
                     () -> assertFalse(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                            null, true),
+                                    null, true),
                             "quarkus.http.ssl.certificate.* alone produces HTTPS — the shipped default "
                                     + "posture, which must not warn"),
                     () -> assertTrue(ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                            null, false),
+                                    null, false),
                             "no bucket and no certificate leaves nothing to terminate with"));
         }
     }
