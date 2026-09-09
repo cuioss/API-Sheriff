@@ -32,7 +32,7 @@ to *run* the finished gateway).
 
 | link:build-gate-discipline.adoc[Build-Gate Discipline -- A Green Gate That Changed Your Files]
 | The three mechanisms that mutate the working tree while the gate exits 0 -- OpenRewrite's
-  import-group churn, the pre-commit formatter's non-idempotency, and the `SimplifyTestThrows`
+  import-group churn, the pre-commit formatter's one-pass convergence, and the `SimplifyTestThrows`
   reversion -- the three consequences a contributor acts on (verify by surviving the gate,
   attribute a dirty tree before reverting it, never hand-edit formatter-owned formatting), the
   revert rule with the objection to it and the standing fixed-point debt, the recipe-scoping trap,
