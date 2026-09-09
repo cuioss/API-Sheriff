@@ -181,13 +181,20 @@ platform bundle]. Read `ApiSheriff-17` and `ApiSheriff-122` in the boot log afte
 
 One leg is reachable *only* through that default store, which is worth knowing before you decide
 whether you need one. The BFF's own back-channel to the identity provider -- discovery, the
-authorization-code exchange, refresh and logout -- is dialled by `token-sheriff-client`, which
+authorization-code exchange and refresh -- is dialled by `token-sheriff-client`, which
 exposes no per-client TLS-trust seam
 (https://github.com/cuioss/token-sheriff/issues/597[token-sheriff-client#597]). A per-issuer
 `jwks.tls_profile` does not cover it. Against an identity provider behind a private CA, that leg is
 served by the JVM default trust store or not at all, so the store is not optional there -- and the
 replacement rule above applies to it in full. See link:bff-session.adoc[BFF session management] for
 the rest of that back-channel's operator surface.
+
+*Logout is deliberately absent from that list: it is not a back-channel leg and does not depend on
+this store.* RP-initiated logout builds an `end_session_endpoint` redirect URL and hands it to the
+browser -- the gateway opens no connection to the identity provider for it, so the trust in play is
+the *browser's*, not the gateway's. The token-revocation seam that flow carries is bound to a no-op
+in the production wiring and issues no request today; it would acquire a trust dependency only if it
+were ever given a real implementation, and this paragraph is the place to revisit if it is.
 
 == The management interface (health and metrics)
 

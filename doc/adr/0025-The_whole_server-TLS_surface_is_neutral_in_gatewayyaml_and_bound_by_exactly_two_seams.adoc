@@ -346,6 +346,16 @@ main-listener audit reports the resolved state, says in its own text that it is 
 report where the two disagree, and the degrade's own record names both terms rather than presenting
 the declared view as the whole truth.
 
+One direction of that disagreement carries a sharp operator-visible consequence, and it is a property
+of the discriminator rather than a defect in it. The named-TLS-configuration route is
+*declaration-only*: a non-blank name counts as declared material, and nothing at that moment can check
+that the named bucket exists or that it carries a key, because the registry that would answer is a CDI
+bean that does not exist yet. A name that resolves to nothing therefore suppresses the projection, the
+shipped exposure default stands, and the boot *refuses* exactly as it would have with no configuration
+at all -- the degrade does not soften the refusal it exists to avert. That is the accepted cost of
+keying on the declared view: the degrade can decline to act on a declaration, but it cannot tell a
+true one from a false one.
+
 This is consistent with the audit ruling above -- an audit keyed on a configuration key reports a
 comfortable fiction -- and does not weaken it. The audits are still keyed on observed effective
 state. It is the *degrade*, a boot-time actuator rather than an audit, that necessarily keys on the

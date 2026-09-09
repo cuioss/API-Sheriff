@@ -751,6 +751,16 @@ an undocumented exception would be a silent trim.
   is authoritative wherever the two disagree; the degrade reports itself as `ApiSheriff-123`. See the
   third-seam amendment in
   link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
+  +
+  That divergence has one operator-visible failure mode worth stating outright, because
+  `quarkus.http.tls-configuration-name` is a *declaration-only* route: any non-blank value counts as
+  declared key material, with no check that the named bucket exists or that it carries a key. A name
+  pointing at a missing or key-less bucket therefore *suppresses* the degrade, the shipped `redirect`
+  at 250 stands, and the boot *refuses* rather than serving plain HTTP -- a missing bucket fails while
+  the TLS configuration is resolved, and a key-less one fails with
+  `Cannot set quarkus.http.insecure-requests without enabling SSL.` A deployment that meant to serve
+  plain HTTP by supplying no key material must therefore leave this key *unset*, not set it to a name
+  that resolves to nothing.
 |===
 
 Certificate, key and trust *material* is deployment-bound by the same rule and is likewise never
@@ -837,6 +847,14 @@ keytool -importcert -noprompt -alias private-ca -file private-ca.crt \
 Mount the result and point the triple above at it. A store built by step 2 *alone* is the replacement
 hazard in its most common shape: it works against the private CA and breaks every public endpoint the
 gateway dials.
+
+The recipe runs on the operator's own *build host*, not inside the distroless image -- `$JAVA_HOME`
+there is that host's JDK, and the *source* store's format is a property of that JDK rather than of
+this project. The supported baseline is a *Java 25* JDK, whose `cacerts` is PKCS12, which is what
+step 1's `-srcstoretype PKCS12` asserts. Build the store on a Java 25 JDK; on one old enough to ship
+a JKS `cacerts` that flag is simply wrong for the file it is reading and step 1 fails. The
+`-deststoretype PKCS12` on the other side is unconditional -- the store the gateway mounts is PKCS12
+whatever the source bundle was.
 
 ===== What the boot log tells you
 
