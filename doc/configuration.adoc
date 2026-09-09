@@ -799,10 +799,10 @@ the hazard is stated here first rather than after the recipe.
 
 The same replacement rule governs the registry-side lever -- the Quarkus TLS registry's `<default>`
 bucket. Its trust material is supplied under the *unnamed* `quarkus.tls.trust-store.*` prefix, which
-is `QUARKUS_TLS_TRUST__STORE_P12_PATH` in environment spelling. *Spell it with no name segment.*
-Adding one selects a different bucket: `QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH` declares a
+is `QUARKUS_TLS_TRUST_STORE_P12_PATH` in environment spelling. *Spell it with no name segment.*
+Adding one selects a different bucket: `QUARKUS_TLS_DEFAULT_TRUST_STORE_P12_PATH` declares a
 *named* trust profile that merely happens to be called `default` -- the
-`QUARKUS_TLS_<PROFILE>_TRUST__STORE_*` form
+`QUARKUS_TLS_<PROFILE>_TRUST_STORE_*` form
 link:user/environment-variable-overrides.adoc[Environment-variable overrides] documents for
 `jwks.tls_profile` -- and the registry's `<default>` bucket is not addressable by name at all
 (Quarkus refuses the literal name `<default>` and reaches that bucket only through the unnamed

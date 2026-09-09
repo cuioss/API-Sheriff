@@ -126,15 +126,23 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
     private static final List<String> KEY_STORE_MATERIAL_SUFFIXES = List.of(".p12.path", ".jks.path");
 
     /**
-     * Folds every run of non-alphanumeric characters into a single {@code .} so a property name and
-     * its environment-variable spelling compare equal. {@code quarkus.tls.key-store.p12.path} and
-     * {@code QUARKUS_TLS_KEY__STORE_P12_PATH} both canonicalize to
+     * Folds <strong>one</strong> non-alphanumeric character into a single {@code .} so a property
+     * name and its environment-variable spelling compare equal. {@code quarkus.tls.key-store.p12.path}
+     * and {@code QUARKUS_TLS_KEY_STORE_P12_PATH} both canonicalize to
      * {@code quarkus.tls.key.store.p12.path}, which is what lets the bucket tests see a bucket
      * declared through either door. Direct lookups do not need this — the configuration maps a
      * requested name onto its environment spelling itself — so it is used only where names are
      * enumerated.
+     * <p>
+     * <strong>The absent {@code +} quantifier is the correctness of this pattern, not an oversight.</strong>
+     * {@code EnvConfigSource} maps EACH non-alphanumeric character of a property name to EXACTLY ONE
+     * {@code _}; a doubled {@code __} encodes a quote, never a dash. Folding <em>runs</em> would
+     * therefore canonicalize {@code QUARKUS_TLS_KEY__STORE_P12_PATH} onto the default bucket and
+     * report material that no boot can resolve — the gate would fall silent and hand the
+     * no-certificate boot back the framework's own confusing refusal, which is the one outcome it
+     * exists to prevent.
      */
-    private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-z0-9]+");
+    private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-z0-9]");
 
     private static final String SUPPORTED_SPELLINGS =
             "quarkus.http.ssl.certificate.files (with .key-files), "
@@ -246,16 +254,27 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
      * prefix test therefore reports "material is declared" in every deployment, which would make
      * this gate permanently silent and hand the no-certificate boot back the framework's own
      * confusing refusal.
+     * <p>
+     * <strong>A name that no spelling could resolve is skipped rather than matched.</strong>
+     * {@link #canonical(String)} declines such a name — see its own note on the unpaired quote an
+     * environment variable like {@code QUARKUS_TLS_KEY__STORE_P12_PATH} decodes to — and this
+     * enumeration then passes over it, so an unresolvable declaration reaches the refusal it
+     * deserves instead of standing the gate down.
      *
      * @param keyStorePrefix the bucket's key-store prefix, in property spelling
-     * @return {@code true} when a material-bearing leaf of that bucket carries a non-blank value
+     * @return {@code true} when a material-bearing leaf of that bucket carries a non-blank value;
+     *         {@code false} when the bucket name itself carries an unpaired quote, since no such
+     *         bucket can resolve
      */
     private boolean declaresKeyMaterialUnder(String keyStorePrefix) {
         String bucket = canonical(keyStorePrefix);
         String pem = canonical(keyStorePrefix + PEM_SEGMENT);
+        if (bucket == null || pem == null) {
+            return false;
+        }
         for (String name : config.getPropertyNames()) {
             String canonical = canonical(name);
-            if (!canonical.startsWith(bucket)) {
+            if (canonical == null || !canonical.startsWith(bucket)) {
                 continue;
             }
             List<String> materialLeaves = canonical.startsWith(pem)
@@ -277,8 +296,47 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
         return false;
     }
 
-    private static String canonical(String name) {
-        return NON_ALPHANUMERIC.matcher(name.toLowerCase(Locale.ROOT)).replaceAll(".");
+    /**
+     * Reduces a name to the spelling-independent form the bucket tests compare on, or reports that
+     * no spelling could resolve it.
+     *
+     * <h4>Why quotes appear here at all</h4>
+     *
+     * {@code EnvConfigSource} publishes TWO names for every environment variable: the raw
+     * {@code QUARKUS_TLS_..._PATH} spelling and a decoded dotted candidate produced by
+     * {@code StringUtil.toLowerCaseAndDotted}. That decoder treats a doubled {@code __} as a
+     * <em>quote</em> around a map key that needs quoting — a TLS bucket name containing a {@code .}
+     * — so {@code QUARKUS_TLS__MY_BUCKET__KEY_STORE_P12_PATH} decodes to the well-formed
+     * {@code quarkus.tls."my.bucket".key.store.p12.path}. Those quotes are erased here, which is
+     * what lets a correctly quoted named bucket be seen through the environment door.
+     *
+     * <h4>Why an odd quote count is a refusal rather than a fold</h4>
+     *
+     * The same decoder emits an <em>unclosed</em> quote when a {@code __} was never a quote pair:
+     * {@code QUARKUS_TLS_KEY__STORE_P12_PATH} decodes to {@code quarkus.tls.key."store.p12.path}.
+     * That is precisely the spelling an operator reaches for when they assume a dash doubles the
+     * underscore, and {@code EnvName.equals} rejects it — no such property resolves at boot.
+     * Erasing the stray quote would fold it back onto the default bucket and re-open the false
+     * accept; counting quotes and declining the name keeps the declaration invalid, so the gate
+     * reaches its remedy-bearing refusal instead of passing silently.
+     *
+     * @param name a property name, an environment-variable spelling, or a decoded dotted candidate
+     * @return the canonical form, or {@code null} when the name carries an unpaired quote and can
+     *         therefore never resolve to a TLS property
+     */
+    private static @Nullable String canonical(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        int quotes = 0;
+        for (int i = 0; i < lower.length(); i++) {
+            if (lower.charAt(i) == '"') {
+                quotes++;
+            }
+        }
+        if (quotes % 2 != 0) {
+            return null;
+        }
+        String unquoted = quotes == 0 ? lower : lower.replace("\"", "");
+        return NON_ALPHANUMERIC.matcher(unquoted).replaceAll(".");
     }
 
     /**

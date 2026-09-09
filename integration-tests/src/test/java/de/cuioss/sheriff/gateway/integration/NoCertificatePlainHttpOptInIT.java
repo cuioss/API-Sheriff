@@ -338,8 +338,6 @@ class NoCertificatePlainHttpOptInIT {
                 // listener's, which is the one this test withholds; the gate never reads these.
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt",
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key",
-                "-e", "QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12",
-                "-e", "QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust",
                 "-e", "SHERIFF_CONFIG_DIR=/app/sheriff-config",
                 "-e", "OIDC_CLIENT_SECRET=integration-secret",
                 "-v", CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro",

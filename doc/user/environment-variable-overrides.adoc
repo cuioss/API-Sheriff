@@ -135,13 +135,36 @@ implementation and put secrets in the document you commit.
 | The management interface's certificate and key. Deliberately not set in the shipped configuration:
   they are container paths that would break every non-container run.
 
-| `QUARKUS_TLS_<PROFILE>_TRUST__STORE_*`
+| `QUARKUS_TLS_<PROFILE>_TRUST_STORE_*`
 | Trust anchors bound to a *logical trust-profile name* that `gateway.yaml` refers to by name only
   (`jwks.tls_profile`). The document names the profile; the deployment binds it to material.
-  Copy the exact spelling from the shipped compose files rather than deriving it: a bucket name is a
-  configuration *map key*, and its environment-variable encoding is not a plain dot-to-underscore
-  substitution (the shipped stack uses `QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH`).
+  The spelling is derivable -- see the encoding rule below -- so a profile named `benchmark-idp`
+  binds through `QUARKUS_TLS_BENCHMARK_IDP_TRUST_STORE_P12_PATH`.
 |===
+
+[[_env_encoding_rule]]
+==== Deriving the variable name
+
+Every non-alphanumeric character of a property name becomes *exactly one* `_`. A dash is one
+character, so `quarkus.tls.benchmark-idp.trust-store.p12.path` is
+`QUARKUS_TLS_BENCHMARK_IDP_TRUST_STORE_P12_PATH` -- the dash of `trust-store` and the dots around it
+are each a single underscore, indistinguishably.
+
+A *doubled* `__` is not a dash and never encodes one. It encodes a `"`, and a quote appears in a
+property name only around a configuration *map key* that needs quoting -- which for a trust profile
+means a name containing a `.`. A profile called `my.idp` is quoted as
+`quarkus.tls."my.idp".trust-store.p12.path` and therefore spelled
+`QUARKUS_TLS__MY_IDP__TRUST_STORE_P12_PATH`, where the two `__` pairs are the opening and closing
+quote. Profile names without a dot -- `benchmark-idp`, `it-upstream` -- need no quoting and take no
+doubled underscore.
+
+[WARNING]
+====
+Writing `__` where a dash belongs produces a variable that resolves to *nothing*. The runtime decodes
+`QUARKUS_TLS_TRUST__STORE_P12_PATH` to the malformed `quarkus.tls.trust."store.p12.path`, which
+matches no property, so the material is silently absent rather than rejected -- the failure surfaces
+later as an opaque handshake error against an endpoint whose anchor was never loaded.
+====
 
 [IMPORTANT]
 ====

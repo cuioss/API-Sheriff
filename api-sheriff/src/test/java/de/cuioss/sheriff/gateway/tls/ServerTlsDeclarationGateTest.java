@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,6 +28,7 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
+import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import io.vertx.core.http.HttpServerOptions;
 import org.eclipse.microprofile.config.Config;
@@ -51,6 +54,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code "Cannot set quarkus.http.insecure-requests without enabling SSL."} — names a value the
  * operator did not set and no remedy at all. A test asserting only "something was thrown" would pass
  * just as happily against that message, so each case pins the offending key AND both ways out.
+ * <p>
+ * <strong>Cases about the environment door use a real {@link io.smallrye.config.EnvConfigSource},
+ * never {@link StandInSource}.</strong> The stand-in returns its map keys verbatim, so it would
+ * report whatever spelling the test handed it and could never observe SmallRye's actual
+ * property-name-to-environment mapping — a case built on it can pass while no boot resolves the
+ * variable. Those cases go through {@link #environmentConfig(Map, Map)} instead, and each asserts
+ * the RESOLVED property alongside the gate's verdict so the mapping is pinned by SmallRye rather
+ * than by this harness.
  */
 @DisplayName("Server-TLS declaration gate")
 class ServerTlsDeclarationGateTest {
@@ -66,6 +77,32 @@ class ServerTlsDeclarationGateTest {
             "quarkus.tls." + NAMED_BUCKET + ".key-store.p12.path";
     private static final String DEFAULT_BUCKET_MATERIAL = "quarkus.tls.key-store.p12.path";
 
+    /**
+     * The environment spelling of {@link #DEFAULT_BUCKET_MATERIAL}: EACH non-alphanumeric character
+     * becomes EXACTLY ONE {@code _}, the dash of {@code key-store} included.
+     */
+    private static final String ENV_DEFAULT_BUCKET_MATERIAL = "QUARKUS_TLS_KEY_STORE_P12_PATH";
+
+    /**
+     * The spelling an operator reaches for when they assume a dash doubles the underscore. It
+     * resolves to nothing: {@code __} encodes a quote, so this decodes to the malformed
+     * {@code quarkus.tls.key."store.p12.path}.
+     */
+    private static final String ENV_DOUBLED_UNDERSCORE_MATERIAL = "QUARKUS_TLS_KEY__STORE_P12_PATH";
+
+    /** A bucket name containing a {@code .}, which is therefore a map key that needs quoting. */
+    private static final String DOTTED_BUCKET = "my.tls";
+    private static final String DOTTED_BUCKET_MATERIAL =
+            "quarkus.tls.\"" + DOTTED_BUCKET + "\".key-store.p12.path";
+
+    /**
+     * The environment spelling of {@link #DOTTED_BUCKET_MATERIAL}. The two {@code __} pairs are the
+     * opening and closing quote around the bucket name — the one place a doubled underscore is
+     * correct, and the case a blanket ban on {@code __} would wrongly refuse.
+     */
+    private static final String ENV_DOTTED_BUCKET_MATERIAL =
+            "QUARKUS_TLS__MY_TLS__KEY_STORE_P12_PATH";
+
     private static final String CERTIFICATE_PATH = "/etc/certs/localhost.crt";
     private static final String KEYSTORE_PATH = "/etc/certs/keystore.p12";
 
@@ -73,9 +110,10 @@ class ServerTlsDeclarationGateTest {
     @DisplayName("The refusal travels through the customizer hook the recorder actually calls")
     void refusalTravelsThroughTheCustomizerHook() {
         ServerTlsDeclarationGate gate = gateOver(Map.of(), SHIPPED_DEFAULT);
+        HttpServerOptions options = new HttpServerOptions();
 
         assertThrows(IllegalStateException.class,
-                () -> gate.customizeHttpServer(new HttpServerOptions()),
+                () -> gate.customizeHttpServer(options),
                 "the gate is only worth anything if it fires from the hook "
                         + "VertxHttpRecorder.initializeMainHttpServer invokes before its own "
                         + "getKeyCertOptions() guard. Asserting only the direct method would leave "
@@ -180,12 +218,47 @@ class ServerTlsDeclarationGateTest {
         @Test
         @DisplayName("The default bucket is seen through its environment-variable spelling too")
         void defaultBucketIsSeenThroughItsEnvironmentSpelling() {
-            assertDoesNotThrow(
-                    () -> validate(Map.of("QUARKUS_TLS_KEY__STORE_P12_PATH", KEYSTORE_PATH)),
-                    "the bucket is detected by enumerating names rather than by direct lookup, so "
-                            + "the canonicalisation is the only thing that lets a bucket declared "
-                            + "through the environment door be seen — without it this gate would "
-                            + "refuse a deployment that really does carry key material");
+            Config config = environmentConfig(Map.of(ENV_DEFAULT_BUCKET_MATERIAL, KEYSTORE_PATH));
+
+            assertAll("the spelling SmallRye resolves must be the spelling the gate accepts",
+                    () -> assertEquals(KEYSTORE_PATH,
+                            config.getConfigValue(DEFAULT_BUCKET_MATERIAL).getValue(),
+                            ENV_DEFAULT_BUCKET_MATERIAL + " is the environment spelling of "
+                                    + DEFAULT_BUCKET_MATERIAL + " — one underscore per "
+                                    + "non-alphanumeric character. Asserting the resolved property "
+                                    + "first is what makes the gate verdict below meaningful: it "
+                                    + "pins that SmallRye, not this harness, decides the mapping"),
+                    () -> assertDoesNotThrow(
+                            () -> new ServerTlsDeclarationGate(config)
+                                    .assertServerTlsDeclarationIsCoherent(),
+                            "the bucket is detected by enumerating names rather than by direct "
+                                    + "lookup, so the canonicalisation is the only thing that lets "
+                                    + "a bucket declared through the environment door be seen — "
+                                    + "without it this gate would refuse a deployment that really "
+                                    + "does carry key material"));
+        }
+
+        @Test
+        @DisplayName("The doubled-underscore spelling resolves to nothing, so it is REFUSED")
+        void doubledUnderscoreSpellingIsRefused() {
+            Config config = environmentConfig(Map.of(ENV_DOUBLED_UNDERSCORE_MATERIAL, KEYSTORE_PATH));
+
+            assertAll("the matched negative control for the acceptance above",
+                    () -> assertNull(config.getConfigValue(DEFAULT_BUCKET_MATERIAL).getValue(),
+                            ENV_DOUBLED_UNDERSCORE_MATERIAL + " does NOT resolve to "
+                                    + DEFAULT_BUCKET_MATERIAL + ": a doubled __ encodes a quote, "
+                                    + "never a dash, so EnvConfigSource decodes it to the malformed "
+                                    + "quarkus.tls.key.\"store.p12.path and EnvName.equals rejects "
+                                    + "it. If this assertion ever fails, SmallRye changed its "
+                                    + "mapping rule and the gate may widen to match"),
+                    () -> assertTrue(messageOfRefusal(new ServerTlsDeclarationGate(config))
+                                    .contains("No TLS key material is declared"),
+                            "a declaration the runtime cannot resolve IS invalid configuration, so "
+                                    + "it must reach this gate's remedy-bearing refusal. Accepting "
+                                    + "it would let the boot die on the framework's generic "
+                                    + "'Cannot set quarkus.http.insecure-requests without enabling "
+                                    + "SSL.' — the confusing message this gate exists to replace — "
+                                    + "and would be a silent pass on invalid config"));
         }
 
         @Test
@@ -247,6 +320,30 @@ class ServerTlsDeclarationGateTest {
                     "the PEM sub-bucket is a map keyed by an arbitrary name, so a bucket populated "
                             + "that way is only found by enumeration — a fixed probe would miss it "
                             + "and refuse a correctly configured deployment");
+        }
+
+        @Test
+        @DisplayName("A quoted map-key bucket IS seen through the environment door — the __ that is legitimate")
+        void quotedBucketIsSeenThroughTheEnvironmentDoor() {
+            Config config = environmentConfig(
+                    Map.of(DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME, DOTTED_BUCKET),
+                    Map.of(ENV_DOTTED_BUCKET_MATERIAL, KEYSTORE_PATH));
+
+            assertAll("the doubled underscore is a QUOTE, and here both quotes are present",
+                    () -> assertEquals(KEYSTORE_PATH,
+                            config.getConfigValue(DOTTED_BUCKET_MATERIAL).getValue(),
+                            "a bucket name containing a '.' must be quoted, and a quote is spelled "
+                                    + "__ in the environment — so " + ENV_DOTTED_BUCKET_MATERIAL
+                                    + " really does resolve to " + DOTTED_BUCKET_MATERIAL),
+                    () -> assertDoesNotThrow(
+                            () -> new ServerTlsDeclarationGate(config)
+                                    .assertServerTlsDeclarationIsCoherent(),
+                            "this is the case that forbids closing the over-permissive match by "
+                                    + "simply refusing every doubled underscore. These __ pairs are "
+                                    + "legitimate quoting, the deployment is correctly configured, "
+                                    + "and refusing it would trade a false accept for a false "
+                                    + "REFUSAL — strictly worse, because it breaks a working "
+                                    + "gateway rather than an unresolvable one"));
         }
 
         @Test
@@ -335,14 +432,56 @@ class ServerTlsDeclarationGateTest {
     }
 
     /**
+     * Builds a configuration whose environment door is a REAL {@link EnvConfigSource}.
+     * <p>
+     * {@link StandInSource} returns its map keys verbatim, so a case assembled on it asserts only
+     * what the harness was handed and structurally cannot observe the property-name-to-environment
+     * mapping. Every case about that mapping is therefore decided by SmallRye itself, through the
+     * same class a real boot reads its environment with. The source is constructed over a supplied
+     * map rather than over {@code System.getenv()}, so no case depends on the machine it runs on.
+     *
+     * @param properties the deployment's {@code application.properties}-tier declarations
+     * @param environment the deployment's environment variables, in environment spelling
+     * @return the assembled configuration
+     */
+    private static Config environmentConfig(Map<String, String> properties,
+            Map<String, String> environment) {
+        Map<String, String> propertiesTier = new LinkedHashMap<>(properties);
+        propertiesTier.putIfAbsent(DeclaredKeyMaterialKeys.INSECURE_REQUESTS, SHIPPED_DEFAULT);
+        return new SmallRyeConfigBuilder()
+                .withSources(new StandInSource("StandInApplicationProperties",
+                        APPLICATION_PROPERTIES_ORDINAL, propertiesTier))
+                .withSources(new EnvConfigSource(environment, ENVIRONMENT_ORDINAL))
+                .build();
+    }
+
+    /**
+     * @param environment the deployment's environment variables, in environment spelling
+     * @return the assembled configuration, carrying only the shipped exposure default besides
+     */
+    private static Config environmentConfig(Map<String, String> environment) {
+        return environmentConfig(Map.of(), environment);
+    }
+
+    /**
      * Runs the gate over a configuration that must be refused and returns the refusal's message.
      *
      * @param declared the configuration a deployment declares
      * @return the thrown message
      */
     private static String messageOfRefusal(Map<String, String> declared) {
+        return messageOfRefusal(gateOver(declared, SHIPPED_DEFAULT));
+    }
+
+    /**
+     * Runs a gate that must refuse and returns the refusal's message.
+     *
+     * @param gate the gate over a configuration that must be refused
+     * @return the thrown message
+     */
+    private static String messageOfRefusal(ServerTlsDeclarationGate gate) {
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> validate(declared),
+                gate::assertServerTlsDeclarationIsCoherent,
                 "this configuration declares no usable key material and no plain-HTTP opt-in, so "
                         + "the boot must be refused rather than quietly producing a gateway that "
                         + "serves cleartext nobody asked for");
