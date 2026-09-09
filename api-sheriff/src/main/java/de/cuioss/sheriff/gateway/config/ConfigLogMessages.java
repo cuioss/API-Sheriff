@@ -288,6 +288,35 @@ public final class ConfigLogMessages {
                 .identifier(122)
                 .template("An operator-supplied default trust store is in effect. It REPLACES the platform trust bundle wholesale rather than being added to it, so every anchor the deployment did not put into that store stops being trusted — the public roots the platform shipped included. Legs holding a raw JDK TrustManager: %s. Legs resolving through the Quarkus TLS registry: %s. %s")
                 .build();
+
+        /**
+         * Warns once at boot that {@code oidc.session.max_cookie_size} resolved above the ~4096
+         * bytes RFC 6265 guarantees a browser will keep per cookie, so a session sealing into that
+         * headroom is a session no browser is obliged to hold.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal, for the same reason as
+         * {@link #MANAGEMENT_PLAIN_HTTP} and {@link #EGRESS_HOSTNAME_VERIFICATION_DISABLED}: the
+         * validated range stays {@code 40..8192} and a budget above 4096 is a legitimate posture for
+         * a non-browser client that keeps whatever it is sent. What must not happen is the
+         * relaxation reaching production silently.
+         * <p>
+         * <strong>Why this warning is the only signal there is.</strong> Every other budget failure
+         * in this area is loud: below the floor the codec refuses to construct, above the configured
+         * budget the seal is refused with {@code ApiSheriff-114} and login answers {@code 500}.
+         * Raising the budget past 4096 removes that refusal without removing the problem — the
+         * gateway then emits a {@code Set-Cookie} the browser discards with no error, no header and
+         * no diagnostic on either side, and the user simply stays anonymous. The gateway cannot
+         * observe a drop that happens in the browser, so nothing downstream of this line will ever
+         * report it.
+         * <p>
+         * The template carries the resolved byte budget only — never a cookie value, never key
+         * material.
+         */
+        public static final LogRecord COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(124)
+                .template("oidc.session.max_cookie_size is %s bytes, above the ~4096 bytes RFC 6265 guarantees a browser will keep per cookie. In cookie mode the session IS the cookie, so a session sealing into that headroom is accepted by the gateway and then dropped SILENTLY by the browser — no error surfaces on either side and the user simply stays anonymous, which the gateway cannot detect. Raising this budget moves the failure into the browser rather than removing it; the deployment-level answers are server-mode sessions, a smaller claim set, or an authorization server that issues no refresh token. Restore the browser-safe posture by removing the key or setting it back to 4096 or below in gateway.yaml")
+                .build();
     }
 
     /**

@@ -370,6 +370,9 @@ oidc:                              # only used by the BFF variants (2 and 3)
     max_cookie_size: 4096          # cookie mode only: sealed cookie-value size budget in bytes.
                                    #   40..8192, default 4096. Drives BOTH the seal budget and the
                                    #   gateway's pre-route Cookie header-value cap
+                                   #   A value above 4096 still boots, but warns (ApiSheriff-124):
+                                   #   only 4096 is guaranteed to survive a browser, which drops an
+                                   #   oversized cookie silently
     ttl_seconds: 3600              # absolute session lifetime from login
     csrf:
       trusted_origins: [https://app.example.com]   # app origins allowed on unsafe methods;
@@ -1797,6 +1800,12 @@ ignored when no route's effective auth is `require: session`.
   with a message naming this key: below the floor no structurally valid sealed value could ever be
   emitted, and above the ceiling the derived header cap would exceed what the inbound
   request-header block (16 KiB, shared with every other header) will carry.
+  A value *inside* the range but above `4096` boots and is warned rather than refused
+  (`ApiSheriff-124`), because the range's upper half is only reachable safely by a client that keeps
+  whatever it is sent: a browser is required to keep 4096 bytes and discards anything larger
+  silently, with no error on either side, so raising this budget moves the failure out of the
+  gateway -- where `ApiSheriff-114` would have refused the seal loudly -- and into the browser,
+  where nothing observes it.
 
   This is *one declared number driving two limits*. It is both the seal-time budget -- a sealed
   value over it fails the seal with a logged warning, never a silent truncation -- *and* the source

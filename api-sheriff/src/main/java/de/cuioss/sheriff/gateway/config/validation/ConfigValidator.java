@@ -1228,16 +1228,33 @@ public final class ConfigValidator {
      * number also raises the gateway's pre-route {@code Cookie} header-value cap, and a budget at or
      * above the inbound header-block limit would produce a value the seal accepts but the transport
      * rejects with {@code 431}. A no-op when the key is omitted (the codec default applies).
+     * <p>
+     * <strong>An in-range budget above the browser guarantee is warned, never refused.</strong> The
+     * validated range stays {@code 40..8192} exactly as it is, but only the first ~4096 bytes of it
+     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}) are bytes RFC 6265 guarantees a
+     * browser will keep. A budget above that is a legitimate posture for a client that keeps
+     * whatever it is sent, so it boots — and it emits
+     * {@link ConfigLogMessages.WARN#COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE}, because raising the
+     * budget past 4096 silences the {@code ApiSheriff-114} seal refusal without removing the
+     * problem: the browser then drops the oversized {@code Set-Cookie} with no error on either side,
+     * and no later signal exists for the gateway to report.
      */
     private static void validateSessionMaxCookieSize(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig.Session session = oidcSession(gateway);
         Integer size = session == null ? null : session.maxCookieSize();
-        if (size != null && (size < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
-                || size > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING)) {
+        if (size == null) {
+            return;
+        }
+        if (size < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
+                || size > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_SIZE_POINTER,
                     "oidc session max_cookie_size must be between %d and %d bytes, but was %d"
                             .formatted(SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR,
                                     SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, size)));
+            return;
+        }
+        if (size > SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET) {
+            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, size);
         }
     }
 

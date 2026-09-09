@@ -1678,6 +1678,52 @@ class ConfigValidatorTest {
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
         }
+
+        /**
+         * Matched positive/negative controls straddling the 4096-byte browser guarantee, every case
+         * inside the accepted {@code 40..8192} range so the boot never fails and the warning is the
+         * only variable.
+         * <p>
+         * <strong>Both legs are required.</strong> The fire-only cases alone would pass against a
+         * validator that warned unconditionally — which is the failure this record exists to avoid,
+         * since a boot warning on every cookie-mode gateway is a warning operators learn to ignore.
+         * The silent cases are what pin the threshold, and 4096 / 4097 straddle it exactly, so
+         * moving the comparison off {@code DEFAULT_COOKIE_VALUE_BUDGET} in either direction — or
+         * flipping it from {@code >} to {@code >=} — turns at least one case red.
+         */
+        static Stream<Arguments> browserGuaranteeThresholdControls() {
+            return Stream.of(
+                    Arguments.of("the floor is far below the browser guarantee", 40, false),
+                    Arguments.of("one byte below the guarantee", 4095, false),
+                    Arguments.of("exactly the guarantee", 4096, false),
+                    Arguments.of("one byte above the guarantee", 4097, true),
+                    Arguments.of("the validated ceiling is above the guarantee", 8192, true));
+        }
+
+        @ParameterizedTest(name = "{0} (max_cookie_size = {1})")
+        @MethodSource("browserGuaranteeThresholdControls")
+        @DisplayName("Should warn only when an accepted max_cookie_size exceeds the browser guarantee")
+        void shouldWarnOnlyAboveTheBrowserGuarantee(String label, int maxCookieSize, boolean expectWarning) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .maxCookieSize(maxCookieSize).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a budget inside 40..8192 must be warned about, never refused, got: " + errors);
+            String identifier = ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE
+                    .resolveIdentifierString();
+            if (expectWarning) {
+                LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, identifier);
+                LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, String.valueOf(maxCookieSize));
+            } else {
+                assertTrue(TestLoggerFactory.getTestHandler()
+                                .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
+                        () -> maxCookieSize + " is at or below the browser guarantee and must not emit " + identifier);
+            }
+        }
     }
 
     @Nested

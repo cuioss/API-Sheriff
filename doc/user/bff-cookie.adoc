@@ -122,6 +122,12 @@ so the IdP issues a smaller access token, and cut `user_info.allowed_claims` -- 
 link:../variants/02-bff-session.adoc[server-session variant]*, where token size is irrelevant
 because nothing crosses to the browser.
 
+Raising the budget above 4096 is permitted -- the validated range runs to 8192 -- and the gateway
+warns once at boot when you do (`ApiSheriff-124`). Treat that boot line as the last signal you will
+get: it fires precisely because raising the budget switches off the seal refusal described above,
+and what the refusal was protecting you from then happens in the browser instead, which reports
+nothing to anyone.
+
 [IMPORTANT]
 ====
 *Enabling `session.refresh` in this variant costs a third token in the seal.* The refresh token is
