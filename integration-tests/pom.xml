@@ -235,8 +235,18 @@
                                     <goal>verify</goal>
                                 </goals>
                                 <configuration>
+                                    <!-- Must stay the unqualified pattern. The qualified form this
+                                         replaced, **/integration/**/*IT.java, matched NONE of the IT
+                                         classes under de/cuioss/sheriff/gateway/integration/ in
+                                         failsafe 3.6.0, so `verify -Pintegration-tests` reported
+                                         "Tests run: 0" and BUILD SUCCESS while running no integration
+                                         test at all — a green lane asserting nothing, which is worse
+                                         than a red one. The pattern is deliberately NOT re-narrowed to
+                                         the integration package: every IT already lives there, so the
+                                         qualifier bought no selectivity, and an include that can
+                                         silently under-match is exactly the failure mode above. -->
                                     <includes>
-                                        <include>**/integration/**/*IT.java</include>
+                                        <include>**/*IT.java</include>
                                     </includes>
                                     <!-- The mirror image of the jfr profile's exclusion below:
                                          ImageMetadataJfrIT asserts the version label on
@@ -443,8 +453,12 @@
                                     <goal>verify</goal>
                                 </goals>
                                 <configuration>
+                                    <!-- Unqualified for the same reason as the integration-tests
+                                         profile above: the qualified **/integration/**/*IT.java form
+                                         matched no class under failsafe 3.6.0 and left this lane
+                                         reporting success while running nothing. -->
                                     <includes>
-                                        <include>**/integration/**/*IT.java</include>
+                                        <include>**/*IT.java</include>
                                     </includes>
                                     <!-- ImageMetadataIT asserts the OCI labels on api-sheriff:distroless,
                                          but this lane builds and tags api-sheriff:jfr — the IT would
@@ -454,6 +468,34 @@
                                          execution below builds. -->
                                     <excludes>
                                         <exclude>**/ImageMetadataIT.java</exclude>
+                                        <!-- MtlsHandshakeIT is the ONE IT whose fallback targets a
+                                             DIFFERENT instance than the one it names, so broadening the
+                                             include above to **/*IT.java selects it into a lane that
+                                             cannot serve it. This profile declares neither
+                                             test.mtls.port (default "10443" — the PRIMARY instance,
+                                             which does not require a client certificate) nor
+                                             test.mtls.client.keystore / test.mtls.wrong.keystore (no
+                                             default at all, so the client offers NO identity). The
+                                             result is worse than a plain failure:
+                                             trustedClientCertAccepted passes green having proven
+                                             nothing about mTLS, while the two rejection legs fail
+                                             against a listener that was never asked to reject.
+
+                                             Every OTHER per-instance property this lane omits already
+                                             defaults to the value -Pintegration-tests declares
+                                             (ws-admission 10447, plain-mgmt 19005, egress-verify
+                                             10450/10451, log dir target/quarkus-logs) or is a
+                                             constant in BffKeycloakLoginFlow (cookie 10445/10446,
+                                             refresh 10452), so those suites do reach the instance they
+                                             name — MtlsHandshakeIT is the sole exception, hence a
+                                             named exclusion rather than a wider re-narrowing.
+
+                                             Declaring the mTLS properties here instead would point the
+                                             wrong way: this lane builds only api-sheriff:jfr and never
+                                             api-sheriff:distroless, so its ability to start the other
+                                             nine instances at all rests on an image some earlier
+                                             -Pintegration-tests run happened to leave behind. -->
+                                        <exclude>**/MtlsHandshakeIT.java</exclude>
                                     </excludes>
                                     <systemPropertyVariables>
                                         <test.https.port>${test.https.port}</test.https.port>

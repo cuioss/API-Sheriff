@@ -56,11 +56,17 @@ MANAGEMENT_CONTAINER_PORT=9000
 # variable NAME, so a rename here fails the test rather than silently passing.
 # See doc/user/context-path.adoc.
 MANAGEMENT_ROOT_PATH=/q
-# Host port for case 7's negative leg. Deliberately outside the 19000-19005 block
-# docker-compose.yml publishes for the six gateway instances, so this script can run
-# against a live integration stack without colliding with it. A collision surfaces as
+# Host port for case 7's negative leg, so this script can run against a live integration
+# stack without colliding with it. The invariant is positional, not a fixed range: it must
+# sit CLEAR of the contiguous management-port block docker-compose.yml publishes upward from
+# 19000, and that block grows by exactly one port for every gateway instance added to the
+# stack. A probe port picked just past the current top is therefore a collision waiting for
+# the next instance — which is what happened to the previous value: 19009 was chosen to clear
+# a 19000-19005 block of six instances, and became a hard failure the moment the stack
+# reached ten. Sitting far above the block, rather than immediately after it, is what keeps
+# this port correct without being re-derived on every stack change. A collision surfaces as
 # docker's own "port is already allocated" failure under `set -e`, which is loud enough.
-MGMT_PROBE_PORT=19009
+MGMT_PROBE_PORT=19099
 
 cleanup() {
     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true

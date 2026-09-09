@@ -50,14 +50,22 @@ import org.junit.jupiter.api.Test;
  * unit test — only to a descriptor assertion like this one, or to the expensive container suite.
  * <p>
  * The coverage is deliberately <strong>all committed descriptors, not just the base one</strong>:
- * the compose stack boots seven native gateway instances over five {@code sheriff-config*} gateway
+ * the compose stack boots ten native gateway instances over eight {@code sheriff-config*} gateway
  * descriptors ({@code api-sheriff}, {@code api-sheriff-mtls}, {@code api-sheriff-cookie},
- * {@code api-sheriff-cookie-2}, {@code api-sheriff-ws-admission}, {@code api-sheriff-plain-mgmt}
- * and {@code api-sheriff-passthrough-empty}), so a cap raised in any sibling descriptor pushes that
- * instance into a boot abort. The descriptors are discovered by glob rather
- * than hard-coded, so a new {@code sheriff-config-*} directory comes under the assertion
- * automatically — and a glob that matches fewer than the five present today fails rather than
- * passing vacuously.
+ * {@code api-sheriff-cookie-2}, {@code api-sheriff-ws-admission}, {@code api-sheriff-plain-mgmt},
+ * {@code api-sheriff-passthrough-empty}, {@code api-sheriff-egress-verify-on},
+ * {@code api-sheriff-egress-verify-off} and {@code api-sheriff-refresh}), so a cap raised in any
+ * sibling descriptor pushes that instance into a boot abort. The instance count exceeds the
+ * descriptor count because {@code api-sheriff-plain-mgmt} and {@code api-sheriff-cookie-2} overlay
+ * no descriptor of their own — the former mounts the shared one and the latter reuses the cookie
+ * overlay. The descriptors are discovered by glob rather than hard-coded, so a new
+ * {@code sheriff-config-*} directory comes under the assertion automatically.
+ * <p>
+ * {@link #COMMITTED_DESCRIPTOR_COUNT} is a <em>floor</em>, not a census. It is deliberately lower
+ * than the eight descriptors present today: its only job is to fail an empty or mis-rooted glob that
+ * would otherwise satisfy the per-descriptor loop vacuously. Adding a descriptor therefore does not
+ * require raising it, and it must not be read as the current count — the two numbers answer
+ * different questions and are kept apart on purpose.
  * <p>
  * It parses the committed descriptors only (YAML / properties text) and asserts the activation is
  * present — it starts no container and reaches no network. The containerised sibling that exercises

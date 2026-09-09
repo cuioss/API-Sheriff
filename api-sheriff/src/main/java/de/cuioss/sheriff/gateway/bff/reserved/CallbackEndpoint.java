@@ -99,10 +99,20 @@ import org.jspecify.annotations.Nullable;
  * exchange, PKCE, and {@code state}/{@code nonce}/{@code iss} validation (fail-closed). The seam
  * keeps the endpoint decoupled from the confidential-client wiring (discovery metadata, client
  * authentication) and unit-testable without a live token endpoint. On success the endpoint builds
- * the {@link SessionRecord} and binds it to the browser through the mode-neutral
- * {@link SessionBinding} seam — emitting whatever {@code Set-Cookie} that binding produces rather
- * than building one itself — clears the now-consumed binding cookie (single-use), and redirects the
- * browser to the record's same-origin-validated return URL.
+ * the {@link SessionRecord} — <strong>including the refresh token the exchange returned</strong>,
+ * which is what makes the session refreshable at all (see {@code completeLogin}) — and binds it to
+ * the browser through the mode-neutral {@link SessionBinding} seam — emitting whatever
+ * {@code Set-Cookie} that binding produces rather than building one itself — clears the
+ * now-consumed binding cookie (single-use), and redirects the browser to the record's
+ * same-origin-validated return URL.
+ * <p>
+ * <strong>The refresh token never reaches the browser in the clear.</strong> It is a component of
+ * the {@link SessionRecord}, so it lives wherever the active binding puts that record: server-side
+ * in the store under an opaque handle in server mode, and inside the AES-256-GCM sealed value in
+ * cookie mode. Neither the redirect nor the {@link CallbackOutcome} carries token material, and
+ * {@link SessionRecord#toString()} redacts it, so it cannot reach a log line or a stack trace.
+ * Whether it is retained at all is the operator's {@code oidc.session.refresh.enabled} switch,
+ * applied one layer out where the {@link CodeExchange} seam is bound.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -218,6 +228,15 @@ public final class CallbackEndpoint {
         SessionRecord session = SessionRecord.builder()
                 .sessionId(SessionRecord.newSessionId())
                 .accessToken(accessToken.getRawToken())
+                // The refresh token the authorization server issued alongside the validated tokens.
+                // It is load-bearing rather than decorative: TokenRefreshCoordinator.refresh returns on
+                // its very first guard when session.refreshToken() is null, BEFORE any logging, so a
+                // session created without it can never be refreshed and — because the refresh is the
+                // only thing that re-contacts the IdP — is never re-validated either. Leaving it out is
+                // what made a near-expiry refresh silently never fire and an IdP-revoked session keep
+                // answering 200. null stays a normal outcome: an authorization server legitimately
+                // grants no refresh token, and SessionRecord documents the component as nullable.
+                .refreshToken(result.refreshToken())
                 .idToken(idToken.getRawToken())
                 .sub(subject.get())
                 .sid(claim(idToken, CLAIM_SID))
@@ -299,7 +318,10 @@ public final class CallbackEndpoint {
          *
          * @param context the pending record's engine transaction context (owns state/nonce/PKCE)
          * @param params  the parsed callback parameters (from the raw, never map-collapsed query — BFF-13)
-         * @return the validated access + ID token result
+         * @return the validated access + ID token result, carrying the refresh token the
+         *         authorization server issued alongside them (the record's {@code refreshToken}
+         *         component is {@code null} when it issued none, or when the runtime's binding of
+         *         this seam dropped it because {@code oidc.session.refresh.enabled} is off)
          * @throws de.cuioss.sheriff.token.commons.error.TokenSheriffException when the exchange or
          *         token validation fails (invalid state/nonce, IdP error, signature/claim failure)
          */
