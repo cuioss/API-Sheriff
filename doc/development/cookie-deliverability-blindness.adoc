@@ -364,8 +364,15 @@ has one further answer, and it is the same shape rather than a different one.
 `RestAssured.useRelaxedHTTPSValidation()` for every suite that extends it
 (`integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BaseIntegrationTest.java:57`),
 and the BFF helper's own request specs relax it independently
-(`BffKeycloakLoginFlow.java:308`, `:323`). Certificate-chain validity is a *client*-enforced control,
+(`BffKeycloakLoginFlow.java:336`, `:351`). Certificate-chain validity is a *client*-enforced control,
 so the lane cannot observe it -- exactly as it cannot observe `SameSite`.
+
+The surface is wider than those four sites, and materially so: the substitution appears in *four
+mechanically distinct forms* across *14 files*, and a census for the single spelling above finds
+neither the per-specification form nor the two JDK-level ones. The enumerated surface, with the
+census mistake that hid it, is recorded in
+link:test-corpus-integrity.adoc[Test-Corpus Integrity] § "Shape (e)-2 -- the enumerated relaxed-TLS
+surface".
 
 That is a deliberate and correct choice, not a defect: the stack serves a self-signed `localhost`
 bundle, and the browser lane handles it the same way with `--ignore-certificate-errors`

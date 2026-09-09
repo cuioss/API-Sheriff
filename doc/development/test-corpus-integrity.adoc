@@ -4,14 +4,28 @@
 :sectnums:
 
 Which test methods in the API Sheriff corpus carry assertions that *cannot support the behaviour
-their names claim*, what verdict each one received, which twenty were strengthened, and -- the part
+their names claim*, what verdict each one received, which eighteen were strengthened, and -- the part
 that makes this note auditable rather than anecdotal -- exactly how much of the surface was left
 un-classified, counted.
 
+Two passes are recorded. The first ranked the corpus by vacuity-marker density and read the ranked
+files; the second (<<pro-forma-audit>>) read *every* file in the integration lane, because the defect
+class that motivated it leaves no marker for a ranking to find. The second pass is what added
+<<shape-e>> to the taxonomy and what emptied the integration-lane half of <<backlog>>.
+
 The companion note link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
-does the same job for declared gateway limits; this one does it for assertion *strength*. Both follow
-the same discipline: enumerate the whole surface first, credit what already exists by name, derive
-the cap against the real gap count, and record the remainder as a *countable* standing backlog.
+does the same job for declared gateway limits; this one does it for assertion *strength*. The third
+sibling, link:cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness], answers the
+question neither of them asks -- which properties the integration lane is *structurally incapable of
+observing*, however strong its assertions. All three follow the same discipline: enumerate the whole
+surface first, credit what already exists by name, derive the cap against the real gap count, and
+record the remainder as a *countable* standing backlog.
+
+The three divide cleanly by what they can be wrong about. This note asks *does the assertion support
+the claim?*; the declared-limit note asks *does the claim have an assertion at all?*; the blindness
+note asks *could any assertion in this lane have seen it?* A test can pass all three questions and
+still be worthless only if the claim itself is wrong, which is a review problem rather than a
+measurable one.
 
 == Why This Note Exists
 
@@ -23,6 +37,10 @@ note is built from *mechanical censuses whose counts are reproducible* plus a *t
 ranked candidates*, and it says plainly which files were read and which were not.
 
 == Method
+
+This section describes the *first* pass's method, against the 135-file surface it measured at
+`ec6f7e4`; the surface is now 155 files (<<recensus-497c592>>), which strengthens rather than dates
+the argument.
 
 Census-then-targeted-read, deliberately -- not a linear 135-file pass. A linear pass over a corpus
 this size degrades into spot-checks, which is precisely the apparent-vs-real-coverage failure this
@@ -42,6 +60,26 @@ counts it into the backlog. There is no "the whole corpus was reviewed" assertio
 because no such claim could be verified.
 ====
 
+=== Where census-then-targeted-read does not reach
+
+The three-step method above selects candidates by *marker density*, which presupposes that a weak
+assertion leaves a textual trace. <<pro-forma-audit>> below is the pass that found the presupposition
+is only sometimes true, and the exception is not marginal -- it is the shape that motivated the whole
+cookie-deliverability plan.
+
+*Shape (e) is invisible to every marker this note censuses.* All nine cookie tests carried
+substantive-looking status and attribute assertions and not one vacuity marker between them, while
+being green about a session no browser could hold. A density ranking would never have surfaced them,
+and neither would a read that only opened the ranked files. The consequence is stated plainly rather
+than buried: *for shape (e), the census shortcut is unavailable, and the only method that finds it is
+reading every file in the pool.* That is why <<pro-forma-audit>> is a linear 56-file pass and says so,
+rather than reproducing the ranked sample this section prescribes.
+
+The rest of the method survives intact. Density remains a working screen for shapes (a)--(d) --
+<<density-finding>> is the evidence for that and against over-trusting it -- and the linear pass is
+warranted where the defect class carries no marker, not as a general replacement for ranking.
+
+[[search-form-constraint]]
 === Search-form constraint (load-bearing)
 
 Every symbol-reachability census in this sweep searched *both* the call form `name(` *and* the
@@ -157,6 +195,49 @@ de-duplicated by path).
 strengthens* -- a measurement artefact read as a regression. That file already mixes both forms (it
 carries one `@ParameterizedTest` before this change and after it).
 
+[[recensus-497c592]]
+=== Re-census at `497c592` -- the surface this note's numbers now describe
+
+The corpus has grown since the baseline above. <<pro-forma-audit>> re-ran every census under the
+mandatory both-annotations rule, at `497c592`, and the figures below *supersede* the `ec6f7e4` ones
+for every claim in this note that is not explicitly dated. The originals are kept above because the
+selection, the cap and the strengthened set were all derived from them; a reader comparing the two
+should read the baseline as history and this table as the present.
+
+[cols="3,1,1,1,1,1",options="header"]
+|===
+| Census | IT files | IT occ. | api-sheriff files | api-sheriff occ. | D1 files / occ.
+
+| `@Test(?![A-Za-z0-9_])` | 52 | 201 | 103 | 1306 | 155 / 1507
+| `@ParameterizedTest`    |  1 |   2 |  38 |  123 |  39 /  125
+| *Declared surface (union)* | *52* | *203* | *103* | *1429* | *155 / 1632*
+| `assertDoesNotThrow`    |  1 |   2 |  31 |  121 |  32 /  123
+| `assertNotNull`         | 25 | 101 |  20 |   75 |  45 /  176
+| *Marker union*          | *26* | *103* | *43* | *196* | *69 / 299*
+|===
+
+Every row ran under complete coverage: `files_scanned: 1006`, `0` unreadable, `truncated: false`,
+`0` elided. The scanned population is the whole module-attributed inventory; the per-tree columns are
+derived by de-duplicating the `api-sheriff-parent` attribution the inventory carries for every file,
+which is why no row double-counts.
+
+*The declared surface moved from 135 files / 1368 methods to 155 / 1632.* Both halves grew: the
+integration lane from 42 files to 56 (52 of which declare a test method -- the other four are the
+support classes named in <<pro-forma-audit>>), and `api-sheriff` from 93 to 103 marker-relevant
+files. The marker union grew from 58 files / 267 occurrences to 69 / 299. <<backlog>> is recomputed
+from these numbers rather than edited.
+
+[NOTE]
+====
+*A carried figure is not a census.* The `assertDoesNotThrow` D1 count reached this audit as
+"32 files / 125 occurrences" from an earlier pass. The file count reproduces exactly; the occurrence
+count does not -- the run above measures *123* at `497c592`. The two-occurrence delta is not
+explained here because it cannot be: the earlier run's tree state was not recorded, and inventing a
+reconciliation would be exactly the unverifiable claim this note refuses elsewhere. What is recorded
+is the pattern, the commit and the coverage evidence, so the number above is reproducible even though
+its predecessor is not.
+====
+
 == Taxonomy
 
 === What counts as flagged
@@ -167,8 +248,13 @@ F1:: *Wholly vacuous* -- the method's entire assert-block consists only of `asse
 and/or `assertNotNull`.
 F2:: *Partially vacuous* -- the method mixes a substantive assertion with one or more additional
 *distinct scenarios* whose only assertion is a vacuous marker.
+F3:: *Substituted client* -- the assert-block is entirely substantive, and the defect is one level
+down: the observation it asserts over was produced by a client that applies none of the policy the
+method's claim depends on. F3 is the flagging class for shape (e), and it exists because F1 and F2
+are both defined over *markers* -- so neither can reach a method whose assertions look, and are,
+strong.
 
-=== The four shapes
+=== The five shapes
 
 [cols="1,3",options="header"]
 |===
@@ -177,11 +263,64 @@ F2:: *Partially vacuous* -- the method mixes a substantive assertion with one or
 | (a) | construction / wiring-only evidence -- the object was built, nothing about it was inspected
 | (b) | call returned without inspecting the return value
 | (c) | tautological given the arrange block -- the assertion is entailed by the setup
-| (d) | *highest risk* -- named or documented for a behaviour its assertions do not exercise
+| (d) | *highest risk among the marker shapes* -- named or documented for a behaviour its assertions
+       do not exercise
+| (e) | *permissive substitute client* -- the assertions are substantive, but the client that produced
+       the observation enforces none of the policy the claim rests on
 |===
 
-Shape (d) is ranked highest because it is the only shape that actively *misleads*: the
-`@DisplayName` reads as a specification and the green result reads as its proof.
+Shape (d) is ranked highest *among (a)--(d)* because it is the only one of them that actively
+*misleads*: the `@DisplayName` reads as a specification and the green result reads as its proof.
+
+[[shape-e]]
+==== Shape (e) -- the permissive substitute client
+
+Shapes (a)--(d) are all properties of an *assert-block*: read the assertions, and the defect is
+there to see. Shape (e) is not. Its assert-block can be exemplary -- exact status codes, exact
+attribute values, a matched negative control -- and the test can still be green about a state that
+could not occur, because the *client* standing in for the real one applies none of the policy that
+would have prevented it.
+
+That makes it the only shape with no textual marker, and therefore the only one a density census
+cannot rank. It is also the only shape whose fix is usually not in the test: an assert-block that is
+already substantive is not made honest by strengthening it further.
+
+*The diagnostic question* -- the shape-(e) analogue of the reversion test -- is: *if the real client
+applied its policy, would the arrange step still have succeeded?* When the answer is no, every
+assertion downstream is being made about a state the production client would never have reached, and
+the strength of those assertions is beside the point.
+
+*Two confirmed instances in this corpus,* both in the integration lane, both recorded in the
+companion note link:cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness]:
+
+[cols="1,3,1,3",options="header"]
+|===
+| Instance | The substitution | Status | Where the audit found it
+
+| (e)-1
+| The BFF login helper replays cookies from a `Map` it manages itself, so it applies no cookie policy
+  at all: no per-cookie budget, and no `SameSite` / `Secure` / `+__Host-+` enforcement. The helper's
+  own class Javadoc states the limitation
+  (`integration-tests/.../BffKeycloakLoginFlow.java:43-51`).
+| *Deliverability leg closed*
+| The per-cookie budget is now asserted at the single seam every `Bff*IT` login funnels through --
+  `assertCookiesFitBrowserBudget` at `BffKeycloakLoginFlow.java:309`, against the test's own
+  `BROWSER_COOKIE_BUDGET_BYTES` constant at `:158`. The attribute-policy legs remain open and belong
+  to the browser lane.
+
+| (e)-2
+| Certificate validation is disabled for every client the lane drives, in four mechanically distinct
+  forms -- see <<relaxed-tls-census>> for the enumerated surface.
+| *Open, and deliberate*
+| Recorded rather than fixed: the stack serves a self-signed `localhost` bundle and the browser lane
+  relaxes it the same way. It is a member of the class, and the class is what is worth knowing.
+|===
+
+Instance (e)-1 is the worked example, and it is worth naming what it cost: nine tests, all green, all
+correctly asserting the wrong subject, for the whole interval between the payload crossing 4096 bytes
+and the defect being found by other means. The companion note carries the per-test verdict under a
+policy-applying client -- seven of the nine go red, two stay green and are named -- and this note does
+not restate it.
 
 === The three verdicts
 
@@ -686,42 +825,486 @@ methods became two `@ParameterizedTest` methods covering the same five Host shap
 attribution control. Counting both annotations shows the file's real movement: 12 methods before, 9
 after, with strictly more asserted per shape.
 
+[[pro-forma-audit]]
+== The Integration-Lane Pro-Forma Audit
+
+A second pass, over a different pool and by a different method: *every file* under
+`integration-tests/src/test/**` at `497c592`, read in full, looking for assertions that would survive
+reverting the behaviour they name.
+
+It is scoped as a *survey*, not a sweep. It authored and edited no Java, in-lane or out; every fix it
+identified is written up below and routed onward. That boundary is why it could afford to be
+exhaustive where the first pass could not.
+
+=== Why this pass is linear where the first was ranked
+
+The first pass ranked by marker density and read the ranked files, and <<density-finding>> is its own
+evidence that ranking works for shapes (a)--(d). This pass could not use it, and the reason is
+<<shape-e>>: the defect class that motivated it leaves no marker at all. The choice was therefore
+between a linear pass and a pass that structurally could not find what it was looking for.
+
+The cost was affordable only because the pool is small. 56 files, 52 of which declare a test method,
+203 declared test methods -- roughly a third of the `api-sheriff` surface. *Do not read this as a
+precedent for the whole corpus*: the same method over the D1 surface is 155 files and 1632 methods,
+which is the size at which a linear pass degrades into spot-checks -- precisely the failure this
+note's `Method` section exists to refuse.
+
+=== The pool, and what "all of it" means
+
+[cols="4,1,1",options="header"]
+|===
+| Population | Files | Declared test methods
+
+| `integration-tests/src/test/**` at `497c592`                         | 56  | 203
+| -- declaring at least one `@Test` / `@ParameterizedTest`             | 52  | 203
+| -- support classes declaring none (read, classified, no methods)     |  4  |   0
+| *-- read in full by this pass*                                       | *56* | *203*
+| *-- not read*                                                        |  *0* |   *0*
+|===
+
+The four support classes are `BaseIntegrationTest`, `BffKeycloakLoginFlow`, `ContainerHealthInspector`
+and `ImageLabelInspector`. They are counted rather than skipped because two of them *are* the
+mechanism of <<shape-e>>: `BaseIntegrationTest:57` relaxes certificate validation lane-wide, and
+`BffKeycloakLoginFlow` is the name-keyed cookie jar. A pass that had excluded "files with no tests"
+would have missed the shape it was run to find.
+
+The method-count column is the both-annotations union required by <<recensus-497c592>>. Exactly one
+file in the pool carries `@ParameterizedTest` -- `grpc/GrpcEchoServiceTest.java`, two occurrences --
+so a `@Test`-only census would have under-reported the pool by two methods.
+
+=== Verdict distribution
+
+[cols="4,1,3",options="header"]
+|===
+| Population | Methods | Note
+
+| Declared test methods in the pool | 203 |
+| -- flagged (F1 / F2 / F3)         |  20 | every row below carries a `file:line`, exactly one shape and exactly one verdict
+| -- unflagged                      | 183 | assertions support the claim; see the per-file table for the accounting
+| *verdict* `strengthen`            | *14* |
+| *verdict* `delete`                |  *1* |
+| *verdict* `keep`                  |  *5* | flagged and then attributed -- a matched control or a correctly narrow scope
+|===
+
+*A 10% flag rate over an exhaustive pass is the headline result, and it is a finding about the corpus
+rather than about the audit.* The integration lane is markedly stronger than the marker census would
+predict: 26 of its 56 files carry a vacuity marker at all, and 25 of those 26 carry only
+`assertNotNull`, overwhelmingly as a structural precondition ahead of a substantive assertion rather
+than as the assertion itself. <<density-finding>> said density is a screen and not a verdict; this
+pass is the larger sample that says so again, from the other direction.
+
+=== Classification -- the twenty flagged methods
+
+==== Verdict `strengthen` (14)
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method (file) | Line | Shape | Evidence, and what the strengthening would have to reach
+
+| `cookieGatewayStillRegistersTheBackchannelPath`
+  (`BffCookieActivationWiringTest`)
+| 110 | (d)
+| Asserts only that `oidc.logout.backchannel_path` is *present*, never its value, while its own
+  comment ties the assertion to the path `BffCookieBackchannelDisabledIT` probes. A descriptor
+  declaring `backchannel_path: /wrong` keeps this green and breaks that IT. Assert the value.
+
+| `composeSuppliesTheSealingKey`
+  (`BffCookieActivationWiringTest`)
+| 156 | (d)
+| The yaml side asserts the reference is `${...}`-shaped (`:104`); the compose side asserts a variable
+  literally named `SESSION_ENCRYPTION_KEY` is supplied. *Neither reads the other.* Renaming the
+  variable in the overlay to `${OTHER}` keeps both green and aborts the instance's boot. Read the
+  referenced name out of the yaml and compare it against the compose key.
+
+| `rpInitiatedLogoutClearsTheSealedCookie`
+  (`BffCookieSessionIT`)
+| 176 | (d)
+| `LogoutEndpoint` answers a logout *without* a session with the same `302` and the same fixed
+  clearing `Set-Cookie` as the authenticated branch, so all three assertions hold identically on both.
+  The test cannot distinguish "logged out" from "was never logged in". The matched control is cheap:
+  the identical request with no session jar must produce the identical response -- which is the point.
+
+| `loginEstablishesUsableSession`
+  (`BffSessionLoginIT`)
+| 41 | (d)
+| `assertFalse(session.gatewayCookies().isEmpty())` is captioned "the callback must set a session
+  cookie", but a jar carrying only the short binding cookie satisfies it. Assert the session cookie
+  by name, as the cookie-mode sibling already does.
+
+| `userInfoServesCuratedDefaultView`
+  (`BffUserInfoIT`)
+| 50 | (c)
+| The allowlist leg is `assertNull(response.path("claims.client_secret"))` -- a claim Keycloak never
+  mints, so its absence is entailed by the arrange. An allowlist that leaked `email` or
+  `realm_access` stays green. The mounted config declares `default_view: [sub, preferred_username]`;
+  assert the disclosed claim *set* equals it.
+
+| `containerOverrideExceedsTheNegativeCaseBody`
+  (`BodyLimitActivationWiringTest`)
+| 144 | (d)
+| Named for `LargeBodyIT`'s negative-case body size and asserted against a hand-copied constant
+  (`71303168L` at `:96`, mirroring `LargeBodyIT:105`). The two agree today and nothing keeps them
+  agreeing. Derive one from the other.
+
+| `unmountedPathDeniedByDefault`
+  (`ConfigLoadedIntegrationIT`)
+| 49 | (c)
+| A `404` for an unmounted path is produced by *any* failure to load the route table, including
+  loading none at all. The class Javadoc names the positive control that would make it discriminating
+  -- "the single mounted `/proxy` route being live ... is the observable proof" -- and the class
+  contains no such test. `managementHealthReportsUp:69` is not it: readiness is `UP` whether or not a
+  route was assembled.
+
+| `declaredAnchorNamespaceWithoutEndpointServesNothing`
+  (`ConfigLoadedIntegrationIT`)
+| 59 | (c)
+| The same gap, on the same missing control. One added positive leg fixes both rows.
+
+| `authenticatedAssetRejectsWithoutToken`
+  (`DirectoryAssetServingIT`)
+| 91 | (d)
+| Named "rejected 401 *before any file is read*"; nothing asserts the ordering, and from outside it
+  cannot be asserted directly. It can be asserted *by contrast*: a request for a file that does not
+  exist under `/secure-assets` must also answer `401` -- source-resolution-first would answer `404`.
+
+| `sheriffMetersAppearAndMoveAfterProxyTraffic`
+  (`MetricsIT`)
+| 58 | (d)
+| Named "appear *and move*"; every assertion is a `contains` over the scrape body, so nothing moves.
+  Its own sibling `securityEventsMeterAppearsAndMovesAfterRejection:90` shows the shape --
+  sum before, act, assert strictly greater.
+
+| `wrongCaClientCertRejected`
+  (`MtlsHandshakeIT`)
+| 87 | (c)
+| Reads `test.mtls.wrong.keystore`; when that property is unset the helper builds a context with *no*
+  key manager, which is byte-identical to `noClientCertRejected:77`. The test then passes for the
+  sibling's reason rather than its own. Assert the property resolves before using it.
+
+| `midStreamResetSurfacesAsAbort`
+  (`PassthroughFaultIT`)
+| 109 | (c)
+| `assertThrows(IOException.class, ...)` is satisfied by an unmapped fault SNI, an unreachable
+  Toxiproxy, or a listener that is simply down -- and the class drives no toxic-free relay, so no leg
+  establishes that the relay works at all. Add the control, or narrow the expected exception.
+
+| `failsafeWiresMtlsSystemProperties`
+  (`TlsEdgeActivationWiringTest`)
+| 291 | (d)
+| Asserts `pom.xml` *contains the element name* `+<test.mtls.port>+`. A value pointing at the wrong
+  instance passes, which is the failure the test's own comment describes ("falls back to ... port
+  10443"). Assert the value against the port the compose file publishes, as
+  `EgressVerifyActivationWiringTest` does for its own pair.
+
+| `overlayDeclaresAnExhaustibleAdmissionBudget`
+  (`WsAdmissionActivationWiringTest`)
+| 82 | (d)
+| Both caps are asserted below `SEQUENTIAL_UPGRADES = 10` (`:78`), a hand-copied mirror of
+  `WebSocketProxyIT.LOW_CAP_SEQUENTIAL_UPGRADES = 10` whose Javadoc claims the lockstep it does not
+  check. Raising one alone silently disarms the exhaustion regression -- the exact silence the guard
+  was written for.
+|===
+
+==== Verdict `delete` (1)
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method (file) | Line | Shape | Evidence
+
+| `benchmarkGatewayHealthTargetServesOverHttps`
+  (`ApiSheriffIntegrationIT`)
+| 66 | (d)
+| Strictly subsumed by `quarkusHealthEndpoint:36`: identical arrange
+  (`givenManagement().get("/health")`), and the sibling asserts `statusCode(200)` *plus* the JSON
+  content type. Its `@DisplayName` claims to pin the `gatewayHealth` benchmark's target, and its own
+  Javadoc concedes it cannot -- "the two resolutions never meet, so a change to the benchmark's
+  target leaves this test green".
+
+  *Its Javadoc is the part worth keeping.* The merge-queue reasoning it records -- why the guard lives
+  here rather than in the benchmark pre-flight -- is real and would be lost with the method. Move that
+  paragraph onto `quarkusHealthEndpoint` in the same change.
+|===
+
+==== Verdict `keep` (5) -- flagged, then attributed
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method (file) | Line | Shape | Why the admission is attributable
+
+| `baseDescriptorDeclaresOnlyUnmappedExtensions`
+  (`AssetContentTypeActivationWiringTest`)
+| 106 | (c)
+| Asserts an empty collision set, which an *absent* `content_types` block satisfies. The matched
+  control is `baseDescriptorActivatesTheBlock:91` in the same class, which pins the block non-empty.
+
+| `trustedClientCertAccepted` (`MtlsHandshakeIT`)
+| 67 | (a)
+| F1 by marker -- its whole body is `assertDoesNotThrow(() -> handshake(context))`. Two matched
+  negative controls drive the identical `handshake()` path differing only in the client identity and
+  assert `SSLException` (`:77`, `:87`), which is the neutralised-fixture standard this note's `keep`
+  verdict requires.
+
+| `sealedSessionCookieIsHardened` (`BffCookieSessionIT`)
+| 97 | (e)
+| Correctly scoped to the *emitted* header, which is the side of the integration/browser boundary the
+  gateway can be held to. It observes nothing a client applies and claims nothing a client applies.
+
+| `sealedSessionMediatesAndStaysUsable` (`BffCookieSessionIT`)
+| 149 | (e)
+| The archetypal (e)-1 row: "stays usable" is a claim about a session a client can hold, asserted
+  through a jar that would have held anything. It is `keep` *now* because the deliverability leg is
+  closed at the shared login seam (`BffKeycloakLoginFlow:309`), not because the assertions changed.
+
+| `aSessionSealedByOneInstanceIsServedByThePeer`
+  (`BffCookieStatelessnessIT`)
+| 84 | (e)
+| Same shape, same fixture, same resolution.
+|===
+
+[IMPORTANT]
+====
+*The two shape-(e) `keep` verdicts rest on a fixture, not on their own assert-blocks.* Remove
+`assertCookiesFitBrowserBudget` from `BffKeycloakLoginFlow.login(...)` and both revert to
+`strengthen` without a line of either test changing. That is the defining property of shape (e) and
+the reason it is worth a taxonomy entry: the verdict lives somewhere the method does not.
+====
+
+=== Per-file coverage -- all 56 files accounted for
+
+Every file in the pool, with its declared method count and its flagged count. A zero in the *flagged*
+column means the file was read and nothing in it met F1, F2 or F3 -- never that it was skipped.
+
+[cols="4,1,1,3",options="header"]
+|===
+| File | Methods | Flagged | Note
+
+| `ApiSheriffIntegrationIT.java`                  | 3  | 1 | one `delete`
+| `AssetContentTypeActivationWiringTest.java`     | 3  | 1 | `keep`
+| `BaseIntegrationTest.java`                      | 0  | 0 | support class; the lane-wide (e)-2 site at `:57`
+| `BearerSecurityFilterInteractionIT.java`        | 4  | 0 | four-cell gate-ordering matrix with a positive control
+| `BearerValidationIT.java`                       | 4  | 0 | carries its own anti-vacuity length assertion at `:120`
+| `BenchmarkRealmCredentialConsistencyTest.java`  | 4  | 0 | one whole test is an anti-vacuity control (`:153`)
+| `BffCookieActivationWiringTest.java`            | 7  | 2 | two `strengthen`
+| `BffCookieBackchannelDisabledIT.java`           | 2  | 0 | matched 404/400 pair discriminated by `Cache-Control`
+| `BffCookieSessionIT.java`                       | 6  | 3 | one `strengthen`, two shape-(e) `keep`
+| `BffCookieStatelessnessIT.java`                 | 3  | 1 | shape-(e) `keep`
+| `BffCsrfIT.java`                                | 3  | 0 | 403 / 403 / 401 triple separates CSRF from auth
+| `BffKeycloakLoginFlow.java`                     | 0  | 0 | support class; the (e)-1 site, and the seam that closes it
+| `BffLoginInitiationIT.java`                     | 2  | 0 | `:78-80` states why the exact target is asserted
+| `BffLogoutIT.java`                              | 2  | 0 | replays the stale jar and asserts the 401
+| `BffSessionLoginIT.java`                        | 1  | 1 | one `strengthen`
+| `BffSessionMediationIT.java`                    | 4  | 0 | mediation asserted on the upstream echo
+| `BffTokenRefreshIT.java`                        | 5  | 0 | byte-identical vs different bearer; three-part clearing check
+| `BffUserInfoIT.java`                            | 2  | 1 | one `strengthen`
+| `BodyLimitActivationWiringTest.java`            | 3  | 1 | one `strengthen`
+| `CipherSuiteFixtureWiringTest.java`             | 2  | 0 | `:90` refuses to delegate its precondition to a sibling
+| `ComposeSampleForwardedTrustWiringTest.java`    | 3  | 0 | drives the real `ConfigLoader`; vacuity guards on both derived sides
+| `ConfigLoadedIntegrationIT.java`                | 3  | 2 | two `strengthen`
+| `ContainerHealthIT.java`                        | 3  | 0 | third test is a negative control on the reader itself
+| `ContainerHealthInspector.java`                 | 0  | 0 | support class
+| `DeclaredLimitBoundaryIT.java`                  | 11 | 0 | every negative leg paired one unit the other side of the cap
+| `DescriptorInventoryWiringTest.java`            | 3  | 0 | derives its expectations from the note it guards
+| `DirectoryAssetServingIT.java`                  | 5  | 1 | one `strengthen`
+| `EgressAllowlistActivationWiringTest.java`      | 2  | 0 | issuer counters are explicit anti-vacuity controls
+| `EgressVerifyActivationWiringTest.java`         | 8  | 0 | leg-identity substitution rule instead of an exception list
+| `ErrorContractIT.java`                          | 3  | 0 | type, title, status and no-echo on every rejection
+| `GetWithBodyActivationWiringTest.java`          | 4  | 0 | fail-closed carve-out with its own negative control
+| `GetWithBodyIT.java`                            | 3  | 0 | one test asserts the constructed request bytes
+| `GracefulShutdownIT.java`                       | 3  | 0 | see <<class-name-overclaim>>
+| `GrpcProxyIT.java`                              | 4  | 0 | unary, streaming, status relay, trailers-only rejection
+| `HostSmuggleGuardIT.java`                       | 2  | 0 | matched smuggled/benign pair; see <<census-evasion>>
+| `ImageLabelActivationWiringTest.java`           | 1  | 0 | expectation derived from the Dockerfile, two vacuity guards
+| `ImageLabelInspector.java`                      | 0  | 0 | support class
+| `ImageMetadataIT.java`                          | 3  | 0 | third test is a negative control on the reader
+| `ImageMetadataJfrIT.java`                       | 2  | 0 | same control, narrower asserted set, and says why
+| `ItProfileConfigBindingWiringTest.java`         | 6  | 0 | derived instance set asserts its own non-emptiness
+| `LargeBodyIT.java`                              | 2  | 0 | `producedBytes() == 0` pins where the rejection landed
+| `ManagementPlainHttpActivationWiringTest.java`  | 7  | 0 | one test asserts the guard's own predicate
+| `ManagementPlainHttpOptOutIT.java`              | 3  | 0 | `SSLException` not `IOException`, and says why
+| `ManagementRootPathLabelIT.java`                | 5  | 0 | positive, negative control and vacuity guard, all named
+| `MetricsIT.java`                                | 3  | 1 | one `strengthen`
+| `MtlsHandshakeIT.java`                          | 3  | 2 | one `strengthen`, one `keep`
+| `PassthroughFaultIT.java`                       | 1  | 1 | one `strengthen`
+| `PipelineVerbIT.java`                           | 6  | 0 | every verb asserted on the echo, not the status alone
+| `SecurityProfileModeIT.java`                    | 8  | 0 | the still-rejects legs are the load-bearing ones
+| `TlsEdgeActivationWiringTest.java`              | 10 | 1 | one `strengthen`
+| `TlsPassthroughIT.java`                         | 2  | 0 | asserts the negotiated peer certificate identity
+| `UpstreamAssetServingIT.java`                   | 5  | 0 | h2 regression plus a directory-source control
+| `UpstreamHostnameVerificationIT.java`           | 3  | 0 | three legs; the third separates two readings of the knob
+| `WebSocketProxyIT.java`                         | 8  | 0 | see <<cumulative-finding>>
+| `WsAdmissionActivationWiringTest.java`          | 4  | 1 | one `strengthen`
+| `grpc/GrpcEchoServiceTest.java`                 | 4  | 0 | the pool's only `@ParameterizedTest` file
+| *Total*                                         | *203* | *20* |
+|===
+
+[[relaxed-tls-census]]
+=== Shape (e)-2 -- the enumerated relaxed-TLS surface
+
+The audit's own census of the substitution, because a partial one would repeat the note's
+<<search-form-constraint,search-form>> mistake in a new guise. Measured at `497c592` under complete
+coverage (`files_scanned: 1006`, `0` unreadable, not truncated, `0` elided):
+
+[cols="3,1,4",options="header"]
+|===
+| Construct | Files | Where
+
+| `RestAssured.useRelaxedHTTPSValidation()` -- global, static
+| 1
+| `BaseIntegrationTest:57`. Inherited by the *27* suites that extend it, which is the lane-wide reach.
+
+| `given().relaxedHTTPSValidation()` -- per request-specification
+| 5
+| `BffKeycloakLoginFlow:336,:351`; `BffCookieBackchannelDisabledIT:62,:78`;
+  `BffTokenRefreshIT:341,:351,:360`; `ManagementRootPathLabelIT:112,:138`;
+  `UpstreamHostnameVerificationIT:209`
+
+| A hand-written trust-all `X509TrustManager`
+| 6
+| `MtlsHandshakeIT:135` (the shared `TrustAllManager`, used at `:125` and imported by
+  `LargeBodyIT:119`, `TlsPassthroughIT:98` and `PassthroughFaultIT:125`);
+  `GetWithBodyIT:262`; `WebSocketProxyIT:327`
+
+| Netty's `InsecureTrustManagerFactory`
+| 2
+| `GrpcProxyIT:85`; `UpstreamAssetServingIT:86`
+
+| *Union*
+| *14 files, 31 occurrences*
+| plus the 27 suites inheriting the lane-wide form
+|===
+
+[CAUTION]
+.The carried figure for this instance was wrong, and the reason is instructive
+====
+Shape (e)-2 reached this audit as "*4 files* -- `BaseIntegrationTest:57` lane-wide, plus
+`GetWithBodyIT`, `LargeBodyIT` and `WebSocketProxyIT` relaxing it independently". That count comes
+from censusing the literal `useRelaxedHTTPSValidation`, and it is wrong in *both* directions.
+
+*Too narrow*: the per-specification form is spelled `relaxedHTTPSValidation` with a lower-case `r`,
+so a case-sensitive census for the `use`-prefixed name misses all five files that use it, and misses
+the two JDK-level mechanisms entirely.
+
+*Too broad*: of the four files it did report, three match only in *prose*. `GetWithBodyIT:256`,
+`LargeBodyIT:117` and `WebSocketProxyIT:127` each name the method in a comment explaining that their
+JDK client is its analogue. The static form has exactly *one* call site in the entire lane.
+
+This is the note's own <<search-form-constraint,search-form constraint>> recurring -- the same lesson
+that a call-form-only census produced a false "dead API" verdict during outline -- and it is also the
+`assertNotNull` prose-occurrence problem from <<report-only>> recurring. Two known failure modes, both
+already documented in this note, both repeated. The rule they share is worth stating once: *a census
+is a claim about a regular expression, not about a concept, and the gap between the two is where the
+false verdicts live.*
+====
+
+=== Report-only observations
+
+Per the standing boundary, defects found outside this pass's write scope are reported, never
+absorbed. This pass authored no Java at all, so *every* fix above is in this category; the entries
+below are the ones that are not per-method verdicts.
+
+[[census-evasion]]
+==== `assertNotNull` spelled so no census can see it
+
+`HostSmuggleGuardIT:73` asserts `assertTrue(response.path("method") != null, ...)`. It is an
+`assertNotNull` in everything but name, and the marker census in <<recensus-497c592>> cannot count
+it. The row itself is `keep` -- it has a matched control at `:48` -- but it means the published
+marker counts are a *lower bound* on the vacuous-shape population, not a measurement of it. One
+occurrence found in 56 files is not evidence that it is rare; it is evidence that nothing looks for it.
+
+[[class-name-overclaim]]
+==== A class name claiming more than any of its methods do
+
+`GracefulShutdownIT` exercises no shutdown. Its three methods are honestly named and honestly scoped
+-- liveness, readiness, and a concurrent burst -- and its class Javadoc states the limitation
+outright: a black-box suite cannot signal `SIGTERM` to a container it does not own. No method is
+flagged, because none over-claims. It is recorded because *the taxonomy is defined over methods and
+this defect is not one*: a reader scanning class names for shutdown coverage would conclude it exists.
+
+==== Prose counts inside a guard that deliberately does not assert them
+
+`DescriptorInventoryWiringTest`'s Javadoc describes the note's surface as "*sixteen files* -- seven
+`gateway.yaml` documents ...", while `declared-limit-assertion-coverage.adoc` now enumerates
+seventeen across eight. The guard is unaffected: it derives every expectation from the note at
+runtime and says so explicitly (`:56-59`). The prose is stale, not the assertion -- which is exactly
+the trade the guard chose, and the residue that trade leaves.
+
+==== `LogMessagesCatalogueTest` does not reconcile against `doc/LogMessages.adoc`
+
+The catalogue test checks identifier *uniqueness* and *band membership*. It does not compare the
+declared records against the rows of `doc/LogMessages.adoc`, so those rows are convention-maintained
+and guarded by no test. A row that names a message the code no longer emits, or a message the doc
+never gained a row for, is invisible to the build. This is out of this pass's pool
+(`integration-tests/src/test/**`) and is recorded because it is the same *unguarded-mirror* shape as
+four of the `strengthen` verdicts above -- see <<mirror-finding>>.
+
+==== Stale `file:line` citations in a sibling note, caused by this plan
+
+`cookie-deliverability-blindness.adoc` cited the BFF helper's relaxed-TLS sites as
+`BffKeycloakLoginFlow.java:308, :323`. The deliverable that added `assertCookiesFitBrowserBudget`
+moved them to `:336, :351` in the same plan that wrote the citation. Corrected in place, and recorded
+here because a note whose whole method is `file:line` citation cannot afford them silently.
+
 [[backlog]]
 == The Countable Backlog
 
-*43 files carrying 140 vacuous-shape marker occurrences were censused but not individually
-classified.* That is the standing backlog, and it is the honest measure of what this sweep did not
-cover.
+*29 files carrying 87 vacuous-shape marker occurrences were censused but not individually
+classified.* That is the standing backlog, and it is the honest measure of what these two passes did
+not cover between them.
 
-Derivation, reproducible from the censuses above:
+*This table is corpus-wide, and that scope is load-bearing.* Its population is the whole D1 surface,
+not the integration lane <<pro-forma-audit>> read -- so the growth from 93 to 103 marker-relevant
+`api-sheriff` files recorded in <<recensus-497c592>> lands *in the backlog*, because no pass has read
+those files. A reader must not take the exhaustive integration-lane pass as coverage of the rows
+below: every one of them is under `api-sheriff/src/test/**`, and none was opened.
+
+Derivation, recomputed from <<recensus-497c592>> at `497c592` rather than edited:
 
 [cols="4,1,1",options="header"]
 |===
 | Population | Files | Marker occurrences
 
-| Marker-carrying files in the D1 surface (`assertDoesNotThrow` union `assertNotNull`) | 58 | 267
-| -- read in full: the mutation pool                                                  | 12 | 113
-| -- read in full: the control sample                                                 |  3 |  14
-| *-- censused, not individually classified (the backlog)*                            | *43* | *140*
+| Marker-carrying files in the D1 surface (`assertDoesNotThrow` union `assertNotNull`) | 69 | 299
+| -- read in full: the original mutation pool (all `api-sheriff`)                     | 12 | 101
+| -- read in full: the original control sample, `api-sheriff` legs                    |  2 |   8
+| -- read in full: <<pro-forma-audit>>, the whole integration lane                    | 26 | 103
+| *-- censused, not individually classified (the backlog)*                            | *29* | *87*
 |===
 
-=== Backlog rows -- `api-sheriff/src/test/**` (24 files, 73 occurrences)
+The arithmetic closes in both columns (12 + 2 + 26 + 29 = 69; 101 + 8 + 103 + 87 = 299), and every
+term is a census output rather than a carried figure. The integration-lane row counts 26 rather than
+56 because only 26 of the lane's files carry a marker at all -- the other 30 were read too, and
+contribute nothing to a marker-defined population. The original control sample's third leg,
+`EgressAllowlistActivationWiringTest`, has moved from the control row into the integration-lane row,
+where it is now covered exhaustively rather than as a sample.
+
+*The integration-lane half of the backlog is now empty*, and that is the one substantive change this
+pass makes to the count. The 19 integration-tests rows the previous derivation listed -- including the
+three named gate-1 exclusions, `BffCookieSessionIT` among them -- are all classified in
+<<pro-forma-audit>>. What remains is entirely `api-sheriff`.
+
+=== Backlog rows -- `api-sheriff/src/test/**` (29 files, 87 occurrences)
+
+The whole backlog now lives in one module. Densities are raw occurrence counts at `497c592`, on the
+same census the derivation above uses.
 
 [cols="4,1,1,2",options="header"]
 |===
 | File | `aDNT` | `aNN` | Note
 
+| `arch/LoopbackEphemeralBindArchTest.java`          | 2 | 0 | *new since `ec6f7e4`*
 | `arch/NativeRuntimeInitRegistrationArchTest.java`  | 2 | 3 |
 | `arch/NoStoredOptionalArchTest.java`               | 2 | 0 |
+| `asset/DirectoryAssetSourceTest.java`              | 2 | 0 | *new since `ec6f7e4`*
 | `asset/UpstreamAssetSourceTest.java`               | 2 | 2 |
 | `auth/JwksTrustProfileResolverTest.java`           | 0 | 1 | prose occurrence only -- see <<report-only>>
 | `auth/MountedTlsMapKeyTest.java`                   | 0 | 3 |
 | `bff/cookie/SealedSessionCookieCodecTest.java`     | 2 | 0 |
 | `bff/refresh/TokenRefreshCoordinatorTest.java`     | 0 | 2 |
 | `bff/reserved/CallbackEndpointTest.java`           | 2 | 0 |
+| `bff/session/InMemorySessionStoreTest.java`        | 2 | 0 | *new since `ec6f7e4`*
 | `config/RouteTableBuilderTest.java`                | 2 | 3 |
 | `config/load/ConfigLoaderTest.java`                | 0 | 4 |
-| `config/model/ConfigModelContractTest.java`        | 0 | 6 | *named gate-2 exclusion*
+| `config/model/ConfigModelContractTest.java`        | 0 | 7 | *named gate-2 exclusion*
 | `config/topology/TopologyResolverTest.java`        | 2 | 0 |
 | `edge/GatewayEdgePipelineTest.java`                | 0 | 3 |
 | `edge/GatewayEdgeRouteBffWiringTest.java`          | 2 | 0 |
@@ -730,54 +1313,33 @@ Derivation, reproducible from the censuses above:
 | `pipeline/CanonicalPathGuardTest.java`             | 2 | 0 |
 | `pipeline/RouteSelectionStageTest.java`            | 0 | 2 |
 | `pipeline/VerbGateStageTest.java`                  | 2 | 0 |
+| `quarkus/BuildParentContractTest.java`             | 0 | 3 | *new since `ec6f7e4`*
 | `quarkus/ConfigFailFastTest.java`                  | 2 | 2 |
 | `quarkus/ConfigModelReflectionTest.java`           | 0 | 2 |
 | `quarkus/CookieModeBootTest.java`                  | 0 | 3 |
 | `quarkus/SheriffMetricsTest.java`                  | 0 | 7 | *named gate-2 exclusion*
+| `testsupport/AwaitsTest.java`                      | 4 | 0 | *new since `ec6f7e4`*
 | `tls/MtlsServerCustomizerTest.java`                | 0 | 2 |
-| *Total*                                            | *28* | *45* |
+| *Total*                                            | *36* | *51* |
 |===
 
-=== Backlog rows -- `integration-tests/src/test/**` (19 files, 67 occurrences)
-
-Every file below is additionally blocked from the mutation pool by *gate 1* (verification
-reachability), regardless of density.
-
-[cols="4,1,1,2",options="header"]
-|===
-| File | `aDNT` | `aNN` | Note
-
-| `BearerValidationIT.java`                      | 0 | 2  |
-| `BffCookieActivationWiringTest.java`           | 0 | 8  | *named gate-1 exclusion*
-| `BffCookieSessionIT.java`                      | 0 | 11 | *named gate-1 exclusion* -- highest `assertNotNull` density in the surface
-| `BffCookieStatelessnessIT.java`                | 0 | 4  |
-| `BffLoginInitiationIT.java`                    | 0 | 3  |
-| `BffLogoutIT.java`                             | 0 | 2  |
-| `BffSessionMediationIT.java`                   | 0 | 3  |
-| `BodyLimitActivationWiringTest.java`           | 0 | 4  |
-| `CipherSuiteFixtureWiringTest.java`            | 0 | 2  |
-| `DeclaredLimitBoundaryIT.java`                 | 0 | 3  |
-| `DescriptorInventoryWiringTest.java`           | 0 | 2  |
-| `GetWithBodyActivationWiringTest.java`         | 0 | 2  |
-| `ItProfileConfigBindingWiringTest.java`        | 0 | 2  |
-| `LargeBodyIT.java`                             | 0 | 2  |
-| `ManagementPlainHttpActivationWiringTest.java` | 0 | 2  |
-| `MtlsHandshakeIT.java`                         | 2 | 0  |
-| `TlsEdgeActivationWiringTest.java`             | 0 | 8  | *named gate-1 exclusion*
-| `TlsPassthroughIT.java`                        | 0 | 2  |
-| `WsAdmissionActivationWiringTest.java`         | 0 | 3  |
-| *Total*                                        | *2* | *65* |
-|===
+Five rows are marked new: they are files that did not carry a marker at `ec6f7e4` and do at
+`497c592`. They entered the backlog by growth, not by any decision, which is what the corpus-wide
+scope note above is warning about.
 
 === What the backlog is not
 
-It is *not* "various remaining tests". Every entry is a named file with its measured marker density
-and the gate that excluded it. Draining it means reading those 43 files and classifying their flagged
-methods -- work that is bounded and countable, not open-ended.
+It is *not* "various remaining tests". Every entry is a named file with its measured marker density,
+and where a gate excluded it that gate is named. Draining it means reading those 29 files and
+classifying their flagged methods -- work that is bounded and countable, not open-ended.
 
-The control sample suggests the backlog's *yield* is low (0 strengthen verdicts from 6 flagged methods
-across 3 sampled files), but a 6.5% sample is a signal, not a proof, and this note does not claim
-otherwise.
+*Two independent samples now bound its expected yield, and they agree.* The original three-file
+control sample produced 0 `strengthen` verdicts from 6 flagged methods; <<pro-forma-audit>>'s
+exhaustive 56-file pass produced 14 from 203 declared methods, a 7% strengthen rate over a population
+selected by nothing at all. Both point the same way -- the corpus is stronger than a density ranking
+suggests -- and neither is a proof about the 29 files nobody has opened. What has changed since the
+first pass is only that the second sample is exhaustive over its own pool rather than a 6.5% slice,
+so "the yield is probably low" is now a claim with a real denominator behind it.
 
 == Findings
 
@@ -799,6 +1361,57 @@ In each case the marker count is high because the *subject* is an admit/reject g
 admission is paired with a matched rejection control in the same class. Counting markers finds
 candidates; only reading finds vacuity. A future sweep that ranks by density and then acts *without
 reading* would have rewritten seventeen correctly-scoped tests in these three files alone.
+
+[[mirror-finding]]
+=== The unguarded mirror -- a claim of lockstep that nothing checks
+
+Four of <<pro-forma-audit>>'s fourteen `strengthen` verdicts are the same defect wearing different
+clothes, and naming the pattern is worth more than the four rows:
+
+* `BodyLimitActivationWiringTest:96` copies `LargeBodyIT:105`'s body size;
+* `WsAdmissionActivationWiringTest:78` copies `WebSocketProxyIT:107`'s upgrade count;
+* `BffCookieActivationWiringTest:72` spells a variable name the overlay's own placeholder must match;
+* `TlsEdgeActivationWiringTest:291` asserts a `pom.xml` element exists rather than what it says.
+
+In each case a value is defined in one file, restated in another, and the restating file's Javadoc
+*claims the lockstep* -- "kept in lockstep with", "the variable the overlaid gateway.yaml resolves
+to", "LargeBodyIT's negative-case body size". Nothing compares the two. The tests are green whether
+the mirror is accurate or not, and each is green in a way that specifically disarms the guard it
+belongs to.
+
+The shape generalises past tests. `LogMessagesCatalogueTest` checks identifier uniqueness and band
+membership but never reconciles the declared records against `doc/LogMessages.adoc`, so those rows are
+a hand-maintained mirror with no comparison behind them either.
+
+*The corpus already contains the fix, twice, written for exactly this reason.*
+`BenchmarkRealmCredentialConsistencyTest` exists solely to compare the k6 script's credential literals
+against the realm import that provisions them, and its Javadoc says why the values are not generated:
+the coupling would be worse than the mirror, so the mirror stays and is *asserted*.
+`DescriptorInventoryWiringTest` does the same for a note, deriving its expectations from the document
+at run time rather than transcribing them. Both are proof that this is a solved problem here, which
+is what makes the four rows above defects rather than accepted trade-offs.
+
+`EgressVerifyActivationWiringTest:111-122` is the honest middle case: it carries two port literals it
+cannot derive, and its Javadoc names all three files that must agree and states plainly that none can
+check the others. The mirror is still unguarded; the difference is that a reader is told.
+
+[[cumulative-finding]]
+=== A per-request assertion cannot observe cumulative exhaustion
+
+`WebSocketProxyIT`'s class Javadoc records a failure this note's taxonomy would not have caught, and
+it belongs here because the taxonomy is defined over *single methods*. Seven tests were green while
+the relay leaked its admission permit on every connection. None of the seven was vacuous: each
+asserted a real status on a real handshake. The blindness was structural -- three leaked permits
+against a 2048-permit pool, with no assertion anywhere reading the pool.
+
+The rule it states is worth carrying: *detecting resource exhaustion needs an assertion of a
+different shape -- one made after N operations, and made about the gateway rather than about any
+single response.* An eighth per-request test would have left the leak equally invisible.
+
+That is a *sixth* way a green suite can be dishonest, and it is deliberately not shape (f). Shapes
+(a)--(e) classify a method against its own claim; this one is a property of a *set* of methods and has
+no per-method row to sit on. It is recorded as a finding rather than a taxonomy entry so the taxonomy
+keeps meaning one thing.
 
 === The `assertNotNull` companion pattern
 
@@ -859,7 +1472,16 @@ sets for fitness functions, applied to an ordinary unit test:
 * the assertion must be *capable of failing* on the behaviour the method's name claims;
 * it must not degrade to an always-passing form when the subject is renamed or moved;
 * where the claim is an *admission*, the strengthening either inspects the post-state directly or is
-  paired with a matched negative control that makes the admission attributable.
+  paired with a matched negative control that makes the admission attributable;
+* where the claim depends on a *client policy* -- a cookie budget, a cookie attribute, a certificate
+  chain -- the strengthening must either observe something the substitute client does enforce, or the
+  claim must be narrowed to what the gateway *emits*. See <<shape-e>>: strengthening an assert-block
+  that was already substantive does nothing for a defect that lives one level down.
 
 Inverting the asserted behaviour locally must turn the strengthened test red. A strengthening that
 survives its own inversion has not strengthened anything.
+
+*And the same standard applies to a `keep`.* Every `keep` verdict in this note names the thing that
+makes the admission attributable -- a matched control, a neutralised fixture, a narrow scope, or a
+fixture-level assertion elsewhere. A `keep` that names nothing is a `strengthen` that was not written
+down.

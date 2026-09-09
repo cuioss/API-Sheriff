@@ -98,13 +98,19 @@ to *run* the finished gateway).
 
 | link:test-corpus-integrity.adoc[Test-Corpus Integrity -- Assertions That Assert Nothing]
 | Which test methods carry assertions that cannot support the behaviour their names claim -- the
-  135-file / 1368-method declared surface (`@Test` union `@ParameterizedTest`, both counted), the
+  155-file / 1632-method declared surface (`@Test` union `@ParameterizedTest`, both counted), the
   `assertDoesNotThrow` / `assertNotNull` shape censuses with their complete-coverage evidence, the
-  four vacuity shapes and the three verdicts, the two selection gates that bound the strengthening
+  five vacuity shapes and the three verdicts, the two selection gates that bound the strengthening
   pool and every higher-density file they excluded, one verdict row per flagged method with a
-  `file:line` citation, and the standing backlog counted as 43 files carrying 140 marker occurrences.
-  Also records that marker density is a screen and not a verdict: three high-density files yielded
-  zero strengthenings.
+  `file:line` citation, and the standing backlog counted as 29 files carrying 87 marker occurrences,
+  now entirely inside `api-sheriff`. Carries a second, exhaustive pass over all 56 integration-lane
+  files -- 203 declared methods, 20 flagged, every file accounted for -- which is what added shape
+  (e), the permissive substitute client: assertions that are entirely substantive while the client
+  that produced the observation enforces none of the policy the claim rests on, the one shape no
+  marker census can rank. Also records that marker density is a screen and not a verdict (three
+  high-density files yielded zero strengthenings), that a marker census under-counts by construction
+  when the same assertion is spelled differently, and that a per-request assertion cannot observe
+  cumulative resource exhaustion however strong it is.
 
 | link:cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness -- What the Integration
   Lane Cannot Observe]
