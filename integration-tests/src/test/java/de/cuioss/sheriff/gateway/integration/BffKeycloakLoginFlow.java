@@ -16,8 +16,11 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -133,6 +136,26 @@ final class BffKeycloakLoginFlow {
 
     /** The refresh-suite test user's password. */
     static final String REFRESH_PASSWORD = "refresh-password";
+
+    /**
+     * The per-cookie byte budget a browser guarantees, as RFC 6265 §6.1 states it: at least 4096
+     * bytes measured over the cookie's name, value <em>and</em> attributes — that is, over the whole
+     * {@code Set-Cookie} header value, which is exactly what
+     * {@link #assertCookiesFitBrowserBudget(Response)} measures.
+     * <p>
+     * <strong>This is deliberately the test's own constant, not a value read from the product.</strong>
+     * It is neither {@code SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING} (8192, the
+     * validator's ceiling) nor {@code oidc.session.max_cookie_size} from any {@code gateway.yaml}.
+     * Both of those are numbers the gateway is <em>configured</em> with, and an assertion that read
+     * either would pass by construction for every configuration — including the configuration that
+     * caused this assertion to be written, where a 5123-byte seal (5200 bytes once emitted as a
+     * header) was admitted by raising the configured budget to 8192 and was then dropped silently
+     * by the browser. The browser does not
+     * read our configuration; 4096 is its number, so the test states it independently.
+     *
+     * @see #assertCookiesFitBrowserBudget(Response)
+     */
+    static final int BROWSER_COOKIE_BUDGET_BYTES = 4096;
 
     /** Matches the Keycloak username/password form's {@code login-actions/authenticate} action URL. */
     private static final Pattern FORM_ACTION =
@@ -280,6 +303,11 @@ final class BffKeycloakLoginFlow {
                 .then().statusCode(302).extract().response();
         gatewayCookies.putAll(callback.getCookies());
 
+        // The one seam every Bff*IT login funnels through, so the deliverability check belongs here
+        // rather than duplicated per suite: whatever the gateway just set on the browser has to be a
+        // cookie the browser would actually keep.
+        assertCookiesFitBrowserBudget(callback);
+
         return new Session(gatewayCookies, callback.getDetailedCookies());
     }
 
@@ -346,6 +374,59 @@ final class BffKeycloakLoginFlow {
             throw new IllegalStateException("expected a Location header on a redirect response");
         }
         return value;
+    }
+
+    /**
+     * Asserts that every {@code Set-Cookie} header the response emits fits the
+     * {@link #BROWSER_COOKIE_BUDGET_BYTES} browser budget.
+     * <p>
+     * <strong>Why this exists.</strong> This suite replays cookies from a {@link Map} it manages
+     * itself (see the class-level LIMITATION note), so it applies no cookie policy at all: an
+     * oversized {@code Set-Cookie} is recorded and replayed exactly like any other, and every
+     * downstream request succeeds. A real browser discards it silently — no error, no header, no
+     * signal — and the session simply never exists. That asymmetry is what let a session cookie of
+     * 5200 header bytes (a 5123-byte sealed value plus its name and attributes) ship green through
+     * nine cookie-mode integration tests against a session no browser could hold. Applying a full
+     * cookie policy to the jar would be the wider fix; asserting
+     * the size of what the gateway <em>emits</em> is the narrow one, and it is the leg that belongs
+     * on the pull request rather than in the browser lane.
+     * <p>
+     * <strong>What is measured.</strong> The whole {@code Set-Cookie} header value — name, value and
+     * attributes — because that is the quantity RFC 6265 §6.1 budgets. Measuring only the cookie
+     * value would understate every cookie by the length of its attributes, and the {@code __Host-}
+     * prefixed session cookie carries {@code Secure}, {@code HttpOnly}, {@code Path} and
+     * {@code SameSite}, so the understatement is not negligible.
+     * <p>
+     * The failure message names the offending cookie and its byte size but never its value: the
+     * session cookie's value is a sealed token and does not belong in a build log.
+     *
+     * @param response the response whose emitted {@code Set-Cookie} headers are checked — on the
+     *                 login path this is the callback response, the one that establishes the session
+     */
+    static void assertCookiesFitBrowserBudget(Response response) {
+        List<String> oversized = response.getHeaders().getValues("Set-Cookie").stream()
+                .filter(header -> byteLength(header) > BROWSER_COOKIE_BUDGET_BYTES)
+                .map(BffKeycloakLoginFlow::describeOversized)
+                .toList();
+        assertTrue(oversized.isEmpty(), () -> "the gateway emitted %d Set-Cookie header(s) larger than the %d-byte browser budget, which a browser drops silently: %s"
+                .formatted(oversized.size(), BROWSER_COOKIE_BUDGET_BYTES, String.join(", ", oversized)));
+    }
+
+    private static int byteLength(String headerValue) {
+        return headerValue.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    /**
+     * Renders an oversized {@code Set-Cookie} header as {@code name (N bytes)} — deliberately
+     * without the cookie value, which is a sealed session token.
+     *
+     * @param headerValue the offending {@code Set-Cookie} header value
+     * @return a log-safe description naming the cookie and its size
+     */
+    private static String describeOversized(String headerValue) {
+        int nameEnd = headerValue.indexOf('=');
+        String name = nameEnd < 0 ? "<unnamed>" : headerValue.substring(0, nameEnd);
+        return "%s (%d bytes)".formatted(name, byteLength(headerValue));
     }
 
     private static String extractFormAction(String html) {

@@ -39,6 +39,25 @@ seal-time guard -- `if (encoded.length() > maxCookieValueBytes)` at
 `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:211`
 -- no longer fired either.
 
+[IMPORTANT]
+.Two sizes are in play, and it matters which one the budget applies to
+====
+*5123 bytes is the sealed cookie value alone. 5200 bytes is the whole `Set-Cookie` header* -- and
+5200 is the figure the browser's budget actually governs, because RFC 6265 §6.1 budgets a cookie's
+name, value *and* attributes together rather than the value in isolation.
+
+The 77-byte difference is fully accounted for: 23 bytes of `+__Host-sheriff-session=+`, plus the
+attributes the codec always appends -- `+; Max-Age=…; Path=/; Secure; HttpOnly; SameSite=Lax+`
+(`SealedSessionCookieCodec.java:287-288`), 54 bytes with the four-digit `Max-Age` observed on this
+instance. So 5123 + 23 + 54 = 5200.
+
+Both figures exceed 4096, so nothing in the analysis below changes -- which is precisely why the
+distinction is easy to lose. It is recorded because the assertion this plan added measures the
+*header* and names 5200 in its failure message (`BffKeycloakLoginFlow.java`,
+`assertCookiesFitBrowserBudget`); a reader holding only 5123 would be left with two unexplained
+numbers. Throughout this note, "the sealed value" means 5123 and "the emitted header" means 5200.
+====
+
 Every one of the nine tests should have gone red the moment the payload crossed 4096. None did.
 
 [NOTE]
@@ -211,7 +230,8 @@ Storing the refresh token is what moved the payload. `CallbackEndpoint` now seed
 (`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java:239`, with
 the mechanism documented in the comment at `:231-238`), and in cookie mode the session is the cookie
 -- so access + ID + refresh seal to 5123 bytes on this instance
-(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164`). The same change
+(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164`), which the codec
+emits as a 5200-byte `Set-Cookie` header once the name and attributes are counted. The same change
 raised `max_cookie_size` to 8192 (`:171`), which is what kept the gateway's own guard quiet.
 
 So the suite became blind at one identifiable instant, without a line of test code being touched.
@@ -360,7 +380,8 @@ The rule that falls out of the analysis is a clean split by *enforcing party*, a
 stating as a rule because it decides where the next assertion goes.
 
 Belongs in the integration lane -- everything the gateway *decides and emits*::
-The presence, name and exact attribute set of each `Set-Cookie`; the *size* of the emitted value;
+The presence, name and exact attribute set of each `Set-Cookie`; the *size of the emitted header* --
+name, value and attributes together, the quantity RFC 6265 §6.1 budgets;
 status codes and redirect targets; the sealed wire format and its version gate; fail-closed rejection
 of a tampered or unauthenticatable value; two-instance portability. A programmatic client observes
 all of these faithfully, because they are facts about the response rather than about the client.
@@ -374,7 +395,7 @@ link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note] alre
 `:84-88`.
 
 The size assertion sits on the *first* side of that line, and that is the load-bearing consequence.
-The emitted `Set-Cookie` value's length is a fact about the gateway's own output, observable by any
+The emitted `Set-Cookie` header's length is a fact about the gateway's own output, observable by any
 client that can read a response header -- so it belongs on the pull request, in the integration lane,
 even though the *consequence* of exceeding it is browser-side. Nothing about the browser needs to be
 simulated to assert a number the gateway itself produced.
