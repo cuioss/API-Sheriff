@@ -288,6 +288,37 @@ public final class ConfigLogMessages {
                 .identifier(122)
                 .template("An operator-supplied default trust store is in effect. It REPLACES the platform trust bundle wholesale rather than being added to it, so every anchor the deployment did not put into that store stops being trusted — the public roots the platform shipped included. Legs holding a raw JDK TrustManager: %s. Legs resolving through the Quarkus TLS registry: %s. %s")
                 .build();
+
+        /**
+         * The gateway entered <em>no-certificate mode</em>: the deployment declares no server key
+         * material, so the <em>plain-HTTP degrade</em>
+         * ({@link de.cuioss.sheriff.gateway.config.PlainHttpDegradeConfigSourceFactory}) projected
+         * {@code quarkus.http.insecure-requests=enabled} and the boot proceeded.
+         * <p>
+         * What the degrade replaced is a hard boot refusal, not a misrouted request.
+         * {@code VertxHttpRecorder.initializeMainHttpServer} throws
+         * {@code IllegalStateException("Cannot set quarkus.http.insecure-requests without enabling
+         * SSL.")} in this state, upstream of the redirect path, so the gateway never started at all
+         * and no plain-HTTP request was ever redirected to a dead port. The record must therefore
+         * never claim to have prevented a redirect loop or a black-holed request — it states which
+         * mode is now live.
+         * <p>
+         * <strong>It reports the DECLARED view, and says so.</strong> A configuration source can
+         * only observe key material visible as configuration keys while the configuration system is
+         * being built; the {@code TlsConfigurationRegistry} does not exist yet.
+         * {@link #TERMINATED_LISTENER_PLAIN_HTTP} reports <em>resolved</em> key material and is the
+         * authoritative record wherever the two disagree, which is why this template names both
+         * terms rather than presenting the declared view as the whole truth.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal — that is the entire point of the seam. The
+         * template names the plain port and the three supply routes only; it carries no store path,
+         * no password and no anchor material.
+         */
+        public static final LogRecord TLS_DEGRADED_TO_PLAIN_HTTP = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(123)
+                .template("No-certificate mode: no server key material is DECLARED, so the plain-HTTP degrade projected quarkus.http.insecure-requests=enabled at ordinal 275 and the gateway serves plain HTTP on port %s instead of refusing to start. The degrade keys on DECLARED key material, which is all a configuration source can observe; ApiSheriff-121 keys on RESOLVED key material and is the authoritative report wherever the two disagree. Restore HTTPS by supplying key material through exactly one of quarkus.http.tls-configuration-name, a default quarkus.tls.key-store.* bucket, or quarkus.http.ssl.certificate.* — the material stays deployment-supplied and is never named in gateway.yaml (ADR-0025). A deployment-supplied QUARKUS_HTTP_INSECURE_REQUESTS still outranks the degrade")
+                .build();
     }
 
     /**

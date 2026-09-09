@@ -730,7 +730,27 @@ an undocumented exception would be a silent trim.
 | `quarkus.http.insecure-requests`
 | *deployment-bound*
 | *exception 2 -- retained*
-| Same class: a port/exposure knob the deployment owns, not TLS policy.
+| Same class: a port/exposure knob the deployment owns, not TLS policy. It stays declared in
+  `application.properties` as the shipped `redirect` default.
+  +
+  One further source reaches this key: the *no-certificate plain-HTTP degrade*, which projects
+  `enabled` at *ordinal 275* and only when the deployment declares no server key material by any of
+  the three routes (`quarkus.http.tls-configuration-name`, a default `quarkus.tls.key-store.*`
+  bucket, or `quarkus.http.ssl.certificate.*`). Without it that state does not serve plain HTTP at
+  all -- it refuses to boot.
+  +
+  275 sits strictly inside the band between `application.properties` (250) and the environment
+  source (300), and both bounds are load-bearing: above the properties file so the shipped `redirect`
+  can be overridden, and deliberately *below* the environment so a deployment's own
+  `QUARKUS_HTTP_INSECURE_REQUESTS` still wins. Outranking the deployment on a deployment-bound knob
+  is the operator surprise the ordinal rule exists to prevent, which is why this source sits below
+  the environment while the policy source sits above it.
+  +
+  The degrade keys on *declared* key material -- all a config source can observe while the
+  configuration system is still being built. The *resolved* view is reported by `ApiSheriff-121` and
+  is authoritative wherever the two disagree; the degrade reports itself as `ApiSheriff-123`. See the
+  third-seam amendment in
+  link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
 |===
 
 Certificate, key and trust *material* is deployment-bound by the same rule and is likewise never

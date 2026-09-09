@@ -7,8 +7,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Every server-TLS knob is classified as policy, deployment-bound, or build-time; policy is named neutrally in gateway.yaml and reaches the runtime through exactly two seams — an HttpServerOptionsCustomizer for the terminated listener and one single-ordinal, policy-keys-only ConfigSource for the management interface — while ports, certificate and trust material stay deployment-supplied and build-time knobs leave the runtime surface entirely.
-// tags: configuration-surface, tls, management-interface, layering, portability, config-source-ordinal, secure-by-default, framework-seam, build-time-config
+// summary: Every server-TLS knob is classified as policy, deployment-bound, or build-time; policy is named neutrally in gateway.yaml and reaches the runtime through an HttpServerOptionsCustomizer for the terminated listener and one single-ordinal, policy-keys-only ConfigSource for the management interface — while ports, certificate and trust material stay deployment-supplied and build-time knobs leave the runtime surface entirely. AMENDED: the original "exactly two seams" claim is superseded by a three-seam claim — a third, policy-free ConfigSourceFactory at ordinal 275 (below the environment source) enters the no-certificate plain-HTTP degrade, keyed on declared rather than resolved key material.
+// tags: configuration-surface, tls, management-interface, layering, portability, config-source-ordinal, secure-by-default, framework-seam, build-time-config, plain-http-degrade
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -249,6 +249,119 @@ or hands the still-encrypted stream on -- so it neither applies nor could apply 
 a passthrough hostname the backend's own TLS policy is the effective one, end to end. Scoping the
 policy to the terminated listener is therefore a statement of what the policy *can* mean, not a
 limitation that more code could lift.
+
+== Amendment: a third seam carries the no-certificate plain-HTTP degrade
+
+*This record is amended, not superseded. The three-way classification, the policy-keys-only
+constraint on the projecting source, the single-ordinal rule and the two-doors-onto-one-lever
+arrangement are all unchanged. What changes is a cardinality: the decision above states that policy
+reaches the runtime through* exactly two seams*, and that claim is superseded by a* three-seam
+*claim. The third seam projects no policy at all -- which is precisely what leaves every other part
+of this record standing. The record's title retains the original cardinality because it is the
+document's stable identifier; this section is the authoritative statement of the count.*
+
+=== Why a third seam exists at all
+
+A deployment that supplies no server key material for the terminated main listener does not merely
+serve plain HTTP -- it *fails to boot*. The runtime drops the SSL options when no key or certificate
+options survived the customizer hooks, and then refuses outright rather than starting a plain
+listener, because the shipped exposure strategy is not the permissive one. The failure is a
+framework-worded `IllegalStateException` naming a configuration key, raised from inside HTTP server
+start.
+
+That guard sits *upstream of both existing seams*, which is what forces a third one rather than
+making it a matter of taste:
+
+* An `HttpServerOptionsCustomizer` runs before the guard, but the exposure strategy is not one of
+  the values a customizer can reach -- it is computed earlier and passed in. A customizer could
+  avert the refusal only by *supplying key material*, which the no-certificate state by definition
+  does not have.
+* A startup observer -- the seam the effective-state audits use -- runs after HTTP server start, so
+  the refusal has already failed the boot before it could observe anything.
+
+The exposure strategy is a runtime key read from MicroProfile Config, so a higher-ordinal
+configuration source is the only remaining lever. The seam is therefore forced by the runtime's own
+call order, not chosen for symmetry with the other two.
+
+The seam is a config source *factory* rather than a bare source: only a factory receives a context
+from which other keys can be read while the configuration system is still being built, and reading
+the certificate keys is the entire discriminator. It logs nothing, for the same reason the policy
+source logs nothing -- a source is constructed before logging is safe. The degrade reports itself
+once at startup, from the audit's path, as `ApiSheriff-123`.
+
+=== What the third seam projects, and the band it must stay within
+
+Exactly one key, and only in the no-certificate state: the plain-HTTP exposure strategy, at
+*ordinal 275*. In every other state it contributes nothing, so the shipped secure default stands
+untouched and the degraded posture is expressed by presence rather than the secure one by absence.
+
+The ordinal is not free. It must sit *strictly inside the open band between the properties file
+(250) and the environment source (300)*: above the properties file, or the shipped default would win
+and the boot would still refuse; below the environment source, or a deployment's own exposure
+variable would be silently overridden. Any future re-ordinalling of this source is constrained to
+that band, and moving it outside the band changes the decision rather than tuning it.
+
+The discriminator is *declared key material* across the three routes a deployment can use: the
+named-TLS-configuration key, the default TLS registry bucket's key-store material, and the HTTP-SSL
+certificate keys. Declaring material by any one of them suppresses the projection entirely.
+
+=== Why it sits below the environment source, where the policy source sits above it
+
+The two placements look contradictory and are the same rule applied twice.
+
+The policy source may outrank the environment *because it projects policy keys only* -- the standing
+invariant stated above. The exposure strategy is not policy. It is classified *deployment-bound* by
+the three-way classification, and it is recorded as such in the per-key verdict table and in the
+contract test that pins the sanctioned exceptions: it is a port/exposure decision the deployment
+owns.
+
+Outranking the deployment on a deployment-bound knob is exactly the operator surprise the
+single-ordinal rule exists to prevent. The degrade source must therefore *lose* to the environment,
+and a deployment that sets the exposure strategy itself keeps the last word over the degrade. The
+inverse ordinals are the classification doing its job, not an exception to it.
+
+This is also why the third seam does not reopen the rejected second-source alternative above. That
+alternative proposed splitting *one* projection across two precedences so different keys in the same
+set could win differently -- a per-key precedence no operator could predict. Here there is no split:
+each source projects a disjoint key set of a single class, and each sits where its class says it
+belongs. Precedence remains statable in one sentence per source.
+
+=== The divergence it accepts: declared versus resolved key material
+
+The two existing seams and the degrade do not ask the same question, and the amendment records the
+gap rather than hiding it.
+
+* *Declared key material* -- key material visible as configuration keys while the configuration
+  system is being built. It is all a config source can observe, because the TLS registry is a CDI
+  bean that does not exist yet. It is the degrade's discriminator.
+* *Resolved key material* -- the key material the registry actually produced for the listener, which
+  is the same question the recorder asks when it chooses between the SSL and the plain options. It
+  is the audits' discriminator, and it is the authoritative one.
+
+The two can disagree in both directions: a declared path that resolves to no usable key, or a
+customizer that supplies material the configuration never declared. The divergence is accepted
+rather than engineered away, because closing it would require the degrade to observe a registry that
+does not exist at the only moment it can act. It is bounded and observable rather than silent: the
+main-listener audit reports the resolved state, says in its own text that it is the authoritative
+report where the two disagree, and the degrade's own record names both terms rather than presenting
+the declared view as the whole truth.
+
+This is consistent with the audit ruling above -- an audit keyed on a configuration key reports a
+comfortable fiction -- and does not weaken it. The audits are still keyed on observed effective
+state. It is the *degrade*, a boot-time actuator rather than an audit, that necessarily keys on the
+declared view, and the record that reports it says so.
+
+=== What is unchanged
+
+* The three-way classification, and every disposition it assigns.
+* The policy-keys-only constraint on the projecting policy source: it still projects never a port,
+  never trust material, never key material, and this amendment adds nothing to its projected set.
+  The degrade lives in a *separate* source; the policy source's cardinality and contents are
+  untouched.
+* The hard prohibition on projecting key material into the default TLS registry bucket. The degrade
+  *reads* that bucket to decide; it writes nothing to it, and it projects no material anywhere.
+* The management interface's default, its opt-out, and the two-doors arrangement.
+* The deployment-bound status of every port, including the one the degraded listener serves on.
 
 == Consequences
 

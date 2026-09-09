@@ -48,7 +48,7 @@ WORKDIR /app
 # Copy pre-built native executable
 COPY --chmod=0755 target/*-runner /app/application
 
-EXPOSE 8443 9000
+EXPOSE 8080 8443 9000
 
 # Exec (JSON) form is required, not a style preference: this base carries no executable other than
 # /app/application, so the shell form — and every Compose `healthcheck.test` string form, which
