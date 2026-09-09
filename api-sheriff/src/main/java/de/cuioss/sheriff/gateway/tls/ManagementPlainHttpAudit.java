@@ -122,11 +122,8 @@ public class ManagementPlainHttpAudit {
      * @return {@code true} when the management interface resolved to plain HTTP
      */
     public boolean auditManagementTls() {
-        // The nullable field is re-wrapped at this single call site rather than being stored or
-        // propagated as an Optional; the shared discriminator takes the Optional the recorder's own
-        // helper takes.
         boolean plain = ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                Optional.ofNullable(tlsConfigurationName), managementCertificateConfigured);
+                tlsConfigurationName, managementCertificateConfigured);
         if (plain) {
             LOGGER.warn(ConfigLogMessages.WARN.MANAGEMENT_PLAIN_HTTP, managementPort);
         } else {

@@ -151,7 +151,7 @@ public class TerminatedListenerTlsAudit {
      */
     public boolean auditTerminatedListenerTls() {
         boolean plain = ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
-                Optional.ofNullable(tlsConfigurationName), certificateConfigured);
+                tlsConfigurationName, certificateConfigured);
         String topology = resolveTopology();
         if (plain) {
             LOGGER.warn(ConfigLogMessages.WARN.TERMINATED_LISTENER_PLAIN_HTTP, httpPort, topology);

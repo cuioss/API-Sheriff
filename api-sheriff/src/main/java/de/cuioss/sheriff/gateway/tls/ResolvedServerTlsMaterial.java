@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.tls;
 import java.util.Objects;
 import java.util.Optional;
 
+import org.jspecify.annotations.Nullable;
 
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
@@ -84,19 +85,18 @@ final class ResolvedServerTlsMaterial {
      *
      * @param registry              the live TLS registry, resolved exactly as the recorder resolves
      *                              it
-     * @param tlsConfigurationName  the selected named TLS bucket, empty when the deployment selects
-     *                              none
+     * @param tlsConfigurationName  the selected named TLS bucket, {@code null} when the deployment
+     *                              selects none
      * @param certificateConfigured whether the listener's legacy {@code ssl.certificate.*} block
      *                              supplies a certificate chain
      * @return {@code true} when no key material reaches the listener, so it serves plain HTTP
      */
     static boolean resolvesToPlainHttp(TlsConfigurationRegistry registry,
-            Optional<String> tlsConfigurationName, boolean certificateConfigured) {
+            @Nullable String tlsConfigurationName, boolean certificateConfigured) {
         Objects.requireNonNull(registry, "registry");
-        Objects.requireNonNull(tlsConfigurationName, "tlsConfigurationName");
 
-        if (tlsConfigurationName.isPresent()) {
-            Optional<TlsConfiguration> named = registry.get(tlsConfigurationName.get());
+        if (tlsConfigurationName != null) {
+            Optional<TlsConfiguration> named = registry.get(tlsConfigurationName);
             return named.isEmpty() || named.get().getKeyStoreOptions() == null;
         }
         if (defaultBucketCarriesKeyMaterial(registry)) {
