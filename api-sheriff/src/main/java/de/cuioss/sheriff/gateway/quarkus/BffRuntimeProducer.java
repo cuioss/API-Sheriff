@@ -267,37 +267,28 @@ public class BffRuntimeProducer {
         LoginFlow loginFlow = new LoginFlow(() -> authorizationCodeFlow.authorize(metadata.get()),
                 pendingStore, bindingCookieCodec, gatewayOrigin);
 
-        // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation.
-        // The engine returns the refresh token alongside the validated tokens and CallbackEndpoint
-        // seeds it into the SessionRecord, which is what makes the session refreshable: without it
-        // TokenRefreshCoordinator.refresh returns on its first guard and the near-expiry refresh
-        // silently never runs. When refresh is switched off the seam drops it HERE rather than
-        // letting it be stored and ignored — a credential the gateway will never redeem is not
-        // written to the session store, and in cookie mode is never sealed into the browser cookie.
-        CallbackEndpoint.CodeExchange codeExchange = (context, params) -> {
-            AuthorizationCodeFlow.AuthenticationResult exchanged = authorizationCodeFlow.exchange(
-                    metadata.get(), context, params, clientAuthentication);
-            return refreshEnabled
-                    ? exchanged
-                    : new AuthorizationCodeFlow.AuthenticationResult(exchanged.accessToken(),
-                    exchanged.idToken(), null);
-        };
+        // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
+        // then hands the result to the refresh policy, which is where the exchange's refresh token is
+        // retained or dropped. See applyRefreshPolicy for why the drop happens at login rather than
+        // at storage time.
+        CallbackEndpoint.CodeExchange codeExchange = (context, params) -> applyRefreshPolicy(
+                authorizationCodeFlow.exchange(metadata.get(), context, params, clientAuthentication),
+                refreshEnabled);
         CallbackEndpoint callbackEndpoint = new CallbackEndpoint(codeExchange, pendingStore, bindingCookieCodec,
                 sessionBinding, sessionTtl);
 
         // D7/D9 transparent refresh — near-expiry decision + engine RefreshFlow, session persistence.
         // Assembled ONLY when refresh.enabled: with the switch off no coordinator exists and the
-        // stage's refresh seam degrades to the unwired binding SessionAuthenticationStage.TokenRefresh
-        // documents (session unchanged, no cookies), so the gateway mediates the current token
-        // verbatim until the session's absolute TTL expires.
+        // stage's refresh seam degrades to sessionUnchanged() — the unwired binding
+        // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies) — so the
+        // gateway mediates the current token verbatim until the session's absolute TTL expires.
         SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
                 ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
                 sessionBinding))
-                : (sessionRecord, cookieHeader, now) ->
-                Optional.of(new SessionBinding.BoundSession(sessionRecord, List.of()));
+                : sessionUnchanged();
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
@@ -376,7 +367,7 @@ public class BffRuntimeProducer {
      * @param coordinator the assembled near-expiry refresh coordinator
      * @return the stage seam driving {@code coordinator}
      */
-    private static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
+    static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
         return (sessionRecord, cookieHeader, now) -> {
             TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
             if (outcome.isFailure()) {
@@ -386,6 +377,43 @@ public class BffRuntimeProducer {
                     Objects.requireNonNullElse(outcome.session(), sessionRecord),
                     outcome.setCookieHeaders()));
         };
+    }
+
+    /**
+     * The disabled binding of the same seam — the alternative {@link #nearExpiryRefresh} adapts to.
+     * With {@code oidc.session.refresh.enabled=false} no coordinator exists, so the seam yields the
+     * resolved session verbatim and produces no {@code Set-Cookie}: the gateway keeps mediating the
+     * token it was issued at login until the absolute session TTL expires, and never reaches the
+     * engine's refresh grant.
+     *
+     * @return the unwired stage seam
+     */
+    static SessionAuthenticationStage.TokenRefresh sessionUnchanged() {
+        return (sessionRecord, cookieHeader, now) ->
+                Optional.of(new SessionBinding.BoundSession(sessionRecord, List.of()));
+    }
+
+    /**
+     * Applies {@code oidc.session.refresh.enabled} to a completed code exchange.
+     * <p>
+     * The engine returns the refresh token alongside the validated tokens and {@link CallbackEndpoint}
+     * seeds it into the {@code SessionRecord}, which is what makes the session refreshable: without it
+     * {@link TokenRefreshCoordinator#refresh} returns on its first guard and the near-expiry refresh
+     * silently never runs. When refresh is switched off the token is therefore dropped <em>here</em>,
+     * rather than being stored and ignored — a credential the gateway will never redeem is not written
+     * to the session store, and in cookie mode is never sealed into the browser cookie.
+     *
+     * @param exchanged      the engine's authentication result for the completed exchange
+     * @param refreshEnabled the resolved {@code oidc.session.refresh.enabled}
+     * @return {@code exchanged} unchanged when refresh is on, otherwise a copy carrying the same
+     *         validated access and ID tokens and no refresh token
+     */
+    static AuthorizationCodeFlow.AuthenticationResult applyRefreshPolicy(
+            AuthorizationCodeFlow.AuthenticationResult exchanged, boolean refreshEnabled) {
+        if (refreshEnabled) {
+            return exchanged;
+        }
+        return new AuthorizationCodeFlow.AuthenticationResult(exchanged.accessToken(), exchanged.idToken(), null);
     }
 
     /**

@@ -20,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,21 +38,38 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
+import de.cuioss.sheriff.token.client.token.RotationResult;
+import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
+import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
+import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -74,6 +93,13 @@ class BffRuntimeProducerTest {
     private static final String ORIGIN = "https://gw.example.com";
     private static final String REDIRECT_URI = ORIGIN + "/auth/callback";
     private static final String ISSUER = "https://idp.example.com";
+    private static final String SUBJECT = "session-subject";
+    /**
+     * Deliberately a fixed literal, not generated: the rotated-session assertion's whole content is
+     * that the mediated token is <em>this</em> value rather than the pre-refresh one the session was
+     * built with, so the two must be distinguishable by construction.
+     */
+    private static final String ROTATED_ACCESS_TOKEN = "rotated-access-token";
 
     private final TokenValidator tokenValidator = TokenValidator.builder()
             .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
@@ -392,6 +418,214 @@ class BffRuntimeProducerTest {
                 .session(session)
                 .login(OidcConfig.Login.builder().path("/auth/login").build())
                 .build();
+    }
+
+    /**
+     * The switch's two <em>decisions</em>, as opposed to the wiring {@link RefreshSwitch} asserts.
+     * <p>
+     * {@code RefreshSwitch} can only see that a coordinator is or is not present in the object graph;
+     * it cannot see what the seams built around it actually do, because the producer holds them as
+     * lambdas that no assembled-runtime test can invoke without a live IdP. The three seams are
+     * therefore extracted to package-private factories and driven here directly — with a real
+     * store-backed binding and hand-built engine objects, no live token endpoint and no test-double
+     * framework, exactly as {@code TokenRefreshCoordinatorTest} drives the coordinator itself.
+     * <p>
+     * Two of the decisions below are security-relevant rather than cosmetic: dropping the refresh
+     * token at login when refresh is off keeps a credential the gateway will never redeem out of the
+     * session store (and out of the sealed browser cookie in cookie mode), and mapping a
+     * {@code FAILED} refresh to {@link Optional#empty()} is what stops the stage mediating the
+     * pre-refresh token of a session the engine just revoked.
+     */
+    @Nested
+    @DisplayName("Refresh seams — the decisions the assembly's lambdas carry")
+    class RefreshSeams {
+
+        private static final Instant NOW = Instant.parse("2026-07-25T10:00:00Z");
+        private static final Duration LEEWAY = Duration.ofSeconds(60);
+        private static final Duration SESSION_TTL = Duration.ofHours(8);
+
+        private final InMemorySessionStore store = new InMemorySessionStore(16);
+        private final SessionBinding binding = new ServerSessionBinding(store,
+                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
+
+        @Test
+        @DisplayName("Should hand the engine's exchange through untouched when refresh is enabled")
+        void shouldRetainRefreshTokenWhenEnabled() {
+            String refreshToken = token();
+            AuthorizationCodeFlow.AuthenticationResult exchanged = authenticationResult(refreshToken);
+
+            AuthorizationCodeFlow.AuthenticationResult applied =
+                    BffRuntimeProducer.applyRefreshPolicy(exchanged, true);
+
+            assertSame(exchanged, applied, "an enabled refresh must not rebuild the engine's result");
+            assertEquals(refreshToken, applied.refreshToken(),
+                    "the refresh token is what CallbackEndpoint seeds into the session — without it "
+                            + "TokenRefreshCoordinator.refresh returns on its first guard");
+        }
+
+        @Test
+        @DisplayName("Should drop the refresh token at login when refresh is disabled, keeping both other tokens")
+        void shouldDropRefreshTokenWhenDisabled() {
+            AuthorizationCodeFlow.AuthenticationResult exchanged = authenticationResult(token());
+
+            AuthorizationCodeFlow.AuthenticationResult applied =
+                    BffRuntimeProducer.applyRefreshPolicy(exchanged, false);
+
+            assertAll("a credential the gateway will never redeem never reaches the session binding",
+                    () -> assertNull(applied.refreshToken(),
+                            "the refresh token must be dropped here, not stored and ignored"),
+                    () -> assertSame(exchanged.accessToken(), applied.accessToken(),
+                            "the validated access token is carried over untouched"),
+                    () -> assertSame(exchanged.idToken(), applied.idToken(),
+                            "the validated ID token is carried over untouched"));
+        }
+
+        @Test
+        @DisplayName("Should yield the session unchanged and no cookies on the disabled refresh seam")
+        void shouldYieldSessionUnchangedWhenRefreshDisabled() {
+            SessionRecord live = session(token());
+
+            Optional<SessionBinding.BoundSession> bound =
+                    BffRuntimeProducer.sessionUnchanged().refreshIfNeeded(live, null, NOW);
+
+            assertTrue(bound.isPresent(),
+                    "turning refresh off is a policy choice — it must not make a live session unauthenticated");
+            assertAll("the gateway mediates the token it was issued until the absolute TTL expires",
+                    () -> assertSame(live, bound.orElseThrow().session(),
+                            "the resolved session is handed back verbatim"),
+                    () -> assertTrue(bound.orElseThrow().setCookieHeaders().isEmpty(),
+                            "an unwired seam re-binds nothing, so it emits no Set-Cookie"));
+        }
+
+        @Test
+        @DisplayName("Should hand back the current session when the mediated token is not near expiry")
+        void shouldYieldCurrentSessionWhenNotNearExpiry() {
+            SessionRecord live = storedSession(token());
+            AtomicInteger engineCalls = new AtomicInteger();
+
+            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer
+                    .nearExpiryRefresh(coordinator(NOW.plusSeconds(600), engineCalls))
+                    .refreshIfNeeded(live, cookieHeader(live), NOW);
+
+            assertTrue(bound.isPresent());
+            assertSame(live, bound.orElseThrow().session());
+            assertEquals(0, engineCalls.get(), "a token outside the leeway must not reach the engine");
+        }
+
+        /**
+         * The null-refresh-token short circuit sits in {@code TokenRefreshCoordinator.refresh}
+         * <em>before</em> the near-expiry check, so a session seeded without a refresh token never
+         * refreshes however close to expiry its token is — and the seam reports that as an ordinary
+         * authenticated request, which is precisely why the defect this plan was written for was
+         * silent. Pinning it here keeps the two halves of the switch honest: whenever the exchange
+         * seam drops the token, this is the behaviour the session is left with.
+         */
+        @Test
+        @DisplayName("Should never reach the engine when the session carries no refresh token")
+        void shouldShortCircuitWithoutRefreshToken() {
+            SessionRecord live = storedSession(null);
+            AtomicInteger engineCalls = new AtomicInteger();
+
+            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer
+                    .nearExpiryRefresh(coordinator(NOW, engineCalls))
+                    .refreshIfNeeded(live, cookieHeader(live), NOW);
+
+            assertTrue(bound.isPresent(), "a session with no refresh token is still authenticated");
+            assertSame(live, bound.orElseThrow().session());
+            assertEquals(0, engineCalls.get(),
+                    "no refresh token means no refresh at all — silently, and regardless of expiry");
+        }
+
+        @Test
+        @DisplayName("Should carry the rotated session through the seam when the engine refreshes")
+        void shouldYieldRotatedSession() {
+            SessionRecord live = storedSession(token());
+            AtomicInteger engineCalls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NOW, engineCalls);
+
+            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer.nearExpiryRefresh(coordinator)
+                    .refreshIfNeeded(live, cookieHeader(live), NOW);
+
+            assertTrue(bound.isPresent());
+            assertEquals(1, engineCalls.get(), "a token inside the leeway drives exactly one engine refresh");
+            assertEquals(ROTATED_ACCESS_TOKEN, bound.orElseThrow().session().accessToken(),
+                    "the stage must mediate from the rotated token, never the pre-refresh one");
+        }
+
+        @Test
+        @DisplayName("Should signal unauthenticated when the refresh failed and the session was destroyed")
+        void shouldYieldEmptyOnRefreshFailure() {
+            SessionRecord live = storedSession(token());
+            TokenRefreshCoordinator rejecting = new TokenRefreshCoordinator(LEEWAY, sessionRecord -> NOW,
+                    refreshToken -> {
+                        throw new ClientProtocolException("token endpoint rejected the refresh grant");
+                    },
+                    binding);
+
+            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer.nearExpiryRefresh(rejecting)
+                    .refreshIfNeeded(live, cookieHeader(live), NOW);
+
+            assertTrue(bound.isEmpty(),
+                    "a FAILED outcome must reach the stage as empty so it re-drives the unauthenticated "
+                            + "negotiation, rather than mediating the token of a session just revoked");
+        }
+
+        private TokenRefreshCoordinator coordinator(Instant accessTokenExpiry, AtomicInteger engineCalls) {
+            return new TokenRefreshCoordinator(LEEWAY, sessionRecord -> accessTokenExpiry,
+                    refreshToken -> {
+                        engineCalls.incrementAndGet();
+                        return rotation();
+                    },
+                    binding);
+        }
+
+        private SessionRecord storedSession(@Nullable String refreshToken) {
+            SessionRecord live = session(refreshToken);
+            store.create(live, NOW);
+            return live;
+        }
+
+        private static String cookieHeader(SessionRecord live) {
+            return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + live.sessionId();
+        }
+
+        private static SessionRecord session(@Nullable String refreshToken) {
+            return SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(token())
+                    .refreshToken(refreshToken)
+                    .idToken(token())
+                    .sub(SUBJECT)
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .build();
+        }
+
+        private static AuthorizationCodeFlow.AuthenticationResult authenticationResult(String refreshToken) {
+            Map<String, ClaimValue> accessClaims = new HashMap<>();
+            accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+            Map<String, ClaimValue> idClaims = new HashMap<>();
+            idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+            return new AuthorizationCodeFlow.AuthenticationResult(new AccessTokenContent(accessClaims, token()),
+                    new IdTokenContent(idClaims, token()), refreshToken);
+        }
+
+        /**
+         * The rotation the engine seam returns. {@code grantedScope} is {@code null} and
+         * {@code scopeDelta} {@code UNDECLARED} — the "the IdP declared no scope on the refresh
+         * response" pair — because nothing on the path under test reads either component; picking
+         * {@code EQUAL} would assert a scope comparison this fixture never performs.
+         */
+        private static RotationResult rotation() {
+            Map<String, ClaimValue> claims = new HashMap<>();
+            claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+            return new RotationResult(new AccessTokenContent(claims, ROTATED_ACCESS_TOKEN), token(), token(),
+                    300L, true, null, RotationResult.ScopeDelta.UNDECLARED);
+        }
+    }
+
+    /** Opaque token material — no production code under test parses it, so any non-blank value serves. */
+    private static String token() {
+        return Generators.letterStrings(16, 32).next();
     }
 
     @Nested
