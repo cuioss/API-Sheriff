@@ -760,6 +760,86 @@ link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_b
 do. The full operator-facing split of what stays deployment-bound versus what `gateway.yaml` owns is
 in link:user/environment-variable-overrides.adoc[Environment-variable overrides].
 
+[[_default_trust_store_replaces]]
+==== Supplying a default trust store REPLACES the platform bundle
+
+*Read this before supplying trust material of any kind: a default trust store substitutes for the
+platform trust bundle wholesale, it is never added to it.* The moment
+`-Djavax.net.ssl.trustStore` names a store, every anchor that store does not contain stops being
+trusted -- the public roots the platform shipped included. An operator who builds a store holding
+only their private certificate authority has not "added a CA"; they have removed every other one.
+The failure does not surface as a configuration error. It surfaces much later, as an opaque
+handshake rejection against some perfectly ordinary public endpoint that used to work, which is why
+the hazard is stated here first rather than after the recipe.
+
+The same replacement rule governs the registry-side lever
+(`QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH`), and the two levers are *independent*: moving only one
+leaves the other half of the gateway's outbound surface on the platform bundle. That split state is
+exactly the one an operator would never think to check, so the gateway reports it -- see the boot
+records below.
+
+===== Why the native, distroless image has no other route
+
+The published image is a GraalVM native executable on a *distroless* base: no shell, no package
+manager, and therefore no `update-ca-trust` and no writable system anchor directory to drop a PEM
+into. The trust material a native image carries is captured *at build time*; nothing at container
+start extends it.
+
+That leaves exactly *one supported runtime route*, and it is the JDK's own triple, passed as
+command-line `-D` arguments to the native runner:
+
+[source,yaml]
+----
+command:
+  - -Djavax.net.ssl.trustStore=/app/certificates/gateway-truststore.p12
+  - -Djavax.net.ssl.trustStorePassword=<password>
+  - -Djavax.net.ssl.trustStoreType=PKCS12
+----
+
+The image's `ENTRYPOINT` is exec-form with no `CMD`, so a Compose `command:` list *appends* to it as
+runtime `-D` arguments rather than replacing the entrypoint.
+
+*`JAVA_TOOL_OPTIONS` does not work here, and this is the single most common way the route is missed.*
+A native executable is not a JVM launch: it never reads that variable, so a trust store supplied
+through it is silently ignored and the dial fails exactly as if nothing had been configured. The
+`-D` arguments on the runner's own command line are what a GraalVM/Mandrel native image honours for
+the default `TrustManager`.
+
+===== Keeping the public roots while adding a private CA
+
+Because the store replaces rather than extends, a deployment that needs *both* a private CA and the
+public roots must build a store that contains both -- there is no configuration that composes them.
+Start from the JDK's own bundle and import the private anchor into a copy of it:
+
+[source,bash]
+----
+# 1. Start from the platform bundle rather than from an empty store.
+keytool -importkeystore \
+  -srckeystore  "$JAVA_HOME/lib/security/cacerts" -srcstorepass changeit -srcstoretype PKCS12 \
+  -destkeystore gateway-truststore.p12          -deststorepass "$PW" -deststoretype PKCS12
+
+# 2. Add the private CA to that copy.
+keytool -importcert -noprompt -alias private-ca -file private-ca.crt \
+  -keystore gateway-truststore.p12 -storepass "$PW" -storetype PKCS12
+----
+
+Mount the result and point the triple above at it. A store built by step 2 *alone* is the replacement
+hazard in its most common shape: it works against the private CA and breaks every public endpoint the
+gateway dials.
+
+===== What the boot log tells you
+
+The effective trust source is reported at startup rather than left to be inferred. `ApiSheriff-17`
+names, for both tiers, which store is actually in force -- the legs holding a raw JDK `TrustManager`
+and the legs resolving through the Quarkus TLS registry -- and `ApiSheriff-122` fires alongside it
+whenever an operator-supplied store is in effect on either tier, stating the replacement hazard and
+naming which half of the surface was left behind when the two disagree. Read those two lines after
+any trust change; they are the check that the store you built is the store the gateway is using.
+
+Two further legs are governed by their own keys and are *not* what these records describe: see
+link:#_egress_tls_hostname_scope[`upstream_verify_hostname`] and its `ApiSheriff-119`, and
+link:#_jwks_verify_hostname_reads_nothing_today[`jwks_verify_hostname`] and its `ApiSheriff-120`.
+
 [[_egress_tls]]
 === `egress_tls`
 
@@ -881,7 +961,10 @@ The two keys are limited in *opposite directions*, and the difference is what an
   and leaves the asset leg on the JVM default trust store. An operator serving assets from an origin
   behind a private CA therefore sees that fetch *fail closed* (a `502` and a chain-validation error),
   not succeed unverified. The answer is to bind those anchors into the JVM trust store the container
-  runs with; naming them in `upstream_tls_profile` will not reach the asset fetch.
+  runs with -- following
+  link:#_default_trust_store_replaces[Supplying a default trust store REPLACES the platform bundle],
+  because that store substitutes for the public roots rather than adding to them; naming them in
+  `upstream_tls_profile` will not reach the asset fetch.
 
 Both directions are stated because the alarming reading -- "a leg the security knob misses" -- is the
 wrong one. Nothing here is silently unverified; one leg is simply not configurable from this block.
@@ -1029,7 +1112,12 @@ key itself: the flag is *global* and the profile is *per issuer*, so turning the
 for every `http`-sourced issuer naming a profile, not only the one that motivated the relaxation. An operator whose
 IdP needs *both* private-CA anchors and a relaxed hostname check has no supported combination; the
 answer is to fix the certificate's names, or to bind those anchors into the JVM default trust store
-the container runs with and drop the profile for that issuer.
+the container runs with and drop the profile for that issuer. That second answer is not a one-liner
+and it carries a hazard of its own -- the store *replaces* the platform bundle rather than extending
+it, and on the native, distroless image there is exactly one route that delivers it. Follow
+link:#_default_trust_store_replaces[Supplying a default trust store REPLACES the platform bundle]
+rather than improvising a store, or the IdP starts working and every public endpoint the gateway
+dials stops.
 
 An operator who needs the JWKS back-channel to reach an IdP behind an internal CA -- and whose
 certificate names the dialled host correctly -- keeps using `jwks.tls_profile` and leaves this key

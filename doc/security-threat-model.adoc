@@ -661,6 +661,53 @@ is explicit that an upstream security posture is adopted and documented rather t
 on. Closing it means binding the posture at the `BffRuntimeProducer` construction site and asserting
 it -- a behavioural change on the authentication back-channel, so it is recorded, not scheduled.
 
+*Threat -- trust-root REPLACEMENT of the default store.* Every entry above asks whether a dial
+verifies. This one asks a prior question: *which anchors is it verifying against, and what stopped
+being trusted when the deployment supplied them.* Both levers that set the gateway's default trust --
+the JDK's `-Djavax.net.ssl.trustStore` triple and the Quarkus TLS registry's default trust bucket --
+*substitute for the platform trust bundle wholesale rather than adding to it*. An operator who
+supplies a store holding only their private certificate authority has silently stopped trusting every
+public root the platform shipped. The failure mode is what makes it a threat rather than a
+misconfiguration: nothing refuses at boot, and the loss surfaces later as an opaque handshake
+rejection against an endpoint that used to work -- so the natural reading is "that endpoint broke",
+not "we removed its anchor". The reverse direction is the security-relevant one and is worse,
+because it is silent in both directions: a store assembled from the platform bundle *plus* an
+attacker-influenced anchor widens what every terminated-egress leg accepts, with no key in
+`gateway.yaml` recording that it happened. The two levers are also *independent*, so moving one and
+not the other leaves half the outbound surface on the platform bundle and half on the supplied store
+-- a split posture no single configuration file states.
+
+*Control.* Report the effective store at boot rather than requiring it to be derived, and document
+the one supported route with the replacement hazard stated before the recipe.
+
+*Status:* DELIVERED as a reporting-and-documentation control, and it is worth being exact about what
+that does and does not buy. `ApiSheriff-17` names, per tier, the trust source actually in force --
+the legs holding a raw JDK `TrustManager` and the legs resolving through the Quarkus TLS registry --
+and `ApiSheriff-122` fires alongside it whenever an operator-supplied store is in effect on either
+tier, stating the replacement hazard and naming which half was left behind when the two tiers
+disagree. The split-posture case is therefore reported in the one place an operator could not have
+computed it from. Neither record carries a password, an alias or any anchor material. The operator
+recipe -- including that the native, distroless image has no `update-ca-trust`, that the JDK triple
+must arrive as command-line `-D` arguments, that `JAVA_TOOL_OPTIONS` is not honoured by a native
+runner, and how to build a store that keeps the public roots *and* adds a private CA -- is in
+link:configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+platform bundle].
+
+*Assertion.* A boot with no operator-supplied store reports the platform bundle on both tiers and
+emits no `ApiSheriff-122`; a boot with a store on either tier emits it, and a boot where the two
+tiers disagree says which half stayed on the platform bundle.
+
+*Residual risk (accepted) -- the two tiers are independently settable.* The control reports the
+posture; it does not constrain it. Nothing refuses a deployment that moves one lever and not the
+other, and nothing inspects what is *inside* the supplied store -- a store missing the public roots,
+or carrying an anchor it should not, boots exactly like a correct one. This is accepted rather than
+closed because both levers are deployment-bound by
+link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
+and refusing a legitimate single-tier deployment would be wrong; the gateway cannot know which
+anchors a deployment *intended*. What bounds the exposure is that the state is no longer silent: the
+divergence is named in the boot log by the record that exists for this hazard, so it is observable at
+the moment it is introduced rather than at the moment it breaks something.
+
 [#gw-07]
 === GW-07 -- Slowloris / connection & body-size exhaustion / decompression bombs
 
