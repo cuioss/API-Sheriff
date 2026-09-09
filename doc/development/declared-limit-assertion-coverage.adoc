@@ -262,7 +262,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `PipelineVerbIT` (405 plus four positive controls)
 
 | `oidc.session.csrf.trusted_origins`
-  `gateway.yaml` ×4 -- base:295, cookie:174, mtls:156, ws:135
+  `gateway.yaml` ×4 -- base:295, cookie:177, mtls:156, ws:135
 | BFF CSRF origin gate
 | COVERED
 | `BffCsrfIT` (403 / 403 with a 401 control)
@@ -312,7 +312,7 @@ declaration's *existence* is proven while its *boundary* is not.
   built-in; no served-asset content type is asserted at runtime
 
 | `oidc.session.refresh.leeway_seconds: 30`
-  `gateway.yaml` ×4 -- base:293, cookie:172, mtls:154, ws:133
+  `gateway.yaml` ×4 -- base:293, cookie:175, mtls:154, ws:133
 | Session refresh scheduling
 | COVERED
 | `BffTokenRefreshIT` on the dedicated `api-sheriff-refresh` instance -- the only place the boundary
@@ -431,7 +431,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | none
 
 | *G10* `oidc.user_info.allowed_claims`
-  `gateway.yaml` ×4 -- base:298, cookie:177, mtls:159, ws:138
+  `gateway.yaml` ×4 -- base:298, cookie:180, mtls:159, ws:138
 | user_info claim projection
 | PARTIAL
 | `BffUserInfoIT` asserts the `default_view` projection; no negative leg proves a claim *outside*

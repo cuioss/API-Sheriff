@@ -1336,7 +1336,7 @@ same census the derivation above uses.
 | `quarkus/SheriffMetricsTest.java`                  | 0 | 7 | *named gate-2 exclusion*
 | `testsupport/AwaitsTest.java`                      | 4 | 0 | *new since `ec6f7e4`*
 | `tls/MtlsServerCustomizerTest.java`                | 0 | 2 |
-| *Total*                                            | *36* | *51* |
+| *Total*                                            | *38* | *49* |
 |===
 
 Five rows are marked new: they are files that did not carry a marker at `ec6f7e4` and do at
