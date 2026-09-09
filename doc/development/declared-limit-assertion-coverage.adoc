@@ -252,7 +252,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `PipelineVerbIT` (405 plus four positive controls)
 
 | `oidc.session.csrf.trusted_origins`
-  `gateway.yaml` ×4 -- base:295, cookie:163, mtls:156, ws:135
+  `gateway.yaml` ×4 -- base:295, cookie:176, mtls:156, ws:135
 | BFF CSRF origin gate
 | COVERED
 | `BffCsrfIT` (403 / 403 with a 401 control)
@@ -302,15 +302,39 @@ declaration's *existence* is proven while its *boundary* is not.
   built-in; no served-asset content type is asserted at runtime
 
 | `oidc.session.refresh.leeway_seconds: 30`
-  `gateway.yaml` ×4 -- base:293, cookie:161, mtls:154, ws:133
+  `gateway.yaml` ×8 -- base:293, cookie:174, egress-verify-off:143, egress-verify-on:143,
+  mtls:154, passthrough-empty:309, refresh:279, ws-admission:133
 | Session refresh scheduling
-| GAP
-| none -- no descriptor-parsing guard asserts the declaration is present
-  (`BffCookieActivationWiringTest` parses the `oidc.session` block but asserts only `mode`, `store`,
-  `encryption_key` and `logout.backchannel_path`; `DescriptorInventoryWiringTest` partitions files,
-  never keys), and `BffCookieSessionIT` / `BffSessionMediationIT` exercise session *continuity*
-  without forcing a refresh, let alone approaching the 30s leeway boundary. Neither half of `WIRED`
-  holds, which is why this row was corrected from `WIRED` to `GAP`.
+| COVERED
+| `BffTokenRefreshIT` on the dedicated `api-sheriff-refresh` instance -- the only place the boundary
+  is reachable, because it needs an access-token lifespan shorter than the leeway is wide. The
+  `refresh-client` mints a 45-second token, so the near-expiry window opens at
+  `lifespan - leeway` = 15s, and the row's matched control pair straddles exactly that edge:
+  `currentOutcomeReusesTheMediatedToken` calls *inside* the window and asserts a byte-identical
+  bearer (CURRENT -- nothing rotated), while `refreshedOutcomeRotatesTheMediatedToken` calls *after*
+  it opens and asserts a different bearer (REFRESHED). Move the declared 30 either way and one of
+  the two goes red, which is what makes this the boundary rather than a smoke test.
+  `mediatedTokenCarriesTheDeclaredLifespan` is the precondition control -- it asserts the 45-second
+  lifespan is genuinely in effect, without which the window would be unreachable and both branches
+  would pass vacuously.
+
+  *This row was `GAP` until the plan that added `BffTokenRefreshIT`.* The prior text is worth
+  keeping as a caution: it recorded that `BffCookieSessionIT` / `BffSessionMediationIT` exercise
+  session *continuity* without ever forcing a refresh, so the leeway was declared, parsed, and
+  never acted on. Closing it required a dedicated instance and a short-lifespan client -- not a new
+  assertion on the existing suite.
+
+| `oidc.session.max_cookie_size: 8192`
+  `sheriff-config-cookie/gateway.yaml:171`
+| `SealedSessionCookieCodec` seal-time budget *and* the derived pre-route `Cookie` header cap --
+  one declared number driving both ends of the round trip
+| COVERED
+| The nine cookie-mode ITs (`BffCookieSessionIT` ×6, `BffCookieStatelessnessIT` ×3) are the
+  assertion, by construction rather than by naming the number: this instance seals access + id +
+  refresh into 5123 bytes, so at the 4096 default the codec refuses the seal (`ApiSheriff-114`) and
+  every one of the nine fails `302` vs `500` at login. Delete the key and all nine go red -- the
+  deleted-key test the note's own methodology asks for. The negative control is the *other* seven
+  instances, which declare no budget and keep the 4096 default without ever approaching it.
 
 | *G1* `security_defaults.max_authorization_header_value_length: 8192`
   `sheriff-config/gateway.yaml:50`
@@ -407,7 +431,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | none
 
 | *G10* `oidc.user_info.allowed_claims`
-  `gateway.yaml` ×4 -- base:298, cookie:166, mtls:159, ws:138
+  `gateway.yaml` ×4 -- base:298, cookie:179, mtls:159, ws:138
 | user_info claim projection
 | PARTIAL
 | `BffUserInfoIT` asserts the `default_view` projection; no negative leg proves a claim *outside*
@@ -475,8 +499,8 @@ boundary -- and they are listed as the standing remainder so the class stays cou
 
 === The standing remainder
 
-*The G2 runtime leg, G6--G11 and the session-refresh leeway boundary are deliberately not authored*,
-and are recorded so the class stays countable rather than forgotten:
+*The G2 runtime leg and G6--G11 are deliberately not authored*, and are recorded so the class stays
+countable rather than forgotten:
 
 * *G2* -- runtime egress-refusal leg: that a JWKS host *outside* `allowed_egress_hosts` is actually
   refused. The descriptor half is `WIRED` by `EgressAllowlistActivationWiringTest`; proving the
@@ -487,12 +511,13 @@ and are recorded so the class stays countable rather than forgotten:
 * *G9* -- `oidc.session.ttl_seconds`
 * *G10* -- `oidc.user_info.allowed_claims` negative leg
 * *G11* -- `tls.min_version` / `cipher_suites` runtime handshake leg
-* *Session-refresh leeway* -- `oidc.session.refresh.leeway_seconds: 30`: that a session is actually
-  refreshed the declared 30 seconds ahead of expiry. Neither leg exists -- no descriptor-parsing
-  guard asserts the declaration, and the BFF session ITs exercise continuity without forcing a
-  refresh. This row was carried as `WIRED` until the PR #148 review corrected it to `GAP`; it is
-  recorded here rather than assigned a G-number, because G1--G11 are the outline-time ranked
-  inventory that the matrix orders.
+
+*Session-refresh leeway has since left this list.* It was recorded here -- without a G-number,
+because G1--G11 are the outline-time ranked inventory the matrix orders -- as the one remainder
+whose *both* legs were missing. It is now `COVERED` by `BffTokenRefreshIT`; see its matrix row
+above. What closed it is the part worth carrying forward: not a new assertion on the existing
+session ITs, but a dedicated gateway instance whose client mints a 45-second access token, because
+a leeway boundary is only reachable when the token expires faster than the leeway is wide.
 
 Two of these are additionally *impractical to boundary-test at proportionate cost*: G9 would need a
 one-hour wait, and G11's runtime leg needs a handshake fixture matrix. A future plan should pick
