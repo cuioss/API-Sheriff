@@ -106,6 +106,17 @@ to *run* the finished gateway).
   Also records that marker density is a screen and not a verdict: three high-density files yielded
   zero strengthenings.
 
+| link:cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness -- What the Integration
+  Lane Cannot Observe]
+| Why nine cookie integration tests reported success against a session no browser could hold -- the
+  two-leg mechanism (no size policy on the replay path, and a name-keyed cookie jar that discards
+  every attribute), the three candidate maskers checked and ruled out, the per-test verdict under a
+  policy-applying client (seven of the nine go red, two stay green and are named), the exact instant
+  the suite stopped being honest and why that makes it a missing invariant rather than a test defect,
+  the six-property surface with a verdict each -- three attribute-asserted, three unasserted, none
+  enforcement-observed -- and the boundary rule that puts what the gateway *emits* on the pull
+  request and what the browser *applies* in the browser lane.
+
 | link:../../demo-client/doc/playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite]
 | The `demo-client` module -- why the demo SPA is served by the gateway rather than a side-car
   static server, the opt-in `skipPlaywrightTests` / `e2e-demo` build mechanism that keeps it out of
