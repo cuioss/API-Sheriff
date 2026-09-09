@@ -48,12 +48,13 @@ import org.junit.jupiter.api.Test;
  * refuses passes the refusal half, and is useless behind a TLS-terminating ingress. Only the pair
  * pins "plain HTTP is declared, never inferred".
  * <p>
- * <strong>Why an integration test rather than a {@code @QuarkusTest}.</strong> The gate runs while
- * SmallRye is assembling the configuration, before CDI exists, and it is discovered through the real
- * {@code ServiceLoader}. Whether that survives native-image generation is precisely the question a
- * JVM-mode boot cannot answer. Nothing rebuilds anything for this test — the opt-in instance runs the
- * same {@code api-sheriff:distroless} image as every other gateway service, and the refusal leg runs
- * that same image once.
+ * <strong>Why an integration test rather than a {@code @QuarkusTest}.</strong> The gate is an
+ * {@code @ApplicationScoped} {@code HttpServerOptionsCustomizer}, so two distinct things have to
+ * survive native-image generation for it to act at all: Arc has to still discover the bean, and
+ * {@code VertxHttpRecorder.initializeMainHttpServer} has to still invoke the customizer loop before
+ * its own {@code getKeyCertOptions()} guard. Neither is observable from a JVM-mode boot. Nothing
+ * rebuilds anything for this test — the opt-in instance runs the same {@code api-sheriff:distroless}
+ * image as every other gateway service, and the refusal leg runs that same image once.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -191,10 +192,21 @@ class NoCertificatePlainHttpOptInIT {
      * <strong>Why a one-off {@code docker run} rather than a compose service.</strong> A service
      * whose whole purpose is to fail could not live in the stack: the readiness gate selects every
      * {@code api-sheriff*} service and waits for it to report healthy, so a permanently-refusing
-     * instance would fail the gate rather than be observed by it. Driving one container directly is
-     * also the more honest read — the refusal happens while the configuration is being assembled,
-     * long before the file-log handler that {@code readContainerLog()} depends on has been
-     * configured, so the message only ever reaches the container's own output.
+     * instance would fail the gate rather than be observed by it. The one-off container is driven
+     * with no {@code /logs} mount and no {@code QUARKUS_LOG_FILE_ENABLED}, so unlike the opt-in
+     * instance it writes no log file at all and the refusal is read from its own merged output.
+     * <p>
+     * <strong>The refusal lands at the LISTENER seam, not during configuration assembly, and the
+     * difference is what
+     * {@link NoCertificatePlainHttpOptInIT#runWithoutCertificateOrOptIn()} has to provision
+     * for.</strong> The
+     * gate is invoked from {@code VertxHttpRecorder.initializeMainHttpServer}, which runs after every
+     * {@code StartupEvent} observer has completed. A container that dies in one of those observers
+     * therefore never reaches the gate — and exits non-zero without a startup line while doing so,
+     * which is indistinguishable from a real refusal on those two properties alone. That is why the
+     * run below mirrors the compose service's whole environment and why
+     * {@link NoCertificatePlainHttpOptInIT#REACHED_LISTENER_SEAM} is asserted before either test
+     * reads the output.
      */
     @Nested
     @DisplayName("Without the opt-in, the gateway refuses to boot")
@@ -216,7 +228,7 @@ class NoCertificatePlainHttpOptInIT {
                     () -> assertFalse(run.output().contains(STARTED_MARKER),
                             () -> "the framework's startup line appeared, so the gateway served "
                                     + "something before giving up — the refusal must land while the "
-                                    + "configuration is being assembled, before any listener binds. "
+                                    + "listener is being initialized, before it ever binds. "
                                     + "Output: " + run.output()));
         }
 
@@ -247,18 +259,46 @@ class NoCertificatePlainHttpOptInIT {
     // Harness
     // ---------------------------------------------------------------------------------------------
 
-    /** Upper bound on the refusal container's whole lifetime; it fails during config assembly. */
+    /** Upper bound on the refusal container's whole lifetime; it fails as the listener starts. */
     private static final long REFUSAL_TIMEOUT_SECONDS = 90L;
 
     /** The image every gateway instance in this stack runs, and the one under test here. */
     private static final String IMAGE = "api-sheriff:distroless";
 
-    /**
-     * The shipped integration configuration, mounted so the ONLY thing missing from the refusal run
-     * is the server key material. Without it the boot could fail for an unrelated reason and the
-     * assertions would be measuring that instead.
-     */
+    /** The shipped integration configuration, mounted exactly as the compose service mounts it. */
     private static final Path SHERIFF_CONFIG = Path.of("src", "main", "docker", "sheriff-config");
+
+    /**
+     * The certificate directory. It is mounted for {@code test-jwks.json} and the management
+     * listener's material — NOT for the main listener, which is what this test withholds.
+     * <p>
+     * Mounting it does not weaken the state under test, and the reason is the whole shape of the
+     * gate: key material is declared through configuration KEYS, never inferred from a file being
+     * present. No {@code quarkus.http.ssl.certificate.*} key and no
+     * {@code quarkus.http.tls-configuration-name} is set below, so the main listener declares
+     * nothing whatever this directory contains.
+     */
+    private static final Path CERTIFICATES = Path.of("src", "main", "docker", "certificates");
+
+    /**
+     * The no-{@code passthrough_sni} gateway.yaml the compose service overlays. Without it the shared
+     * gateway.yaml starts the accept-time SNI front listener, which is a second, unrelated way for
+     * this container to behave differently from the instance it is the matched negative of.
+     */
+    private static final Path PASSTHROUGH_EMPTY_GATEWAY =
+            Path.of("src", "main", "docker", "sheriff-config-passthrough-empty", "gateway.yaml");
+
+    /**
+     * Proof that the container got as far as the seam the gate acts at.
+     * <p>
+     * {@code TerminatedListenerTlsAudit} emits this from a {@code StartupEvent} observer, so its
+     * presence means configuration loading, CDI bean creation and token-validator construction all
+     * succeeded and the only remaining step was starting the HTTP listener. It is the positive
+     * control that stops "the container exited non-zero without a startup line" from passing for an
+     * unrelated crash — which is exactly how this test previously passed its refusal assertion while
+     * the container was in fact dying on a missing JWKS file, several steps before the gate.
+     */
+    private static final String REACHED_LISTENER_SEAM = "ApiSheriff-121";
 
     /**
      * The outcome of one refusal container.
@@ -272,16 +312,43 @@ class NoCertificatePlainHttpOptInIT {
     /**
      * Runs the shipped image once with neither key material nor the plain-HTTP opt-in, and reports
      * how it ended.
+     * <p>
+     * <strong>Everything below mirrors the {@code api-sheriff-no-certificate} compose service except
+     * the one variable under test.</strong> That is a correctness requirement rather than tidiness:
+     * the gate runs after every {@code StartupEvent} observer, so any under-provisioning that kills
+     * one of those observers stops the container before the gate is ever consulted — and produces a
+     * non-zero exit with no startup line, which is precisely the shape a genuine refusal has. The
+     * omission that made this test measure the wrong thing was {@link #CERTIFICATES}, whose
+     * {@code test-jwks.json} the {@code token_validation} block loads from disk at
+     * {@code StartupEvent}; without it the boot died in {@code TokenValidatorProducer} and never
+     * reached the listener.
+     * <p>
+     * The single deliberate difference from the compose service is the absence of
+     * {@code QUARKUS_HTTP_INSECURE_REQUESTS=enabled}. No port is published because this container is
+     * never expected to bind one, which also keeps it from colliding with the live stack.
      *
      * @return the exit status and merged output of that container
      */
     private static RefusalRun runWithoutCertificateOrOptIn() {
         ProcessBuilder builder = new ProcessBuilder(
                 "docker", "run", "--rm",
+                "-e", "QUARKUS_PROFILE=it",
+                "-e", "QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties",
+                // The MANAGEMENT listener's material. A different key family from the main
+                // listener's, which is the one this test withholds; the gate never reads these.
+                "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt",
+                "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key",
+                "-e", "QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12",
+                "-e", "QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust",
                 "-e", "SHERIFF_CONFIG_DIR=/app/sheriff-config",
                 "-e", "OIDC_CLIENT_SECRET=integration-secret",
+                "-v", CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro",
                 "-v", SHERIFF_CONFIG.toAbsolutePath() + ":/app/sheriff-config:ro",
-                IMAGE);
+                "-v", PASSTHROUGH_EMPTY_GATEWAY.toAbsolutePath() + ":/app/sheriff-config/gateway.yaml:ro",
+                IMAGE,
+                "-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12",
+                "-Djavax.net.ssl.trustStorePassword=localhost-trust",
+                "-Djavax.net.ssl.trustStoreType=PKCS12");
         builder.redirectErrorStream(true);
         Path captured = null;
         try {
@@ -295,7 +362,8 @@ class NoCertificatePlainHttpOptInIT {
                         + "on a configuration that declares neither key material nor an opt-in. "
                         + "Output so far: " + readQuietly(captured));
             }
-            return new RefusalRun(process.exitValue(), Files.readString(captured));
+            return reachedTheListenerSeam(
+                    new RefusalRun(process.exitValue(), Files.readString(captured)));
         } catch (IOException e) {
             throw new UncheckedIOException("cannot run the certificate-less container — is "
                     + IMAGE + " built?", e);
@@ -305,6 +373,29 @@ class NoCertificatePlainHttpOptInIT {
         } finally {
             deleteQuietly(captured);
         }
+    }
+
+    /**
+     * Asserts the container got far enough for the gate to have been consulted at all.
+     * <p>
+     * Both refusal tests read properties — a non-zero exit, an absent startup line, an absent
+     * framework message — that a container dying anywhere before the listener seam satisfies just as
+     * well as a container the gate refused. This is the discriminator between the two, and it is
+     * checked in the harness rather than in either test so that neither can be satisfied by a run
+     * that never reached the code under test.
+     *
+     * @param run the finished refusal container
+     * @return that same run, when it reached the seam
+     */
+    private static RefusalRun reachedTheListenerSeam(RefusalRun run) {
+        assertTrue(run.output().contains(REACHED_LISTENER_SEAM),
+                () -> "the certificate-less container never reached the seam the gate acts at, so "
+                        + "this run cannot say anything about the gate: it died before the HTTP "
+                        + "listener was initialized and its non-zero exit is some OTHER failure. "
+                        + "Provision the run to match the api-sheriff-no-certificate compose service "
+                        + "— the whole environment, minus QUARKUS_HTTP_INSECURE_REQUESTS. Output: "
+                        + run.output());
+        return run;
     }
 
     private static String readQuietly(Path captured) {
