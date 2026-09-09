@@ -152,6 +152,14 @@ final class BffKeycloakLoginFlow {
      * header) was admitted by raising the configured budget to 8192 and was then dropped silently
      * by the browser. The browser does not
      * read our configuration; 4096 is its number, so the test states it independently.
+     * <p>
+     * The gateway now also declares the same RFC figure as
+     * {@code SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE}, which — unlike the two
+     * above — is a hardcoded constant rather than a configured value, so the by-construction
+     * argument does not reach it. This constant stays independent of that one anyway, on the
+     * narrower ground that a test which imported the product's idea of the browser limit could not
+     * detect the product getting that idea wrong. The two are expected to agree; the point is that
+     * nothing makes them agree.
      *
      * @see #assertCookiesFitBrowserBudget(Response)
      */

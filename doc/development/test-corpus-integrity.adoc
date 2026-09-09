@@ -927,7 +927,7 @@ pass is the larger sample that says so again, from the other direction.
 
 | `rpInitiatedLogoutClearsTheSealedCookie`
   (`BffCookieSessionIT`)
-| 176 | (d)
+| 177 | (d)
 | `LogoutEndpoint` answers a logout *without* a session with the same `302` and the same fixed
   clearing `Set-Cookie` as the authenticated branch, so all three assertions hold identically on both.
   The test cannot distinguish "logged out" from "was never logged in". The matched control is cheap:

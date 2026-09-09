@@ -135,9 +135,12 @@ public final class SealedSessionCookieCodec {
      * <p>
      * It governs the <em>whole</em> {@code Set-Cookie} header — the cookie's name, its value
      * <em>and</em> its attributes summed together — never the value in isolation. Every
-     * browser-deliverability comparison in this codebase goes through this constant plus
+     * browser-deliverability comparison <em>in the gateway</em> goes through this constant plus
      * {@link #DEFAULT_SET_COOKIE_HEADER_OVERHEAD} rather than against
      * {@link #DEFAULT_COOKIE_VALUE_BUDGET}, because the latter measures a different quantity.
+     * The integration suite deliberately does not: its own budget constant is declared
+     * independently of this one so the test cannot inherit a product-side mistake in the very
+     * number it exists to check.
      */
     public static final int BROWSER_PER_COOKIE_HEADER_GUARANTEE = 4096;
 
