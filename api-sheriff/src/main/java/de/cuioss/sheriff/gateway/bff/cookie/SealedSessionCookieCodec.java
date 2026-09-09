@@ -158,9 +158,23 @@ public final class SealedSessionCookieCodec {
      * this is the <em>default-configuration</em> overhead rather than a universal one, and a guard
      * built on it is approximate by exactly the configured deviation: a longer cookie name or a TTL
      * past 9999 seconds raises the real overhead, so the guard under-warns by that many bytes; a
-     * shorter name lowers it, so the guard warns that many bytes early. The residual is single-digit
-     * for every name in this codebase and is accepted deliberately — resolving it exactly would put
-     * a second copy of the header-assembly arithmetic in the configuration validator, which is the
+     * shorter name lowers it, so the guard warns that many bytes early.
+     * <p>
+     * <strong>The under-warn is bounded only for the names this codebase ships, not in general.</strong>
+     * {@code session.cookie_name} is operator-supplied and nothing bounds its length: the schema
+     * declares it an unrestricted {@code string} with no {@code pattern} and no {@code maxLength}, and
+     * {@code ConfigValidator} carries no rule for it, so the only constraint is
+     * {@code requireNonBlank}. Every name this repository ships — the
+     * {@code SessionCookieCodec.DEFAULT_COOKIE_NAME} assumed above and the shorter
+     * {@code __Host-sheriff} used throughout the documented examples, which errs on the
+     * warn-early side — keeps the deviation single-digit; an arbitrary configured name does not,
+     * and the guard then under-warns by the full length difference with no ceiling.
+     * <p>
+     * That residual is accepted deliberately at that bound, for two reasons. What the under-warn
+     * misses is a {@code Set-Cookie} the browser drops — an anonymous SPA, an availability failure
+     * rather than a loss of confidentiality or integrity; the seal itself is unaffected, and the
+     * name is bound into the AEAD associated data either way. And resolving it exactly would put a
+     * second copy of the header-assembly arithmetic in the configuration validator, which is the
      * kind of duplication that produced the contradiction this constant exists to remove.
      */
     public static final int DEFAULT_SET_COOKIE_HEADER_OVERHEAD = 77;
