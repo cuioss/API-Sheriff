@@ -65,6 +65,30 @@ public final class ConfigLogMessages {
                 .identifier(3)
                 .template("Route '%s' effective posture: anchor='%s', auth.require='%s', filter='%s'")
                 .build();
+
+        /**
+         * The effective default trust source, reported once at startup for every deployment.
+         * <p>
+         * It names both tiers separately because they are two independent levers reaching two
+         * <em>disjoint</em> sets of outbound legs: the runtime {@code javax.net.ssl.trustStore}
+         * system property governs every leg holding a raw JDK {@code TrustManager}, while the
+         * Quarkus {@code <default>} TLS bucket's trust material governs every leg resolving through
+         * the TLS registry. Collapsing them into one line would report a comfortable fiction for a
+         * deployment that moved only one.
+         * <p>
+         * Emitted unconditionally, at {@code INFO}, because "which anchors is this gateway actually
+         * trusting" is a question an operator must be able to answer from the boot log rather than
+         * only when something is already wrong.
+         * <p>
+         * Each tier fragment carries the store's kind and, for the system-property route, its path —
+         * an operator-supplied location, not secret material. It must never carry a password, an
+         * alias, or any anchor bytes.
+         */
+        public static final LogRecord DEFAULT_TRUST_SOURCE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(17)
+                .template("Effective default trust source — legs holding a raw JDK TrustManager: %s; legs resolving through the Quarkus TLS registry: %s")
+                .build();
     }
 
     /**
@@ -238,6 +262,31 @@ public final class ConfigLogMessages {
                 .prefix(PREFIX)
                 .identifier(121)
                 .template("Terminated main listener is serving PLAIN HTTP on port %s — no server key material resolved, so no HTTPS listener was started and every HTTPS client of this gateway will fail against it. Live edge topology: %s. Expose the plain port only behind a TLS-terminating boundary; restore HTTPS by supplying server key material through exactly one of quarkus.http.tls-configuration-name, a default quarkus.tls.key-store.* bucket, or quarkus.http.ssl.certificate.* — the material stays deployment-supplied and is never named in gateway.yaml (ADR-0025)")
+                .build();
+
+        /**
+         * An operator-supplied default trust store is in effect on at least one of the two tiers
+         * {@link INFO#DEFAULT_TRUST_SOURCE} reports.
+         * <p>
+         * The hazard is <em>replacement</em>: both levers substitute the platform trust bundle
+         * wholesale rather than adding to it, so every anchor the deployment did not put into its own
+         * store stops being trusted on the legs that lever governs. An operator who supplies a store
+         * holding only a private certificate authority has thereby stopped trusting the public roots
+         * the platform shipped, which surfaces much later as an opaque handshake rejection rather
+         * than as anything resembling a configuration error.
+         * <p>
+         * The record carries both tier fragments and, when they disagree, says so in its own sentence
+         * — a deployment that moved only one lever has left half its outbound surface behind, and
+         * that half is exactly what an operator would otherwise never think to check.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: a deployment-bound trust store is a
+         * legitimate, deliberate posture. The template must never carry a password, an alias, or any
+         * anchor material; the trust-store password property is not read at all.
+         */
+        public static final LogRecord DEFAULT_TRUST_STORE_REPLACED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(122)
+                .template("An operator-supplied default trust store is in effect. It REPLACES the platform trust bundle wholesale rather than being added to it, so every anchor the deployment did not put into that store stops being trusted — the public roots the platform shipped included. Legs holding a raw JDK TrustManager: %s. Legs resolving through the Quarkus TLS registry: %s. %s")
                 .build();
     }
 
