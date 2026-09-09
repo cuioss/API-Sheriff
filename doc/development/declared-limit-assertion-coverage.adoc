@@ -17,14 +17,26 @@ wiring guards named below (`BodyLimitActivationWiringTest`, `EgressAllowlistActi
 a contributor which limits have such a guard, which have only a runtime assertion, and which have
 neither.
 
-Two companion notes answer the questions this one does not, and a limit is only really covered when
-all three are satisfied. link:test-corpus-integrity.adoc[Test-Corpus Integrity -- Assertions That
+Two companion notes answer the questions this one does not.
+link:test-corpus-integrity.adoc[Test-Corpus Integrity -- Assertions That
 Assert Nothing] asks whether an indexed test's assertions are strong enough to support the behaviour
 its name claims. link:cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness -- What
 the Integration Lane Cannot Observe] asks whether the lane could observe the property *at all* --
 a limit can be indexed here and asserted hard there while the client standing in for a browser
 enforces none of the policy the limit exists for, which is exactly how nine cookie tests stayed green
 against a session no browser could hold.
+
+The first two questions apply to every limit in this index: it must be listed with a real assertion
+behind it, and that assertion must not be vacuous. *The third is scoped, and applying it everywhere
+over-reports.* Deliverability blindness is a property of *client-enforced* limits -- the ones the
+gateway declares but a browser, not the gateway, has to honour: the per-cookie size guarantee,
+`SameSite`, the `__Host-` prefix rules. A *server-enforced* limit -- a request-body cap, a route
+allowlist, a TLS floor, an inbound header-block bound -- is rejected by the gateway on the wire, so
+the integration client observes the enforcement directly whatever policy it does or does not
+implement, and the third note has nothing to say about it. Marking those rows incomplete for
+failing a test they are not subject to would inflate the gap this index exists to count. So: a
+server-enforced limit is covered when it satisfies the first two questions; a client-enforced one
+carries the third as well.
 
 == The Enumerated Surface
 

@@ -297,11 +297,20 @@ public final class ConfigLogMessages {
          * <p>
          * <strong>The comparison is against the derived HEADER, not the value budget.</strong> The
          * key declares a sealed <em>value</em> budget; RFC 6265 6.1 budgets the cookie's name, value
-         * and attributes together. The threshold is therefore
-         * {@code SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET} (4019 = 4096 - 77), not
-         * the 4096 default value budget — comparing against the latter left a 77-byte band in which
-         * the gateway emitted an undeliverable header and this record stayed silent, which is the
-         * very failure the record exists to announce.
+         * and attributes together. The threshold is therefore the 4096-byte guarantee less
+         * {@code SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, sessionTtl)} for the
+         * gateway's <em>resolved</em> {@code session.cookie_name} and {@code session.ttl_seconds} —
+         * 4019 under the default configuration, and lower for a longer cookie name or a five-digit
+         * {@code Max-Age}. Comparing against the 4096 value budget instead left a 77-byte band in
+         * which the gateway emitted an undeliverable header and this record stayed silent, which is
+         * the very failure the record exists to announce; comparing against a <em>fixed</em> 4019
+         * left the same band open for every configuration that is not the default one.
+         * <p>
+         * <strong>Cookie mode only.</strong> The record is emitted when {@code session.mode} is
+         * {@code cookie}. A server-mode or bearer-only gateway emits no sealed session
+         * {@code Set-Cookie} at all, so there is no header for the guarantee to govern and an
+         * explicit {@code max_cookie_size} there is inert rather than dangerous. Its range is still
+         * validated in every mode.
          * <p>
          * It is a {@code WARN} and never a boot refusal, for the same reason as
          * {@link #MANAGEMENT_PLAIN_HTTP} and {@link #EGRESS_HOSTNAME_VERIFICATION_DISABLED}: the

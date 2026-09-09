@@ -130,7 +130,6 @@ public class BffRuntimeProducer {
 
     private static final CuiLogger LOGGER = new CuiLogger(BffRuntimeProducer.class);
 
-    private static final int DEFAULT_SESSION_TTL_SECONDS = 3600;
     private static final int DEFAULT_MAX_SESSIONS = 10_000;
     private static final int DEFAULT_MAX_PENDING = 10_000;
     private static final int DEFAULT_REFRESH_LEEWAY_SECONDS = 30;
@@ -204,7 +203,7 @@ public class BffRuntimeProducer {
         String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
 
         Duration sessionTtl = Duration.ofSeconds(
-                Objects.requireNonNullElse(session.ttlSeconds(), DEFAULT_SESSION_TTL_SECONDS));
+                Objects.requireNonNullElse(session.ttlSeconds(), OidcConfig.Session.DEFAULT_TTL_SECONDS));
         String declaredCookieName = session.cookieName();
         String cookieName = declaredCookieName == null
                 ? SessionCookieCodec.DEFAULT_COOKIE_NAME

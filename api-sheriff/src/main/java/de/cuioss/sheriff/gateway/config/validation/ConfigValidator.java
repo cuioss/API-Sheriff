@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -32,6 +33,7 @@ import java.util.regex.Pattern;
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -1231,12 +1233,9 @@ public final class ConfigValidator {
      * <p>
      * <strong>An in-range budget whose emitted header outgrows the browser guarantee is warned,
      * never refused.</strong> The validated range stays {@code 40..8192} exactly as it is. The
-     * warning threshold is {@link SealedSessionCookieCodec#BROWSER_SAFE_COOKIE_VALUE_BUDGET}
-     * (4019) rather than {@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET} (4096),
-     * because the two numbers measure different things: this key is a sealed <em>value</em> budget,
-     * while the ~4096 bytes RFC 6265 6.1 guarantees govern the whole {@code Set-Cookie}
-     * header — name, value and attributes together, which for this cookie is a further
-     * {@link SealedSessionCookieCodec#DEFAULT_SET_COOKIE_HEADER_OVERHEAD} bytes. Comparing the value
+     * comparison is against the emitted {@code Set-Cookie} <em>header</em>, not against the value
+     * budget: this key declares a sealed <em>value</em> budget, while the ~4096 bytes RFC 6265 6.1
+     * guarantees govern the whole header — name, value and attributes together. Comparing the value
      * budget against the header guarantee left the band {@code 4020..4096} silent while the gateway
      * emitted a header no browser is obliged to keep — the same false guarantee this record exists
      * to announce. A budget above the threshold is still a legitimate posture for a client that
@@ -1245,6 +1244,26 @@ public final class ConfigValidator {
      * budget that far silences the {@code ApiSheriff-114} seal refusal without removing the problem:
      * the browser then drops the oversized {@code Set-Cookie} with no error on either side, and no
      * later signal exists for the gateway to report.
+     * <p>
+     * <strong>The overhead is derived from THIS gateway's configuration, never from a constant.</strong>
+     * The header {@link SealedSessionCookieCodec#toSetCookieHeader} emits wraps the configured
+     * {@code session.cookie_name} and a {@code Max-Age} carrying the configured
+     * {@code session.ttl_seconds} around the value, so the threshold is
+     * {@link SealedSessionCookieCodec#BROWSER_PER_COOKIE_HEADER_GUARANTEE} less
+     * {@link SealedSessionCookieCodec#setCookieHeaderOverhead(String, java.time.Duration)} for the
+     * <em>resolved</em> pair — the same derivation the header assembly itself counts. A fixed
+     * threshold assumes the default name and a four-digit {@code Max-Age}: a longer cookie name or a
+     * TTL past 9999 seconds emits a larger header than the constant describes, and the warning would
+     * then stay silent on a configuration that is already undeliverable. Both keys fall back to the
+     * values the runtime producer resolves for them, so validation reasons about the header the
+     * gateway will actually send.
+     * <p>
+     * <strong>The warning is cookie-mode only; the range check is not.</strong> Outside
+     * {@code session.mode: cookie} no sealed session {@code Set-Cookie} is ever emitted — a
+     * server-mode or bearer-only gateway has no header for the guarantee to govern — so warning
+     * there is noise about a header that does not exist. The bounds check stays unconditional: an
+     * explicitly declared out-of-range value is a misconfiguration whatever the mode, and refusing
+     * it at boot is what stops it becoming live the moment the mode is switched.
      * <p>
      * <strong>Residual, stated rather than hidden.</strong> The rule is a no-op when the key is
      * omitted, and the codec default that then applies (4096) is itself above the browser-safe value
@@ -1266,11 +1285,44 @@ public final class ConfigValidator {
                                     SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, size)));
             return;
         }
-        if (size > SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET) {
-            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, size,
-                    size + SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD,
-                    SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET);
+        // isCookieMode() is the SHARED mode predicate — the spelling is never re-derived here.
+        if (!session.isCookieMode()) {
+            return;
         }
+        int overhead = SealedSessionCookieCodec.setCookieHeaderOverhead(
+                resolvedCookieName(session), resolvedSessionTtl(session));
+        int headerBytes = size + overhead;
+        if (headerBytes > SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE) {
+            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, size,
+                    headerBytes,
+                    SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE - overhead);
+        }
+    }
+
+    /**
+     * The session-cookie name the runtime will resolve, for deriving the emitted header size.
+     * <p>
+     * A blank declared name is folded onto the default rather than passed through: the schema
+     * declares {@code cookie_name} an unrestricted string, so {@code cookie_name: ""} is
+     * schema-valid, and handing it to the codec's overhead derivation would raise from inside a
+     * validator whose contract is to <em>collect</em> violations rather than throw. The blank value
+     * is refused later by the codec's own constructor guard, where the failure names the field.
+     */
+    private static String resolvedCookieName(OidcConfig.Session session) {
+        String declared = session.cookieName();
+        return declared == null || declared.isBlank()
+                ? SessionCookieCodec.DEFAULT_COOKIE_NAME
+                : declared;
+    }
+
+    /**
+     * The absolute session lifetime the runtime will resolve, for deriving the {@code Max-Age} width
+     * of the emitted header. Shares {@link OidcConfig.Session#DEFAULT_TTL_SECONDS} with the runtime
+     * producer so validation can never reason about a TTL the gateway does not run.
+     */
+    private static Duration resolvedSessionTtl(OidcConfig.Session session) {
+        return Duration.ofSeconds(Objects.requireNonNullElse(
+                session.ttlSeconds(), OidcConfig.Session.DEFAULT_TTL_SECONDS));
     }
 
     /**

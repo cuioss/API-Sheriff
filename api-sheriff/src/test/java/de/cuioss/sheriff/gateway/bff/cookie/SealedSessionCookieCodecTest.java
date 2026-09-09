@@ -27,6 +27,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.stream.Stream;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -41,6 +42,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for {@link SealedSessionCookieCodec} — the AES-256-GCM crypto core of the stateless
@@ -332,6 +336,96 @@ class SealedSessionCookieCodecTest {
 
             assertTrue(header.startsWith(COOKIE_NAME + "=;"), header);
             assertTrue(header.contains("Max-Age=0"), header);
+        }
+    }
+
+    /**
+     * The {@code Set-Cookie} overhead derivation — the single source every browser-deliverability
+     * comparison in the gateway goes through.
+     * <p>
+     * These rows are the anti-drift guard the derivation's javadoc promises. The overhead used to be
+     * a fixed 77 while {@link SealedSessionCookieCodec#toSetCookieHeader} assembled the header from
+     * the <em>configured</em> cookie name and TTL, so a gateway running either off the default
+     * emitted a larger header than every guard believed. Pinning the arithmetic against a header the
+     * codec actually formatted is what makes a change to one of them alone impossible to land quietly.
+     */
+    @Nested
+    @DisplayName("Set-Cookie header overhead derivation")
+    class HeaderOverhead {
+
+        static Stream<Arguments> configurations() {
+            return Stream.of(
+                    Arguments.of("the default name and a four-digit Max-Age",
+                            "__Host-sheriff-session", Duration.ofSeconds(3600)),
+                    Arguments.of("the default name and a five-digit Max-Age",
+                            "__Host-sheriff-session", Duration.ofSeconds(86_400)),
+                    Arguments.of("the shorter name the documented examples use",
+                            "__Host-sheriff", Duration.ofSeconds(3600)),
+                    Arguments.of("a cookie name well past the default length",
+                            "__Host-a-considerably-longer-session-cookie-name", Duration.ofHours(8)),
+                    Arguments.of("a single-digit Max-Age", "s", Duration.ofSeconds(9)),
+                    Arguments.of("a seven-digit Max-Age", "__Host-sheriff-session", Duration.ofDays(30)));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("configurations")
+        @DisplayName("Should report exactly the bytes the formatted header wraps around the value")
+        void shouldMatchTheFormattedHeader(String label, String cookieName, Duration ttl) throws Exception {
+            // Arrange — at the login instant Max-Age carries the full TTL, which is the widest the
+            // attribute ever gets, so this is the case the derivation must reproduce exactly.
+            SealedSessionCookieCodec configured =
+                    new SealedSessionCookieCodec(cookieName, ttl, BUDGET, key, KEY_ID);
+            String sealed = configured.seal(payload());
+
+            // Act
+            String header = configured.toSetCookieHeader(sealed, LOGIN, LOGIN);
+
+            // Assert
+            assertEquals(header.length() - sealed.length(),
+                    SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, ttl),
+                    () -> "the derivation must count the same bytes the assembly emits: " + header);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("configurations")
+        @DisplayName("Should never understate the overhead once Max-Age has shrunk below the full TTL")
+        void shouldBoundEveryLaterHeader(String label, String cookieName, Duration ttl) throws Exception {
+            // A re-seal mid-session carries a smaller remaining lifetime and therefore possibly fewer
+            // Max-Age digits. A deliverability guard must not report a header smaller than one the
+            // gateway can actually send, so the derivation is an upper bound over the whole session.
+            SealedSessionCookieCodec configured =
+                    new SealedSessionCookieCodec(cookieName, ttl, BUDGET, key, KEY_ID);
+            String sealed = configured.seal(payload());
+            int derived = SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, ttl);
+
+            String halfway = configured.toSetCookieHeader(sealed, LOGIN, LOGIN.plus(ttl.dividedBy(2)));
+            String expired = configured.toSetCookieHeader(sealed, LOGIN, LOGIN.plus(ttl).plusSeconds(60));
+
+            assertTrue(halfway.length() - sealed.length() <= derived, halfway);
+            assertTrue(expired.length() - sealed.length() <= derived, expired);
+        }
+
+        @Test
+        @DisplayName("Should keep the documented default-configuration constant equal to the derivation")
+        void shouldPinTheDefaultConfigurationConstant() {
+            // 22 name bytes + '=' + "; Max-Age=" + four digits + "; Path=/; Secure; HttpOnly;
+            // SameSite=Lax" (40) = 77. The figure is spelled here independently of the production
+            // arithmetic because it is the number the operator-facing catalogue entries quote.
+            assertEquals(77, SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD);
+            assertEquals(SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD,
+                    SealedSessionCookieCodec.setCookieHeaderOverhead(
+                            "__Host-sheriff-session", Duration.ofSeconds(3600)),
+                    "the default-configuration constant is the derivation's default-configuration case");
+            assertEquals(4019, SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET);
+        }
+
+        @Test
+        @DisplayName("Should refuse a blank or absent cookie name rather than derive a nonsense overhead")
+        void shouldRefuseUnusableInputs() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> SealedSessionCookieCodec.setCookieHeaderOverhead("  ", Duration.ofSeconds(1)));
+            assertThrows(NullPointerException.class,
+                    () -> SealedSessionCookieCodec.setCookieHeaderOverhead(COOKIE_NAME, null));
         }
     }
 

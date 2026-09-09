@@ -62,8 +62,16 @@ name, value *and* attributes together rather than the value in isolation.
 
 The 77-byte difference is fully accounted for: 23 bytes of `+__Host-sheriff-session=+`, plus the
 attributes the codec always appends -- `+; Max-Age=…; Path=/; Secure; HttpOnly; SameSite=Lax+`
-(`SealedSessionCookieCodec.java:340-341`), 54 bytes with the four-digit `Max-Age` observed on this
+(`SealedSessionCookieCodec.java:370`), 54 bytes with the four-digit `Max-Age` observed on this
 instance. So 5123 + 23 + 54 = 5200.
+
+*77 is this instance's overhead, not a constant of the design.* Both inputs are configured -- a
+longer `session.cookie_name` or a `ttl_seconds` past 9999 emits a wider header -- so the gateway
+derives the figure from the resolved pair through
+`SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, ttl)`, which the header assembly and
+boot validation both count against. `DEFAULT_SET_COOKIE_HEADER_OVERHEAD` survives as the
+default-configuration case the operator-facing catalogue quotes, pinned to that derivation by test,
+and no guard is built on it.
 
 Both figures exceed 4096, so nothing in the analysis below changes -- which is precisely why the
 distinction is easy to lose. It is recorded because the assertion this plan added measures the

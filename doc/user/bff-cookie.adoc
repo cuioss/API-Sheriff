@@ -127,8 +127,10 @@ summed together. Under the default cookie name the difference is 77 bytes -- 23 
 
 So the largest value budget that still emits a browser-safe header is *4019* (4096 - 77), not 4096.
 That is the number `ApiSheriff-124` warns above, and the number to declare when you declare the key
-at all. A custom `session.cookie_name` moves the overhead by its own length difference; the warning
-threshold stays at the default-name figure.
+at all -- *under the default cookie name and TTL*. A custom `session.cookie_name` or a
+`ttl_seconds` past 9999 moves the overhead by its own length difference, and the warning threshold
+moves with it: the gateway derives the overhead from the values you configured, so a longer name
+means a lower browser-safe budget than 4019 and `ApiSheriff-124` fires from there.
 ====
 
 The gateway therefore refuses to seal an over-budget session rather than truncating it, and logs a
