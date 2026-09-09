@@ -51,8 +51,11 @@ import jakarta.inject.Inject;
  * <ul>
  *   <li>The runtime {@code javax.net.ssl.trustStore} system property governs every leg that holds a
  *       raw JDK {@code TrustManager} — the confidential-client OIDC engine among them, which performs
- *       its discovery, token, refresh and logout calls with the JVM default {@code TrustManager} alone
- *       and exposes no per-client TLS-trust seam. No per-client TLS pin is attempted on that leg.</li>
+ *       its discovery, token and refresh calls with the JVM default {@code TrustManager} alone
+ *       and exposes no per-client TLS-trust seam. No per-client TLS pin is attempted on that leg.
+ *       Logout is deliberately absent from that list: it builds an {@code end_session_endpoint}
+ *       redirect for the browser rather than dialling the IdP, and the token-revocation seam is
+ *       bound to a no-op in production wiring, so no outbound call is made for it to trust.</li>
  *   <li>The Quarkus {@code <default>} TLS bucket's trust material governs every leg that resolves
  *       through {@link TlsConfigurationRegistry}.</li>
  * </ul>
