@@ -143,8 +143,9 @@ matches no alternative in the sweep pattern, and the origin appears inside `redi
 base. It is limit-bearing purely on the base keys it inherits, so it needs no Coverage Matrix row of
 its own.
 
-What makes this overlay worth naming is that it is the fixture the standing remainder's
-session-refresh leeway item needs. The shared realm mints a 900-second access token, which puts the
+What makes this overlay worth naming is that it is the fixture the `refresh.leeway_seconds`
+row's boundary assertion needs -- the item it served stood in the standing remainder until this
+overlay made it reachable, and the row is `COVERED` because of it. The shared realm mints a 900-second access token, which puts the
 near-expiry window 870 seconds into a session and out of a test's reach; this overlay authenticates
 as `refresh-client`, whose client-level `access.token.lifespan` is 45, moving that window to
 15s--45s. The declared `refresh.leeway_seconds: 30` is unchanged here -- the overlay changes what the
@@ -157,9 +158,10 @@ leeway is measured *against*, never the leeway itself.
 `asset_defaults.content_types`, G1, G11). Citing this overlay per row would add a *fifth* line number
 to each of the seven `×4` rows and a *second* to six of the seven base-only rows -- *thirteen* rows,
 restating one fact thirteen times where it is better stated once: *derive it from the base citation.*
-The two remaining `gateway.yaml` rows in the matrix cite an overlay only
-(`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`) and declare keys the
-base does not, so they are outside this derivation entirely.
+The three remaining `gateway.yaml` rows in the matrix cite an overlay only
+(`sheriff-config-cookie/gateway.yaml`, `sheriff-config-mtls/gateway.yaml`,
+`sheriff-config-ws-admission/gateway.yaml`) and declare keys the base does not, so they are outside
+this derivation entirely.
 
 The thirteenth-versus-fourteenth row is not an off-by-one: the base-only row that would gain *no*
 citation is `tls.passthrough_sni` itself, the one key this overlay does **not** carry -- and that
@@ -302,18 +304,20 @@ declaration's *existence* is proven while its *boundary* is not.
   built-in; no served-asset content type is asserted at runtime
 
 | `oidc.session.refresh.leeway_seconds: 30`
-  `gateway.yaml` ×8 -- base:293, cookie:174, egress-verify-off:143, egress-verify-on:143,
-  mtls:154, passthrough-empty:309, refresh:279, ws-admission:133
+  `gateway.yaml` ×4 -- base:293, cookie:174, mtls:154, ws:133
 | Session refresh scheduling
 | COVERED
 | `BffTokenRefreshIT` on the dedicated `api-sheriff-refresh` instance -- the only place the boundary
   is reachable, because it needs an access-token lifespan shorter than the leeway is wide. The
   `refresh-client` mints a 45-second token, so the near-expiry window opens at
-  `lifespan - leeway` = 15s, and the row's matched control pair straddles exactly that edge:
-  `currentOutcomeReusesTheMediatedToken` calls *inside* the window and asserts a byte-identical
-  bearer (CURRENT -- nothing rotated), while `refreshedOutcomeRotatesTheMediatedToken` calls *after*
-  it opens and asserts a different bearer (REFRESHED). Move the declared 30 either way and one of
-  the two goes red, which is what makes this the boundary rather than a smoke test.
+  `lifespan - leeway` = 15s, and the row's matched control pair straddles exactly that edge -- from
+  *opposite sides*, which is the whole of what makes it a boundary:
+  `currentOutcomeReusesTheMediatedToken` makes its two calls immediately after login with *no wait*,
+  so they land *before* the window opens, where no refresh is due, and asserts a byte-identical
+  bearer (CURRENT -- nothing rotated); `refreshedOutcomeRotatesTheMediatedToken` sleeps 22 seconds
+  to land *inside* the window, where a refresh *is* due, and asserts a different bearer (REFRESHED).
+  Move the declared 30 either way and one of the two goes red, which is what makes this the boundary
+  rather than a smoke test.
   `mediatedTokenCarriesTheDeclaredLifespan` is the precondition control -- it asserts the 45-second
   lifespan is genuinely in effect, without which the window would be unreachable and both branches
   would pass vacuously.
@@ -328,13 +332,22 @@ declaration's *existence* is proven while its *boundary* is not.
   `sheriff-config-cookie/gateway.yaml:171`
 | `SealedSessionCookieCodec` seal-time budget *and* the derived pre-route `Cookie` header cap --
   one declared number driving both ends of the round trip
-| COVERED
-| The nine cookie-mode ITs (`BffCookieSessionIT` ×6, `BffCookieStatelessnessIT` ×3) are the
-  assertion, by construction rather than by naming the number: this instance seals access + id +
-  refresh into 5123 bytes, so at the 4096 default the codec refuses the seal (`ApiSheriff-114`) and
-  every one of the nine fails `302` vs `500` at login. Delete the key and all nine go red -- the
-  deleted-key test the note's own methodology asks for. The negative control is the *other* seven
-  instances, which declare no budget and keep the 4096 default without ever approaching it.
+| PARTIAL
+| *Proven -- the key acts.* The nine cookie-mode ITs (`BffCookieSessionIT` ×6,
+  `BffCookieStatelessnessIT` ×3) are a deleted-key control, by construction rather than by naming
+  the number: this instance seals access + id + refresh into 5123 bytes, so at the 4096 default the
+  codec refuses the seal (`ApiSheriff-114`) and every one of the nine fails `302` vs `500` at login.
+  Delete the key and all nine go red -- exactly the deletion discriminator this note's own
+  methodology asks for. The negative control is the *other* seven instances, which declare no budget
+  and keep the 4096 default without ever approaching it.
+
+  *Not proven -- the declared VALUE at its boundary.* What those nine exercise is the *4096
+  default's* refusal, never the *8192 declaration's* admission. The seal is 5123 bytes, 3069 clear
+  of 8192, so nothing here approaches the declared cap: lower the 8192 to any value at or above 5123
+  and all nine stay green. By this note's `COVERED` definition -- asserted *at its boundary* with a
+  matched positive control -- that is one leg, so the row is `PARTIAL` rather than `COVERED`.
+  Closing it means a fixture that seals to just under and just over 8192; padding this row would be
+  worse than recording the honest half.
 
 | *G1* `security_defaults.max_authorization_header_value_length: 8192`
   `sheriff-config/gateway.yaml:50`
@@ -464,8 +477,8 @@ scoped to the host its own `jwks.url` names, but no runtime egress refusal is ex
 note's own vocabulary that is not `COVERED`, so G2's runtime leg is *still open* and is counted
 below rather than dropped.
 
-*Eight items remain* -- the G2 runtime egress-refusal leg, G6--G11, plus the session-refresh leeway
-boundary -- and they are listed as the standing remainder so the class stays countable.
+*Seven items remain* -- the G2 runtime egress-refusal leg and G6--G11 -- and they are listed as the
+standing remainder so the class stays countable.
 
 [cols="1,1,1,4"]
 |===
@@ -555,19 +568,20 @@ enlarge exactly the hole this note has chosen to report.
 == Report-Only Finding: the inventory guard partitions files, not keys
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
-paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the ten
-paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file *boolean*
-predicate ("does this file declare at least one limit-shaped key"), not a key enumeration, so the
-assertion's granularity is the file and never the key.
+paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
+thirteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+*boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
+so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *ten already limit-bearing* files leaves
-the computed set identical to the parsed one. The build stays green and no Coverage Matrix row is
-forced. Only a key that makes one of the remaining three --
-`sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml` or
-`sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Ten of thirteen is the *majority* of the surface, so this is the ordinary case rather than an edge
-one: for those ten files the "add its row here in the same change" instruction that closes this
-note rests on contributor convention, not on the guard.
+The consequence: adding a limit-shaped key to one of the *thirteen already limit-bearing* files
+leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
+row is forced. Only a key that makes one of the remaining four --
+`sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
+`sheriff-config/endpoints/untrusted.yaml` or `sheriff-config/topology.properties` -- limit-bearing
+crosses the partition and fails the build. Thirteen of seventeen is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those thirteen files the "add its row here
+in the same change" instruction that closes this note rests on contributor convention, not on the
+guard.
 
 This is *reported, not fixed*, for the same reason as the finding above. Closing it means deriving
 the Coverage Matrix's own *qualified* keys and comparing them exactly against the descriptors --

@@ -50,8 +50,9 @@ import org.junit.jupiter.api.Test;
  * <strong>What this suite proves.</strong> Each of the three terminal outcomes is reached through the
  * real edge and asserted by an observable that would differ had the branch not been taken:
  * <ul>
- *   <li>{@code CURRENT} — two mediated calls inside the window carry a <em>byte-identical</em>
- *       {@code Authorization} header. A refresh would have rotated it.</li>
+ *   <li>{@code CURRENT} — two mediated calls made <em>before</em> the window opens carry a
+ *       <em>byte-identical</em> {@code Authorization} header. Outside the near-expiry window no
+ *       refresh is due, so a rotation here would mean one was driven early.</li>
  *   <li>{@code REFRESHED} — a mediated call after the window opens carries a <em>different</em>
  *       {@code Authorization} header. The proof is the changed upstream bearer, never session
  *       continuity: a session that merely still works proves only that it was not destroyed, which is
@@ -127,6 +128,14 @@ class BffTokenRefreshIT {
     /** The host-published Keycloak origin the test JVM can reach (compose {@code 1443 -> 8443}). */
     private static final String KEYCLOAK_ORIGIN = "https://localhost:1443";
 
+    /**
+     * The browser session cookie this instance binds. The refresh descriptor declares no
+     * {@code session.cookie_name}, so it resolves {@code SessionCookieCodec.DEFAULT_COOKIE_NAME}.
+     * Spelled out rather than imported: this is a black-box IT and the cookie name is part of the
+     * wire contract it observes, not an implementation detail it may reach into.
+     */
+    private static final String SESSION_COOKIE_NAME = "__Host-sheriff-session";
+
     /** The client-level {@code access.token.lifespan} declared on {@code refresh-client}. */
     private static final int ACCESS_TOKEN_LIFESPAN_SECONDS = 45;
 
@@ -157,18 +166,22 @@ class BffTokenRefreshIT {
     }
 
     @Test
-    @DisplayName("CURRENT: two calls inside the window mediate a byte-identical bearer and rotate nothing")
+    @DisplayName("CURRENT: two calls before the window opens mediate a byte-identical bearer and rotate nothing")
     void currentOutcomeReusesTheMediatedToken() {
         Session session = loginToRefreshInstance();
 
+        // Deliberately NO wait: both calls land within a second or two of login, and the near-expiry
+        // window does not open until lifespan - leeway = 15s. This is the BEFORE-the-window control
+        // that gives refreshedOutcomeRotatesTheMediatedToken (which sleeps into the window) its
+        // meaning — the two straddle the 15s edge from opposite sides.
         Response first = mediatedCall(session);
         Response second = mediatedCall(session);
 
         String firstBearer = authorizationOf(first);
         String secondBearer = authorizationOf(second);
         assertEquals(firstBearer, secondBearer,
-                "inside the leeway window no refresh is due, so the mediated bearer must be the very "
-                        + "same token; a difference here means a refresh was driven early");
+                "before the leeway window opens no refresh is due, so the mediated bearer must be the "
+                        + "very same token; a difference here means a refresh was driven early");
         assertNoSetCookie(second, "a CURRENT outcome rebinds nothing");
     }
 
@@ -276,23 +289,48 @@ class BffTokenRefreshIT {
     }
 
     /**
-     * Asserts the response clears the browser session cookie — the observable that distinguishes a
+     * Asserts the response clears <em>the session cookie</em> — the observable that distinguishes a
      * destroyed session from a merely rejected request.
+     * <p>
+     * Both halves are load-bearing and are asserted on the SAME header, never across two. Matching
+     * the {@link #SESSION_COOKIE_NAME} alone would be satisfied by a session cookie re-emitted with a
+     * live value; matching an expiry alone would be satisfied by any unrelated cookie the edge
+     * happens to clear. Only a header that names the session cookie AND carries an empty value AND
+     * carries an expiry actually removes it from the browser — without all three the FAILED tests
+     * could pass while {@value #SESSION_COOKIE_NAME} stays live and the next request replays a
+     * session the gateway has destroyed.
      */
     private static void assertClearsSessionCookie(Response response) {
         List<String> setCookies = response.getHeaders().getValues("Set-Cookie");
         assertFalse(setCookies.isEmpty(),
                 "a failed refresh destroys the session, so the response must clear the session cookie");
-        boolean clearing = setCookies.stream().anyMatch(BffTokenRefreshIT::isClearingCookie);
+        boolean clearing = setCookies.stream().anyMatch(BffTokenRefreshIT::clearsTheSessionCookie);
         assertTrue(clearing,
-                "expected a clearing Set-Cookie (empty value, Max-Age=0 or a past Expires); got " + setCookies);
+                "a failed refresh must clear " + SESSION_COOKIE_NAME + " itself — one Set-Cookie naming "
+                        + "that cookie with an empty value AND an expiry (Max-Age=0 or the epoch "
+                        + "Expires); anything less leaves the cookie live in the browser and the next "
+                        + "request replays a destroyed session. Got " + setCookies);
     }
 
-    private static boolean isClearingCookie(String setCookie) {
-        String lower = setCookie.toLowerCase(Locale.ROOT);
-        return lower.contains("max-age=0")
-                || lower.contains("expires=thu, 01 jan 1970")
-                || lower.matches("^[^=]+=;.*");
+    /**
+     * Whether one {@code Set-Cookie} header clears {@link #SESSION_COOKIE_NAME}. The gateway's own
+     * clearing form is {@code SessionCookieCodec#toClearingSetCookieHeader()} —
+     * {@code __Host-sheriff-session=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax} — and the
+     * epoch {@code Expires} is accepted as the equivalent legacy shape.
+     */
+    private static boolean clearsTheSessionCookie(String setCookie) {
+        int equals = setCookie.indexOf('=');
+        if (equals < 0 || !SESSION_COOKIE_NAME.equals(setCookie.substring(0, equals).trim())) {
+            return false;
+        }
+        String remainder = setCookie.substring(equals + 1);
+        int firstAttribute = remainder.indexOf(';');
+        String value = (firstAttribute < 0 ? remainder : remainder.substring(0, firstAttribute)).trim();
+        if (!value.isEmpty()) {
+            return false;
+        }
+        String lower = remainder.toLowerCase(Locale.ROOT);
+        return lower.contains("max-age=0") || lower.contains("expires=thu, 01 jan 1970");
     }
 
     /**
