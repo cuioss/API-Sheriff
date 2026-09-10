@@ -358,8 +358,7 @@ class SealedSessionCookieCodecTest {
         }
 
         private static byte[] deflate(byte[] plaintext) {
-            Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
-            try {
+            try (Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION)) {
                 deflater.setInput(plaintext);
                 deflater.finish();
                 ByteArrayOutputStream compressed = new ByteArrayOutputStream(plaintext.length);
@@ -368,8 +367,6 @@ class SealedSessionCookieCodecTest {
                     compressed.write(chunk, 0, deflater.deflate(chunk));
                 }
                 return compressed.toByteArray();
-            } finally {
-                deflater.end();
             }
         }
 

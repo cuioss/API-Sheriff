@@ -512,8 +512,7 @@ public final class SealedSessionCookieCodec {
      * nonce is a fixed floor on what any level can achieve.
      */
     private static byte[] deflate(byte[] plaintext) {
-        Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
-        try {
+        try (Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION)) {
             deflater.setInput(plaintext);
             deflater.finish();
             ByteArrayOutputStream compressed = new ByteArrayOutputStream(plaintext.length);
@@ -522,8 +521,6 @@ public final class SealedSessionCookieCodec {
                 compressed.write(chunk, 0, deflater.deflate(chunk));
             }
             return compressed.toByteArray();
-        } finally {
-            deflater.end();
         }
     }
 
@@ -539,8 +536,7 @@ public final class SealedSessionCookieCodec {
      * {@code payload-format} rejection: "no session", never an error.
      */
     private static Optional<byte[]> inflate(byte[] compressed) {
-        Inflater inflater = new Inflater();
-        try {
+        try (Inflater inflater = new Inflater()) {
             inflater.setInput(compressed);
             ByteArrayOutputStream plaintext = new ByteArrayOutputStream(compressed.length);
             byte[] chunk = new byte[ZIP_CHUNK_BYTES];
@@ -559,8 +555,6 @@ public final class SealedSessionCookieCodec {
             return Optional.of(plaintext.toByteArray());
         } catch (DataFormatException _) {
             return Optional.empty();
-        } finally {
-            inflater.end();
         }
     }
 
