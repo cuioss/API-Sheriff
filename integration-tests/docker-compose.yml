@@ -1517,8 +1517,6 @@ services:
       # https) would fail closed against it. api-sheriff-plain-mgmt is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid
       # cookie-refresh gateway.yaml resolves to via EnvSecretResolver. refresh-secret, NOT
