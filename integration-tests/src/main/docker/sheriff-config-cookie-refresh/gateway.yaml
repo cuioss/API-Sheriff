@@ -8,8 +8,8 @@
 # sealed-cookie session that ALSO refreshes. Session mode, the refresh switch and the minting client
 # are each a property of the whole gateway process, so none of them can be varied per request on an
 # existing instance — sheriff-config-cookie holds refresh OFF and sheriff-config-refresh holds
-# session mode SERVER. Neither can be flipped
-# without destroying the contract it was built to prove, which is why this third document exists.
+# session mode SERVER. Neither can be flipped without destroying the contract it was built to
+# prove, which is why this third document exists.
 #
 # It is the sibling cookie document (sheriff-config-cookie/gateway.yaml) with exactly THREE
 # deliberate behavioural differences:

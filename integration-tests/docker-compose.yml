@@ -1476,17 +1476,13 @@ services:
   # --- The cookie-mode-WITH-REFRESH proof rig ----------------------------------------------------
   # The one combination no other instance can carry. Session mode, the refresh switch and the
   # minting client are each process-wide, so this instance cannot be folded into either sibling:
-  # api-sheriff-cookie holds refresh OFF and api-sheriff-refresh holds session mode SERVER.
-  # Flipping either would destroy the
-  # contract that instance exists to prove, so the combination gets its own process, published on
-  # 10455 with management port 19011.
+  # api-sheriff-cookie holds refresh OFF and api-sheriff-refresh holds session mode SERVER. Flipping
+  # either would destroy the contract that instance exists to prove, so the combination gets its own
+  # process, published on 10455 with management port 19011.
   #
   # Those two numbers are NOT the next ones after api-sheriff-refresh's 10452/19009, and the skip is
-  # deliberate: api-sheriff-no-certificate below already publishes 10453, 10454 and 19010. It is the
-  # one gateway service this stack starts that doc/development/integration-test-topology.adoc has
-  # never enumerated and the topology SVG has never drawn, so reading either of those for the next
-  # free port yields a number the runtime then refuses to bind. Allocate host ports against THIS
-  # file, never against the topology document.
+  # deliberate: api-sheriff-no-certificate below already publishes 10453, 10454 and 19010.
+  # Allocate host ports against THIS file, never against the topology document.
   #
   # It is a whole-block mirror of api-sheriff-cookie above, with five per-instance values and
   # nothing else: the two published ports, LOG_FILE_PATH, the overlay it mounts, OIDC_CLIENT_SECRET,

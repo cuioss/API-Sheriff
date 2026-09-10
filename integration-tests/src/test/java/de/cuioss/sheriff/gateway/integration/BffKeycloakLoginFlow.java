@@ -118,8 +118,8 @@ final class BffKeycloakLoginFlow {
      * <p>
      * Three properties this instance combines are each a property of the whole gateway process, so
      * the combination fits on no existing instance: {@link #COOKIE_GATEWAY_ORIGIN} runs cookie mode
-     * with {@code refresh.enabled: false}, and {@link #REFRESH_GATEWAY_ORIGIN} runs the refresh path in
-     * <em>server</em> mode, where the session lives server-side and the cookie carries only an opaque
+     * with {@code refresh.enabled: false}, and {@link #REFRESH_GATEWAY_ORIGIN} runs the refresh
+     * path in <em>server</em> mode, where the session lives server-side and the cookie carries an opaque
      * handle. Only here does a sealed cookie that <em>is</em> the session also have to absorb a
      * rotated token set. {@code BffCookieRefreshIT} drives this origin.
      * <p>

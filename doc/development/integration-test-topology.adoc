@@ -162,8 +162,8 @@ collapsed into one annotated group that names each of them with its port pair:
 | Session mode, the refresh switch and the minting client are each process-wide, so the one
   combination that matters most to a cookie-mode operator -- a *stateless sealed-cookie session that
   also refreshes* -- fits on neither sibling: `api-sheriff-cookie` holds refresh off and
-  `api-sheriff-refresh` stays in server mode.
-  This instance is the proof rig for that combination. It overlays the cookie document with exactly
+  `api-sheriff-refresh` stays in server mode. This instance is the proof rig for that combination.
+  It overlays the cookie document with exactly
   three behavioural differences -- `refresh-client` as the minting client, `session.refresh.enabled:
   true`, and the 10455 gateway origin -- and declares *no* `max_cookie_size` override, so it runs on
   the lowered 4019-byte browser-safe default and the size question `BffCookieRefreshIT` exists to
