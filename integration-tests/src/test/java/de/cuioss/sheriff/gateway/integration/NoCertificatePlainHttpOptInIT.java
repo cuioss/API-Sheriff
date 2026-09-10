@@ -342,7 +342,10 @@ class NoCertificatePlainHttpOptInIT {
                             () -> "remedy two is 'terminate TLS instead': " + output),
                     () -> assertTrue(output.contains("silently inert"),
                             () -> "the message must say WHY the combination is refused rather than "
-                                    + "ignored — the requirement never runs at all: " + output));
+                                    + "ignored — the requirement never runs at all: " + output),
+                    () -> assertFalse(output.contains(FRAMEWORK_REFUSAL),
+                            () -> "reaching the framework's own message means this gate did not act "
+                                    + "first: " + output));
         }
 
         @Test
@@ -364,7 +367,10 @@ class NoCertificatePlainHttpOptInIT {
                     () -> assertTrue(output.contains("remove the tls.passthrough_sni block"),
                             () -> "remedy one is 'drop the passthrough topology': " + output),
                     () -> assertTrue(output.contains("remove " + OPT_IN_KEY),
-                            () -> "remedy two is 'terminate TLS instead': " + output));
+                            () -> "remedy two is 'terminate TLS instead': " + output),
+                    () -> assertFalse(output.contains(FRAMEWORK_REFUSAL),
+                            () -> "reaching the framework's own message means this gate did not act "
+                                    + "first: " + output));
         }
     }
 
@@ -495,18 +501,49 @@ class NoCertificatePlainHttpOptInIT {
                     () -> "the login redirect must emit " + BINDING_COOKIE + "; Set-Cookie headers "
                             + "were: " + response.headers().getValues("Set-Cookie"));
             assertAll("nothing relaxes the hardening for cleartext — that is the whole verdict",
-                    () -> assertTrue(bindingCookie.contains("Secure"),
+                    () -> assertTrue(hasAttribute(bindingCookie, "Secure"),
                             () -> "Secure is emitted unconditionally, which is exactly why a browser "
                                     + "reaching this port over http:// would drop the cookie: "
                                     + bindingCookie),
-                    () -> assertTrue(bindingCookie.contains("HttpOnly"),
+                    () -> assertTrue(hasAttribute(bindingCookie, "HttpOnly"),
                             () -> "HttpOnly is unconditional too: " + bindingCookie),
-                    () -> assertTrue(bindingCookie.contains("Path=/"),
+                    () -> assertTrue(hasAttribute(bindingCookie, "Path=/"),
                             () -> "Path=/ is one of the three attributes the __Host- prefix requires: "
                                     + bindingCookie),
-                    () -> assertTrue(bindingCookie.contains("SameSite=Lax"),
+                    () -> assertTrue(hasAttribute(bindingCookie, "SameSite=Lax"),
                             () -> "SameSite=Lax pairs with the query response mode the gateway drives: "
                                     + bindingCookie));
+        }
+
+        /**
+         * Whether a {@code Set-Cookie} header carries an attribute as a COMPLETE attribute token.
+         * <p>
+         * <strong>A substring test asserts less than these four messages claim, in both directions.</strong>
+         * {@code contains("Path=/")} is satisfied by {@code Path=/auth} — a narrower path than the
+         * {@code __Host-} prefix permits at all — so the assertion would pass on precisely the cookie
+         * whose scoping had been weakened. And {@code Secure} or {@code HttpOnly} appearing anywhere
+         * in the opaque cookie VALUE satisfies the test without the gateway having emitted either
+         * attribute, which makes the whole hardening verdict reportable from a coincidence.
+         * <p>
+         * The first {@code ;}-delimited component is the {@code name=value} pair (RFC 6265 §4.1.1),
+         * so it is dropped before any comparison; each remaining component is an
+         * {@code attribute-name} optionally followed by {@code =attribute-value}, and is compared
+         * whole. The comparison ignores case because attribute names are case-insensitive, and the
+         * two values pinned here — a {@code /} path and the {@code Lax} SameSite token — are
+         * unaffected by that latitude.
+         *
+         * @param setCookie the emitted {@code Set-Cookie} header value
+         * @param attribute the attribute token expected on it, e.g. {@code Secure} or {@code Path=/}
+         * @return {@code true} when the header carries exactly that attribute
+         */
+        private boolean hasAttribute(String setCookie, String attribute) {
+            String[] components = setCookie.split(";");
+            for (int i = 1; i < components.length; i++) {
+                if (components[i].trim().equalsIgnoreCase(attribute)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**
