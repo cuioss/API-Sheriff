@@ -179,12 +179,21 @@ test.describe('per-cookie size budget', () => {
       `attribute arm (name+value fixed at ${FIXED_NAME_VALUE_BYTES}): stored ${attributeArm.storable} ` +
       `total bytes, first rejection at ${attributeArm.rejectedAt ?? 'none below the ' + ATTRIBUTE_ARM_CEILING_BYTES + '-byte ceiling'}`;
 
+    // The compared quantity is the WHOLE candidate, not the half the arm varies. RFC 6265 section 6.1
+    // budgets a cookie's name, value and attributes together, while `valueArm.storable` is the
+    // name+value size alone — every candidate also carried FIXED_ATTRIBUTES. A browser that stops at
+    // exactly 4096 total bytes therefore stores 4096 minus those attributes of name+value, and
+    // comparing that half against the floor would fail a browser that in fact honours it.
+    const storableWholeCookieBytes = valueArm.storable + FIXED_ATTRIBUTES.length;
+
     // The assertion is the FLOOR, not the measurement. A browser storing more than 4096 is headroom
     // this project does not spend: the gateway's bar stays at the RFC floor less its cookie name and
     // attributes, because it ships to every browser and the floor is what all of them guarantee.
     expect(
-      valueArm.storable,
-      `the browser must honour the RFC 6265 section 6.1 per-cookie floor — ${measured}`
+      storableWholeCookieBytes,
+      `the browser must honour the RFC 6265 section 6.1 per-cookie floor — ${storableWholeCookieBytes} ` +
+        `whole-cookie bytes, i.e. name+value plus the ${FIXED_ATTRIBUTES.length}-byte fixed ` +
+        `attributes — ${measured}`
     ).toBeGreaterThanOrEqual(BROWSER_COOKIE_BUDGET_BYTES);
 
     // Guards the measurement itself rather than the browser: a bisection that never observed a

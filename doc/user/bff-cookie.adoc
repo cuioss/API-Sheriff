@@ -234,8 +234,10 @@ The current format is `FORMAT_VERSION` *3*, and the bump to it was the packaging
 payload became length-prefixed raw UTF-8 that is deflated before encryption, replacing version 2's
 per-field base64 armouring. That is the change that made a refresh-carrying session fit the budget.
 The bump before it, to version 2, added the per-session identity nonce. A cookie in either retired
-format is refused at an authenticated version gate before any decryption is attempted -- never
-mis-parsed, and with deliberately no acceptance path.
+format is refused at an explicit version gate *before* decryption: the version byte is read and
+compared before any cipher is constructed. The version an accepted cookie carries is authenticated in
+turn -- AES-GCM binds it into the associated data -- but that happens after the gate, not at it. So a
+retired format is never mis-parsed, and there is deliberately no acceptance path.
 
 == Operate
 

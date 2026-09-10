@@ -32,6 +32,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.zip.Deflater;
 import javax.crypto.Cipher;
@@ -54,7 +55,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link SealedSessionCookieCodec} — the AES-256-GCM crypto core of the stateless
@@ -236,8 +236,21 @@ class SealedSessionCookieCodecTest {
                     "an unknown format version is refused before any decrypt attempt");
         }
 
+        /**
+         * Every version below the current {@code FORMAT_VERSION}, derived from it rather than listed
+         * beside it. A hand-kept list mirrors a set defined elsewhere, so the next bump could retire a
+         * version this regression never exercises while the test stays green; deriving the range means
+         * a bump enrols the version it retires without anyone remembering to.
+         *
+         * @return one argument per retired format version, as the {@code byte} the header carries
+         */
+        static Stream<Arguments> retiredFormatVersions() {
+            return IntStream.range(1, SealedSessionCookieCodec.FORMAT_VERSION)
+                    .mapToObj(retired -> Arguments.of((byte) retired));
+        }
+
         @ParameterizedTest
-        @ValueSource(bytes = {1, 2})
+        @MethodSource("retiredFormatVersions")
         @DisplayName("Should reject a cookie stamped with a retired format version, before any decrypt")
         void shouldRejectRetiredFormatVersions(byte retired) throws Exception {
             String sealed = codec.seal(payload());
@@ -245,9 +258,9 @@ class SealedSessionCookieCodecTest {
             raw[0] = retired;
 
             assertTrue(codec.unseal(Base64.getUrlEncoder().withoutPadding().encodeToString(raw)).isEmpty(),
-                    "the version bump to 3 is a clean break: a cookie stamped with a retired version is "
-                            + "refused at the version gate, with no Cipher constructed, rather than being "
-                            + "inflated and parsed against the new framing");
+                    "every version below FORMAT_VERSION is a clean break: a cookie stamped with a "
+                            + "retired version is refused at the version gate, with no Cipher constructed, "
+                            + "rather than being inflated and parsed against the current framing");
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, "unknown-version");
         }
 

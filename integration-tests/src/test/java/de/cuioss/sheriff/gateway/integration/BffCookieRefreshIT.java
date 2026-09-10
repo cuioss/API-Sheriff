@@ -186,6 +186,7 @@ class BffCookieRefreshIT {
         Session session = login();
         sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
         Response afterRefresh = mediatedCall(session.gatewayCookies());
+        String refreshedAuthorization = authorizationOf(afterRefresh);
         String resealed = afterRefresh.getCookie(SESSION_COOKIE);
         assertNotNull(resealed, "this test needs an actual re-seal to replay; none was emitted");
         Map<String, String> resealedJar = new HashMap<>(session.gatewayCookies());
@@ -199,8 +200,18 @@ class BffCookieRefreshIT {
         // detect.
         assertEquals("GET", subsequent.path("method"),
                 "the re-sealed cookie must resolve to the same live session and keep mediating");
-        assertNotNull(authorizationOf(subsequent),
-                "the re-sealed session must still mediate a bearer upstream");
+        // Asserting merely that SOME bearer is mediated would be satisfied by an implementation that
+        // rotates the refreshing request's bearer but re-seals the OLD token set: the replay would
+        // simply refresh those old tokens again and answer 200 with a non-null bearer. Pinning the
+        // value to the one the refresh produced is what makes this an assertion about what the cookie
+        // CARRIES rather than about what the previous response happened to mediate.
+        assertEquals(refreshedAuthorization, authorizationOf(subsequent),
+                "the re-sealed cookie must persist the rotated bearer, not an older token set");
+        List<String> resealSetCookies = subsequent.getHeaders().getValues("Set-Cookie");
+        assertTrue(resealSetCookies.isEmpty(),
+                "the rotated token was minted moments ago, so it is nowhere near expiry and there is "
+                        + "nothing to re-seal; a Set-Cookie here means the replayed cookie carried the "
+                        + "old token set and drove a second refresh; got " + resealSetCookies);
     }
 
     @Test
