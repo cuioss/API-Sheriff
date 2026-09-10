@@ -59,32 +59,8 @@
         <system>GitHub Issues</system>
     </issueManagement>
 
-    <!-- Required for ${version.token-sheriff}. The reactor consumes token-sheriff as a SNAPSHOT
-         while the JWKS hostname-verification passthrough (HttpJwksLoaderConfigBuilder#verifyHostname)
-         is unreleased, and Maven Central serves no snapshots — without this declaration a clean
-         runner with an empty local cache cannot resolve token-sheriff-bom at all and the build fails
-         at dependency resolution, whatever a warm developer cache says.
-
-         REMOVAL CONDITION: delete this block once ${version.token-sheriff} names a RELEASE version.
-         Leaving it in place after that point keeps a snapshot repository in the resolution path of
-         a release build, which is exactly the reproducibility hole snapshot repositories create:
-         a coordinate that resolves today can resolve to different bytes tomorrow. Releases are
-         disabled below for the same reason — this repository serves snapshots and nothing else. -->
-    <repositories>
-        <repository>
-            <id>sonatype-snapshots</id>
-            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-            <releases>
-                <enabled>false</enabled>
-            </releases>
-            <snapshots>
-                <enabled>true</enabled>
-            </snapshots>
-        </repository>
-    </repositories>
-
     <properties>
-        <version.token-sheriff>0.9.5-SNAPSHOT</version.token-sheriff>
+        <version.token-sheriff>0.9.5</version.token-sheriff>
         <version.json-schema-validator>3.0.7</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
@@ -123,13 +99,19 @@
             </dependency>
             <!-- Token Sheriff BOM: supplies token-sheriff-client / -client-quarkus / -validation-quarkus
                  versions. Declared after quarkus-bom on purpose: quarkus-bom is imported first, so it wins
-                 every artifact the two BOMs both manage. Verified against the resolved dependency graph at
-                 token-sheriff 0.9.5-SNAPSHOT / Quarkus 3.39.1: token-sheriff declares its Quarkus artifacts
-                 (quarkus-config-yaml, quarkus-hibernate-validator) at 3.39.2 — via token-sheriff-parent's
-                 own version.quarkus — and the quarkus-bom import pins them back to 3.39.1, after which
-                 io.smallrye.config converges on a single 3.17.2 across the whole reactor at compile scope.
-                 Reordering these two imports would pull a second Quarkus line into the build and split
-                 smallrye-config, which breaks Quarkus config-mapping augmentation.
+                 every artifact the two BOMs both manage. Re-measured against the resolved dependency graph
+                 at token-sheriff 0.9.5 / Quarkus 3.39.2: both sides now sit on the SAME Quarkus line, because
+                 this project and token-sheriff-parent both inherit version.quarkus from cui-quarkus-parent
+                 1.7.3. token-sheriff declares its Quarkus artifacts (quarkus-config-yaml,
+                 quarkus-hibernate-validator) at 3.39.2 and the quarkus-bom import agrees at 3.39.2, so the
+                 precedence is currently a no-op rather than a correction, and io.smallrye.config converges on
+                 a single 3.17.2 across the whole reactor at compile scope.
+
+                 That agreement is a coincidence of the moment, not a guarantee — the two version.quarkus
+                 values are separate inputs that only happen to resolve equal while both parents match. Keep
+                 the ordering: the instant the lines diverge again it is what stops a second Quarkus line
+                 entering the build and splitting smallrye-config, which breaks Quarkus config-mapping
+                 augmentation.
 
                  Re-measure this paragraph on every ${version.token-sheriff} bump. The numbers above are an
                  observation of ONE resolved graph, not a standing invariant: the upstream Quarkus line moves
