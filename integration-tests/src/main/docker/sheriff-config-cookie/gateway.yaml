@@ -156,21 +156,21 @@ oidc:
     # lets a second instance unseal a cookie this one sealed: the instances share only this key.
     encryption_key: ${SESSION_ENCRYPTION_KEY}
     ttl_seconds: 3600
-    # No max_cookie_size override: this instance keeps the 4096 default VALUE budget. Note the two
-    # figures are not the same measure — 4096 here bounds the sealed cookie value, while the ~4 KB
-    # a browser guarantees covers the whole Set-Cookie header (name + value + attributes, a further
-    # 77 bytes for this cookie), so the browser-safe value budget is 4019. The tension is real and
-    # belongs to the product, not to the test — a cookie-mode session that ALSO refreshes does not
-    # fit in that budget at all, because in cookie mode the session IS the cookie and access + id +
-    # refresh seals far past it. Raising the budget does not solve it, it only moves the failure
-    # into the browser, which drops the oversized Set-Cookie silently. The deployment-level answer
-    # is server mode, a smaller claim set, or an authorization server that issues no refresh
-    # token — never a larger default.
+    # No max_cookie_size override: this instance keeps the shipped default VALUE budget, which is
+    # 4019 — the largest value budget whose emitted Set-Cookie still fits the ~4 KB a browser
+    # guarantees, once the name, the __Host- prefix and the attributes are counted (a further 77
+    # bytes for this cookie under the default name and TTL). Raising it does not buy headroom, it
+    # only moves the failure into the browser, which drops an oversized Set-Cookie silently.
+    # A cookie-mode session that ALSO refreshes now fits: the version-3 packaging seals access +
+    # id + refresh to 2700 bytes, leaving 32.8 % of the budget spare. That is exercised on the
+    # separate api-sheriff-cookie-refresh instance, not here.
     refresh:
-      # OFF so the seal carries access + id only and stays inside the browser-safe default above.
+      # OFF so this instance covers the access + id cookie variant. It is off to keep the variants
+      # separated, NOT because a refreshing cookie session cannot fit — see the budget note above,
+      # and api-sheriff-cookie-refresh, which exercises exactly that case.
       # leeway_seconds stays declared: declared-limit-assertion-coverage.adoc cites it as a ×4 row
       # including this file, and its boundary is covered on the separate api-sheriff-refresh
-      # instance, which is where refresh is exercised.
+      # instance, which is where refresh leeway is exercised.
       enabled: false
       leeway_seconds: 30
     csrf:

@@ -31,11 +31,12 @@ In cookie mode the session *is* the cookie. Storing the refresh token alongside 
 tokens grew the sealed value to 5123 bytes
 (`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164` *as that file stood
 before this note's remediation*), and browsers are only required to accept 4096 bytes per cookie
-(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:117-130`).
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:176`,
+`BROWSER_PER_COOKIE_HEADER_GUARANTEE`).
 A browser therefore drops the `Set-Cookie` silently: no error, no session, an anonymous SPA. The
 same change had raised the instance budget to 8192 (`:171` in that same pre-remediation file), so the
 gateway's own seal-time guard -- `if (encoded.length() > maxCookieValueBytes)` at
-`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:264`
+`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:334`
 -- no longer fired either.
 
 [NOTE]

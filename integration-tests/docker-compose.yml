@@ -1488,9 +1488,10 @@ services:
   # free port yields a number the runtime then refuses to bind. Allocate host ports against THIS
   # file, never against the topology document.
   #
-  # It is a whole-block mirror of api-sheriff-cookie above, with four per-instance values and
-  # nothing else: the two published ports, LOG_FILE_PATH, the overlay it mounts, and
-  # OIDC_CLIENT_SECRET. That last one is not cosmetic and is NOT mirrored from the sibling: the
+  # It is a whole-block mirror of api-sheriff-cookie above, with five per-instance values and
+  # nothing else: the two published ports, LOG_FILE_PATH, the overlay it mounts, OIDC_CLIENT_SECRET,
+  # and SESSION_ENCRYPTION_KEY. The last two are not cosmetic and neither is mirrored from the
+  # sibling; the paragraph below states why the key differs. As for the secret: the
   # overlay names client_id refresh-client (whose 45-second access.token.lifespan is what brings the
   # near-expiry window within a test's reach), so it must present refresh-client's own secret or
   # every token call — including the refresh call this rig exists to drive — is rejected
@@ -1517,7 +1518,9 @@ services:
       de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
-      - "10455:8443"  # External test port for BffCookieRefreshIT (test.cookie.refresh.port)
+      - "10455:8443"  # External test port for BffCookieRefreshIT, hard-coded in
+                      # BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN — no system property
+                      # carries it, so this literal and that constant must move together
       - "19011:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
     environment:
       - QUARKUS_PROFILE=it

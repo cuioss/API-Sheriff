@@ -140,8 +140,11 @@ class BffCookieSessionIT {
                     "the sealed cookie must carry no readable segment of the mediated access token");
         }
         byte[] raw = Base64.getUrlDecoder().decode(sealed);
-        assertEquals((byte) 2, raw[0],
-                "the cookie value must be the version-2 sealed layout, not an opaque server-side handle");
+        // The literal tracks SealedSessionCookieCodec.FORMAT_VERSION by hand: this module tests the
+        // gateway black-box through its container, so it carries no api-sheriff class on its
+        // classpath and cannot reference the constant. Bump both together.
+        assertEquals((byte) 3, raw[0],
+                "the cookie value must be the version-3 sealed layout, not an opaque server-side handle");
     }
 
     @Test

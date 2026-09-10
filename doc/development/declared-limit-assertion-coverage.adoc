@@ -176,10 +176,12 @@ leeway is measured *against*, never the leeway itself.
 
 `sheriff-config-cookie-refresh/gateway.yaml` is outside the `×N` notation for the same reason, and it
 is derived from the *cookie* document rather than the base one: it is
-`sheriff-config-cookie/gateway.yaml` with three values repointed -- `oidc.client_id` to
+`sheriff-config-cookie/gateway.yaml` with three *behavioural* values repointed -- `oidc.client_id` to
 `refresh-client`, `session.refresh.enabled` from `false` to `true`, and the gateway origin from 10445
-to 10455 -- and no key added or removed. It therefore declares exactly the key set the cookie document
-declares, and the `×4` rows are **not** re-cited to include it. None of the three repointed values is
+to 10455 -- plus the `metadata.config_version` document label, which the overlay itself records as a
+label rather than a fourth behavioural difference. No key is added or removed. It therefore declares
+exactly the key set the cookie document declares, and the `×4` rows are **not** re-cited to include
+it. None of the three repointed values is
 limit-shaped: `client_id` and `enabled` match no alternative in the sweep pattern, and the origin
 appears inside `redirect_uri`, `post_logout_redirect_uri` and `csrf.trusted_origins`, whose *keys*
 are already cited. It is limit-bearing purely on the keys it shares with the cookie document, so it
