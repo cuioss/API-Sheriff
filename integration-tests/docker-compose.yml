@@ -1481,7 +1481,7 @@ services:
   # process, published on 10455 with management port 19011.
   #
   # Those two numbers are NOT the next ones after api-sheriff-refresh's 10452/19009, and the skip is
-  # deliberate: api-sheriff-no-certificate below already publishes 10453, 10454 and 19010.
+  # deliberate: api-sheriff-no-certificate above already publishes 10453, 10454 and 19010.
   # Allocate host ports against THIS file, never against the topology document.
   #
   # It is a whole-block mirror of api-sheriff-cookie above, with five per-instance values and
