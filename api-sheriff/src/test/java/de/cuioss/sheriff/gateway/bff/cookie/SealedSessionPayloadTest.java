@@ -172,7 +172,8 @@ class SealedSessionPayloadTest {
         @Test
         @DisplayName("Should decode nothing when bytes trail the ninth field")
         void shouldDecodeNothingFromTrailingBytes() {
-            byte[] withTrailer = Arrays.copyOf(minimalWireForm(), minimalWireForm().length + 1);
+            byte[] wellFormed = minimalWireForm();
+            byte[] withTrailer = Arrays.copyOf(wellFormed, wellFormed.length + 1);
 
             assertTrue(SealedSessionPayload.decode(withTrailer).isEmpty(),
                     "the buffer must be consumed exactly — a tenth field smuggled behind the ninth is a "

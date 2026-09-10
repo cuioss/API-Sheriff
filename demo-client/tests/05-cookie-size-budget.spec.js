@@ -67,9 +67,9 @@ const SESSION_COOKIE_NAME = '__Host-sheriff-session';
  * @param {'value'|'attributes'} arm.grow which part of the cookie grows
  * @param {number} arm.low a size known to be storable
  * @param {number} arm.high a size at or above the first rejection (the search ceiling)
- * @returns {Promise<{storable: number, rejectedAt: (number|null), probes: number}>} the largest
- *   storable size for the arm, the smallest size observed to be rejected (null when the ceiling was
- *   reached without a rejection), and how many probes it took
+ * @returns {Promise<{storable: number, rejectedAt: (number|null)}>} the largest storable size for
+ *   the arm, and the smallest size observed to be rejected (null when the ceiling was reached
+ *   without a rejection)
  */
 function measureArm(page, arm) {
   return page.evaluate(
@@ -109,26 +109,22 @@ function measureArm(page, arm) {
         return `${head}${'p'.repeat(Math.max(0, size - head.length))}`;
       };
 
-      let probes = 0;
       /**
-       * Counts each probe so a run reports how much work the bisection took.
+       * Renders one candidate size and reports whether the browser kept it.
        *
        * @param {number} size the candidate size
        * @returns {boolean} whether the browser stored it
        */
-      const attempt = (size) => {
-        probes += 1;
-        return storable(candidate(size));
-      };
+      const attempt = (size) => storable(candidate(size));
 
       // The low bound is an assumption the measurement rests on, so it is checked rather than
       // trusted: a browser that cannot store even the small probe would otherwise bisect its way to
       // a meaningless answer.
       if (!attempt(low)) {
-        return { storable: 0, rejectedAt: low, probes };
+        return { storable: 0, rejectedAt: low };
       }
       if (attempt(high)) {
-        return { storable: high, rejectedAt: null, probes };
+        return { storable: high, rejectedAt: null };
       }
 
       let keep = low;
@@ -141,7 +137,7 @@ function measureArm(page, arm) {
           reject = middle;
         }
       }
-      return { storable: keep, rejectedAt: reject, probes };
+      return { storable: keep, rejectedAt: reject };
     },
     {
       grow: arm.grow,
