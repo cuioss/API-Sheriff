@@ -130,8 +130,15 @@ TLS-terminating hop are two answers to the same question; pick one.
 is now the terminating hop rather than the client, so that declaration decides every client-address
 question. With no `forwarded` block, or an empty list, the peer gate trusts nobody: every inbound
 `X-Forwarded-For` is ignored, and because the gateway *regenerates* the forwarding family rather than
-propagating it, what the upstream is handed is derived from the peer alone -- the hop's address, for
-every request. Set the list to the hop's *exact* address as a `/32`. Never a bridge range, and never
+propagating it, there is then nothing left to regenerate from -- the upstream is handed *no*
+`X-Forwarded-For` at all. The gateway never falls back to synthesising one from the TCP peer:
+`ForwardPolicyStage.applyRegeneratedForwarding` hands the resolver an empty list for every forwarding
+name, and the resolver is never given the socket remote address in the first place. So an upstream
+that makes IP-based decisions -- a rate limit, an allow-list, an audit trail -- gets no client
+attribution and falls back to the address of its own connection, which is *the gateway's*: every
+client looks alike to it, including the ones an allow-list was meant to exclude. That silent
+uniformity is the failure mode this declaration prevents, and it is why the declaration is
+load-bearing rather than optional. Set the list to the hop's *exact* address as a `/32`. Never a bridge range, and never
 a range wide enough to contain the clients themselves: a client inside the trusted set has its own
 `X-Forwarded-For` believed and prepended, which is precisely the spoof the gate exists to stop.
 
