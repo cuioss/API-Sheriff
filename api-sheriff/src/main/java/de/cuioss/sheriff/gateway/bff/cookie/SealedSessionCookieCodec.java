@@ -367,8 +367,9 @@ public final class SealedSessionCookieCodec {
         Objects.requireNonNull(loginInstant, "loginInstant");
         Objects.requireNonNull(now, "now");
         long configuredTtlSeconds = Math.max(0L, sessionTtl.toSeconds());
-        long remaining = Math.min(configuredTtlSeconds,
-                Math.max(0L, Duration.between(now, loginInstant.plus(sessionTtl)).toSeconds()));
+        long remaining = Math.clamp(
+                Duration.between(now, loginInstant.plus(sessionTtl)).toSeconds(),
+                0L, configuredTtlSeconds);
         return cookieName + "=" + sealedValue + MAX_AGE_ATTRIBUTE + remaining + HARDENING_ATTRIBUTES;
     }
 

@@ -431,9 +431,10 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should keep the documented default-configuration constant equal to the derivation")
         void shouldPinTheDefaultConfigurationConstant() {
-            // 22 name bytes + '=' + "; Max-Age=" + four digits + "; Path=/; Secure; HttpOnly;
-            // SameSite=Lax" (40) = 77. The figure is spelled here independently of the production
-            // arithmetic because it is the number the operator-facing catalogue entries quote.
+            // Twenty-two bytes of default cookie name, one for the separator, ten for the Max-Age
+            // attribute label, four for a four-digit lifetime, and forty for the hardening
+            // attributes: seventy-seven in total. The figure is spelled here independently of the
+            // production arithmetic because it is the number the operator-facing catalogue quotes.
             assertEquals(77, SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD);
             assertEquals(SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD,
                     SealedSessionCookieCodec.setCookieHeaderOverhead(
@@ -445,8 +446,9 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should refuse a blank or absent cookie name rather than derive a nonsense overhead")
         void shouldRefuseUnusableInputs() {
+            Duration oneSecond = Duration.ofSeconds(1);
             assertThrows(IllegalArgumentException.class,
-                    () -> SealedSessionCookieCodec.setCookieHeaderOverhead("  ", Duration.ofSeconds(1)));
+                    () -> SealedSessionCookieCodec.setCookieHeaderOverhead("  ", oneSecond));
             assertThrows(NullPointerException.class,
                     () -> SealedSessionCookieCodec.setCookieHeaderOverhead(COOKIE_NAME, null));
         }
