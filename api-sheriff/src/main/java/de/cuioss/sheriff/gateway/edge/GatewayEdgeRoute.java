@@ -1417,7 +1417,7 @@ public class GatewayEdgeRoute {
      * The effective cap is {@code max(baseline.maxHeaderValueLength(), budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}.
      * Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
      * gateway: the shipped default budget
-     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}, 4096) plus the overhead is 4608,
+     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}, 4019) plus the overhead is 4531,
      * below that profile's 8192 baseline, so a cookie-mode BFF rejected {@code 400} every request
      * whose {@code Cookie} value sat between the two — while every OTHER header on the same gateway
      * was admitted to 8192. No operator misconfiguration was required. The {@code max} restores
@@ -1464,7 +1464,7 @@ public class GatewayEdgeRoute {
         Integer declaredBudget = session.maxCookieSize();
         int budget = declaredBudget != null ? declaredBudget : SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
         // max(), not an outright set: a carve-out may only ever ADMIT MORE length. The default budget
-        // plus the overhead is 4608, which sits BELOW the lenient profile's 8192 baseline, so setting
+        // plus the overhead is 4531, which sits BELOW the lenient profile's 8192 baseline, so setting
         // the cap outright turned this carve-out into a per-header TIGHTENING on every shipped-default
         // lenient cookie-mode gateway. Same bound as ThoroughChecksStage.carveOutConfigurationFor.
         int cap = Math.max(baseline.maxHeaderValueLength(), budget + COOKIE_HEADER_OVERHEAD_BYTES);

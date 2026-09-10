@@ -112,9 +112,10 @@ the re-login) before rolling this version out.
 == Cookie size budget
 
 Because the session travels in the cookie, its sealed value has a size budget --
-`session.max_cookie_size`, defaulting to 4096 bytes. Browsers are only required to accept 4 KB per
-cookie, so a larger value risks being *silently dropped* by the browser, leaving a session that can
-never be resolved.
+`session.max_cookie_size`, defaulting to *4019* bytes. That default is not a round number by
+accident: it is the largest value budget whose emitted `Set-Cookie` header still fits the ~4 KB per
+cookie a browser is required to keep, under the default cookie name and TTL. A larger value risks
+being *silently dropped* by the browser, leaving a session that can never be resolved.
 
 [IMPORTANT]
 .The budget key and the browser's 4 KB measure different things
@@ -125,12 +126,19 @@ summed together. Under the default cookie name the difference is 77 bytes -- 23 
 `+__Host-sheriff-session=+` plus 54 for the attributes the gateway always appends
 (`+; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax+`).
 
-So the largest value budget that still emits a browser-safe header is *4019* (4096 - 77), not 4096.
-That is the number `ApiSheriff-124` warns above, and the number to declare when you declare the key
-at all -- *under the default cookie name and TTL*. A custom `session.cookie_name` or a
-`ttl_seconds` past 9999 moves the overhead by its own length difference, and the warning threshold
-moves with it: the gateway derives the overhead from the values you configured, so a longer name
-means a lower browser-safe budget than 4019 and `ApiSheriff-124` fires from there.
+So the largest value budget that still emits a browser-safe header is *4019* (4096 - 77), not 4096 --
+which is why 4019 is the shipped default, and the number `ApiSheriff-124` warns above, *under the
+default cookie name and TTL*. A custom `session.cookie_name` or a `ttl_seconds` past 9999 moves the
+overhead by its own length difference, and the warning threshold moves with it: the gateway derives
+the overhead from the values you configured, so a longer name means a lower browser-safe budget than
+4019 and `ApiSheriff-124` fires from there.
+
+*Omitting the key does not opt out of that warning.* The gateway emits the same header whether the
+number was written down or left to the default, so the check reads the *effective* budget. It stays
+quiet on a default configuration -- 4019 plus the default 77 bytes lands exactly on the guarantee --
+and it fires on a gateway that omitted the key while running a longer cookie name or a wider TTL.
+That case used to pass in silence, because the default was 4096 and an omitted key was skipped
+outright.
 ====
 
 The gateway therefore refuses to seal an over-budget session rather than truncating it, and logs a
@@ -146,19 +154,46 @@ and what the refusal was protecting you from then happens in the browser instead
 nothing to anyone.
 
 [IMPORTANT]
+.Refresh is supported in cookie mode, with a measured and finite margin
 ====
-*Enabling `session.refresh` in this variant costs a third token in the seal.* The refresh token is
-stored in the session -- it has to be, because it is the only thing that re-contacts the IdP -- and
-in cookie mode the session *is* the cookie. Access + ID + refresh together commonly exceed the 4096
-default *value* budget -- which is why the integration suite's own cookie instance runs with
-`session.refresh` disabled, keeping its seal inside the default rather than declaring a larger
-budget.
+*This supersedes earlier guidance.* Previous releases of this guide said that access + ID + refresh
+together commonly exceeded the budget, and pointed you at the server-session variant as the answer
+whenever both refresh and browser-safe cookies were required. That is no longer the position: the
+sealed payload is now framed as length-prefixed raw UTF-8 and deflated before it is encrypted
+(`FORMAT_VERSION` 3), which is what made the three-token session fit.
 
-The failure is honest but blunt: the seal is refused and login answers `500`. Raising
-`max_cookie_size` above 4019 makes it work against this gateway while moving the risk into the
-browser, which is only required to accept 4 KB per *header* -- so treat a raised budget as viable
-for a controlled client, not as a general answer. Where both refresh and browser-safe cookies are
-required, use the link:../variants/02-bff-session.adoc[server-session variant].
+*Enabling `session.refresh` still costs a third token in the seal.* The refresh token has to be
+stored in the session -- it is the only thing that re-contacts the IdP -- and in cookie mode the
+session *is* the cookie. An access + ID + refresh session is therefore the largest this variant ever
+carries; the question is only how much room is left over.
+
+Measured on a three-token fixture built to the shape Keycloak issues for the `integration` realm:
+the framed plaintext is *3433 bytes*, and the sealed cookie value that leaves the gateway is *2700
+bytes* -- 78.6 % of the framed plaintext. Against the 4019-byte budget that leaves *1319 bytes*
+unused, *32.8 %* of the budget.
+
+*Read that margin as a budget for growth, not as spare capacity.* It is one realm's claim set, and
+two independent things spend it:
+
+* *A larger claim set.* Every mapper the IdP adds -- realm roles, group membership, audiences, user
+  properties -- travels inside the seal. A deployment whose IdP mints fatter tokens spends the
+  32.8 % first, and the gateway cannot trim what the IdP put there.
+* *A longer `session.cookie_name`, or a `ttl_seconds` past 9999.* These do not grow the payload;
+  they lower the bar. Both widen the per-header overhead, so the browser-safe value budget falls
+  below 4019 and the margin closes from the other side.
+
+When the margin does run out the failure is honest: the seal is refused (`ApiSheriff-114`) and login
+answers `500` -- loud, server-side and diagnosable. *Raising `max_cookie_size` past the browser-safe
+budget is not the remedy.* It silences that refusal without making the cookie deliverable, and moves
+the failure into the browser, which drops the oversized header silently and reports it to no one.
+The remedies that work are the ones above -- trim `scopes` and `user_info.allowed_claims` so the IdP
+issues less -- and, where those do not cover it, the
+link:../variants/02-bff-session.adoc[server-session variant], where token size is irrelevant because
+nothing crosses to the browser.
+
+The measurement, and the four routes weighed before this one shipped, are recorded in
+link:../development/bff-cookie.adoc[the contributor guide]. Note what the 4019 bar is: the floor
+every browser guarantees, not a limit measured in any particular browser.
 ====
 
 == What is unavailable in this variant
@@ -193,7 +228,16 @@ and there is deliberately no backward-compatible acceptance path.
 
 *Plan for it*: on an upgrade that bumps the format version, all existing cookie-mode sessions are
 invalidated at deploy time and users must log in again. There is no rolling migration -- schedule
-the deploy accordingly. The most recent bump added the per-session identity nonce.
+the deploy accordingly.
+
+The current format is `FORMAT_VERSION` *3*, and the bump to it was the packaging change: the sealed
+payload became length-prefixed raw UTF-8 that is deflated before encryption, replacing version 2's
+per-field base64 armouring. That is the change that made a refresh-carrying session fit the budget.
+The bump before it, to version 2, added the per-session identity nonce. A cookie in either retired
+format is refused at an explicit version gate *before* decryption: the version byte is read and
+compared before any cipher is constructed. The version an accepted cookie carries is authenticated in
+turn -- AES-GCM binds it into the associated data -- but that happens after the gate, not at it. So a
+retired format is never mis-parsed, and there is deliberately no acceptance path.
 
 == Operate
 

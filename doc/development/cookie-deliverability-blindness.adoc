@@ -31,12 +31,12 @@ In cookie mode the session *is* the cookie. Storing the refresh token alongside 
 tokens grew the sealed value to 5123 bytes
 (`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164` *as that file stood
 before this note's remediation*), and browsers are only required to accept 4096 bytes per cookie
-(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:117-130`).
+(`SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE`).
 A browser therefore drops the `Set-Cookie` silently: no error, no session, an anonymous SPA. The
 same change had raised the instance budget to 8192 (`:171` in that same pre-remediation file), so the
-gateway's own seal-time guard -- `if (encoded.length() > maxCookieValueBytes)` at
-`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:264`
--- no longer fired either.
+gateway's own seal-time guard -- the `encoded.length() > maxCookieValueBytes` check in
+`SealedSessionCookieCodec.seal()`, which raises `CookieSizeBudgetExceededException` -- no longer
+fired either.
 
 [NOTE]
 .Every `gateway.yaml` citation here is historical, deliberately
@@ -61,9 +61,11 @@ tree; re-derive the numbers from the pre-remediation revision of the file if you
 name, value *and* attributes together rather than the value in isolation.
 
 The 77-byte difference is fully accounted for: 23 bytes of `+__Host-sheriff-session=+`, plus the
-attributes the codec always appends -- `+; Max-Age=…; Path=/; Secure; HttpOnly; SameSite=Lax+`
-(`SealedSessionCookieCodec.java:370`), 54 bytes with the four-digit `Max-Age` observed on this
-instance. So 5123 + 23 + 54 = 5200.
+attributes the codec always appends -- `+; Max-Age=…; Path=/; Secure; HttpOnly; SameSite=Lax+`,
+which `SealedSessionCookieCodec.toSetCookieHeader` assembles from *two* constants:
+`MAX_AGE_ATTRIBUTE` (`+; Max-Age=+`) followed by the digits, then the 40-byte
+`HARDENING_ATTRIBUTES` (`+; Path=/; Secure; HttpOnly; SameSite=Lax+`). That is 54 bytes with the
+four-digit `Max-Age` observed on this instance. So 5123 + 23 + 54 = 5200.
 
 *77 is this instance's overhead, not a constant of the design.* Both inputs are configured -- a
 longer `session.cookie_name` or a `ttl_seconds` past 9999 emits a wider header -- so the gateway
@@ -87,7 +89,8 @@ Every one of the nine tests should have gone red the moment the payload crossed 
 *The nine* are `BffCookieSessionIT` (six tests) and `BffCookieStatelessnessIT` (three), both under
 `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/`. Both drive the dedicated
 cookie-mode instance `api-sheriff-cookie` on port 10445
-(`BffCookieSessionIT.java:83`, `BffCookieStatelessnessIT.java:68`).
+(`BffCookieSessionIT.COOKIE_ORIGIN` and `BffCookieStatelessnessIT.ORIGIN`, both bound to
+`BffKeycloakLoginFlow.COOKIE_GATEWAY_ORIGIN`).
 ====
 
 == Why Each of the Nine Passed
@@ -135,21 +138,24 @@ Three specific maskers were checked and none is present. Recording the negatives
 single confirmed explanation is worth more than a plausible one.
 
 A fixture that re-authenticates between steps:: Absent. Each test logs in exactly once, in its
-Arrange (`BffCookieSessionIT.java:99`, `:119`, `:151`, `:179`, `:201`, `:219`;
-`BffCookieStatelessnessIT.java:86`, `:111`, `:130`). The one mid-test re-login is at
-`BffCookieSessionIT.java:236`, and it is the property that test exists to prove, not a fixture
-smoothing over a failure.
+Arrange -- all six `BffCookieSessionIT` tests (`sealedSessionCookieIsHardened`,
+`sealedCookieValueCarriesNoReadableToken`, `sealedSessionMediatesAndStaysUsable`,
+`rpInitiatedLogoutClearsTheSealedCookie`, `tamperedCookieIsUnauthenticatedNeverServerError`,
+`unauthenticatableCookieDrivesFullReAuthentication`) and all three `BffCookieStatelessnessIT` tests.
+The one mid-test re-login is inside
+`BffCookieSessionIT.unauthenticatableCookieDrivesFullReAuthentication`, and it is the property that
+test exists to prove, not a fixture smoothing over a failure.
 
-A helper that re-seals rather than replaying:: Absent. `tamper`
-(`BffCookieSessionIT.java:287-292`) and `restampKeyId` (`:267-272`) mutate decoded bytes and
+A helper that re-seals rather than replaying:: Absent. `BffCookieSessionIT.tamper`
+and `BffCookieSessionIT.restampKeyId` mutate decoded bytes and
 re-encode them; neither constructs a cipher and neither re-seals. Both exist to produce a value the
 gateway must *reject*, so neither sits on a green path. The green path replays the callback's value
 verbatim.
 
 An assertion that reads the response body rather than the session state:: Present, but not masking.
-`sealedSessionMediatesAndStaysUsable` asserts against the go-httpbin echo body
-(`BffCookieSessionIT.java:164-171`) -- but it only reaches that body through a request the session
-had to authenticate, since the same call asserts `statusCode(200)` at `:162`. The body read is
+`sealedSessionMediatesAndStaysUsable` asserts against the go-httpbin echo body -- but it only
+reaches that body through a request the session had to authenticate, since the same call asserts
+`statusCode(200)` first. The body read is
 downstream of a genuine session check, not a substitute for one.
 
 === Per-test verdict
@@ -158,63 +164,55 @@ Under the counterfactual above, *seven of the nine go red and two stay green*. T
 green are structurally incapable of observing deliverability, and they would have been green against
 any client at all.
 
-[cols="3,1,3,1",options="header"]
+[cols="3,3,1",options="header"]
 |===
-| Test | Line | What its green actually establishes | Red under the counterfactual?
+| Test | What its green actually establishes | Red under the counterfactual?
 
 | `sealedSessionCookieIsHardened`
-| `:97`
 | The attributes on the *emitted* `Set-Cookie`. It reads `callbackCookies()` -- the parsed response
   header -- and never issues a request with the session.
 | *No*
 
 | `sealedCookieValueCarriesNoReadableToken`
-| `:117`
-| That the sealed value carries no readable token segment. Reads the jar at `:120` and asserts it
-  non-null at `:121`.
+| That the sealed value carries no readable token segment. Reads the jar and asserts it non-null.
 | Yes -- at the fixture
 
 | `sealedSessionMediatesAndStaysUsable`
-| `:149`
-| Two mediated requests through one live session, `statusCode(200)` at `:162`.
+| Two mediated requests through one live session, each asserting `statusCode(200)`.
 | Yes -- on the behaviour
 
 | `rpInitiatedLogoutClearsTheSealedCookie`
-| `:177`
 | A `302` plus a clearing `Set-Cookie`. See the note below -- the no-session branch emits the
   identical pair.
 | *No*
 
 | `tamperedCookieIsUnauthenticatedNeverServerError`
-| `:199`
-| A `401` rather than a `500` for a tampered value. `tamper` asserts its input non-null at `:288`.
+| A `401` rather than a `500` for a tampered value. `tamper` asserts its input non-null.
 | Yes -- at the fixture
 
 | `unauthenticatableCookieDrivesFullReAuthentication`
-| `:216`
-| A full re-authentication round trip. Proves the established session works first, `statusCode(200)`
-  at `:222`.
+| A full re-authentication round trip. Proves the established session works first, via
+  `statusCode(200)`.
 | Yes -- on the behaviour
 
 | `aSessionSealedByOneInstanceIsServedByThePeer`
-| `:84`
-| Portability across two processes sharing only the key. Asserts the jar non-null at `:87`.
+| Portability across two processes sharing only the key. Asserts the jar non-null.
 | Yes -- at the fixture
 
 | `bothInstancesResolveTheSameIdentity`
-| `:109`
-| Both instances resolve one cookie to one identity, via a `200` at
-  `BffCookieStatelessnessIT.java:155`.
+| Both instances resolve one cookie to one identity, via a `200`.
 | Yes -- on the behaviour
 
 | `thePeerRefusesACookieItCannotUnseal`
-| `:128`
-| The peer verifies rather than trusts. `tamper` asserts its input non-null at `:172`.
+| The peer verifies rather than trusts. `tamper` asserts its input non-null.
 | Yes -- at the fixture
 |===
 
-Rows 1-6 are `BffCookieSessionIT`; rows 7-9 are `BffCookieStatelessnessIT`. Line numbers are
-relative to each row's own class.
+Rows 1-6 are `BffCookieSessionIT`; rows 7-9 are `BffCookieStatelessnessIT`. Each row names its test
+method rather than a line number, so line-number edits do not strand this table. Renaming, adding or
+removing a test method still does: this inventory, its six/three split, and the "nine" this note
+counts throughout are a hand-maintained copy of the two classes' method sets, not a derived one, and
+have to be regenerated by hand when either class gains or loses a test.
 
 [IMPORTANT]
 .The two green rows are green for different reasons, and both are worth naming
@@ -229,7 +227,7 @@ can be held to -- but it means the test is indifferent to whether any client acc
 (`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java:96-100`
 versus `:119-121`). That header is a fixed string --
 `+__Host-sheriff-session=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax+` at
-`SealedSessionCookieCodec.java:349-351` -- so every one of the test's three assertions (a `Location`,
+`SealedSessionCookieCodec.toClearingSetCookieHeader()` -- so every one of the test's three assertions (a `Location`,
 `Max-Age=0`, an empty value) holds identically on both branches. The test cannot distinguish
 "logged out" from "was never logged in".
 ====
@@ -276,8 +274,8 @@ not control.
 
 The absence is verified rather than assumed: neither cookie suite asserts the sealed value's length
 anywhere. The only length-shaped expressions in either class are byte-array indexing inside the
-mutation helpers -- `raw[raw.length - 1]` at `BffCookieSessionIT.java:290` and
-`BffCookieStatelessnessIT.java:174`.
+mutation helpers -- `raw[raw.length - 1]` in `BffCookieSessionIT.tamper` and in
+`BffCookieStatelessnessIT`'s equivalent.
 
 == What Else the Same Gap Hides
 
@@ -301,25 +299,25 @@ budget sits in the table alongside the other five rather than outside it.
 | *Size asserted, policy unobservable*
 | `BffKeycloakLoginFlow.assertCookiesFitBrowserBudget` measures the *emitted header* against the
   test's own `BROWSER_COOKIE_BUDGET_BYTES` constant at the single login seam every `Bff*IT` funnels
-  through (`:158`, called at `:309`) -- added by this plan's emitted-header deliverable. The
-  gateway's own seal-time guard (`SealedSessionCookieCodec.java:264`) is *not* that assertion: it
-  fires against the *configured* budget, not the browser's.
+  through -- added by this plan's emitted-header deliverable. The gateway's own seal-time guard in
+  `SealedSessionCookieCodec.seal()` is *not* that assertion: it fires against the *configured*
+  budget, not the browser's.
 
 | `SameSite`
 | The browser, by withholding a `Lax` cookie on a cross-site send.
 | *Attribute asserted, policy unobservable*
-| `BffCookieSessionIT.java:111-112` asserts `SameSite=Lax` on the emitted header.
+| `BffCookieSessionIT.sealedSessionCookieIsHardened` asserts `SameSite=Lax` on the emitted header.
 
 | `__Host-` prefix rules
 | The browser, by rejecting a `__Host-`-named cookie that violates the required combination.
 | *Attribute asserted, policy unobservable*
-| `BffCookieSessionIT.java:106-109` asserts the name, `Secure`, `Path=/` and the absence of
-  `Domain` as one group.
+| `BffCookieSessionIT.sealedSessionCookieIsHardened` asserts the name, `Secure`, `Path=/` and the
+  absence of `Domain` as one group.
 
 | `Secure`-over-plain rejection
 | The browser, by refusing to send a `Secure` cookie over plain HTTP.
 | *Attribute asserted, policy unobservable*
-| `BffCookieSessionIT.java:107` asserts the flag. The rejection itself is never exercised: every
+| `BffCookieSessionIT.sealedSessionCookieIsHardened` asserts the flag. The rejection itself is never exercised: every
   origin in the lane is HTTPS (`BaseIntegrationTest.java:58`; `BffKeycloakLoginFlow.java:79`,
   `:89`, `:100`, `:112`).
 
@@ -343,10 +341,10 @@ budget sits in the table alongside the other five rather than outside it.
 Of the six properties enumerated:
 
 * *Three* carry an attribute assertion in the IT lane -- `SameSite`, the `__Host-` combination, and
-  the `Secure` flag. All three live in one test, `sealedSessionCookieIsHardened`
-  (`BffCookieSessionIT.java:97-113`).
+  the `Secure` flag. All three live in one test,
+  `BffCookieSessionIT.sealedSessionCookieIsHardened`.
 * *One* carries a size assertion -- the per-cookie budget, closed by this plan's emitted-header
-  assertion at the shared login seam (`BffKeycloakLoginFlow.java:309`).
+  assertion at the shared login seam (`BffKeycloakLoginFlow.assertCookiesFitBrowserBudget`).
 * *Two* carry no assertion at all -- per-domain count and aggregate size.
 * *Zero* have their browser-side enforcement exercised anywhere in the integration lane.
 

@@ -344,7 +344,7 @@
             },
             "max_cookie_size": {
               "type": "integer",
-              "description": "Cookie-mode sealed cookie-value size budget in bytes; valid range 40..8192, defaulting to 4096 when omitted. This is the ONE declared number driving both ends of the round trip — the seal-time budget and the gateway's pre-route Cookie header-value cap — so the two can never contradict each other. The bounds are stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no minimum, maximum or default keyword is declared."
+              "description": "Cookie-mode sealed cookie-value size budget in bytes; valid range 40..8192, defaulting to 4019 when omitted — the browser-safe value budget, being the ~4096 bytes RFC 6265 6.1 guarantees per whole Set-Cookie header less the 77 bytes the default cookie name and attributes wrap around the value. This is the ONE declared number driving both ends of the round trip — the seal-time budget and the gateway's pre-route Cookie header-value cap — so the two can never contradict each other. The bounds are stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no minimum, maximum or default keyword is declared."
             }
           }
         },

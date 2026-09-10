@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.cookie;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -26,6 +27,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.zip.DataFormatException;
+import java.util.zip.Deflater;
+import java.util.zip.Inflater;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
@@ -40,10 +44,25 @@ import org.jspecify.annotations.Nullable;
  * cryptographic core of the stateless BFF variant.
  * <p>
  * <strong>Cookie value layout.</strong> {@code version(1B) || key-id(1B) || nonce(12B) ||
- * ciphertext || tag(16B)}, base64url-encoded without padding. The {@code version}, {@code key-id},
- * and the cookie <em>name</em> are bound into the GCM <em>associated data</em>, so a sealed value
- * cannot be replayed under a different format version, a different key generation, or a different
- * cookie name — the tag check fails and the value unseals to "no session".
+ * ciphertext || tag(16B)}, base64url-encoded without padding — <em>once</em>, for transport. The
+ * {@code version}, {@code key-id}, and the cookie <em>name</em> are bound into the GCM
+ * <em>associated data</em>, so a sealed value cannot be replayed under a different format version, a
+ * different key generation, or a different cookie name — the tag check fails and the value unseals
+ * to "no session".
+ * <p>
+ * <strong>Packaging pipeline.</strong> The ciphertext covers a <em>deflated</em>
+ * {@link SealedSessionPayload#encode() length-prefixed raw UTF-8 payload}: encode, deflate, seal,
+ * base64url. Compress-then-encrypt is safe <em>here</em> and only here because the plaintext carries
+ * no attacker-chosen material next to a secret and is never returned to the client as a
+ * length-observable oracle — the sealed value is written once per session change and read back only
+ * by this gateway. See {@code doc/adr/0043} for the CRIME/BREACH discriminator that bounds that
+ * claim.
+ * <p>
+ * <strong>Inflation is bounded.</strong> {@link #unseal} inflates only bytes the GCM tag has already
+ * authenticated, so this is not untrusted-input decompression; the inflated size is nonetheless
+ * capped at {@link SealedSessionPayload#MAX_PLAINTEXT_BYTES} so an authenticated-but-corrupt buffer
+ * cannot drive an unbounded allocation. A malformed or over-long stream takes the same
+ * {@code payload-format} rejection a malformed payload does — "no session", never an error.
  * <p>
  * <strong>Nonce discipline.</strong> {@link #seal} draws a fresh 96-bit nonce from
  * {@link SecureRandom} on <em>every</em> call. The nonce is never derived from the payload and
@@ -68,20 +87,27 @@ import org.jspecify.annotations.Nullable;
  * <strong>Size budget.</strong> A sealed value larger than the configured
  * {@linkplain #maxCookieValueBytes() budget} fails the seal with
  * {@link CookieSizeBudgetExceededException} and a logged warning — never a silent truncation. Cookie
- * splitting across multiple {@code Set-Cookie} headers is a deliberate non-goal; an operator whose
- * token set does not fit is expected to reduce it or run server mode.
+ * splitting across multiple {@code Set-Cookie} headers remains a deliberate non-goal: the packaging
+ * pipeline above is the answer instead, and it is what makes a three-token session fit a single
+ * browser-safe cookie. An operator whose token set still does not fit after packaging is expected to
+ * reduce it or run server mode.
  * <p>
  * The budget is <strong>one declared number</strong> ({@code oidc.session.max_cookie_size},
  * defaulting to {@link #DEFAULT_COOKIE_VALUE_BUDGET}) that drives BOTH ends of the round trip: the
  * seal-time budget enforced here, and the gateway's pre-route {@code Cookie} header-value cap in
  * {@code GatewayEdgeRoute}. Encoding the same limit as two independent constants is what made
  * cookie mode unusable before — every request carrying a live sealed cookie was rejected {@code 400}
- * at the edge by a 2048-character header-value cap the 4096-byte seal budget contradicted.
+ * at the edge by a 2048-character header-value cap that the seal budget of the day (then 4096)
+ * contradicted.
  * <p>
  * <strong>Absolute lifetime.</strong> {@link #toSetCookieHeader} sets {@code Max-Age} to the
  * <em>remaining</em> lifetime computed from the payload's login instant, so a re-seal after a token
- * refresh never extends the session. The header reuses the landed hardening: the {@code __Host-}
- * prefix, {@code Secure}, {@code HttpOnly}, {@code SameSite=Lax}, and {@code Path=/}.
+ * refresh never extends the session. The header reuses the landed hardening: {@code Secure},
+ * {@code HttpOnly}, {@code SameSite=Lax} and {@code Path=/} are emitted unconditionally from
+ * {@code HARDENING_ATTRIBUTES}. The {@code __Host-} prefix is <em>not</em> in that set — it belongs
+ * to the DEFAULT {@code session.cookie_name}, and a deployment that configures another name loses
+ * it, along with the host-binding a browser enforces on the prefix. Nothing currently validates
+ * that.
  * <p>
  * The codec is framework-agnostic and safe for concurrent use — it holds only immutable
  * configuration and a thread-safe {@link SecureRandom}, and creates a fresh {@link Cipher} per
@@ -97,16 +123,21 @@ public final class SealedSessionCookieCodec {
     /**
      * The current sealed-cookie format version, bound into the GCM associated data.
      * <p>
-     * Version {@code 2} carries the nine-field payload that added the per-session nonce keying the
-     * derived session identity. The bump is a clean break with no migration path: {@link #unseal}
-     * reads the leading version byte and rejects anything other than {@code FORMAT_VERSION} at an
-     * explicit gate, before a {@link Cipher} is even constructed — so a version-1 cookie is refused
-     * outright rather than being mis-parsed against the nine-field shape, and decryption is never
-     * attempted for it. The version byte is additionally bound into the GCM associated data, so it
-     * cannot be forged onto a value sealed under a different version either. Pre-existing cookie
-     * sessions are therefore refused fail-closed and the browser simply re-logs in.
+     * Version {@code 3} carries the nine-field payload framed as length-prefixed raw UTF-8 and
+     * deflated before sealing. It replaces version {@code 2}, which base64url-armoured every field
+     * <em>inside</em> the plaintext and then base64url-encoded the sealed value again for transport —
+     * a compounded ~33 % expansion applied to material that is already base64 text, and the reason a
+     * session carrying access + refresh + ID tokens could not fit the browser-safe budget.
+     * <p>
+     * The bump is a clean break with no migration path: {@link #unseal} reads the leading version
+     * byte and rejects anything other than {@code FORMAT_VERSION} at an explicit gate, before a
+     * {@link Cipher} is even constructed — so a version-2 cookie is refused outright rather than
+     * being inflated and mis-parsed against the new framing, and decryption is never attempted for
+     * it. The version byte is additionally bound into the GCM associated data, so it cannot be forged
+     * onto a value sealed under a different version either. Pre-existing cookie sessions are
+     * therefore refused fail-closed and the browser simply re-logs in.
      */
-    public static final byte FORMAT_VERSION = 2;
+    public static final byte FORMAT_VERSION = 3;
 
     /**
      * The {@code Max-Age} attribute introducer, shared by the header assembly in
@@ -131,21 +162,8 @@ public final class SealedSessionCookieCodec {
     private static final int HEADER_BYTES = 2 + NONCE_BYTES;
     private static final int MIN_SEALED_BYTES = HEADER_BYTES + (TAG_BITS / 8);
 
-    /**
-     * The default sealed cookie-value size budget in bytes (~4 KB). Browsers are only required to
-     * accept 4096 bytes per cookie, so a larger value risks being silently dropped by the browser —
-     * which is why the default sits at that figure rather than at the gateway's transport ceiling.
-     * <p>
-     * <strong>It is a VALUE budget, and the browser's 4096 is a HEADER budget.</strong> The two are
-     * not the same number and must not be compared to each other directly: a value sealing to
-     * exactly this budget is emitted as a {@code Set-Cookie} header of
-     * {@code 4096 + }{@link #DEFAULT_SET_COOKIE_HEADER_OVERHEAD} bytes, which is already past what
-     * RFC 6265 6.1 guarantees. {@link #BROWSER_SAFE_COOKIE_VALUE_BUDGET} is the value budget that
-     * corresponds to the guarantee, and it is the number any browser-deliverability comparison
-     * belongs against. This default is deliberately left where it is — it is the documented,
-     * schema-described default and moving it is a separate decision from stating it accurately.
-     */
-    public static final int DEFAULT_COOKIE_VALUE_BUDGET = 4096;
+    /** The transfer-buffer size for the deflate/inflate loops — a working buffer, not a bound. */
+    private static final int ZIP_CHUNK_BYTES = 1024;
 
     /**
      * The per-cookie budget RFC 6265 6.1 asks a user agent to honour, in bytes.
@@ -196,19 +214,45 @@ public final class SealedSessionCookieCodec {
      * value budget than 4019, and comparing against this constant would under-warn by exactly the
      * configured deviation.
      * <p>
-     * What the constant does still record is why the threshold is not
-     * {@link #DEFAULT_COOKIE_VALUE_BUDGET}: warning on 4096 leaves a 77-byte band — a value budget
-     * in {@code 4020..4096} — in which the gateway emits a header the browser is not obliged to keep
-     * and nothing anywhere says so.
+     * What the constant also records is why the shipped default is this figure and not the round
+     * {@code 4096}: a default of 4096 left a 77-byte band — a value budget in {@code 4020..4096} — in
+     * which the gateway emitted a header the browser is not obliged to keep and nothing anywhere said
+     * so. The default now IS this constant, which closes the band at its widest and most common
+     * instance: the gateway that declared no budget at all.
      */
     public static final int BROWSER_SAFE_COOKIE_VALUE_BUDGET =
             BROWSER_PER_COOKIE_HEADER_GUARANTEE - DEFAULT_SET_COOKIE_HEADER_OVERHEAD;
 
     /**
-     * The smallest configurable budget: the encoded length of a sealed value carrying an
-     * <em>empty</em> plaintext ({@code version || key-id || nonce || tag}, base64url without
-     * padding). A budget below this could not admit even a structurally minimal sealed value, so it
-     * is refused at boot rather than failing every seal at runtime.
+     * The default sealed cookie-<em>value</em> size budget in bytes — the browser-safe
+     * {@link #BROWSER_SAFE_COOKIE_VALUE_BUDGET}, {@code 4019}.
+     * <p>
+     * <strong>It is a VALUE budget, and the browser's 4096 is a HEADER budget.</strong> The two are
+     * not the same number and must not be compared to each other directly: RFC 6265 6.1 asks a user
+     * agent to honour ~4096 bytes for the whole {@code Set-Cookie} header — name, value <em>and</em>
+     * attributes together. A default of 4096 was therefore not "the browser's limit" but 77 bytes
+     * past it under the default configuration, and every gateway that left the key omitted ran there.
+     * Deriving the default from the guarantee instead of restating it means the two can never drift.
+     * <p>
+     * <strong>It is the default-configuration case, not a universal safe value.</strong> The
+     * overhead it subtracts is the default cookie name and a four-digit {@code Max-Age}; a gateway
+     * running a longer {@code session.cookie_name} or a TTL past 9999 seconds emits a wider header
+     * around the same value and is still over the guarantee. That case is exactly what
+     * {@code ConfigValidator} warns on, deriving the overhead from the resolved configuration via
+     * {@link #setCookieHeaderOverhead(String, Duration)} rather than from any constant here.
+     */
+    public static final int DEFAULT_COOKIE_VALUE_BUDGET = BROWSER_SAFE_COOKIE_VALUE_BUDGET;
+
+    /**
+     * The smallest configurable budget: the encoded length of the sealed envelope alone
+     * ({@code version || key-id || nonce || tag}, base64url without padding), carrying no ciphertext
+     * at all. A budget below this could not admit even a structurally minimal sealed value, so it is
+     * refused at boot rather than failing every seal at runtime.
+     * <p>
+     * It is a <em>floor</em>, not an achievable length: the shortest value this codec actually emits
+     * is longer, because even an empty payload deflates to a non-empty stream. Keeping the constant
+     * at the envelope size states exactly what it guards — the structural minimum — without pinning
+     * it to whatever the compressor happens to produce for an input the gateway never seals.
      */
     public static final int COOKIE_VALUE_BUDGET_FLOOR = (4 * MIN_SEALED_BYTES + 2) / 3;
 
@@ -281,7 +325,7 @@ public final class SealedSessionCookieCodec {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, currentKey, new GCMParameterSpec(TAG_BITS, nonce));
             cipher.updateAAD(associatedData(FORMAT_VERSION, currentKeyId));
-            sealed = cipher.doFinal(payload.encode());
+            sealed = cipher.doFinal(deflate(payload.encode()));
         } catch (GeneralSecurityException sealingFailure) {
             // A misconfigured key (wrong algorithm or length) is an operator error the gateway
             // cannot serve around — unlike unsealing, sealing has no "no session" fallback.
@@ -335,18 +379,22 @@ public final class SealedSessionCookieCodec {
         byte[] sealed = new byte[raw.length - HEADER_BYTES];
         System.arraycopy(raw, HEADER_BYTES, sealed, 0, sealed.length);
 
-        byte[] plaintext;
+        byte[] compressed;
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, currentKey, new GCMParameterSpec(TAG_BITS, nonce));
             cipher.updateAAD(associatedData(version, keyId));
-            plaintext = cipher.doFinal(sealed);
+            compressed = cipher.doFinal(sealed);
         } catch (GeneralSecurityException _) {
             // Covers the tag mismatch (tampered ciphertext / nonce / tag, or a value replayed under
             // a different cookie name or key generation) — all are "no session", never an error.
             return reject(DISPOSITION_TAG);
         }
-        Optional<SealedSessionPayload> payload = SealedSessionPayload.decode(plaintext);
+        Optional<byte[]> plaintext = inflate(compressed);
+        if (plaintext.isEmpty()) {
+            return reject(DISPOSITION_PAYLOAD);
+        }
+        Optional<SealedSessionPayload> payload = SealedSessionPayload.decode(plaintext.get());
         if (payload.isEmpty()) {
             return reject(DISPOSITION_PAYLOAD);
         }
@@ -452,6 +500,62 @@ public final class SealedSessionCookieCodec {
      */
     public int maxCookieValueBytes() {
         return maxCookieValueBytes;
+    }
+
+    /**
+     * Compresses the encoded payload before it is sealed — the step that makes a three-token session
+     * fit a single browser-safe cookie.
+     * <p>
+     * {@link Deflater#BEST_COMPRESSION} is chosen over the default level because the work is done
+     * once per session change (login, refresh, logout) rather than per request, so the extra CPU buys
+     * cookie bytes at a cost that is not on the hot path. The incompressible 43-character session
+     * nonce is a fixed floor on what any level can achieve.
+     */
+    private static byte[] deflate(byte[] plaintext) {
+        try (Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION)) {
+            deflater.setInput(plaintext);
+            deflater.finish();
+            ByteArrayOutputStream compressed = new ByteArrayOutputStream(plaintext.length);
+            byte[] chunk = new byte[ZIP_CHUNK_BYTES];
+            while (!deflater.finished()) {
+                compressed.write(chunk, 0, deflater.deflate(chunk));
+            }
+            return compressed.toByteArray();
+        }
+    }
+
+    /**
+     * Expands an authenticated compressed payload, bounded by
+     * {@link SealedSessionPayload#MAX_PLAINTEXT_BYTES}.
+     * <p>
+     * The input has already cleared the GCM tag, so this is not untrusted-input decompression and the
+     * bound is not a defence against a chosen compression bomb. It is the allocation guard for the
+     * one case that survives authentication: a buffer sealed under this key that is not a well-formed
+     * stream of this format — a corrupt or foreign payload — which could otherwise expand without
+     * limit. Every refusal is {@link Optional#empty()}, which the caller turns into the
+     * {@code payload-format} rejection: "no session", never an error.
+     */
+    private static Optional<byte[]> inflate(byte[] compressed) {
+        try (Inflater inflater = new Inflater()) {
+            inflater.setInput(compressed);
+            ByteArrayOutputStream plaintext = new ByteArrayOutputStream(compressed.length);
+            byte[] chunk = new byte[ZIP_CHUNK_BYTES];
+            while (!inflater.finished()) {
+                int produced = inflater.inflate(chunk);
+                if (produced == 0 && (inflater.needsInput() || inflater.needsDictionary())) {
+                    // A truncated stream, or one demanding a preset dictionary this format never
+                    // writes: the inflater can make no further progress and would otherwise spin.
+                    return Optional.empty();
+                }
+                if (plaintext.size() + produced > SealedSessionPayload.MAX_PLAINTEXT_BYTES) {
+                    return Optional.empty();
+                }
+                plaintext.write(chunk, 0, produced);
+            }
+            return Optional.of(plaintext.toByteArray());
+        } catch (DataFormatException _) {
+            return Optional.empty();
+        }
     }
 
     private byte[] associatedData(byte version, byte keyId) {

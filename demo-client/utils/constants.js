@@ -1,6 +1,6 @@
 /**
- * The coordinates the suite drives: the gateway's reserved paths, the demo SPA entry points, and the
- * Keycloak realm credentials.
+ * The coordinates the suite drives: the gateway's reserved paths, the demo SPA entry points, the
+ * Keycloak realm credentials, and the one browser limit the suite asserts against.
  *
  * No port number appears here. Ports live in the POM properties and reach the suite as environment
  * variables, so a published-port change is made in exactly one place.
@@ -60,3 +60,21 @@ export const FULL_VIEW = '*';
 
 /** Where the documentation screenshots land, one parallel set per session-mode project. */
 export const SCREENSHOT_DIR = 'target/screenshots';
+
+/**
+ * The per-cookie byte floor RFC 6265 section 6.1 obliges a user agent to support: at least 4096
+ * bytes per cookie, measured over the name, the value AND the attributes — that is, over the whole
+ * `Set-Cookie` header value.
+ *
+ * This is deliberately the suite's own constant, not a value read from the gateway. The gateway
+ * carries its own idea of this number (`SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE`)
+ * and derives its configured budget from it, so a test that imported either could not detect the
+ * gateway getting the browser's limit wrong — it would assert the product against itself and pass by
+ * construction. The browser does not read our configuration; 4096 is its number, so the suite states
+ * it independently. The two are expected to agree; the point is that nothing makes them agree.
+ *
+ * It is a FLOOR rather than the limit: a browser may store more, and Chromium does. A measurement
+ * above this number is observed headroom, never licence to raise what the gateway emits — the floor
+ * is what every browser guarantees, and the gateway ships to all of them.
+ */
+export const BROWSER_COOKIE_BUDGET_BYTES = 4096;

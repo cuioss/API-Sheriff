@@ -301,10 +301,18 @@ public final class ConfigLogMessages {
          * {@code SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, sessionTtl)} for the
          * gateway's <em>resolved</em> {@code session.cookie_name} and {@code session.ttl_seconds} —
          * 4019 under the default configuration, and lower for a longer cookie name or a five-digit
-         * {@code Max-Age}. Comparing against the 4096 value budget instead left a 77-byte band in
+         * {@code Max-Age}. Comparing against a 4096 value budget instead left a 77-byte band in
          * which the gateway emitted an undeliverable header and this record stayed silent, which is
          * the very failure the record exists to announce; comparing against a <em>fixed</em> 4019
          * left the same band open for every configuration that is not the default one.
+         * <p>
+         * <strong>It reads the EFFECTIVE budget, so an omitted key is in scope.</strong> The gateway
+         * emits the same header whether the operator wrote the budget down or left it defaulted, so
+         * the record fires on the resolved value either way. That is the second half of closing the
+         * band: the first is that the shipped default is now the browser-safe 4019 rather than 4096,
+         * so the default configuration lands ON the guarantee and this record stays quiet there —
+         * while a gateway running a longer cookie name or a wider {@code Max-Age}, which used to be
+         * silent, now says so.
          * <p>
          * <strong>Cookie mode only.</strong> The record is emitted when {@code session.mode} is
          * {@code cookie}. A server-mode or bearer-only gateway emits no sealed session
@@ -333,7 +341,7 @@ public final class ConfigLogMessages {
         public static final LogRecord COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(124)
-                .template("oidc.session.max_cookie_size is %s bytes, which the gateway emits as a Set-Cookie header of at least %s bytes once the cookie name and attributes are counted — above the ~4096 bytes RFC 6265 6.1 guarantees a browser will keep per cookie, a budget that governs the whole header rather than the sealed value alone. In cookie mode the session IS the cookie, so a session sealing into that headroom is accepted by the gateway and then dropped SILENTLY by the browser — no error surfaces on either side and the user simply stays anonymous, which the gateway cannot detect. Raising this budget moves the failure into the browser rather than removing it; the deployment-level answers are server-mode sessions, a smaller claim set, or an authorization server that issues no refresh token. Restore the browser-safe posture by removing the key or setting it to %s bytes or below in gateway.yaml")
+                .template("The effective oidc.session.max_cookie_size is %s bytes — declared, or the shipped default when the key is omitted — which the gateway emits as a Set-Cookie header of at least %s bytes once the cookie name and attributes are counted, above the ~4096 bytes RFC 6265 6.1 guarantees a browser will keep per cookie, a budget that governs the whole header rather than the sealed value alone. In cookie mode the session IS the cookie, so a session sealing into that headroom is accepted by the gateway and then dropped SILENTLY by the browser — no error surfaces on either side and the user simply stays anonymous, which the gateway cannot detect. Raising this budget moves the failure into the browser rather than removing it. Restore the browser-safe posture by setting oidc.session.max_cookie_size to %s bytes or below in gateway.yaml, or by shortening session.cookie_name or session.ttl_seconds — those two are what widen the per-header overhead this threshold subtracts, so a gateway running either off the default has less room for the value than the default budget assumes")
                 .build();
     }
 

@@ -1473,6 +1473,124 @@ services:
       - api-sheriff
     restart: unless-stopped
 
+  # --- The cookie-mode-WITH-REFRESH proof rig ----------------------------------------------------
+  # The one combination no other instance can carry. Session mode, the refresh switch and the
+  # minting client are each process-wide, so this instance cannot be folded into either sibling:
+  # api-sheriff-cookie holds refresh OFF and api-sheriff-refresh holds session mode SERVER. Flipping
+  # either would destroy the contract that instance exists to prove, so the combination gets its own
+  # process, published on 10455 with management port 19011.
+  #
+  # Those two numbers are NOT the next ones after api-sheriff-refresh's 10452/19009, and the skip is
+  # deliberate: api-sheriff-no-certificate above already publishes 10453, 10454 and 19010.
+  # Allocate host ports against THIS file, never against the topology document.
+  #
+  # It is a whole-block mirror of api-sheriff-cookie above, with five per-instance values and
+  # nothing else: the two published ports, LOG_FILE_PATH, the overlay it mounts, OIDC_CLIENT_SECRET,
+  # and SESSION_ENCRYPTION_KEY. The last two are not cosmetic and neither is mirrored from the
+  # sibling; the paragraph below states why the key differs. As for the secret: the
+  # overlay names client_id refresh-client (whose 45-second access.token.lifespan is what brings the
+  # near-expiry window within a test's reach), so it must present refresh-client's own secret or
+  # every token call — including the refresh call this rig exists to drive — is rejected
+  # invalid_client. api-sheriff-refresh carries the same value for the same reason.
+  #
+  # SESSION_ENCRYPTION_KEY is deliberately a DIFFERENT value from the one api-sheriff-cookie and
+  # api-sheriff-cookie-2 share. Their byte-identical key is the statelessness experiment; this
+  # instance takes no part in it and shares no state with anything, so giving it its own key keeps
+  # key equality meaning exactly what BffCookieActivationWiringTest asserts it means — a property of
+  # that pair, not of every cookie-mode instance.
+  api-sheriff-cookie-refresh:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597). Load-bearing here in
+    # particular, as on api-sheriff-refresh: this instance drives the confidential-client REFRESH
+    # call against the self-signed IT Keycloak, and that call uses only the JVM default TrustManager.
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
+
+    ports:
+      - "10455:8443"  # External test port for BffCookieRefreshIT, hard-coded in
+                      # BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN — no system property
+                      # carries it, so this literal and that constant must move together
+      - "19011:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
+      - QUARKUS_LOG_FILE_ENABLED=true
+      # Unique to this instance. All instances share ONE /logs mount, so a path mirrored verbatim
+      # from a sibling would have two processes writing the same file and neither log readable.
+      - LOG_FILE_PATH=/logs/quarkus-cookie-refresh.log
+      # Terminate directly on the public port (no passthrough front on this instance).
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. Without it this
+      # instance's management port 19011 stays plain HTTP while the others are HTTPS, and the
+      # host-side readiness assertion (which adds -k only where the management-scheme label says
+      # https) would fail closed against it. api-sheriff-plain-mgmt is the one deliberate exception.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid
+      # cookie-refresh gateway.yaml resolves to via EnvSecretResolver. refresh-secret, NOT
+      # integration-secret — see the block comment above.
+      - OIDC_CLIENT_SECRET=refresh-secret
+      # The AES-256-GCM sealing key (base64 of 32 bytes) the overlaid gateway.yaml references as
+      # ${SESSION_ENCRYPTION_KEY}. A fixed test value, distinct from the cookie pair's shared key
+      # (see the block comment above); it seals only throwaway integration-realm sessions and is
+      # never a production key.
+      - SESSION_ENCRYPTION_KEY=Y29va2llLXJlZnJlc2gtc2VhbGluZy1rZXktMDEyMzQ=
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the cookie-mode-with-refresh variant.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-cookie-refresh/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      # The demo SPA, same read-only mount as the other login-driving instances. The overlay keeps
+      # final_redirect: /assets/demo/landing.html, which the /assets/demo directory asset route
+      # serves from this mount — without it a post-logout return would 404.
+      - ../demo-client/src/main/resources/spa:/app/demo:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.6.0
     ports:

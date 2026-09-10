@@ -22,9 +22,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -142,15 +144,26 @@ class CallbackEndpointTest {
     /**
      * An exchange whose validated ID token is far larger than the browser-safe cookie budget — the
      * realistic driver of the documented {@code bind()} failure in stateless cookie mode.
+     * <p>
+     * The oversized token is <em>random</em> material rendered base64url, not a repeated character.
+     * Under {@code FORMAT_VERSION} 3 the codec deflates the payload before sealing, so a run of one
+     * character now seals comfortably <em>inside</em> the budget: a repeated-character fixture would
+     * bind successfully and this test would silently stop exercising the failure it was written for.
+     * Base64 carries six bits per byte, so deflate recovers only that quarter and the value stays
+     * over the budget for the reason the test needs.
      */
     private static CodeExchange oversizedExchange() {
         Map<String, ClaimValue> accessClaims = new HashMap<>();
         accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
         AccessTokenContent access = new AccessTokenContent(accessClaims, RAW_ACCESS_TOKEN);
 
+        byte[] incompressible = new byte[12_288];
+        new SecureRandom().nextBytes(incompressible);
+
         Map<String, ClaimValue> idClaims = new HashMap<>();
         idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
-        IdTokenContent id = new IdTokenContent(idClaims, "x".repeat(16_384));
+        IdTokenContent id = new IdTokenContent(idClaims,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(incompressible));
 
         AuthorizationCodeFlow.AuthenticationResult result =
                 new AuthorizationCodeFlow.AuthenticationResult(access, id, RAW_REFRESH_TOKEN);

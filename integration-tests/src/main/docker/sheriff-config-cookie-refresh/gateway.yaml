@@ -1,0 +1,194 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the DEDICATED cookie-mode-WITH-REFRESH integration-test instance
+# (api-sheriff-cookie-refresh in docker-compose.yml). It is overlay-mounted on top of the shared
+# sheriff-config directory so it replaces ONLY gateway.yaml — the endpoints/ subdirectory and
+# topology.properties are shared with every other instance, exactly as the sibling cookie overlay.
+#
+# This instance is the proof rig for the one combination no other instance can carry: a stateless
+# sealed-cookie session that ALSO refreshes. Session mode, the refresh switch and the minting client
+# are each a property of the whole gateway process, so none of them can be varied per request on an
+# existing instance — sheriff-config-cookie holds refresh OFF and sheriff-config-refresh holds
+# session mode SERVER. Neither can be flipped without destroying the contract it was built to
+# prove, which is why this third document exists.
+#
+# It is the sibling cookie document (sheriff-config-cookie/gateway.yaml) with exactly THREE
+# deliberate behavioural differences:
+#
+#   1. oidc.client_id: refresh-client. The shared realm's 900s accessTokenLifespan would put the
+#      near-expiry window 870s into the session — unreachable in a test. refresh-client carries a
+#      client-level access.token.lifespan of 45, moving that window to 15s..45s. Its own secret is
+#      supplied by the deployment (OIDC_CLIENT_SECRET=refresh-secret in docker-compose.yml); it is
+#      NOT integration-secret, and presenting the wrong one is rejected invalid_client on every
+#      token call — including the refresh call this instance exists to drive.
+#   2. session.refresh.enabled: true (leeway_seconds unchanged at 30). This is the switch under
+#      test: with it on, the re-sealed cookie must carry the refreshed access token, so the seal
+#      grows by whatever the authorization server mints.
+#   3. The gateway-origin triple — redirect_uri, logout.post_logout_redirect_uri and
+#      csrf.trusted_origins — retargeted at https://localhost:10455, this instance's own published
+#      port. All three MUST move together: the origin of redirect_uri is what same-origin return-URL
+#      validation and the default CSRF trusted origin are derived from, so a half-moved triple
+#      rejects the browser flow rather than failing loudly at boot.
+#
+# metadata.config_version below is a document LABEL, not a fourth behavioural difference — it names
+# which overlay a boot log came from and is read by nothing.
+#
+# It declares NO max_cookie_size override, and that absence is the experiment rather than an
+# omission: the instance runs on the lowered 4019-byte browser-safe default, so whether a
+# cookie-mode session that also refreshes fits in a browser at all is MEASURED here instead of being
+# assumed. Raising the budget on this instance would move the failure into the browser, which drops
+# an oversized Set-Cookie silently and would leave the rig reporting a pass it never earned.
+version: 1
+metadata:
+  config_version: "integration-test-cookie-refresh"
+allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+tls:
+  # No passthrough_sni on this instance: the SNI front never starts, so Quarkus terminates
+  # directly on the public port — the same simplification the sibling cookie instance makes.
+  alpn: ["h2", "http/1.1"]
+anchors:
+  api:
+    path_prefix: /proxy
+    type: proxy
+    access: public
+  bff:
+    path_prefix: /bff
+    type: proxy
+    access: public
+  # BFF session namespace exercised by BffCookieRefreshIT. A require:session route lives here so an
+  # authenticated browser session mediates a bearer to the go-httpbin echo upstream — which is what
+  # makes the refreshed bearer observable: the IT reads the mediated Authorization header before and
+  # after the near-expiry window opens. type: bff forces access: authenticated (ADR-0013), and the
+  # session floor is backed by the global oidc block below (ConfigValidator rejects a session floor
+  # with no oidc block). The reserved OIDC endpoints are carved out of the route table on the oidc
+  # host and live under /auth, disjoint from this /bff-session proxy prefix.
+  bff-session:
+    path_prefix: /bff-session
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+  graphql:
+    path_prefix: /graphql
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+  upload:
+    path_prefix: /upload
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+    security_filter:
+      max_body_bytes: 67108864
+  ws:
+    path_prefix: /ws
+    type: proxy
+    access: public
+  grpc:
+    path_prefix: /grpc
+    type: proxy
+    access: public
+  assets-public:
+    path_prefix: /assets
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+    - name: benchmark-keycloak
+      issuer: https://keycloak:8443/realms/benchmark
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+    # The cookie-mode BFF (oidc block below) validates the id/access tokens the 'integration' realm
+    # mints for the browser session — including the REFRESHED access token, which is validated on
+    # exactly this issuer after the refresh call returns it. The gateway's shared @GatewayValidator
+    # TokenValidator is built from THIS token_validation block, so the integration issuer MUST be
+    # declared here or every mediated session token is rejected. Same container-internal iss the
+    # integration realm pins via frontendUrl https://keycloak:8443, reached over the shared
+    # api-sheriff network; the same narrow SSRF egress widening and self-signed trust profile the
+    # benchmark issuer uses.
+    - name: integration-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+# --- Cookie-mode-with-refresh BFF confidential-client block (BffCookieRefreshIT) ------------------
+# Activates the cookie-mode BffRuntime (BffRuntimeProducer builds the active runtime for either
+# recognised session.mode — server or cookie — provided a redirect_uri is configured). Confidential
+# client: refresh-client / refresh-secret against the compose 'integration' realm. OIDC discovery is
+# lazy (first engine use), so boot needs no live IdP; the browser reaches this instance on the
+# published host port 10455, while the gateway reaches Keycloak container-internally at
+# keycloak:8443.
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  # Difference 1 of 3. See the header: this client's 45-second access-token lifespan is the only
+  # thing that puts the near-expiry refresh window inside a test's patience.
+  client_id: refresh-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  scopes: ["openid", "profile", "email"]
+  # Difference 3 of 3, first of the origin triple. Its host ('localhost') is the oidc host every
+  # reserved path binds to; its origin ('https://localhost:10455') is the gateway origin used for
+  # same-origin return-URL validation and the default CSRF trusted origin.
+  redirect_uri: https://localhost:10455/auth/callback
+  logout:
+    path: /auth/logout
+    # Difference 3 of 3, second of the origin triple.
+    post_logout_redirect_uri: https://localhost:10455/auth/logout/return
+    # Lands the browser on a real public page instead of a deny-by-default 404, kept in lockstep
+    # with the sibling cookie overlay. Served by the /assets/demo asset route (endpoints/assets.yaml).
+    # It CANNOT simply be '/' — a path_prefix: / anchor fails the pairwise-disjointness boot check
+    # fail-closed, and DirectoryAssetSource performs no directory-index resolution. The full
+    # reasoning is recorded once, on the server-mode overlay; see sheriff-config/gateway.yaml.
+    final_redirect: /assets/demo/landing.html
+    # Registered in cookie mode too: the endpoint's capability gate answers a deliberate 404 here
+    # (the stateless binding cannot honour IdP-driven sid/sub destruction), so the reserved path
+    # never falls through to the proxy route table.
+    backchannel_path: /auth/backchannel
+  session:
+    # The sealed cookie IS the session. No store — a stateless binding holds no server-side index.
+    mode: cookie
+    # The AES-256 sealing key as a bare ${ENV_VAR} reference (the D4 secrets rule refuses a
+    # literal). Supplied by the deployment; this instance shares no state with any other.
+    encryption_key: ${SESSION_ENCRYPTION_KEY}
+    ttl_seconds: 3600
+    # No max_cookie_size override — see the header. This instance runs on the lowered 4019-byte
+    # browser-safe default deliberately, because the size question is what it exists to answer.
+    refresh:
+      # Difference 2 of 3. ON here, where the sibling cookie instance holds it OFF: with refresh on,
+      # the re-sealed cookie carries access + id + refresh, which is precisely the combination whose
+      # fit inside the browser-safe budget is under measurement.
+      enabled: true
+      # Unchanged at 30 — the same value the sibling cookie and refresh overlays declare, so the
+      # near-expiry window is the client lifespan's last 30 seconds and nothing else moved.
+      leeway_seconds: 30
+    csrf:
+      # Difference 3 of 3, third of the origin triple.
+      trusted_origins: ["https://localhost:10455"]
+  user_info:
+    path: /auth/userinfo
+    allowed_claims: ["sub", "preferred_username", "email", "groups"]
+    default_view: ["sub", "preferred_username"]
+  login:
+    path: /auth/login

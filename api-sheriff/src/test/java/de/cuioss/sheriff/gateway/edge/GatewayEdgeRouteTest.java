@@ -597,8 +597,9 @@ class GatewayEdgeRouteTest {
         /** Mirrors the private {@code GatewayEdgeRoute.COOKIE_HEADER_OVERHEAD_BYTES}. */
         private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
 
-        /** The cap the shipped-default cookie budget derives — 4608, deliberately compared against
-         * BOTH baselines below so the max() bound is pinned from above and from below. */
+        /** The cap the shipped-default cookie budget derives — 4531 (4019 + 512), deliberately
+         * compared against BOTH baselines below so the max() bound is pinned from above and from
+         * below. */
         private static final int DEFAULT_COOKIE_HEADER_CAP =
                 SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET + COOKIE_HEADER_OVERHEAD_BYTES;
 
@@ -708,11 +709,13 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("the cookie carve-out never LOWERS a lenient baseline to the smaller cookie budget")
         void cookieCarveOutNeverLowersALenientBaseline() {
-            // Arrange — the regression half of the control pair. The shipped DEFAULT budget (4096)
-            // plus the 512-byte overhead is 4608, which sits BELOW the lenient preset's 8192 baseline,
+            // Arrange — the regression half of the control pair. The shipped DEFAULT budget (4019)
+            // plus the 512-byte overhead is 4531, which sits BELOW the lenient preset's 8192 baseline,
             // so setting the cap outright turned this carve-out into a per-header TIGHTENING: a
-            // cookie-mode BFF on a lenient gateway rejected 400 every Cookie value between 4609 and
+            // cookie-mode BFF on a lenient gateway rejected 400 every Cookie value between 4532 and
             // 8192 while admitting every other header to 8192. No misconfiguration required.
+            // Lowering the default from 4096 to 4019 widened that band rather than closing it, which
+            // is precisely why the max() bound and this control both have to stay.
             SecurityConfiguration baseline = SecurityConfiguration.lenient();
 
             // Act

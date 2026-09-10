@@ -140,8 +140,11 @@ class BffCookieSessionIT {
                     "the sealed cookie must carry no readable segment of the mediated access token");
         }
         byte[] raw = Base64.getUrlDecoder().decode(sealed);
-        assertEquals((byte) 2, raw[0],
-                "the cookie value must be the version-2 sealed layout, not an opaque server-side handle");
+        // The literal tracks SealedSessionCookieCodec.FORMAT_VERSION by hand: this module tests the
+        // gateway black-box through its container, so it carries no api-sheriff class on its
+        // classpath and cannot reference the constant. Bump both together.
+        assertEquals((byte) 3, raw[0],
+                "the cookie value must be the version-3 sealed layout, not an opaque server-side handle");
     }
 
     @Test
@@ -151,11 +154,11 @@ class BffCookieSessionIT {
         Session session = BffKeycloakLoginFlow.login(SESSION_ROUTE, COOKIE_ORIGIN);
 
         // Act + Assert — two sequential mediated requests both reach the upstream through the same
-        // sealed session. This instance runs with oidc.session.refresh.enabled: false (the cookie
-        // instance keeps its seal to access + ID so it stays inside the browser-safe budget), so no
+        // sealed session. This instance runs with oidc.session.refresh.enabled: false, so no
         // re-seal can occur between the two requests at all: what is asserted here is the plain
         // continuity path — one sealed value, unsealed and replayed on every request. Refresh
-        // behaviour belongs to the api-sheriff-refresh instance and is exercised there.
+        // behaviour in cookie mode belongs to the api-sheriff-cookie-refresh instance and is
+        // exercised by BffCookieRefreshIT; api-sheriff-refresh covers the server-mode refresh path.
         for (int request = 0; request < 2; request++) {
             Response response = BffKeycloakLoginFlow.gateway(session.gatewayCookies(), COOKIE_ORIGIN)
                     .when().get(SESSION_ROUTE)
