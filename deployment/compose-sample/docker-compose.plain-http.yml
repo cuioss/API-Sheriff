@@ -1,0 +1,152 @@
+# API Sheriff — plain-HTTP termination variant of the compose sample
+#
+# An OVERRIDE FILE, not a second stack. It is layered on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.plain-http.yml up -d --wait
+#
+# or, equivalently, `./scripts/start-sample.sh --plain-http`, which composes the same two files.
+#
+# WHAT IT DEMONSTRATES. The gateway stops terminating TLS and serves plain HTTP on its container
+# port 8080, reached only over the internal bridge network. A TLS-terminating nginx hop in front of
+# it owns the public HTTPS listener on 8443 and forwards to the gateway in cleartext. That is the
+# ingress / service-mesh-sidecar deployment shape: the gateway is behind something that already did
+# the TLS work, and re-terminating in the gateway would be duplicated work at best and a second,
+# separately-configured trust decision at worst.
+#
+# REQUIRES DOCKER COMPOSE v2.24.0 OR NEWER. Two of the merge behaviours below are Compose-Spec merge
+# tags (`!reset` and `!override`) that older releases do not implement. An older Compose does NOT
+# fail loudly on them — the behaviour varies by version, and the outcome to expect is that the tag
+# is not honoured and the base value survives the merge. Concretely: the gateway would keep
+# publishing 8443 alongside the terminator's own binding on the same host port, which is a port
+# collision at best and a dead container port published off-host at worst. Check with
+# `docker compose version` before reporting a problem with this file.
+#
+# WHY EVERY CLEARED VALUE IS CLEARED RATHER THAN OMITTED. Compose MERGES an override into the base;
+# it does not replace it. Omitting a key here therefore leaves the BASE's value standing, which is
+# the opposite of what an override that means "this deployment does not do that" needs. The two
+# merge rules that bite are:
+#
+#   environment  merges BY VARIABLE NAME, so a variable is dropped by declaring it with an EMPTY
+#                value (`KEY=`), never by leaving it out.
+#   ports        CONCATENATES the two lists, so a published port is dropped by replacing the whole
+#                list with `!override`, never by leaving it out.
+#
+# See doc/user/compose-sample.adoc for the operator walkthrough and doc/user/tls-edge.adoc for the
+# interaction verdicts this deployment shape rests on.
+
+services:
+
+  # --- The gateway, with its TLS termination taken away -------------------------------------------
+  api-sheriff:
+    # REPLACES the base's port list rather than appending to it.
+    #
+    # `!override` and not `!reset`, deliberately. `!reset` removes the key outright, which would drop
+    # the base's LOOPBACK MANAGEMENT publication (127.0.0.1:9000:9000) along with the public 8443 —
+    # and that management publication is exactly what scripts/start-sample.sh derives its readiness
+    # probe from (ADR-0031: the host port published against container port 9000). Resetting the list
+    # would leave the readiness gate with no target and fail discovery outright. `!override` replaces
+    # the list with precisely the entries this variant wants: management stays, 8443 goes.
+    #
+    # 8443 MUST go. It is the terminator's host port in this variant, so leaving the base entry in
+    # place would either collide on the host binding or publish a container port that no longer
+    # listens for TLS — a dead port answering nothing.
+    ports: !override
+      - "127.0.0.1:9000:9000"
+    environment:
+      # THE OPT-IN. Plain HTTP is declared here, never inferred from the absence of a certificate.
+      # ServerTlsDeclarationGate refuses to boot a gateway that would serve neither HTTPS nor a
+      # deliberately-declared plain HTTP, so this key is what makes the cleared certificates below a
+      # coherent deployment rather than a refusal.
+      - QUARKUS_HTTP_INSECURE_REQUESTS=enabled
+      # CLEARED, NOT OMITTED — see the merge note in the header. The empty value is the shape
+      # ServerTlsDeclarationGate.declaredValue() reduces to "absent": a key that is present but blank
+      # supplies no material and declares nothing. Omitting these two would inherit the base's
+      # certificate paths, and a declared certificate alongside the opt-in above is one of the three
+      # incoherent combinations the gate refuses — this variant would not start.
+      #
+      # The gateway's main listener therefore terminates nothing and serves plain HTTP on its
+      # container port 8080, reachable only on the internal bridge network.
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=
+      # WHOSE forwarding headers this gateway believes: the terminating hop, and nothing else.
+      #
+      # The terminator sits on a STATIC address (declared under networks: below) precisely so this
+      # entry can be an exact /32 host route. That is the same shape the base file's commentary
+      # prescribes and the same rule it warns about breaking: never a whole bridge range. Every other
+      # container on this network — keycloak, demo-api — holds an address in the same subnet, and a
+      # range here would let any of them state its own client address via X-Forwarded-For. Only
+      # 10.89.0.10 is trusted, and only the terminator holds it.
+      #
+      # NOTE the management certificates from the base file are deliberately NOT cleared. Quarkus'
+      # management interface is a separate listener with its own key material, so port 9000 stays
+      # HTTPS — which is why the base's de.cuioss.sheriff.management-scheme label stays accurate and
+      # the readiness probe keeps passing -k against the self-signed bundle.
+      - SHERIFF_TRUSTED_PROXIES=10.89.0.10/32
+
+  # --- The TLS-terminating hop --------------------------------------------------------------------
+  # Stands in for whatever terminates TLS in a real deployment — an ingress controller, a service
+  # mesh sidecar, a load balancer. nginx is used here because the sample already runs it for the demo
+  # upstream, so this introduces no new image and no new hardening posture to reason about.
+  tls-terminator:
+    # The same pinned MINOR line the demo upstream uses, for the same reason: a sample that worked
+    # yesterday still works today. Bump deliberately, not implicitly.
+    image: nginx:1.27-alpine
+    # Bypasses docker-entrypoint.sh for the same reason the demo upstream does: its
+    # 10-listen-on-ipv6-only.sh step rewrites the mounted config in place, which fails under
+    # read_only: true and takes the container down with it.
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    # The stock image's unprivileged uid/gid, declared explicitly. With cap_drop: ALL there is no
+    # CAP_NET_BIND_SERVICE, so the listener below uses 8443 rather than 443.
+    user: "101:101"
+    ports:
+      # The variant's ONLY public listener, and the port the base file published for the gateway's
+      # own TLS listener before this override took it away. An operator's URL does not change.
+      - "8443:8443"
+    volumes:
+      - ./docker/nginx/tls-terminator.conf:/etc/nginx/conf.d/default.conf:ro
+      # The SAME self-signed bundle the gateway used to terminate with. Read-only: the terminator
+      # never writes key material.
+      - ./docker/certificates:/etc/nginx/certificates:ro
+    networks:
+      api-sheriff:
+        # The static address the /32 above names. This is the whole reason the network below declares
+        # an explicit subnet: without one, Docker assigns from a pool and the trusted-proxy entry
+        # could not be written as an exact host route at all — it would have to widen to a range, and
+        # a range here trusts every co-located container.
+        ipv4_address: 10.89.0.10
+    # The gateway must be accepting connections before the terminator starts forwarding to it,
+    # otherwise the first requests through the edge fail against a backend that is still booting.
+    depends_on:
+      api-sheriff:
+        condition: service_healthy
+    restart: unless-stopped
+    # The same OWASP posture every service in the base file carries, restated concretely rather than
+    # inherited — this service is declared here, so nothing merges it in.
+    #
+    # uid/gid 101 on each tmpfs is load-bearing exactly as it is for the demo upstream: a tmpfs is
+    # created root-owned and mode 755, so with `user: "101:101"` nginx could not create
+    # /var/cache/nginx/client_temp and would die at startup rather than start slowly.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m,uid=101,gid=101
+      - /var/run:rw,noexec,nosuid,size=1m,uid=101,gid=101
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+
+networks:
+  api-sheriff:
+    # An EXPLICIT subnet, which the base file does not declare. Docker only honours a service's
+    # ipv4_address when the network it joins has a declared IPAM subnet, so this block is what makes
+    # the terminator's static address above legal — and therefore what makes the /32 trusted-proxy
+    # entry exact and testable rather than approximate.
+    #
+    # 10.89.0.0/24 is chosen to sit outside Docker's default bridge address pools (the 172.17-172.31
+    # range, and 192.168.0.0/16) so that layering this variant does not collide with networks the
+    # daemon allocated for other stacks. Change it if it collides with your own routing, and change
+    # the terminator's address and the /32 above with it — the three values are one decision.
+    ipam:
+      config:
+        - subnet: 10.89.0.0/24

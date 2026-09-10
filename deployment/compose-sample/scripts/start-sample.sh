@@ -30,6 +30,13 @@
 # published port, moving the gateway's management context path, or adding a second gateway instance
 # needs no edit here.
 #
+# VARIANTS. With no arguments this brings up the base sample, in which the gateway terminates TLS
+# itself. `--plain-http` layers docker-compose.plain-http.yml on top, which takes that termination
+# away and puts a TLS-terminating nginx hop in front of the gateway instead — the ingress / sidecar
+# deployment shape. The variant changes WHICH files compose reads and nothing else about this script:
+# the readiness contract below is still derived from the resolved model (ADR-0031), so it follows the
+# merged model automatically rather than needing a per-variant branch.
+#
 # Invoked by the deployment module's opt-in `compose-sample` Maven profile at pre-integration-test,
 # and directly by an operator following doc/user/compose-sample.adoc. Both paths are the same path.
 
@@ -40,6 +47,43 @@ SAMPLE_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${SAMPLE_DIR}"
 
+# ---- 0. Select the variant ----------------------------------------------------------------------
+# The base file is always read; a variant appends its override on top. Only the file list changes —
+# every step below is variant-agnostic because it derives what it needs from the resolved model.
+VARIANT="default"
+COMPOSE_FILES=(-f docker-compose.yml)
+# The Compose release that implements the `!reset` / `!override` merge tags the plain-HTTP override
+# depends on. Older releases do not honour them, and do so QUIETLY — see the guard below.
+COMPOSE_MERGE_TAG_MIN_VERSION="2.24.0"
+
+usage() {
+    echo "Usage: ${0##*/} [--plain-http]"
+    echo ""
+    echo "  (no arguments)  The base sample: the gateway terminates TLS itself on 8443."
+    echo "  --plain-http    Layer docker-compose.plain-http.yml on top: the gateway serves plain"
+    echo "                  HTTP internally and an nginx hop terminates TLS on 8443 in front of it."
+    echo "                  Requires Docker Compose ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer."
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --plain-http)
+            VARIANT="plain-http"
+            COMPOSE_FILES+=(-f docker-compose.plain-http.yml)
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "❌ Unknown option: ${arg}"
+            echo ""
+            usage
+            exit 1
+            ;;
+    esac
+done
+
 if docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD=(docker compose)
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -48,6 +92,35 @@ else
     echo "❌ Docker Compose not available (neither 'docker compose' nor 'docker-compose')"
     exit 1
 fi
+
+# The plain-HTTP override drops the gateway's published 8443 with the `!override` merge tag. A
+# Compose too old to implement it does NOT reject the file — it ignores the tag, the base's port list
+# survives the merge, and the gateway ends up publishing 8443 alongside the terminator's binding on
+# the same host port. That surfaces as an opaque port conflict, or as a published container port that
+# answers nothing. Checking the version here turns it into one line naming the actual cause.
+#
+# Compared with `sort -V` rather than lexically: "2.9.0" is NEWER than "2.24.0" lexically and older
+# numerically, which is exactly the comparison a string test gets wrong.
+if [[ "$VARIANT" == "plain-http" ]]; then
+    COMPOSE_VERSION="$("${COMPOSE_CMD[@]}" version --short 2>/dev/null || echo "")"
+    COMPOSE_VERSION="${COMPOSE_VERSION#v}"
+    if [[ -z "$COMPOSE_VERSION" ]]; then
+        echo "⚠️  Could not determine the Docker Compose version; --plain-http needs"
+        echo "   ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer for the !reset / !override merge tags."
+    elif [[ "$(printf '%s\n%s\n' "$COMPOSE_MERGE_TAG_MIN_VERSION" "$COMPOSE_VERSION" \
+              | sort -V | head -n1)" != "$COMPOSE_MERGE_TAG_MIN_VERSION" ]]; then
+        echo "❌ --plain-http needs Docker Compose ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer"
+        echo "   (found ${COMPOSE_VERSION})."
+        echo "   Older releases silently ignore the !reset / !override merge tags that"
+        echo "   docker-compose.plain-http.yml uses to drop the gateway's published 8443, so the"
+        echo "   gateway would collide with the TLS terminator on that host port."
+        exit 1
+    fi
+fi
+
+# Every compose invocation below reads the selected file set. Appended AFTER the version guard above,
+# which needs the bare command only.
+COMPOSE_CMD+=("${COMPOSE_FILES[@]}")
 
 if ! docker info >/dev/null 2>&1; then
     echo "❌ Docker daemon not running — start Docker/Rancher Desktop first"
@@ -230,7 +303,12 @@ capture_sample_diagnostics() {
 #
 # The `if ! ...; then` wrapper is required rather than stylistic: set -e is active, so a bare failing
 # command would abort before the diagnostics could run.
-echo "🐳 Starting the compose sample (api-sheriff, keycloak, demo-api)..."
+if [[ "$VARIANT" == "plain-http" ]]; then
+    echo "🐳 Starting the compose sample, plain-HTTP variant"
+    echo "   (api-sheriff behind tls-terminator, keycloak, demo-api)..."
+else
+    echo "🐳 Starting the compose sample (api-sheriff, keycloak, demo-api)..."
+fi
 if ! "${COMPOSE_CMD[@]}" up -d --wait --wait-timeout 120; then
     echo "❌ The compose sample did not report healthy within 120s"
     while read -r SERVICE SCHEME PORT ROOT; do
@@ -266,5 +344,15 @@ while read -r SERVICE SCHEME PORT ROOT; do
 done <<< "$TARGETS"
 
 echo ""
-echo "🎉 The API Sheriff compose sample is ready."
-echo "   Try it:  curl -k https://localhost:8443/api"
+if [[ "$VARIANT" == "plain-http" ]]; then
+    echo "🎉 The API Sheriff compose sample is ready (plain-HTTP variant)."
+    # The SAME URL as the base sample, deliberately: the terminator publishes the port the gateway
+    # used to publish, so what changed is which component answers the TLS handshake — nginx now,
+    # forwarding to the gateway in cleartext over the internal network.
+    echo "   Try it:  curl -k https://localhost:8443/api"
+    echo "   TLS is terminated by the tls-terminator hop; the gateway itself serves plain HTTP"
+    echo "   on the internal network only and publishes no port off-host except management."
+else
+    echo "🎉 The API Sheriff compose sample is ready."
+    echo "   Try it:  curl -k https://localhost:8443/api"
+fi
