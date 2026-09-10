@@ -831,15 +831,17 @@ the hazard is stated here first rather than after the recipe.
 The same replacement rule governs the registry-side lever -- the Quarkus TLS registry's `<default>`
 bucket. Its trust material is supplied under the *unnamed* `quarkus.tls.trust-store.*` prefix, which
 is `QUARKUS_TLS_TRUST_STORE_P12_PATH` in environment spelling. *Spell it with no name segment.*
-Adding one selects a different bucket: `QUARKUS_TLS_DEFAULT_TRUST_STORE_P12_PATH` declares a
-*named* trust profile that merely happens to be called `default` -- the
+Inserting one selects a different bucket entirely: a variable carrying `DEFAULT` between `TLS` and
+`TRUST_STORE` declares a *named* trust profile that merely happens to be called `default` -- the
 `QUARKUS_TLS_<PROFILE>_TRUST_STORE_*` form
 link:user/environment-variable-overrides.adoc[Environment-variable overrides] documents for
 `jwks.tls_profile` -- and the registry's `<default>` bucket is not addressable by name at all
 (Quarkus refuses the literal name `<default>` and reaches that bucket only through the unnamed
 prefix). Material bound under a profile name therefore does *not* move the registry-resolved legs,
 and `ApiSheriff-17` reporting that tier as still on the platform bundle is the correct answer rather
-than a stale one.
+than a stale one. No descriptor in this repository declares such a profile: the only trust profiles
+any `gateway.yaml` names are `benchmark-idp` and `it-upstream`, and the private-CA trust the
+integration stack actually uses arrives through the `-Djavax.net.ssl.trustStore` triple above.
 
 The two levers are *independent*: moving only one leaves the other half of the gateway's outbound
 surface on the platform bundle. That split state is exactly the one an operator would never think to

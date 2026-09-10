@@ -409,11 +409,28 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
      * accept; counting quotes and declining the name keeps the declaration invalid, so the gate
      * reaches its remedy-bearing refusal instead of passing silently.
      *
+     * <h4>Why this is public</h4>
+     *
+     * The unpaired-quote verdict has a <strong>second caller</strong>:
+     * {@code EnvironmentKeySpellingGuardTest} in {@code integration-tests}, which decodes every
+     * {@code QUARKUS_*} environment key declared by the Compose descriptors through
+     * {@code StringUtil.toLowerCaseAndDotted} and then asks this method whether the decoded name
+     * could ever resolve, failing the build on a {@code null}. That guard exists because a
+     * doubled-underscore key that decodes to an unclosed quote binds nothing at boot while reading
+     * as configured in the file — the exact failure the ten deleted
+     * {@code QUARKUS_TLS_DEFAULT_TRUST__STORE_*} pairs had.
+     * <p>
+     * The discriminator is the quote count <em>after</em> decoding, never a naive refusal of
+     * {@code __}: the paired spelling {@code QUARKUS_TLS__MY_IDP__TRUST_STORE_P12_PATH} is
+     * legitimate and documented, and a guard reading the raw Compose YAML sees no quote characters
+     * at all. Sharing this method rather than restating the rule in the test module is what keeps
+     * the guard and the gate from drifting into two answers.
+     *
      * @param name a property name, an environment-variable spelling, or a decoded dotted candidate
      * @return the canonical form, or {@code null} when the name carries an unpaired quote and can
      *         therefore never resolve to a TLS property
      */
-    private static @Nullable String canonical(String name) {
+    public static @Nullable String canonical(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
         int quotes = 0;
         for (int i = 0; i < lower.length(); i++) {

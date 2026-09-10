@@ -337,8 +337,6 @@ services:
       # deliberate exception, documented at its own service definition.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       # File-based configuration mounted at /app/sheriff-config: the proxy edge
       # sources its routes and upstreams from the assembled RouteTable, and the
       # UPSTREAM topology alias resolves to the go-httpbin echo backend.
@@ -473,8 +471,6 @@ services:
       # gated by its own http:// block.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       # Pin the terminated HTTPS listener to TLS 1.2 so the require-client-cert rejection is
       # observable synchronously at startHandshake() (see the service comment). The controlling key
       # is quarkus.http.ssl.protocols (the HTTPS listener's protocol list); quarkus.tls.protocols is
@@ -569,8 +565,6 @@ services:
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception to that lockstep.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid cookie
       # gateway.yaml (oidc.client_secret) resolves to via EnvSecretResolver — kept in lockstep
@@ -672,8 +666,6 @@ services:
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       - OIDC_CLIENT_SECRET=integration-secret
       # Byte-identical to api-sheriff-cookie's key. This equality IS the experiment: it is the only
@@ -759,8 +751,6 @@ services:
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
       # (oidc.client_secret) resolves to via EnvSecretResolver — kept in lockstep with the primary
@@ -869,8 +859,6 @@ services:
       # The QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES / _KEY_FILES pair every other instance sets is
       # deliberately ABSENT here. Its absence is not what produces the downgrade — the selected
       # key-less bucket is — but leaving it set would only be misleading noise.
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the shared gateway.yaml
       # (oidc.client_secret) resolves to via EnvSecretResolver.
@@ -970,8 +958,6 @@ services:
       # 19006-19009) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
       # (oidc.client_secret) resolves to via EnvSecretResolver — kept in lockstep with the primary
@@ -1217,8 +1203,6 @@ services:
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
       # (oidc.client_secret) resolves to via EnvSecretResolver — kept in lockstep with the primary
@@ -1320,8 +1304,6 @@ services:
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
       # (oidc.client_secret) resolves to via EnvSecretResolver.
@@ -1422,8 +1404,6 @@ services:
       # 19006-19009) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
-      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid refresh
       # gateway.yaml (oidc.client_secret) resolves to via EnvSecretResolver. This is the ONE

@@ -164,6 +164,14 @@ Writing `__` where a dash belongs produces a variable that resolves to *nothing*
 `QUARKUS_TLS_TRUST__STORE_P12_PATH` to the malformed `quarkus.tls.trust."store.p12.path`, which
 matches no property, so the material is silently absent rather than rejected -- the failure surfaces
 later as an opaque handshake error against an endpoint whose anchor was never loaded.
+
+This warning is *machine-asserted*, not merely documented. `EnvironmentKeySpellingGuardTest`
+(module `integration-tests`) decodes every `QUARKUS_*` environment key declared by the Compose
+descriptors with the runtime's own decoder and then asks
+`ServerTlsDeclarationGate.canonical(String)` whether the decoded name could ever resolve; a name
+carrying an unpaired quote fails the build. The discriminator is the quote count *after* decoding,
+so the legitimate paired spelling `QUARKUS_TLS__MY_IDP__TRUST_STORE_P12_PATH` above passes
+untouched while an unpaired `__` is rejected at build time rather than at handshake time.
 ====
 
 [IMPORTANT]
