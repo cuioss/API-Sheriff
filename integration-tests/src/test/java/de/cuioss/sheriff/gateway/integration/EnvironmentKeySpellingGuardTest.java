@@ -72,7 +72,9 @@ import org.junit.jupiter.api.Test;
  * its refusal through: sharing it is what stops the guard and the gate drifting into two answers.
  * <p>
  * <strong>The descriptor set is glob-derived, never enumerated.</strong> Both directories are
- * scanned for {@code docker-compose*.yml}, so a descriptor added later — an overlay, a new
+ * scanned with {@link #DESCRIPTOR_GLOB}, which covers every name Compose itself reads, and each
+ * directory is separately held to a floor so one of them falling out of the scan is a failure rather
+ * than a quieter pass. A descriptor added later — an overlay, a new
  * deployment variant — is covered the moment it lands rather than when somebody remembers to extend
  * a list here. The Compose merge tags {@code !reset} and {@code !override} are registered on the
  * parser so a descriptor using them parses rather than failing as an unknown tag.
@@ -94,18 +96,39 @@ class EnvironmentKeySpellingGuardTest {
     /** The shipped deployment sample, a sibling of this module. */
     private static final Path SAMPLE = MODULE.resolve("../deployment/compose-sample").normalize();
 
-    /** The glob every descriptor directory is scanned with — deliberately not an enumerated list. */
-    private static final String DESCRIPTOR_GLOB = "docker-compose*.yml";
+    /**
+     * The glob every descriptor directory is scanned with, deliberately not an enumerated list.
+     * <p>
+     * It covers <strong>both</strong> name forms Docker Compose reads and both YAML extensions:
+     * {@code compose.yaml} and {@code compose.yml} are Compose's own default descriptor names, which
+     * it prefers over the {@code docker-compose*} spelling, and {@code .yaml} is as valid as
+     * {@code .yml} on either. A narrower glob is the silent escape this guard exists to close: a
+     * descriptor named {@code compose.yaml} would carry unchecked {@code QUARKUS_*} keys — binding
+     * nothing at boot, reporting nothing — while this test stayed green, which is precisely the
+     * "covered the moment it lands" promise the class javadoc makes.
+     * <p>
+     * The two brace groups are siblings rather than nested, which is what keeps this a legal
+     * {@code java.nio} glob; the empty alternative in the first group is what makes the
+     * {@code docker-} prefix optional.
+     */
+    private static final String DESCRIPTOR_GLOB = "{docker-,}compose*.{yml,yaml}";
 
     /** Only Quarkus' own namespace decodes through {@code EnvConfigSource}'s dotted candidate. */
     private static final String QUARKUS_PREFIX = "QUARKUS_";
 
     /**
-     * The floor the glob must clear. Both scanned directories ship at least one descriptor today; a
-     * result below this means the glob or the working directory moved, not that the repository
-     * genuinely has one descriptor.
+     * The floor the glob must clear <strong>in each scanned directory</strong>. Both ship at least
+     * one descriptor today, so a directory yielding none means the glob or the working directory
+     * moved, not that the repository genuinely stopped shipping one.
+     * <p>
+     * <strong>Per directory rather than over the concatenation, and that is the whole strength of
+     * it.</strong> A combined floor of two is satisfied by the sample directory alone — it ships two
+     * descriptors — so the module directory contributing ZERO would still clear it, and the key check
+     * would silently stop covering the integration stack while passing green. Holding each directory
+     * to its own floor is also what makes a combined count redundant: two directories each proven
+     * non-empty already establish everything the sum could.
      */
-    private static final int MINIMUM_DESCRIPTORS = 2;
+    private static final int MINIMUM_DESCRIPTORS_PER_DIRECTORY = 1;
 
     /** Positive control: two {@code __} groups, a legitimately quoted bucket name. */
     private static final String PAIRED_SPELLING = "QUARKUS_TLS__MY_IDP__TRUST_STORE_P12_PATH";
@@ -175,6 +198,10 @@ class EnvironmentKeySpellingGuardTest {
     /**
      * Lists the committed compose descriptors, derived by <strong>glob</strong> over both directories
      * that ship one rather than from an enumerated list a later descriptor would silently escape.
+     * <p>
+     * Each directory is held to {@link #MINIMUM_DESCRIPTORS_PER_DIRECTORY} as it is scanned, so a
+     * directory that stops yielding descriptors fails here, naming itself, instead of being absorbed
+     * by a combined count the other directory already clears.
      *
      * @return the discovered descriptors, ordered by directory then file name
      * @throws IOException when a directory cannot be listed
@@ -195,16 +222,18 @@ class EnvironmentKeySpellingGuardTest {
                     }
                 }
             }
+            assertTrue(found.size() >= MINIMUM_DESCRIPTORS_PER_DIRECTORY,
+                    () -> "the '" + DESCRIPTOR_GLOB + "' glob found only " + found.size()
+                            + " descriptor(s) in " + directory + ", below the per-directory floor of"
+                            + " " + MINIMUM_DESCRIPTORS_PER_DIRECTORY + ". This directory ships at"
+                            + " least one, so an empty result means the glob or the working directory"
+                            + " moved — and the floor is asserted HERE, per directory, because a"
+                            + " combined count over both is cleared by the other directory alone while"
+                            + " this one silently contributes nothing to the key check below. Do NOT"
+                            + " delete this guard.");
             found.sort(Comparator.comparing(path -> path.getFileName().toString()));
             descriptors.addAll(found);
         }
-
-        assertTrue(descriptors.size() >= MINIMUM_DESCRIPTORS,
-                () -> "the '" + DESCRIPTOR_GLOB + "' glob found only " + descriptors.size()
-                        + " descriptor(s) across " + MODULE + " and " + SAMPLE + ", below the expected"
-                        + " floor of " + MINIMUM_DESCRIPTORS + ". Both directories ship at least one, so"
-                        + " this means the glob or the working directory moved — leaving the key check"
-                        + " scanning almost nothing while still passing green.");
         return descriptors;
     }
 
