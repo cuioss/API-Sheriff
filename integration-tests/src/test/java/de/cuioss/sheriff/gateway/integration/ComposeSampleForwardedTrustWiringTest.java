@@ -15,14 +15,17 @@
  */
 package de.cuioss.sheriff.gateway.integration;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -30,13 +33,24 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.AbstractConstruct;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
+import org.yaml.snakeyaml.nodes.MappingNode;
+import org.yaml.snakeyaml.nodes.Node;
+import org.yaml.snakeyaml.nodes.NodeTuple;
+import org.yaml.snakeyaml.nodes.ScalarNode;
+import org.yaml.snakeyaml.nodes.SequenceNode;
+import org.yaml.snakeyaml.nodes.Tag;
 
+import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -68,6 +82,20 @@ import org.junit.jupiter.api.Test;
  * <p>
  * It parses the committed descriptors only — it starts no container and reaches no network.
  *
+ * <h2>The plain-HTTP override</h2>
+ *
+ * The sample also ships {@code docker-compose.plain-http.yml}, an override that takes TLS
+ * termination away from the gateway and puts an nginx hop in front of it. Every assertion about that
+ * variant below is computed over the <strong>merged</strong> base-plus-override model, never over the
+ * override document alone — because Compose MERGES an override into the base rather than replacing
+ * it, so what the override document says in isolation is not what the deployment gets. An assertion
+ * that read the override alone would pass on a file that clears nothing.
+ * <p>
+ * Each cleared value is asserted <strong>present-but-blank in the merged model</strong> and, as the
+ * matched control, <strong>non-blank in the base</strong>. The control is what makes the first
+ * assertion mean something: without it, a merged blank is equally explained by the base never having
+ * declared the key at all, and the override would be proven to have done nothing.
+ *
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -78,14 +106,66 @@ class ComposeSampleForwardedTrustWiringTest {
 
     private static final Path SAMPLE = MODULE.resolve("../deployment/compose-sample").normalize();
     private static final Path COMPOSE = SAMPLE.resolve("docker-compose.yml");
+    /** The plain-HTTP variant's override document, layered on {@link #COMPOSE}. */
+    private static final Path OVERRIDE = SAMPLE.resolve("docker-compose.plain-http.yml");
     private static final Path CONFIG_DIR = SAMPLE.resolve("docker/sheriff-config");
     private static final Path GATEWAY_YAML = CONFIG_DIR.resolve("gateway.yaml");
 
     /** The service whose {@code environment:} block is the sample's deployment door. */
     private static final String GATEWAY_SERVICE = "api-sheriff";
 
+    /** The override's TLS-terminating hop, and the only peer the variant trusts. */
+    private static final String TERMINATOR_SERVICE = "tls-terminator";
+
+    /** The network both services join, and the one the terminator's static address is declared on. */
+    private static final String SAMPLE_NETWORK = "api-sheriff";
+
     /** The variable the sample's allow-list is supplied by. */
     private static final String TRUSTED_PROXIES_VARIABLE = "SHERIFF_TRUSTED_PROXIES";
+
+    /** The key that expresses the variant's deliberate plain-HTTP opt-in. */
+    private static final String INSECURE_REQUESTS_VARIABLE = "QUARKUS_HTTP_INSECURE_REQUESTS";
+
+    /** The value of {@link #INSECURE_REQUESTS_VARIABLE} that opts the main listener into plain HTTP. */
+    private static final String INSECURE_REQUESTS_ENABLED = "enabled";
+
+    /**
+     * The prefix every MAIN-listener certificate variable carries, in its environment spelling — the
+     * selector the override-must-clear set is derived by rather than mirrored from.
+     * <p>
+     * Blanking those variables is what makes the opt-in coherent: a declared certificate alongside it
+     * is a combination the gateway refuses to boot on. A hardcoded two-element list here would
+     * therefore be a correctness gap and not merely a style one: let the base descriptor add a third
+     * {@code QUARKUS_HTTP_SSL_CERTIFICATE_*} variable and the override retain material through it, and
+     * {@code ServerTlsDeclarationGate} would refuse the variant's boot while this test stayed green.
+     * <p>
+     * It is derived from {@link DeclaredKeyMaterialKeys#HTTP_CERTIFICATE_PREFIX}, the same constant the
+     * gate reads its own key set from. The management listener's variables carry the disjoint
+     * {@code QUARKUS_MANAGEMENT_SSL_CERTIFICATE_} prefix, so they are excluded by construction — and
+     * {@link #MANAGEMENT_CERTIFICATE_VARIABLE} below stays as the matched control proving that.
+     */
+    private static final String CERTIFICATE_ENVIRONMENT_PREFIX =
+            environmentSpelling(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_PREFIX);
+
+    /**
+     * The management listener's certificate, which the override must NOT clear — it is a separate
+     * listener, so port 9000 stays HTTPS and the readiness gate keeps working.
+     */
+    private static final String MANAGEMENT_CERTIFICATE_VARIABLE =
+            "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES";
+
+    /**
+     * The Compose-Spec merge tags that make an override REPLACE a sequence rather than append to it.
+     * Either one drops the inherited entry; {@code !override} additionally keeps the entries the
+     * override itself declares, which is why the variant uses it for {@code ports:}.
+     */
+    private static final Set<String> COMPOSE_MERGE_TAGS = Set.of("!reset", "!override");
+
+    /** The container port the base publishes for the gateway's own TLS listener. */
+    private static final String PUBLIC_TLS_PORT = "8443";
+
+    /** The container port the readiness probe is derived from, which must survive the merge. */
+    private static final String MANAGEMENT_PORT = "9000";
 
     /** Matches a {@code ${VAR}} / {@code ${VAR:-default}} reference, capturing the variable name. */
     private static final Pattern VARIABLE_REFERENCE =
@@ -155,6 +235,148 @@ class ComposeSampleForwardedTrustWiringTest {
                         + " and the decision a later well-meaning edit is most likely to undo.");
     }
 
+    @Test
+    @DisplayName("the merged plain-HTTP model clears the certificates the base declares, and keeps the management one")
+    void mergedPlainHttpModelClearsTheCertificatesTheBaseDeclares() throws Exception {
+        Map<String, String> base = serviceEnvironment(COMPOSE, GATEWAY_SERVICE);
+        Map<String, String> merged = mergedGatewayEnvironment();
+
+        // Vacuity guards on both derived sides — an empty either side makes the loop assert nothing.
+        assertFalse(base.isEmpty(),
+                () -> "the base descriptor's '" + GATEWAY_SERVICE + "' service declared no environment"
+                        + " entries, so the base-is-non-blank control below would be vacuous");
+        assertFalse(merged.isEmpty(),
+                () -> "the merged base+override model carries no environment entries at all, so every"
+                        + " assertion below would pass without checking anything");
+
+        // DERIVED from the base descriptor by prefix, never mirrored into a constant: a certificate
+        // variable added to the base later must be covered here the moment it lands, because the
+        // override retaining material through it is a boot the gateway refuses.
+        List<String> clearedCertificateVariables = base.keySet().stream()
+                .filter(variable -> variable.startsWith(CERTIFICATE_ENVIRONMENT_PREFIX))
+                .toList();
+        assertFalse(clearedCertificateVariables.isEmpty(),
+                () -> "no '" + CERTIFICATE_ENVIRONMENT_PREFIX + "*' variable was derived from the base"
+                        + " descriptor's '" + GATEWAY_SERVICE + "' service, so the per-variable loop"
+                        + " below would assert nothing while passing green. The base declares the"
+                        + " gateway's own TLS material through exactly this prefix — an empty"
+                        + " derivation means the descriptor stopped doing so, or the prefix moved.");
+
+        assertEquals(INSECURE_REQUESTS_ENABLED, merged.get(INSECURE_REQUESTS_VARIABLE),
+                () -> "the merged model must declare " + INSECURE_REQUESTS_VARIABLE + "="
+                        + INSECURE_REQUESTS_ENABLED + ". Plain HTTP is DECLARED, never inferred from a"
+                        + " missing certificate — without this key the gateway refuses to boot with its"
+                        + " certificates cleared, because it would serve neither HTTPS nor a"
+                        + " deliberately-declared cleartext listener.");
+
+        for (String variable : clearedCertificateVariables) {
+            assertAll("the cleared certificate variable " + variable,
+                    // The override's effect, stated positively: the key is PRESENT and BLANK. Asserting
+                    // its absence instead would also pass on an override that simply forgot it, since
+                    // Compose would then leave the base's value standing in the merged model.
+                    () -> assertTrue(merged.containsKey(variable),
+                            () -> "the merged model must still CARRY " + variable + ". Compose merges"
+                                    + " environment by variable name, so a variable is dropped by"
+                                    + " declaring it EMPTY, never by omitting it — an omission would"
+                                    + " inherit the base's certificate path and the variant would not"
+                                    + " start."),
+                    () -> assertTrue(merged.get(variable) != null && merged.get(variable).isBlank(),
+                            () -> "the merged " + variable + " must be blank, but is '"
+                                    + merged.get(variable) + "'. A present-but-blank value declares"
+                                    + " nothing, which is what lets the gateway serve plain HTTP; a"
+                                    + " non-blank one is a declared server certificate alongside the"
+                                    + " plain-HTTP opt-in, which the gateway refuses to boot on."),
+                    // The MATCHED CONTROL. Without it a blank merged value is equally explained by the
+                    // base never declaring the key, and the override would be proven to do nothing.
+                    () -> assertFalse(base.getOrDefault(variable, "").isBlank(),
+                            () -> "the BASE descriptor must declare a non-blank " + variable
+                                    + ". This is the control for the assertion above: if the base did"
+                                    + " not declare it, the merged blank would prove nothing about the"
+                                    + " override having cleared anything."));
+        }
+
+        assertAll("the management certificate, which the override must leave alone",
+                () -> assertFalse(base.getOrDefault(MANAGEMENT_CERTIFICATE_VARIABLE, "").isBlank(),
+                        () -> "the base must declare a non-blank " + MANAGEMENT_CERTIFICATE_VARIABLE
+                                + " — the control for the equality below"),
+                () -> assertEquals(base.get(MANAGEMENT_CERTIFICATE_VARIABLE),
+                        merged.get(MANAGEMENT_CERTIFICATE_VARIABLE),
+                        () -> "the merged " + MANAGEMENT_CERTIFICATE_VARIABLE + " must be UNCHANGED"
+                                + " from the base. Quarkus' management interface is a separate listener"
+                                + " with its own key material, so it stays HTTPS in this variant —"
+                                + " which is what keeps the de.cuioss.sheriff.management-scheme label"
+                                + " accurate and the readiness probe passing."));
+    }
+
+    @Test
+    @DisplayName("the merged trusted-proxy list is exactly the terminator's declared static address as a /32")
+    void mergedTrustedProxiesNamesExactlyTheTerminatorsStaticAddress() throws Exception {
+        String address = terminatorStaticAddress();
+        Map<String, String> merged = mergedGatewayEnvironment();
+
+        assertFalse(address.isBlank(),
+                () -> "no ipv4_address was derived for the '" + TERMINATOR_SERVICE + "' service on the"
+                        + " '" + SAMPLE_NETWORK + "' network, so the comparison below would be vacuous."
+                        + " The static address is what makes the /32 below exact rather than a range.");
+
+        String supplied = merged.get(TRUSTED_PROXIES_VARIABLE);
+        assertNotNull(supplied,
+                () -> "the merged model must supply " + TRUSTED_PROXIES_VARIABLE + " — the sample's"
+                        + " gateway.yaml references it with no default, so an absent variable fails the"
+                        + " boot rather than defaulting");
+        List<String> entries = splitAndStrip(supplied);
+
+        assertEquals(List.of(address + "/32"), entries,
+                () -> "the variant must trust EXACTLY the terminating hop, as an exact /32 host route"
+                        + " naming its declared static address. Every other container on this network —"
+                        + " keycloak, demo-api — holds an address in the same subnet, so a range here"
+                        + " would let any of them state its own client address via X-Forwarded-For."
+                        + " The address is derived from the terminator's own ipv4_address declaration,"
+                        + " so moving the hop moves this expectation with it.");
+    }
+
+    @Test
+    @DisplayName("the override drops the gateway's public TLS port with a merge tag and keeps management published")
+    void overrideDropsThePublicTlsPortAndKeepsManagementPublished() throws Exception {
+        String tag = gatewayPortsMergeTag();
+        List<String> basePorts = servicePorts(COMPOSE, GATEWAY_SERVICE);
+        List<String> mergedPorts = mergedGatewayPorts();
+
+        // Vacuity guard: an empty base makes the "8443 was removed" assertion below meaningless.
+        assertFalse(basePorts.isEmpty(),
+                () -> "the base descriptor publishes no ports for '" + GATEWAY_SERVICE + "', so there"
+                        + " would be nothing for the override to drop and the assertions below would"
+                        + " be vacuous");
+
+        assertAll("the override's ports: merge behaviour",
+                // Asserted as a PRESENT tag, never inferred from an absent ports: key. Compose
+                // CONCATENATES sequences, so an override that simply omits ports: leaves the base's
+                // 8443 standing — the exact failure this assertion exists to catch.
+                () -> assertTrue(COMPOSE_MERGE_TAGS.contains(tag),
+                        () -> "the override's '" + GATEWAY_SERVICE + "' ports: must carry a Compose"
+                                + " merge tag (one of " + COMPOSE_MERGE_TAGS + "), but carries '" + tag
+                                + "'. Compose CONCATENATES port lists, so without the tag the base's "
+                                + PUBLIC_TLS_PORT + " survives the merge and collides with the"
+                                + " terminator's binding on the same host port."),
+                () -> assertTrue(publishesContainerPort(basePorts, PUBLIC_TLS_PORT),
+                        () -> "the BASE must publish container port " + PUBLIC_TLS_PORT + " — the"
+                                + " control proving the merge below actually removed something"),
+                () -> assertFalse(publishesContainerPort(mergedPorts, PUBLIC_TLS_PORT),
+                        () -> "the merged model must NOT publish container port " + PUBLIC_TLS_PORT
+                                + " for '" + GATEWAY_SERVICE + "' — that host port belongs to the TLS"
+                                + " terminator in this variant, and the gateway's own listener no"
+                                + " longer terminates, so publishing it would either collide on the"
+                                + " host binding or expose a port that answers nothing. Found: "
+                                + mergedPorts),
+                () -> assertTrue(publishesContainerPort(mergedPorts, MANAGEMENT_PORT),
+                        () -> "the merged model must STILL publish container port " + MANAGEMENT_PORT
+                                + " for '" + GATEWAY_SERVICE + "'. scripts/start-sample.sh derives its"
+                                + " whole readiness probe from the host port published against it"
+                                + " (ADR-0031), so dropping it — which a bare '!reset' of the list"
+                                + " would do — leaves the readiness gate with no target at all."
+                                + " Found: " + mergedPorts));
+    }
+
     /**
      * Reads the {@code api-sheriff} service's {@code environment:} block out of the committed compose
      * descriptor, in the {@code KEY=value} list form the sample uses.
@@ -162,27 +384,30 @@ class ComposeSampleForwardedTrustWiringTest {
      * @return the declared variables in declaration order
      * @throws IOException when the descriptor cannot be read
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, String> sampleEnvironment() throws IOException {
-        assertTrue(Files.isRegularFile(COMPOSE),
-                () -> "cannot read the sample's compose descriptor: " + COMPOSE + " does not exist."
-                        + " It is resolved relative to the module root (" + MODULE + "); if the sample"
-                        + " moved, point COMPOSE at its new location rather than dropping this guard.");
-        Map<String, Object> doc;
-        try (InputStream in = Files.newInputStream(COMPOSE)) {
-            doc = new Yaml().loadAs(in, Map.class);
-        }
-        Object services = doc.get("services");
-        assertInstanceOf(Map.class, services, "docker-compose.yml must declare services");
-        Object service = ((Map<String, Object>) services).get(GATEWAY_SERVICE);
-        assertNotNull(service, "docker-compose.yml must declare the '" + GATEWAY_SERVICE + "' service");
-        Object environment = ((Map<String, Object>) service).get("environment");
-        assertInstanceOf(List.class, environment,
-                "the '" + GATEWAY_SERVICE + "' service environment must be the KEY=value list form the"
-                        + " neighbouring entries use");
+        return serviceEnvironment(COMPOSE, GATEWAY_SERVICE);
+    }
+
+    /**
+     * Reads one service's {@code environment:} block out of one committed descriptor, in the
+     * {@code KEY=value} list form the sample uses. A key with an empty value — the shape an override
+     * clears with — is returned as a present entry with a blank value, which is exactly the
+     * distinction the merged-model assertions turn on.
+     *
+     * @param descriptor the compose document to read
+     * @param service    the service whose block to read
+     * @return the declared variables in declaration order
+     * @throws IOException when the descriptor cannot be read
+     */
+    private static Map<String, String> serviceEnvironment(Path descriptor, String service)
+            throws IOException {
+        Object environment = serviceKey(descriptor, service, "environment");
+        List<?> declaredEntries = assertInstanceOf(List.class, environment,
+                () -> "the '" + service + "' service in " + descriptor.getFileName() + " must declare"
+                        + " its environment in the KEY=value list form the neighbouring entries use");
 
         Map<String, String> declared = new LinkedHashMap<>();
-        for (Object entry : (List<Object>) environment) {
+        for (Object entry : declaredEntries) {
             String text = String.valueOf(entry);
             int separator = text.indexOf('=');
             assertTrue(separator > 0,
@@ -302,11 +527,259 @@ class ComposeSampleForwardedTrustWiringTest {
         return (String) trusted;
     }
 
+    /**
+     * Renders a configuration-property name in the environment-variable spelling a compose
+     * {@code environment:} block declares it under: upper-cased, with every non-alphanumeric
+     * character mapped to a single {@code _}.
+     * <p>
+     * One underscore per character, never a collapsed run — that is SmallRye's own
+     * {@code EnvConfigSource} rule, and the reason a doubled {@code __} means something else entirely
+     * (see {@code EnvironmentKeySpellingGuardTest}). Deriving the spelling rather than writing it out
+     * is what lets the property-side constant stay the single definition of which keys these are.
+     *
+     * @param propertyName the property name or prefix, in dotted spelling
+     * @return its environment spelling
+     */
+    private static String environmentSpelling(String propertyName) {
+        return propertyName.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "_");
+    }
+
     private static List<String> splitAndStrip(String value) {
         List<String> entries = new ArrayList<>();
         for (String element : value.split(",", -1)) {
             entries.add(element.strip());
         }
         return entries;
+    }
+
+    // ---- The merged base+override model ---------------------------------------------------------
+
+    /**
+     * Overlays the override's gateway environment onto the base's, by variable name — which is
+     * exactly how Compose merges an {@code environment:} block. The result is what the deployment
+     * actually gets, and is the only model the variant's assertions are computed over.
+     *
+     * @return the merged variables, base entries first
+     * @throws IOException when either descriptor cannot be read
+     */
+    private static Map<String, String> mergedGatewayEnvironment() throws IOException {
+        Map<String, String> merged = new LinkedHashMap<>(serviceEnvironment(COMPOSE, GATEWAY_SERVICE));
+        merged.putAll(serviceEnvironment(OVERRIDE, GATEWAY_SERVICE));
+        return merged;
+    }
+
+    /**
+     * Applies Compose's {@code ports:} merge rule to the two descriptors: a sequence CONCATENATES
+     * unless the override tags it, {@code !reset} drops it entirely, and {@code !override} replaces
+     * it with the override's own entries. Modelling the rule here — rather than assuming the override
+     * simply wins — is what lets the assertions distinguish a tagged override from an untagged one
+     * that silently appends.
+     *
+     * @return the gateway's effective published ports in the merged model
+     * @throws IOException when either descriptor cannot be read
+     */
+    private static List<String> mergedGatewayPorts() throws IOException {
+        String tag = gatewayPortsMergeTag();
+        if ("!reset".equals(tag)) {
+            return List.of();
+        }
+        if ("!override".equals(tag)) {
+            return servicePorts(OVERRIDE, GATEWAY_SERVICE);
+        }
+        List<String> merged = new ArrayList<>(servicePorts(COMPOSE, GATEWAY_SERVICE));
+        merged.addAll(servicePorts(OVERRIDE, GATEWAY_SERVICE));
+        return merged;
+    }
+
+    /**
+     * Reads the YAML tag carried by the override's gateway {@code ports:} value, at the NODE level so
+     * the tag is observable at all — constructing the document would resolve it away and leave the
+     * assertion unable to tell a tagged sequence from a plain one.
+     *
+     * @return the tag's literal text, e.g. {@code !override}, or the resolved default tag when the
+     *         override carries none
+     * @throws IOException when the override cannot be read
+     */
+    private static String gatewayPortsMergeTag() throws IOException {
+        Node document;
+        try (Reader reader = Files.newBufferedReader(OVERRIDE)) {
+            document = new Yaml().compose(reader);
+        }
+        Node services = childNode(document, "services", OVERRIDE);
+        Node gateway = childNode(services, GATEWAY_SERVICE, OVERRIDE);
+        return childNode(gateway, "ports", OVERRIDE).getTag().getValue();
+    }
+
+    /**
+     * @param node       the mapping node to look in
+     * @param key        the key to resolve
+     * @param descriptor the document being read, for failure messages
+     * @return the value node declared under {@code key}
+     */
+    private static Node childNode(Node node, String key, Path descriptor) {
+        MappingNode mapping = assertInstanceOf(MappingNode.class, node,
+                () -> descriptor.getFileName() + ": expected a mapping while resolving '" + key + "'");
+        for (NodeTuple tuple : mapping.getValue()) {
+            if (tuple.getKeyNode() instanceof ScalarNode scalar && key.equals(scalar.getValue())) {
+                return tuple.getValueNode();
+            }
+        }
+        return fail(descriptor.getFileName() + " declares no '" + key + "' key where one is required");
+    }
+
+    /**
+     * @param descriptor the compose document to read
+     * @param service    the service whose {@code ports:} to read
+     * @return the declared port strings, or an empty list when the service declares none
+     * @throws IOException when the descriptor cannot be read
+     */
+    private static List<String> servicePorts(Path descriptor, String service) throws IOException {
+        Object ports = serviceKey(descriptor, service, "ports");
+        if (ports == null) {
+            return List.of();
+        }
+        List<?> declared = assertInstanceOf(List.class, ports,
+                () -> "the '" + service + "' service in " + descriptor.getFileName()
+                        + " must declare ports: as a sequence");
+        List<String> entries = new ArrayList<>();
+        for (Object entry : declared) {
+            entries.add(String.valueOf(entry));
+        }
+        return entries;
+    }
+
+    /**
+     * Tests whether any published-port entry targets a given CONTAINER port. The container port is
+     * the last colon-separated segment in every Compose short-form spelling, so this reads
+     * {@code "8443:8443"} and {@code "127.0.0.1:9000:9000"} alike without caring which host interface
+     * an entry binds.
+     *
+     * @param ports         the declared port entries
+     * @param containerPort the container-side port to look for
+     * @return {@code true} when at least one entry publishes it
+     */
+    private static boolean publishesContainerPort(List<String> ports, String containerPort) {
+        for (String entry : ports) {
+            String[] segments = entry.split(":");
+            if (containerPort.equals(segments[segments.length - 1])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Reads the terminating hop's declared static address from the override itself, so the {@code /32}
+     * the trusted-proxy assertion expects is DERIVED from the deployment rather than mirrored into a
+     * constant here — moving the hop moves the expectation with it.
+     *
+     * @return the declared {@code ipv4_address}, or the empty string when none is declared
+     * @throws IOException when the override cannot be read
+     */
+    private static String terminatorStaticAddress() throws IOException {
+        Object networks = serviceKey(OVERRIDE, TERMINATOR_SERVICE, "networks");
+        Map<?, ?> declared = assertInstanceOf(Map.class, networks,
+                () -> "the '" + TERMINATOR_SERVICE + "' service must declare its networks in the mapping"
+                        + " form — the list form cannot carry the ipv4_address this variant needs");
+        Object attachment = declared.get(SAMPLE_NETWORK);
+        Map<?, ?> settings = assertInstanceOf(Map.class, attachment,
+                () -> "the '" + TERMINATOR_SERVICE + "' service must attach to the '" + SAMPLE_NETWORK
+                        + "' network with an explicit settings mapping");
+        Object address = settings.get("ipv4_address");
+        return address == null ? "" : String.valueOf(address);
+    }
+
+    /**
+     * @param descriptor the compose document to read
+     * @param service    the service to resolve
+     * @param key        the key to read off that service
+     * @return the declared value, or {@code null} when the service declares no such key
+     * @throws IOException when the descriptor cannot be read
+     */
+    private static Object serviceKey(Path descriptor, String service, String key) throws IOException {
+        assertTrue(Files.isRegularFile(descriptor),
+                () -> "cannot read the compose descriptor " + descriptor + ": it does not exist. It is"
+                        + " resolved relative to the module root (" + MODULE + "); if the sample moved,"
+                        + " point this test at its new location rather than dropping the guard.");
+        Object document;
+        try (InputStream in = Files.newInputStream(descriptor)) {
+            document = composeParser().load(in);
+        }
+        Map<?, ?> root = assertInstanceOf(Map.class, document,
+                () -> descriptor.getFileName() + " must parse as a YAML mapping");
+        Map<?, ?> services = assertInstanceOf(Map.class, root.get("services"),
+                () -> descriptor.getFileName() + " must declare services");
+        Map<?, ?> definition = assertInstanceOf(Map.class, services.get(service),
+                () -> descriptor.getFileName() + " must declare the '" + service + "' service");
+        return definition.get(key);
+    }
+
+    /**
+     * @return a parser that understands the Compose merge tags, so the override document parses at all
+     */
+    private static Yaml composeParser() {
+        return new Yaml(new ComposeMergeTagConstructor());
+    }
+
+    /**
+     * A {@link SafeConstructor} that understands the two Compose-Spec merge tags, so the override
+     * document loads rather than being rejected as carrying an unknown tag.
+     * <p>
+     * {@code !reset} removes the value the base declared, which {@code null} models. {@code !override}
+     * keeps its own value but suppresses sequence merging, so it constructs exactly as the untagged
+     * node would — the merge SEMANTICS are applied by {@link #mergedGatewayPorts()}, which reads the
+     * tag separately, not by this constructor.
+     * <p>
+     * {@code EnvironmentKeySpellingGuardTest} registers the same two tags for the same reason; the
+     * registrations are deliberately local to each test rather than shared, so neither test's parser
+     * can be changed out from under it by an edit made for the other.
+     */
+    private static final class ComposeMergeTagConstructor extends SafeConstructor {
+
+        private ComposeMergeTagConstructor() {
+            super(new LoaderOptions());
+            yamlConstructors.put(new Tag("!reset"), new ConstructReset());
+            yamlConstructors.put(new Tag("!override"), new ConstructUntagged());
+        }
+
+        /** Constructs a {@code !reset} node as {@code null} — the base's value is removed. */
+        private static final class ConstructReset extends AbstractConstruct {
+
+            @Override
+            public Object construct(Node node) {
+                return null;
+            }
+        }
+
+        /**
+         * Constructs an {@code !override} node as its untagged equivalent. Children are resolved
+         * through the enclosing constructor, never the node itself — re-entering on the same node
+         * would trip SnakeYAML's recursion guard.
+         */
+        private final class ConstructUntagged extends AbstractConstruct {
+
+            @Override
+            public Object construct(Node node) {
+                return switch (node) {
+                    case ScalarNode scalar -> scalar.getValue();
+                    case SequenceNode sequence -> {
+                        List<Object> values = new ArrayList<>();
+                        for (Node child : sequence.getValue()) {
+                            values.add(constructObject(child));
+                        }
+                        yield values;
+                    }
+                    case MappingNode mapping -> {
+                        Map<Object, Object> values = new LinkedHashMap<>();
+                        for (NodeTuple tuple : mapping.getValue()) {
+                            values.put(constructObject(tuple.getKeyNode()),
+                                    constructObject(tuple.getValueNode()));
+                        }
+                        yield values;
+                    }
+                    default -> null;
+                };
+            }
+        }
     }
 }

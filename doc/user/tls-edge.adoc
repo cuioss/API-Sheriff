@@ -58,9 +58,23 @@ Operating rules:
 == Serving plain HTTP
 
 *Plain HTTP is something you declare, never something the gateway infers.* Set
-`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` and the terminated listener serves cleartext, deliberately
-and without argument -- that is the supported deployment behind a TLS-terminating ingress. Expose
-that port only behind such a boundary.
+`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` and the terminated listener serves cleartext -- that is the
+supported deployment behind a TLS-terminating ingress. Expose that port only behind such a boundary.
+
+*What the opt-in declares is the posture of a coherent deployment, not a licence to leave every other
+TLS declaration standing.* Three combinations are *refused at boot* rather than stood down, because
+each names something that can only mean anything on a listener which terminates TLS:
+
+* *Declared server key material* -- any `QUARKUS_HTTP_SSL_CERTIFICATE_*` spelling, a default
+  `quarkus.tls.key-store.*` bucket, or a `QUARKUS_HTTP_TLS_CONFIGURATION_NAME` bucket that carries
+  material. One listener cannot both serve cleartext and terminate TLS.
+* *`tls.mtls.enabled`* -- <<_interactions_with_the_rest_of_the_edge,verdict 1 below>>.
+* *A non-empty `tls.passthrough_sni`* -- <<_interactions_with_the_rest_of_the_edge,verdict 2 below>>.
+
+Each of the three refusals names the offending key and *both* ways out: remove the contradicting
+declaration, or remove the opt-in and declare a certificate so the listener terminates TLS. A
+selected bucket that carries *no* material is deliberately not among them -- see the refusal below,
+which the opt-in still stands down.
 
 If you supply *no server key material* and do *not* set that variable, the gateway *refuses to
 start*. It does not fall back to cleartext. A missing certificate cannot tell "this gateway is
@@ -91,6 +105,71 @@ inference was rejected -- is in
 link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts] and in the seam
 amendment to
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
+
+[[_interactions_with_the_rest_of_the_edge]]
+=== What this mode does to the rest of the edge
+
+Four other parts of the gateway behave differently -- or stop working -- when the terminated listener
+serves cleartext. Each verdict is stated once here so none of them has to be rediscovered in
+production.
+
+*1. Inbound mTLS (`tls.mtls`) -- REFUSED at boot alongside the opt-in.* A gateway that terminates no
+TLS takes part in no handshake, so it can verify no client certificate: the requirement would not be
+weakened, it would simply never run. Before this refusal existed the combination booted and the
+declared requirement was silently inert, which is the state it now names instead. If you need
+client-certificate verification in this topology, it belongs on the terminating hop, which is the
+component that actually holds the handshake.
+
+*2. The ADR-0017 SNI front listener (`tls.passthrough_sni`) -- REFUSED at boot alongside the opt-in.*
+Passthrough gives the public TLS port to the accept-time front listener, which relays matched
+hostnames undecrypted and hands everything else to the terminated listener behind it. A plain-HTTP
+application port contradicts that topology rather than complementing it. Passthrough and a
+TLS-terminating hop are two answers to the same question; pick one.
+
+*3. `forwarded.trusted_proxies` -- load-bearing here, not optional.* The gateway's immediate TCP peer
+is now the terminating hop rather than the client, so that declaration decides every client-address
+question. With no `forwarded` block, or an empty list, the peer gate trusts nobody: every inbound
+`X-Forwarded-For` is ignored, and because the gateway *regenerates* the forwarding family rather than
+propagating it, there is then nothing left to regenerate from -- the upstream is handed *no*
+`X-Forwarded-For` at all. The gateway never falls back to synthesising one from the TCP peer:
+`ForwardPolicyStage.applyRegeneratedForwarding` hands the resolver an empty list for every forwarding
+name, and the resolver is never given the socket remote address in the first place. So an upstream
+that makes IP-based decisions -- a rate limit, an allow-list, an audit trail -- gets no client
+attribution and falls back to the address of its own connection, which is *the gateway's*: every
+client looks alike to it, including the ones an allow-list was meant to exclude. That silent
+uniformity is the failure mode this declaration prevents, and it is why the declaration is
+load-bearing rather than optional. Set the list to the hop's *exact* address as a `/32`. Never a bridge range, and never
+a range wide enough to contain the clients themselves: a client inside the trusted set has its own
+`X-Forwarded-For` believed and prepended, which is precisely the spoof the gate exists to stop.
+
+*4. The BFF `Secure` / `__Host-` cookie surface -- unconditional, across all three emitting codecs.*
+Nothing in the gateway weakens a cookie attribute for a cleartext listener, and that is deliberate.
+`SessionCookieCodec` (server-mode session), `SealedSessionCookieCodec` (cookie-mode session) and
+`BindingCookieCodec` (the login-time browser binding, `+__Host-sheriff-binding+`) each append
+`Secure`, `HttpOnly` and `SameSite=Lax` unconditionally, and `RpInitiatedLogout` emits its logout
+state and clearing headers with the same attributes. The `__Host-` prefix is fixed on the binding and
+logout cookies and is the default session-cookie name.
+
+A browser that reaches the gateway over `http://` on any *non-loopback* origin drops every one of
+them, so *the BFF cannot function on a plain-HTTP port exposed directly to a browser*. The mode
+supports the BFF only behind a hop the browser reaches over HTTPS -- that hop is what preserves the
+secure context the `__Host-` prefix requires. This is a property of the topology, not a knob: there
+is no setting that relaxes the attributes for cleartext, and asking for one is asking to have the
+session cookie stolen off the wire.
+
+*Loopback is the one exception, and it is named here so it is not mistaken for a deployment option.*
+W3C Secure Contexts treats `http://localhost`, `http://127.0.0.1` and `http://[::1]` as
+potentially-trustworthy origins, and Chrome, Firefox and Safari all accept `Secure` and `__Host-`
+cookies on them -- so a BFF flow driven against a plain-HTTP gateway on your own machine really does
+work. That is a local-development convenience and nothing else. No origin a deployment is reached on
+is loopback, so carrying the observation across to one is exactly the inference the sentence above
+exists to prevent: it would read a working developer setup as evidence that the port may be exposed.
+
+That browser-side half is asserted here from the cookie rules and the topology, *not* from any test
+in this repository. The integration lane drives a Java HTTP client that accepts what a browser would
+refuse, which is exactly the limitation
+link:../development/cookie-deliverability-blindness.adoc[Cookie-deliverability blindness] records --
+the lane observes the header the gateway *emitted* and never what a client does with it.
 
 == Passthrough SNI
 

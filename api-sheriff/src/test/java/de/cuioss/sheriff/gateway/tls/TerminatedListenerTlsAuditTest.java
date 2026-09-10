@@ -59,15 +59,22 @@ import org.junit.jupiter.api.Test;
  * the terminated listener resolves to HTTPS and the audit is correctly silent. The profile selects
  * the key-less {@code plain-management} bucket for the main listener instead — the one bucket this
  * project declares with no key material by construction — which drives the resolution down leg 1 and
- * leaves the listener with nothing to terminate with. Deliberately, it does <em>not</em> clear the
- * certificate keys: leaving real certificate paths in the configuration is what keeps
- * {@link #emitsNoStorePath()} non-vacuous, since a record that leaked a store path would have a path
- * available to leak. The profile must also set {@code quarkus.http.insecure-requests=enabled}: that
- * is the explicit plain-HTTP opt-in
- * ({@link ServerTlsDeclarationGate}), and without it both this
- * boot's key-less bucket selection and {@code VertxHttpRecorder.initializeMainHttpServer} refuse to
- * start the listener at all. Declaring it is this test saying, in the one key that means it, that
- * plain HTTP is the state it wants to observe.
+ * leaves the listener with nothing to terminate with. The profile must also set
+ * {@code quarkus.http.insecure-requests=enabled}: that is the explicit plain-HTTP opt-in
+ * ({@link ServerTlsDeclarationGate}), and without it both this boot's key-less bucket selection and
+ * {@code VertxHttpRecorder.initializeMainHttpServer} refuse to start the listener at all. Declaring
+ * it is this test saying, in the one key that means it, that plain HTTP is the state it wants to
+ * observe.
+ * <p>
+ * <strong>Why the profile CLEARS the inherited certificate keys.</strong> The opt-in combined with
+ * declared server key material is one of the three incoherent combinations
+ * {@link ServerTlsDeclarationGate} refuses at boot, and the boot-wide
+ * {@code src/test/resources/application.properties} declares exactly those keys. Inheriting them
+ * here would therefore fail this container's start on a contradiction that has nothing to do with
+ * what these cases observe, so the profile clears both to the blank value the gate reads as absent.
+ * The record-content case that needed real paths in the configuration no longer runs against the
+ * boot at all — see {@link EmittedRecordContent}, which supplies those paths to the audit directly
+ * and is strictly the stronger measurement for it.
  */
 @QuarkusTest
 @TestProfile(TerminatedListenerTlsAuditTest.KeyLessMainListenerProfile.class)
@@ -78,6 +85,16 @@ class TerminatedListenerTlsAuditTest {
     private static final String NAMED_BUCKET = "named-server-tls";
     private static final int HTTP_PORT = 8080;
     private static final int HTTPS_PORT = 8443;
+
+    /**
+     * The certificate paths the boot-wide test properties declare. {@link EmittedRecordContent}
+     * hands them to the audit itself, so the record it emits really does have a path available to
+     * leak.
+     */
+    private static final String CERTIFICATE_PATH =
+            "../integration-tests/src/main/docker/certificates/localhost.crt";
+    private static final String CERTIFICATE_KEY_PATH =
+            "../integration-tests/src/main/docker/certificates/localhost.key";
 
     @Inject
     Event<StartupEvent> startupEvent;
@@ -91,7 +108,8 @@ class TerminatedListenerTlsAuditTest {
 
     /**
      * Points the main listener at the shipped key-less TLS bucket so it really resolves to plain
-     * HTTP, while leaving the shipped certificate keys in place.
+     * HTTP, and clears the certificate keys the boot-wide test properties declare so the plain-HTTP
+     * opt-in is the only server-TLS posture this container declares.
      */
     public static final class KeyLessMainListenerProfile implements QuarkusTestProfile {
 
@@ -99,7 +117,9 @@ class TerminatedListenerTlsAuditTest {
         public Map<String, String> getConfigOverrides() {
             return Map.of(
                     "quarkus.http.tls-configuration-name", "plain-management",
-                    "quarkus.http.insecure-requests", "enabled");
+                    "quarkus.http.insecure-requests", "enabled",
+                    "quarkus.http.ssl.certificate.files", "",
+                    "quarkus.http.ssl.certificate.key-files", "");
         }
     }
 
@@ -121,14 +141,44 @@ class TerminatedListenerTlsAuditTest {
                 "Live edge topology: single terminated listener (ADR-0017 default topology)");
     }
 
-    @Test
-    @DisplayName("Names the port and the topology only — never the configured store path")
-    void emitsNoStorePath() {
-        startupEvent.fire(new StartupEvent());
+    /**
+     * What the emitted record carries, asserted against an audit that really is holding a store
+     * path.
+     * <p>
+     * <strong>Why this case cannot be driven from the boot any more.</strong> Its whole value is
+     * that the absence of a store path in the record is a MEASUREMENT rather than a tautology, which
+     * needs a path to be available to leak in the first place. That used to come from the booted
+     * container's own certificate keys — but declared key material alongside the plain-HTTP opt-in
+     * is now one of the combinations {@link ServerTlsDeclarationGate} refuses at boot, so no
+     * container can hold both the paths and the plain-HTTP state at once. Constructing the audit
+     * directly restores the premise and tightens it: the paths are handed to the very object under
+     * test, so what the record omits is demonstrably something that object had.
+     */
+    @Nested
+    @DisplayName("The emitted record's content")
+    class EmittedRecordContent {
 
-        assertAll("the boot has real certificate paths configured, so this absence is a measurement",
-                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, "localhost.crt"),
-                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, "localhost.key"));
+        @Test
+        @DisplayName("Names the port and the topology only — never the configured store path")
+        void emitsNoStorePath() {
+            TerminatedListenerTlsAudit audit = new TerminatedListenerTlsAudit(
+                    registry(keyLessConfiguration(), null), gatewayConfig, Optional.of(NAMED_BUCKET),
+                    Optional.of(List.of(CERTIFICATE_PATH)), Optional.of(List.of(CERTIFICATE_KEY_PATH)),
+                    Optional.empty(), Optional.empty(), HTTP_PORT, HTTPS_PORT);
+
+            boolean plain = audit.auditTerminatedListenerTls();
+
+            assertAll("the audit holds real certificate paths, so this absence is a measurement",
+                    () -> assertTrue(plain,
+                            "the vacuity guard: a selected key-less bucket REPLACES the certificate, "
+                                    + "so this audit resolves to plain HTTP and really does emit the "
+                                    + "record. Without it the two absences below would pass equally "
+                                    + "against an audit that emitted nothing at all"),
+                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                            "Terminated main listener is serving PLAIN HTTP on port"),
+                    () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, "localhost.crt"),
+                    () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, "localhost.key"));
+        }
     }
 
     /**

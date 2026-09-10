@@ -22,6 +22,8 @@ import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import io.quarkus.vertx.http.HttpServerOptionsCustomizer;
 import io.vertx.core.http.HttpServerOptions;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -57,13 +59,28 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@code quarkus.http.tls-configuration-name} selects a bucket for which no
  *       {@code quarkus.tls.<name>.key-store.*} material is declared — almost always a typo in the
  *       name, or a bucket nobody populated.</li>
+ *   <li>{@code quarkus.http.insecure-requests=enabled} is combined with declared server key material
+ *       for that same listener: a listener cannot both serve cleartext and terminate TLS.</li>
+ *   <li>{@code quarkus.http.insecure-requests=enabled} is combined with {@code tls.mtls.enabled}: a
+ *       gateway that terminates no TLS participates in no handshake and can verify no client
+ *       certificate, so the declared requirement would be silently inert.</li>
+ *   <li>{@code quarkus.http.insecure-requests=enabled} is combined with a non-empty
+ *       {@code tls.passthrough_sni}: the ADR-0017 front listener claims the public TLS port, which a
+ *       plain-HTTP application port contradicts.</li>
  * </ul>
  *
- * An explicit {@code enabled} stands <em>both</em> refusals down, in silence. That key is the
- * operator stating the posture in the one key that means it, and this gate exists to make plain HTTP
- * explicit rather than to second-guess an operator who has been explicit. A bucket name that
- * resolves to nothing is still worth nothing on such a deployment, but it costs no confidentiality:
- * the listener is serving the cleartext that was asked for, not cleartext nobody chose.
+ * An explicit {@code enabled} stands the first <em>two</em> refusals down, in silence. Those two are
+ * the certificate-<em>absence</em> cases, and absence is exactly what the opt-in is entitled to
+ * declare: the key is the operator stating the posture in the one key that means it, and this gate
+ * exists to make plain HTTP explicit rather than to second-guess an operator who has been explicit.
+ * A bucket name that resolves to nothing is still worth nothing on such a deployment, but it costs
+ * no confidentiality: the listener is serving the cleartext that was asked for, not cleartext nobody
+ * chose.
+ * <p>
+ * What the opt-in does <strong>not</strong> stand down is a declaration that contradicts it. The
+ * last three refusals are incoherence rather than absence — each names a second declaration that
+ * can only mean something on a listener that terminates TLS — so the opt-in makes them louder rather
+ * than quieter, and each names the offending key and both ways out.
  *
  * <h2>Why this seam, and not a configuration source</h2>
  *
@@ -154,15 +171,32 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
                     + "quarkus.http.insecure-requests=enabled, which is the explicit opt-in and is "
                     + "never inferred from a missing certificate";
 
+    /** The plain-HTTP opt-in as an operator writes it, for the incoherence refusals to name. */
+    private static final String PLAIN_HTTP_OPT_IN = DeclaredKeyMaterialKeys.INSECURE_REQUESTS + "="
+            + DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED;
+
+    /** The opening every incoherence refusal shares: the opt-in is declared, and something contradicts it. */
+    private static final String PLAIN_HTTP_OPT_IN_DECLARED =
+            PLAIN_HTTP_OPT_IN + " opts the terminated main listener into plain HTTP, but ";
+
+    /** The second way out of every incoherence refusal: drop the opt-in and terminate TLS instead. */
+    private static final String TERMINATE_TLS_REMEDY = "remove " + PLAIN_HTTP_OPT_IN
+            + " and declare a server certificate through " + SUPPORTED_SPELLINGS;
+
     private final Config config;
 
+    private final GatewayConfig gatewayConfig;
+
     /**
-     * @param config the resolved configuration, read for the declared server-TLS keys and for the
-     *               enumerated TLS-registry bucket names
+     * @param config        the resolved configuration, read for the declared server-TLS keys and for
+     *                      the enumerated TLS-registry bucket names
+     * @param gatewayConfig the bound global gateway document, read for the {@code tls.mtls} and
+     *                      {@code tls.passthrough_sni} blocks the plain-HTTP opt-in contradicts
      */
     @Inject
-    public ServerTlsDeclarationGate(Config config) {
+    public ServerTlsDeclarationGate(Config config, GatewayConfig gatewayConfig) {
         this.config = Objects.requireNonNull(config, "config");
+        this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
     }
 
     /**
@@ -180,14 +214,18 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
     }
 
     /**
-     * Applies the two refusal cases, in the order their preconditions nest.
+     * Applies the five refusal cases, in the order their preconditions nest: the plain-HTTP opt-in
+     * selects the three incoherence refusals, its absence the two certificate-absence refusals.
      *
      * @throws IllegalStateException when the terminated main listener would serve neither HTTPS nor
-     *                               a deliberately-declared plain HTTP
+     *                               a deliberately-declared plain HTTP, or when the declared
+     *                               plain-HTTP posture is contradicted by a second declaration that
+     *                               only means something on a TLS-terminating listener
      */
     public void assertServerTlsDeclarationIsCoherent() {
         if (DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED.equals(
                 declaredValue(DeclaredKeyMaterialKeys.INSECURE_REQUESTS))) {
+            assertPlainHttpDeclarationIsCoherent();
             return;
         }
         String bucket = declaredValue(DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME);
@@ -197,19 +235,92 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
             }
             return;
         }
-        if (declaresLegacyCertificate() || declaresKeyMaterialUnder(DEFAULT_KEY_STORE_PREFIX)) {
+        if (declaredLegacyCertificateKey() != null || declaresKeyMaterialUnder(DEFAULT_KEY_STORE_PREFIX)) {
             return;
         }
         throw new IllegalStateException(noKeyMaterialDeclared());
     }
 
-    private boolean declaresLegacyCertificate() {
+    /**
+     * Applies the three refusals a declared plain-HTTP posture selects, in the order the deliverable
+     * states them: declared server key material, inbound mTLS, then an SNI passthrough topology.
+     * <p>
+     * What is deliberately <em>not</em> refused here is a selected but key-less TLS registry bucket:
+     * it declares no material, so it contradicts nothing, and the opt-in stands its own refusal down
+     * exactly as it did before these three existed.
+     *
+     * @throws IllegalStateException when a second declaration contradicts the plain-HTTP opt-in
+     */
+    private void assertPlainHttpDeclarationIsCoherent() {
+        String certificate = declaredServerKeyMaterial();
+        if (certificate != null) {
+            throw new IllegalStateException(plainHttpWithKeyMaterial(certificate));
+        }
+        TlsConfig tls = gatewayConfig.tls();
+        if (tls == null) {
+            return;
+        }
+        TlsConfig.Mtls mtls = tls.mtls();
+        if (mtls != null && mtls.enabled()) {
+            throw new IllegalStateException(plainHttpWithMtls());
+        }
+        if (!tls.passthroughSni().isEmpty()) {
+            throw new IllegalStateException(plainHttpWithPassthroughSni());
+        }
+    }
+
+    /**
+     * Names the declaration that supplies server key material for the terminated main listener,
+     * through whichever of the three routes Quarkus would actually resolve.
+     *
+     * <h4>The selected bucket is resolved first, and it is resolved exclusively</h4>
+     *
+     * When {@code quarkus.http.tls-configuration-name} names a bucket, Quarkus takes the main
+     * listener's key material from that bucket <em>alone</em>: the legacy
+     * {@code quarkus.http.ssl.certificate.*} keys and the default {@code quarkus.tls.key-store.*}
+     * bucket are inactive on that branch, so neither can supply material and neither may be
+     * consulted. Falling through to them would name a key that could never have terminated anything
+     * — refusing a valid plain-HTTP listener over a legacy certificate the boot would have ignored.
+     * <p>
+     * This mirrors the precedence {@link #assertServerTlsDeclarationIsCoherent()} already applies:
+     * it tests {@code bucket != null} first and never consults the legacy keys on that branch. The
+     * two methods answer the same question about the same deployment, so they must answer it the
+     * same way. A selected but key-less bucket consequently yields {@code null} here — it declares
+     * nothing, which is exactly what {@link #assertPlainHttpDeclarationIsCoherent()} documents as
+     * deliberately not refused.
+     * <p>
+     * The legacy keys and the default bucket are reached only when no bucket is selected, in the
+     * order {@code HttpServerOptionsUtils} itself would consider them.
+     *
+     * @return an operator-facing name for the declaring key or bucket, or {@code null} when no route
+     *         declares material
+     */
+    private @Nullable String declaredServerKeyMaterial() {
+        String bucket = declaredValue(DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME);
+        if (bucket != null) {
+            if (declaresKeyMaterialUnder(namedKeyStorePrefix(bucket))) {
+                return "the TLS registry bucket '" + bucket + "' selected by "
+                        + DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME;
+            }
+            return null;
+        }
+        String legacyKey = declaredLegacyCertificateKey();
+        if (legacyKey != null) {
+            return legacyKey;
+        }
+        if (declaresKeyMaterialUnder(DEFAULT_KEY_STORE_PREFIX)) {
+            return "the default " + DEFAULT_KEY_STORE_PREFIX + "* bucket";
+        }
+        return null;
+    }
+
+    private @Nullable String declaredLegacyCertificateKey() {
         for (String key : DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS) {
             if (declaredValue(key) != null) {
-                return true;
+                return key;
             }
         }
-        return false;
+        return null;
     }
 
     /**
@@ -320,11 +431,28 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
      * accept; counting quotes and declining the name keeps the declaration invalid, so the gate
      * reaches its remedy-bearing refusal instead of passing silently.
      *
+     * <h4>Why this is public</h4>
+     *
+     * The unpaired-quote verdict has a <strong>second caller</strong>:
+     * {@code EnvironmentKeySpellingGuardTest} in {@code integration-tests}, which decodes every
+     * {@code QUARKUS_*} environment key declared by the Compose descriptors through
+     * {@code StringUtil.toLowerCaseAndDotted} and then asks this method whether the decoded name
+     * could ever resolve, failing the build on a {@code null}. That guard exists because a
+     * doubled-underscore key that decodes to an unclosed quote binds nothing at boot while reading
+     * as configured in the file — the exact failure the ten deleted
+     * {@code QUARKUS_TLS_DEFAULT_TRUST__STORE_*} pairs had.
+     * <p>
+     * The discriminator is the quote count <em>after</em> decoding, never a naive refusal of
+     * {@code __}: the paired spelling {@code QUARKUS_TLS__MY_IDP__TRUST_STORE_P12_PATH} is
+     * legitimate and documented, and a guard reading the raw Compose YAML sees no quote characters
+     * at all. Sharing this method rather than restating the rule in the test module is what keeps
+     * the guard and the gate from drifting into two answers.
+     *
      * @param name a property name, an environment-variable spelling, or a decoded dotted candidate
      * @return the canonical form, or {@code null} when the name carries an unpaired quote and can
      *         therefore never resolve to a TLS property
      */
-    private static @Nullable String canonical(String name) {
+    public static @Nullable String canonical(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
         int quotes = 0;
         for (int i = 0; i < lower.length(); i++) {
@@ -353,6 +481,47 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
                 + " — or " + PLAIN_HTTP_REMEDY + ". A missing certificate cannot distinguish a "
                 + "gateway deliberately placed behind a TLS-terminating ingress from one whose "
                 + "certificate failed to mount, so cleartext is never chosen on its behalf.";
+    }
+
+    /**
+     * @param declaration the operator-facing name of the declaration supplying the key material
+     * @return the refusal raised when the plain-HTTP opt-in is combined with declared key material
+     */
+    private static String plainHttpWithKeyMaterial(String declaration) {
+        return PLAIN_HTTP_OPT_IN_DECLARED + declaration + " declares server key material for that "
+                + "same listener. One listener cannot both serve cleartext and terminate TLS, so the "
+                + "two declarations contradict each other and this gateway will not guess which one "
+                + "was meant. Either remove " + declaration + ", leaving the plain-HTTP opt-in as the "
+                + "only declared posture — the listener then serves cleartext behind a "
+                + "TLS-terminating boundary — or remove " + PLAIN_HTTP_OPT_IN + ", so the key "
+                + "material that is already declared terminates TLS on this listener.";
+    }
+
+    /**
+     * @return the refusal raised when the plain-HTTP opt-in is combined with inbound mTLS
+     */
+    private static String plainHttpWithMtls() {
+        return PLAIN_HTTP_OPT_IN_DECLARED + "tls.mtls.enabled requires every terminated connection "
+                + "to present a client certificate. A gateway that terminates no TLS participates in "
+                + "no handshake and can verify no client certificate, so the declared requirement "
+                + "would be silently inert rather than enforced. Either remove the tls.mtls block "
+                + "from gateway.yaml — or set tls.mtls.enabled: false — leaving the plain-HTTP "
+                + "opt-in as the only declared posture, or " + TERMINATE_TLS_REMEDY + ", so the "
+                + "listener terminates TLS and can verify client certificates.";
+    }
+
+    /**
+     * @return the refusal raised when the plain-HTTP opt-in is combined with an SNI passthrough
+     *         topology
+     */
+    private static String plainHttpWithPassthroughSni() {
+        return PLAIN_HTTP_OPT_IN_DECLARED + "tls.passthrough_sni declares an SNI passthrough "
+                + "topology, which gives the public TLS port to the L4 front listener that relays "
+                + "those hostnames undecrypted. A plain-HTTP application port on the same gateway "
+                + "contradicts that topology. Either remove the tls.passthrough_sni block from "
+                + "gateway.yaml, leaving the plain-HTTP opt-in as the only declared posture, or "
+                + TERMINATE_TLS_REMEDY + ", so the terminated listener terminates TLS alongside the "
+                + "passthrough relay.";
     }
 
     /**

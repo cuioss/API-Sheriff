@@ -24,6 +24,13 @@ gateway validates, and a stand-in upstream that the gateway proxies to. The
 link:../development/compose-sample.adoc[contributor guide] explains why it is a separate stack from
 the one `integration-tests` brings up, and draws the topology.
 
+An optional override file adds a fourth service, a TLS-terminating hop in front of the gateway, to
+demonstrate the ingress / sidecar deployment shape in which the gateway itself serves plain HTTP.
+It carries the same *security* directives as the three above -- non-root, `cap_drop: ALL`,
+`no-new-privileges`, `read_only` with explicitly sized `tmpfs` -- and, like the identity provider and
+the upstream and unlike the gateway, declares *no resource limits*, for the reason given just above.
+See <<_the_plain_http_variant>>.
+
 WARNING: Every credential and every piece of key material in this sample is a placeholder. Read
 <<_what_must_change_before_this_is_real>> before this stack is reachable by anything you care about.
 
@@ -155,6 +162,124 @@ Two other endpoints are published:
 
 This removes the containers, the network and the volumes, so the next bring-up starts from a known
 state and re-imports the realm.
+
+[[_the_plain_http_variant]]
+== The plain-HTTP variant -- TLS terminated in front of the gateway
+
+Everything above runs the gateway as its own TLS edge. The variant in
+`deployment/compose-sample/docker-compose.plain-http.yml` takes that away: the gateway serves plain
+HTTP on the internal network only, and a TLS-terminating nginx hop in front of it owns the public
+HTTPS listener. That is the shape a deployment behind an ingress controller, a service mesh sidecar
+or a load balancer already has, and it is the shape in which re-terminating TLS inside the gateway
+would be duplicated work and a second, separately-configured trust decision.
+
+It is an *override file*, layered on the base rather than replacing it:
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/start-sample.sh --plain-http
+----
+
+which composes exactly this:
+
+[source,bash]
+----
+cd deployment/compose-sample
+docker compose -f docker-compose.yml -f docker-compose.plain-http.yml up -d --wait
+----
+
+Stopping is unchanged -- `./deployment/compose-sample/scripts/stop-sample.sh` tears the variant down
+too, because it runs `down -v --remove-orphans` and the terminator is an orphan with respect to the
+base file.
+
+The request you drive through it is the same one, at the same address: the terminator publishes the
+port the gateway used to publish, so `curl -k https://localhost:8443/api` still works. What changed
+is which component answers the handshake.
+
+=== Requires Docker Compose 2.24.4 or newer
+
+The override drops the gateway's published `8443` using the Compose-Spec `!override` merge tag.
+Releases older than 2.24.4 do not implement *that* tag, and they *do not reject the file* -- the tag
+is ignored and the base's value survives the merge. The gateway would then keep publishing `8443`
+alongside the terminator's binding on the same host port, which surfaces as an opaque port conflict
+or as a published container port that answers nothing.
+
+NOTE: 2.24.0 is not enough, and the difference is easy to miss. The sibling `!reset` tag arrived in
+2.24.0; `!override` -- the one this override actually uses, because `!reset` would also drop the
+loopback management publication the readiness gate is derived from -- arrived in 2.24.4. On 2.24.0
+through 2.24.3 the file parses, the tag is silently ignored, and the collision above is what you get.
+
+`start-sample.sh --plain-http` checks the version first and refuses with that explanation rather than
+letting you debug the collision. Check yours with `docker compose version`.
+
+=== Switching between the variants needs a teardown first
+
+Bring the *other* variant up without stopping the current one and the terminator fails to start, with
+a daemon message that names neither the variant nor the cause:
+
+....
+user specified IP address is supported only when connecting to networks with user configured subnets
+....
+
+A Docker network's IPAM is fixed when the network is created, and Compose does *not* reconfigure a
+network that already exists. The base sample declares the network with no subnet at all; the
+plain-HTTP override declares `10.89.0.0/24`, because the terminator holds a static address on it and
+the gateway's trusted-proxy entry is that address as an exact `/32`. Layering the override onto a
+network the base already created therefore reuses the subnet-less one, and the static address cannot
+be honoured.
+
+So tear the stack down between variants -- which removes the network along with the containers:
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/stop-sample.sh
+----
+
+`start-sample.sh --plain-http` preflights this too: if the network is already there without the
+required subnet, it refuses with that explanation and names the teardown command, rather than letting
+the terminator die on the daemon's message.
+
+=== Why values are cleared rather than omitted
+
+Compose *merges* an override into the base; it does not replace it. Omitting a key leaves the base's
+value standing, which is the opposite of what "this deployment does not do that" needs. So the
+override clears the gateway's certificate variables to the empty value:
+
+[source,yaml]
+----
+- QUARKUS_HTTP_INSECURE_REQUESTS=enabled
+- QUARKUS_HTTP_SSL_CERTIFICATE_FILES=
+- QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=
+----
+
+A key that is present but blank declares nothing, which is exactly what is wanted here -- and it is
+required rather than cosmetic. Leaving those two out would inherit the base's certificate paths, and
+a declared server certificate alongside the plain-HTTP opt-in is one of the combinations the gateway
+refuses to boot on. The management interface's certificates are deliberately *not* cleared: that is
+a separate listener, so port 9000 stays HTTPS and the readiness gate is unaffected.
+
+=== The trusted proxy is the terminator, and nothing else
+
+`SHERIFF_TRUSTED_PROXIES` in the variant names one address as an exact `/32` host route -- the
+terminator's, and no other:
+
+[source,yaml]
+----
+- SHERIFF_TRUSTED_PROXIES=10.89.0.10/32
+----
+
+That is why the override declares an explicit subnet for the sample's network and pins the
+terminator to a static address on it: without one, Docker assigns from a pool and the entry could
+not be written as an exact host route at all. It would have to widen to a range -- and every other
+container on that network, `keycloak` and `demo-api` included, holds an address in the same range,
+so a range here would let any of them state its own client address in `X-Forwarded-For`. Change the
+subnet if it collides with your own routing, and change the terminator's address and the `/32` with
+it; the three values are one decision.
+
+For what this mode does to the rest of the edge -- how it interacts with passthrough SNI, inbound
+mTLS, the management interface and the forwarded-header handling -- see
+link:tls-edge.adoc#_interactions_with_the_rest_of_the_edge[the interaction verdicts in TLS Edge].
+They are stated once there rather than restated here.
 
 [[_reading_the_container_health_signal]]
 == Reading the container health signal
