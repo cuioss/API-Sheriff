@@ -754,8 +754,9 @@ an undocumented exception would be a silent trim.
   The refusal comes from the terminated-listener `HttpServerOptionsCustomizer`, which runs before the
   listener is built and changes no option. It replaces the runtime's own message
   (`Cannot set quarkus.http.insecure-requests without enabling SSL.`, which names `enabled` to an
-  operator who set `redirect` and offers no remedy) in two states, and each refusal names the
-  offending key and *both* ways out:
+  operator who set `redirect` and offers no remedy) in *five* states, and each refusal names the
+  offending key and *both* ways out. The first two are certificate-*absence* states, reached when the
+  opt-in is not set; the last three are *incoherence* states, reached only when it is:
   +
   --
   * *No key material is declared anywhere* -- no `quarkus.http.tls-configuration-name`, no default
@@ -771,10 +772,30 @@ an undocumented exception would be a silent trim.
     `quarkus.tls.<name>.key-store.pem.<id>.cert` / `.key` pair), point the key at a bucket that has
     some, remove it and use the `quarkus.http.ssl.certificate.*` route, or set
     `quarkus.http.insecure-requests=enabled`.
+  * *`quarkus.http.insecure-requests=enabled` is combined with declared server key material* for
+    that same listener -- any `quarkus.http.ssl.certificate.*` spelling, a default
+    `quarkus.tls.key-store.*` bucket, or a `quarkus.http.tls-configuration-name` bucket that carries
+    material. One listener cannot both serve cleartext and terminate TLS. Remedy: remove the
+    certificate declaration, leaving the plain-HTTP opt-in as the only declared posture, or remove
+    `quarkus.http.insecure-requests=enabled` so the material already declared terminates TLS.
+  * *`quarkus.http.insecure-requests=enabled` is combined with `tls.mtls.enabled`.* A gateway that
+    terminates no TLS takes part in no handshake and can verify no client certificate, so the
+    declared requirement would be silently inert rather than enforced. Remedy: remove the `tls.mtls`
+    block from `gateway.yaml` (or set `tls.mtls.enabled: false`), or remove
+    `quarkus.http.insecure-requests=enabled` and declare a certificate so the listener terminates TLS
+    and can verify client certificates.
+  * *`quarkus.http.insecure-requests=enabled` is combined with a non-empty `tls.passthrough_sni`.*
+    The ADR-0017 front listener claims the public TLS port to relay those hostnames undecrypted,
+    which a plain-HTTP application port on the same gateway contradicts. Remedy: remove the
+    `tls.passthrough_sni` block from `gateway.yaml`, or remove
+    `quarkus.http.insecure-requests=enabled` and declare a certificate.
   --
   +
-  An explicit `enabled` stands *both* refusals down and produces no warning about the exposure
-  itself: the posture was declared, not inferred.
+  An explicit `enabled` stands the *two certificate-absence* refusals down and produces no warning
+  about the exposure itself: the posture was declared, not inferred. It does *not* stand the three
+  incoherence refusals down -- those are declarations that contradict the posture rather than
+  declarations it replaces, so the opt-in makes them louder. A selected bucket carrying no material
+  stays stood down: it declares nothing, so it contradicts nothing.
   +
   *Why absence is never read as intent.* A missing certificate cannot distinguish a gateway
   deliberately placed behind a TLS-terminating boundary from one whose certificate failed to mount,

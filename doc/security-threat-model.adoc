@@ -201,6 +201,41 @@ client ----> [ TLS edge ] --> [ L7 pipeline ] --------> upstream
   B7 management port (health/metrics) -- never on the data-plane port, no mutation API
 ----
 
+=== Residual risk: plain-HTTP termination behind an external hop (B1)
+
+B1 is drawn assuming the gateway *is* the TLS edge. A deployment that sets
+`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` moves that edge outward onto a separate terminating hop, and
+B1 splits in two: the client reaches the hop over TLS, and the hop reaches the gateway in
+*cleartext*. This is a supported mode, and the split is the point of it -- but it relocates part of
+the boundary's guarantee out of the gateway and into the surrounding topology, which is what makes it
+a residual risk rather than a control.
+
+*What the gateway no longer guarantees on the hop-to-gateway leg:* confidentiality and integrity of
+every request and response byte, and the authenticity of the client-identity signal. The gateway
+cannot observe tampering on a link it does not terminate, and its immediate TCP peer is the hop
+rather than the client, so client-address attribution rests entirely on
+`forwarded.trusted_proxies` naming that hop correctly.
+
+*What the topology must guarantee in exchange:*
+
+* The hop and the gateway share a network segment no untrusted party can observe or inject on. A
+  cleartext leg across anything wider is an unencrypted gateway with extra steps.
+* The hop terminates TLS itself, so the client-facing half of B1 is unchanged from a client's point
+  of view.
+* The hop's address is the one entry in `forwarded.trusted_proxies`, declared as a `/32`. A range
+  wide enough to contain a client hands that client's own forwarding claim to every upstream
+  IP-based decision -- the *Client identity signal* asset, spoofed at the boundary that was supposed
+  to establish it.
+
+The gateway does not merely document this posture; it refuses the combinations that cannot be part of
+it. Inbound mTLS and an ADR-0017 passthrough topology are both rejected at boot alongside the opt-in,
+as is declared server key material, because each would leave a declaration in force that the mode
+makes meaningless. The BFF is likewise unavailable on a plain port a browser reaches directly: every
+session and binding cookie carries `Secure` unconditionally. Both verdicts, and the two others this
+mode carries, are enumerated in
+link:user/tls-edge.adoc#_interactions_with_the_rest_of_the_edge[TLS edge -- What this mode does to
+the rest of the edge]; they are not restated here.
+
 == STRIDE per boundary
 
 The threat categories that actually bite each boundary (empty cells omitted for brevity;
