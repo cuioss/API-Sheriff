@@ -126,7 +126,7 @@ skipped by property; the module's real toolchain is npm, driven by `frontend-mav
 | Two projects, `session-server` and `session-cookie`, differing only in `baseURL`.
 
 | `tests/`, `fixtures/`, `utils/`
-| The suite: four spec files, the shared fixtures, and the Keycloak login helper.
+| The suite: five spec files, the shared fixtures, and the Keycloak login helper.
 
 | `scripts/`
 | `start-dev-environment.sh` / `stop-dev-environment.sh` -- the trimmed three-container bring-up.
@@ -327,6 +327,58 @@ into every token the realm mints, and the gateway's `token_validation` blocks pi
 breaks every landed bearer-token integration test in the repository. The mapping belongs in the
 browser, not in the realm.
 ====
+
+== The Cookie-Budget Spec: What a Real Browser Measures
+
+`tests/05-cookie-size-budget.spec.js` is the one spec in this repository that measures a browser
+limit instead of asserting a gateway behaviour, and it exists because of the class named in
+<<_why_the_java_it_suite_could_not_catch_it>>: *a per-cookie size budget is enforced by the browser,
+so no programmatic HTTP client can observe it.* A Java integration test replays an oversized
+`Set-Cookie` from a map and every downstream request succeeds; a real browser discards the cookie
+silently -- no error, no header, no session -- and that asymmetry is exactly how a session cookie no
+browser could hold once shipped green through nine cookie-mode integration tests.
+
+Two legs, and each proves something the other cannot.
+
+*Leg (a) -- the threshold measurement.* From inside the page context, the spec sets same-origin
+cookies of increasing size through `document.cookie`, reads back which of them the browser actually
+stored, and bisects to the exact byte threshold. It does this over *two arms*, because the two
+specifications budget different things: RFC 6265 section 6.1 budgets the whole `Set-Cookie` header
+value -- name, value and attributes together -- while RFC 6265bis section 5.6 budgets the name and
+value only. So one arm grows the value with the attributes held fixed, the other grows the
+attributes with the value held fixed, and the assertion message reports *both* measured thresholds.
+What is asserted is the floor: the browser enforces a per-cookie budget at or above
+`BROWSER_COOKIE_BUDGET_BYTES` (4096, the RFC 6265 section 6.1 obligation, declared in
+`utils/constants.js` as the suite's own constant rather than read from the gateway -- see the
+rationale on the constant itself).
+
+*Leg (b) -- the live-session deliverability check.* After the ordinary login flow, the spec asserts
+through `context.cookies()` that the gateway's `__Host-` session cookie was *actually stored* with a
+non-empty value. This is the end-to-end form of the same question: not "did the gateway emit a cookie
+of a reasonable size" but "did this browser keep the cookie the gateway just set". Both legs run
+under *both* existing projects, `session-server` and `session-cookie`, with no third project added.
+The server-mode arm of leg (b) is a matched control: server mode's cookie is a small opaque handle
+that can never approach the budget, so its passing shows the assertion is not cookie-mode-specific
+and would not silently pass by construction.
+
+[IMPORTANT]
+.A measured threshold above the floor is headroom, never a relaxed bar
+====
+Chromium stores more than the 4096-byte floor, so leg (a) will report a threshold above it. That
+number is an *observation about one browser*, and it must not be read as permission to emit a larger
+cookie. The gateway's bar is 4019 bytes of sealed cookie value -- the RFC floor less the 77 bytes the
+default cookie name and attributes wrap around it -- and it stays 4019 whatever Chromium measures,
+because the gateway ships to every browser and the floor is what all of them guarantee. Record a
+larger measurement as headroom; do not move the bar to meet it.
+====
+
+And the standing caveat from <<_why_the_java_it_suite_could_not_catch_it>> applies here in full:
+*this suite gates nothing on a pull request.* It runs on pushes to `main` and on demand, so a change
+that pushes the sealed cookie past the budget can merge with this measurement never having run. The
+gateway-side guards are what actually gate -- the seal-time budget check and the
+`assertCookiesFitBrowserBudget` assertion every `Bff*IT` login funnels through. This spec is the only
+place the *browser's own* number is observed rather than assumed, which is why it is worth having and
+why it must be run deliberately when a cookie-size-affecting change is made.
 
 == Standing Prohibitions
 
