@@ -59,11 +59,16 @@ and the gateway holds no per-user state.
 | Aspect | Design
 
 | Encryption
-| AES-256-GCM (authenticated encryption). The plaintext is the token set: access token,
-  refresh token, the raw ID token (needed as `id_token_hint` at logout -- without it in the
-  cookie, the stateless gateway could not drive RP-initiated logout), and minimal metadata;
-  the ciphertext plus nonce and auth tag form the cookie value. A tampered cookie fails
-  authentication and is rejected.
+| AES-256-GCM (authenticated encryption) over a *packed and deflated* plaintext. The payload is the
+  token set -- access token, refresh token, the raw ID token (needed as `id_token_hint` at logout --
+  without it in the cookie, the stateless gateway could not drive RP-initiated logout), and minimal
+  metadata -- framed as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
+  plus nonce and auth tag form the cookie value. Framing by declared length rather than by a
+  separator is what removes the per-field base64 armouring the earlier format needed, and deflation
+  is what turns that saving into fitting the budget. Compress-then-encrypt is safe in this
+  construction for reasons that do not generalise -- see
+  link:../adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043].
+  A tampered cookie fails authentication and is rejected.
 
 | Cookie attributes
 | `HttpOnly` (JavaScript can never *read* the token -- direct exfiltration is prevented, but
@@ -81,11 +86,18 @@ and the gateway holds no per-user state.
 
 | Size
 | The cookie must stay within browser limits (~4 KB), enforced as a seal-time budget: an
-  over-budget seal *fails* rather than being silently truncated. Splitting the token set across
-  several cookies is a deliberate non-goal, so the two available remedies are to reduce the token
-  set (fewer scopes, a leaner IdP token shape) or to run the
-  link:02-bff-session.adoc[session-based variant]. Oversized IdP tokens are a deployment
-  consideration.
+  over-budget seal *fails* rather than being silently truncated. The budget governs the sealed
+  *value* and defaults to 4019 bytes -- the 4096-byte per-cookie header guarantee less the 77 bytes
+  the default name and attributes wrap around it. A session that also refreshes carries three tokens
+  and is the largest shape this variant produces; on one realm's claim set it seals to 2700 bytes,
+  leaving 32.8 % of the budget unused (measured in
+  link:../development/bff-cookie.adoc[the contributor guide]). Splitting the token set across
+  several cookies stays a deliberate non-goal -- a browser concatenates the cookies it holds for an
+  origin into one request header, so chunking relocates the problem to a single header cap rather
+  than dividing it. When the margin is spent, the remedies are to reduce the token set (fewer
+  scopes, a leaner IdP token shape) or to run the link:02-bff-session.adoc[session-based variant];
+  raising the budget past the browser-safe value only moves the failure into the browser, where
+  nothing observes it. Oversized IdP tokens are a deployment consideration.
 |===
 
 == Statelessness
@@ -109,6 +121,14 @@ Both work exactly as in the link:02-bff-session.adoc#_transparent_token_refresh[
 variant] -- refresh with rotation on near-expiry, family revocation on reuse detection, and
 RFC 9470 step-up on upstream challenge -- with one difference: the refreshed token is re-sealed
 into a *new cookie* (`Set-Cookie` on the response) rather than written to a store.
+
+*The refresh token's cost in the seal is measured, not open.* Holding it makes the session a
+three-token payload -- the largest shape this variant carries -- and under the shipped packaging
+that seals to 2700 bytes against the 4019-byte budget. Refresh is therefore a supported cookie-mode
+posture rather than a size gamble, with a finite margin that a larger claim set or a longer
+`session.cookie_name` spends. The figures and the conditions are in
+link:../development/bff-cookie.adoc[the contributor guide]; the operator-facing consequences are in
+link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide].
 
 *The concurrent-refresh race (accepted trade-off of statelessness).* Two parallel requests
 carrying the same cookie can both cross the refresh leeway and present the *same* refresh token;
@@ -226,14 +246,19 @@ across replicas with no affinity at all.
 
 === Sealed-cookie format version
 
-The sealed-cookie format version is bound into the cookie's authenticated data, so a cookie
-carrying a retired version fails to unseal rather than being mis-parsed. The version was bumped
-when the per-session identity nonce was added to the sealed payload.
+The sealed-cookie format version is bound into the cookie's authenticated data, so a cookie carrying
+a retired version fails to unseal rather than being mis-parsed -- the version byte is read at an
+explicit gate before a cipher is ever constructed. The current version is *3*, bumped for the
+packaging change: length-prefixed raw UTF-8 framing, deflated before the seal, replacing version 2's
+per-field base64 armouring. The bump before it, to version 2, added the per-session identity nonce
+to the sealed payload.
 
 *Upgrade consequence*: existing cookie-mode sessions are invalidated on deploy and users must log
-in again. There is deliberately no backward-compatible acceptance path for the previous format --
-accepting it would mean synthesizing the missing nonce, which would silently change the derived
-session identity. See
+in again. There is deliberately no backward-compatible acceptance path for a retired format, and
+each bump has its own reason for that. Accepting a version-1 cookie would have meant synthesizing
+the missing nonce, silently changing the derived session identity; a version-2 cookie frames its
+fields in an entirely different way, so accepting one would mean carrying a second reader for a
+format that exists only in cookies already issued. See
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
 for the architectural
 decision behind the identity model.
