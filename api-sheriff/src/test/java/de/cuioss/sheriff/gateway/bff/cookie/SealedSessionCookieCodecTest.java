@@ -22,14 +22,21 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.stream.Stream;
+import java.util.zip.Deflater;
+import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 
@@ -39,6 +46,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.Unsealed;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import de.cuioss.tools.logging.CuiLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -46,6 +54,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link SealedSessionCookieCodec} — the AES-256-GCM crypto core of the stateless
@@ -113,6 +122,21 @@ class SealedSessionCookieCodecTest {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
     }
 
+    /**
+     * Material the seal-time deflation cannot shrink, so a size-budget test still measures the budget
+     * rather than the compressor.
+     * <p>
+     * A run of one repeated character deflates to almost nothing under {@code FORMAT_VERSION} 3, so
+     * the {@code "x".repeat(n)} the version-2 tests used would now seal comfortably <em>inside</em>
+     * the budget and quietly stop exercising it. Random bytes rendered as base64url are the honest
+     * stand-in: base64 carries six bits per byte, so deflate recovers only that quarter and no more.
+     */
+    private static String incompressible(int approximateCharacters) {
+        byte[] random = new byte[approximateCharacters * 3 / 4];
+        new SecureRandom().nextBytes(random);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+    }
+
     @Nested
     @DisplayName("Round trip")
     class RoundTrip {
@@ -152,10 +176,11 @@ class SealedSessionCookieCodecTest {
         }
 
         @Test
-        @DisplayName("Should stamp format version 2 — the nine-field payload shape")
-        void shouldStampFormatVersionTwo() {
-            assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, (byte) 2,
-                    "the per-session nonce raised the payload to nine fields, which is a wire-format break");
+        @DisplayName("Should stamp format version 3 — the deflated, length-prefixed payload shape")
+        void shouldStampFormatVersionThree() {
+            assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, (byte) 3,
+                    "length-prefixed raw UTF-8 framing plus deflation is a wire-format break from the "
+                            + "version-2 newline-joined, per-field-base64 shape");
         }
     }
 
@@ -211,16 +236,19 @@ class SealedSessionCookieCodecTest {
                     "an unknown format version is refused before any decrypt attempt");
         }
 
-        @Test
-        @DisplayName("Should reject a cookie stamped with the retired version 1 format")
-        void shouldRejectLegacyFormatVersionOne() throws Exception {
+        @ParameterizedTest
+        @ValueSource(bytes = {1, 2})
+        @DisplayName("Should reject a cookie stamped with a retired format version, before any decrypt")
+        void shouldRejectRetiredFormatVersions(byte retired) throws Exception {
             String sealed = codec.seal(payload());
             byte[] raw = Base64.getUrlDecoder().decode(sealed);
-            raw[0] = 1;
+            raw[0] = retired;
 
             assertTrue(codec.unseal(Base64.getUrlEncoder().withoutPadding().encodeToString(raw)).isEmpty(),
-                    "the version bump to 2 is a clean break: a v1 cookie is refused outright rather than "
-                            + "parsed against the nine-field payload shape");
+                    "the version bump to 3 is a clean break: a cookie stamped with a retired version is "
+                            + "refused at the version gate, with no Cipher constructed, rather than being "
+                            + "inflated and parsed against the new framing");
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, "unknown-version");
         }
 
         @Test
@@ -273,7 +301,7 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should refuse to seal a payload whose value exceeds the budget, never truncate")
         void shouldRefuseOversizedPayload() {
-            String huge = "x".repeat(BUDGET * 2);
+            String huge = incompressible(BUDGET * 4);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
                     null, null, null, LOGIN, SESSION_NONCE);
 
@@ -289,6 +317,264 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should seal a realistic payload well inside the budget")
         void shouldSealRealisticPayload() {
             assertDoesNotThrow(() -> codec.seal(payload()));
+        }
+    }
+
+    /**
+     * The {@code FORMAT_VERSION} 3 packaging pipeline: {@code encode -> deflate -> seal -> base64url}
+     * on the way out, and its exact inverse on the way back.
+     * <p>
+     * The rejection cases here all seal <em>hand-built</em> bytes under the codec's own key, so they
+     * clear the GCM tag and reach the inflate step. That is the only state worth guarding: an
+     * unauthenticated buffer never gets this far, and a buffer that authenticates but is not a
+     * well-formed stream of this format is precisely what the bound exists for.
+     */
+    @Nested
+    @DisplayName("Packaging pipeline")
+    class PackagingPipeline {
+
+        private static final String DISPOSITION_PAYLOAD = "payload-format";
+
+        /**
+         * Seals bytes the production {@code seal} would never produce, under the codec's key, cookie
+         * name, version, and key id — so the value authenticates and the unseal path reaches inflate.
+         */
+        private String sealVerbatim(byte[] sealedPlaintext) throws Exception {
+            byte[] nonce = new byte[12];
+            new SecureRandom().nextBytes(nonce);
+            byte[] name = COOKIE_NAME.getBytes(StandardCharsets.UTF_8);
+            byte[] associatedData = ByteBuffer.allocate(name.length + 2)
+                    .put(name).put(SealedSessionCookieCodec.FORMAT_VERSION).put(KEY_ID).array();
+
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, nonce));
+            cipher.updateAAD(associatedData);
+            byte[] sealed = cipher.doFinal(sealedPlaintext);
+
+            byte[] value = ByteBuffer.allocate(14 + sealed.length)
+                    .put(SealedSessionCookieCodec.FORMAT_VERSION).put(KEY_ID).put(nonce).put(sealed)
+                    .array();
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
+        }
+
+        private static byte[] deflate(byte[] plaintext) {
+            Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
+            try {
+                deflater.setInput(plaintext);
+                deflater.finish();
+                ByteArrayOutputStream compressed = new ByteArrayOutputStream(plaintext.length);
+                byte[] chunk = new byte[1024];
+                while (!deflater.finished()) {
+                    compressed.write(chunk, 0, deflater.deflate(chunk));
+                }
+                return compressed.toByteArray();
+            } finally {
+                deflater.end();
+            }
+        }
+
+        @Test
+        @DisplayName("Should reject authenticated bytes that are not a deflate stream at all")
+        void shouldRejectNonDeflateStream() throws Exception {
+            String sealed = sealVerbatim("this is not a deflate stream".getBytes(StandardCharsets.UTF_8));
+
+            assertTrue(codec.unseal(sealed).isEmpty(),
+                    "a corrupt stream under a valid tag is no session, never an escaping exception");
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, DISPOSITION_PAYLOAD);
+        }
+
+        @Test
+        @DisplayName("Should reject a well-formed deflate stream that inflates to a foreign frame")
+        void shouldRejectForeignFrameInsideAValidStream() throws Exception {
+            String sealed = sealVerbatim(deflate("nine fields this is not".getBytes(StandardCharsets.UTF_8)));
+
+            assertTrue(codec.unseal(sealed).isEmpty(),
+                    "inflating cleanly is not the same as carrying the payload shape — the frame guard "
+                            + "still has to refuse it");
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, DISPOSITION_PAYLOAD);
+        }
+
+        @Test
+        @DisplayName("Should refuse to inflate past the plaintext bound, however small the sealed value")
+        void shouldBoundTheInflatedSize() throws Exception {
+            // A megabyte of zeros deflates to roughly a kilobyte, so the sealed value is unremarkable
+            // and only the INFLATED size is out of bounds. Without the cap, unsealing this one cookie
+            // would allocate a megabyte per request.
+            byte[] bomb = deflate(new byte[1024 * 1024]);
+            String sealed = sealVerbatim(bomb);
+
+            assertTrue(sealed.length() < BUDGET,
+                    "the sealed value is inside the cookie budget — the budget is not what stops this");
+            assertTrue(codec.unseal(sealed).isEmpty(),
+                    "the inflated size is capped at MAX_PLAINTEXT_BYTES, so an authenticated-but-corrupt "
+                            + "buffer cannot drive an unbounded allocation");
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, DISPOSITION_PAYLOAD);
+        }
+
+        @Test
+        @DisplayName("Should round-trip a payload whose fields deflate to less than they measure")
+        void shouldRoundTripAcrossCompression() throws Exception {
+            SealedSessionPayload highlyCompressible = new SealedSessionPayload("a".repeat(4096),
+                    "b".repeat(4096), "c".repeat(4096), SUB, null, null, null, LOGIN, SESSION_NONCE);
+
+            String sealed = codec.seal(highlyCompressible);
+
+            assertEquals(Optional.of(new Unsealed(highlyCompressible)), codec.unseal(sealed),
+                    "compression is transparent to the payload contract");
+            assertTrue(sealed.length() < BUDGET,
+                    "12 KB of repeating material seals inside a 4 KB budget: " + sealed.length());
+        }
+    }
+
+    /**
+     * The measurement that settles whether cookie mode is viable <em>with a refresh token</em>: a
+     * session carrying a live access, refresh and ID token must seal to a value the browser is
+     * obliged to keep, with headroom left for claim-set growth.
+     * <p>
+     * <strong>What the fixture is, and what it is not.</strong> The three tokens are built to the
+     * shape Keycloak issues for the {@code integration} realm — an RS256 access and ID token, an
+     * HS512 refresh token, the realm's actual role and client names, and a random signature segment
+     * of the right width for each algorithm. Randomness matters: a signature is the one part of a JWT
+     * deflation cannot help with, so a fixture that used a repeating filler there would report a
+     * ratio no real token can reach. This is a faithful <em>shape</em>, not a live token —
+     * {@code BffCookieRefreshIT} is what measures the real thing against a running IdP, and this test
+     * is the fast gate that fails first when a change costs bytes.
+     */
+    @Nested
+    @DisplayName("Three-token size measurement")
+    class ThreeTokenMeasurement {
+
+        // cui-rewrite:disable CuiLogRecordPatternRecipe
+        private static final CuiLogger MEASUREMENT = new CuiLogger(ThreeTokenMeasurement.class);
+
+        /**
+         * The browser-safe value budget less a 10 % headroom reserve for future claim-set growth:
+         * {@code 4019 - 402}. Spelled independently of the production constant, because it is the
+         * figure the plan's success criterion names.
+         */
+        private static final int HEADROOM_FLOOR = 3617;
+
+        /** The session nonce is 32 random bytes rendered base64url — 43 characters that never compress. */
+        private static final int SESSION_NONCE_CHARACTERS = 43;
+
+        private static final String RS256_HEADER = """
+                {"alg":"RS256","typ":"JWT","kid":"eK3xY2mQvJ8sLd0aTn5PbRc7Zu1WgHfN9iOxKlBmVsE"}""";
+        private static final String HS512_HEADER = """
+                {"alg":"HS512","typ":"JWT","kid":"7f2a9c14-5e83-4b06-9d71-3a8c0e5b2f49"}""";
+        private static final String ISSUER = "https://keycloak:8443/realms/integration";
+        private static final String SUBJECT = "b4f2c9e1-3d7a-4856-9f10-2c8e5a7b6d34";
+        private static final String IDP_SESSION = "7c1e9a52-6b48-4f03-8d75-1a9c2e4b8f60";
+
+        /** RS256 signs with a 2048-bit key: 256 bytes, 342 base64url characters. */
+        private static final int RS256_SIGNATURE_BYTES = 256;
+
+        /** HS512 signs with a 512-bit MAC: 64 bytes, 86 base64url characters. */
+        private static final int HS512_SIGNATURE_BYTES = 64;
+
+        private static String jwt(String header, String claims, int signatureBytes) {
+            Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+            byte[] signature = new byte[signatureBytes];
+            new SecureRandom().nextBytes(signature);
+            return encoder.encodeToString(header.getBytes(StandardCharsets.UTF_8)) + "."
+                    + encoder.encodeToString(claims.getBytes(StandardCharsets.UTF_8)) + "."
+                    + encoder.encodeToString(signature);
+        }
+
+        private static String accessToken() {
+            return jwt(RS256_HEADER, """
+                    {"exp":1785276000,"iat":1785275700,"jti":"onrtac:2f8d1c4b-7a93-4e15-9c62-8b0d5f3a1e77",\
+                    "iss":"%s","aud":["account"],"sub":"%s","typ":"Bearer","azp":"integration-client",\
+                    "sid":"%s","acr":"1","allowed-origins":["https://localhost:10443"],\
+                    "realm_access":{"roles":["offline_access","default-roles-integration",\
+                    "uma_authorization","user"]},"resource_access":{"account":{"roles":["manage-account",\
+                    "manage-account-links","view-profile"]}},"scope":"openid email profile",\
+                    "email_verified":true,"name":"Integration User","preferred_username":"integration-user",\
+                    "given_name":"Integration","family_name":"User","email":"integration-user@example.com"}\
+                    """.formatted(ISSUER, SUBJECT, IDP_SESSION), RS256_SIGNATURE_BYTES);
+        }
+
+        private static String refreshToken() {
+            return jwt(HS512_HEADER, """
+                    {"exp":1785277500,"iat":1785275700,"jti":"5c9e2b7a-1f43-4d86-b0a2-7e6d38c14f95",\
+                    "iss":"%s","aud":"%s","sub":"%s","typ":"Refresh","azp":"integration-client",\
+                    "sid":"%s","scope":"openid email profile"}\
+                    """.formatted(ISSUER, ISSUER, SUBJECT, IDP_SESSION), HS512_SIGNATURE_BYTES);
+        }
+
+        private static String idToken() {
+            return jwt(RS256_HEADER, """
+                    {"exp":1785276000,"iat":1785275700,"auth_time":1785275699,\
+                    "jti":"a1d7f3e0-9b24-4c58-8e16-6f0a3d9c7b52","iss":"%s","aud":"integration-client",\
+                    "sub":"%s","typ":"ID","azp":"integration-client",\
+                    "nonce":"Qn7xK2vL9pTdRa4WsYc0Bg","sid":"%s","at_hash":"jK8sLd0aTn5PbRc7Zu1WgH",\
+                    "acr":"1","email_verified":true,"name":"Integration User",\
+                    "preferred_username":"integration-user","given_name":"Integration",\
+                    "family_name":"User","email":"integration-user@example.com"}\
+                    """.formatted(ISSUER, SUBJECT, IDP_SESSION), RS256_SIGNATURE_BYTES);
+        }
+
+        private static SealedSessionPayload threeTokenSession() {
+            byte[] nonceMaterial = new byte[32];
+            new SecureRandom().nextBytes(nonceMaterial);
+            return new SealedSessionPayload(accessToken(), refreshToken(), idToken(), SUBJECT,
+                    IDP_SESSION, "1", Instant.parse("2026-07-27T09:59:59Z"), LOGIN,
+                    Base64.getUrlEncoder().withoutPadding().encodeToString(nonceMaterial));
+        }
+
+        @Test
+        @DisplayName("Should seal a live access + refresh + ID token at or below the 3617-byte headroom floor")
+        void shouldSealThreeTokenSessionWithinHeadroom() throws Exception {
+            SealedSessionPayload session = threeTokenSession();
+            int framedBytes = session.encode().length;
+
+            String sealed = codec.seal(session);
+
+            int sealedBytes = sealed.getBytes(StandardCharsets.UTF_8).length;
+            // Reported, not merely asserted: the settlement report quotes these figures, and an
+            // assertion message that only surfaces on failure cannot supply them.
+            // cui-rewrite:disable CuiLogRecordPatternRecipe
+            MEASUREMENT.info("FORMAT_VERSION 3 three-token measurement: framed plaintext %s bytes, "
+                            + "sealed value %s bytes (%s percent of framed), headroom floor %s bytes, "
+                            + "browser-safe value budget %s bytes; the %s-character session nonce is "
+                            + "random and incompressible and is a fixed floor on the ratio",
+                    framedBytes, sealedBytes,
+                    // Locale.ROOT: the report quotes this figure, and a locale-dependent decimal
+                    // comma would make the same run read differently on a different machine.
+                    String.format(Locale.ROOT, "%.1f", 100.0 * sealedBytes / framedBytes),
+                    HEADROOM_FLOOR, SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET,
+                    SESSION_NONCE_CHARACTERS);
+            assertTrue(sealedBytes <= HEADROOM_FLOOR, () -> String.format(Locale.ROOT, """
+                    a three-token session must seal to at most %d bytes — the %d-byte browser-safe value \
+                    budget less a 10%% headroom reserve — but it sealed to %d.
+                    Framed plaintext: %d bytes. Sealed value: %d bytes, i.e. %.1f%% of the framed size \
+                    after deflation and the single outer base64url.
+                    The %d-character session nonce is random and incompressible, so it is a fixed floor \
+                    on any ratio this pipeline can reach.\
+                    """, HEADROOM_FLOOR, SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET,
+                    sealedBytes, framedBytes, sealedBytes, 100.0 * sealedBytes / framedBytes,
+                    SESSION_NONCE_CHARACTERS));
+        }
+
+        @Test
+        @DisplayName("Should keep the whole emitted Set-Cookie header inside the browser's per-cookie guarantee")
+        void shouldEmitADeliverableHeader() throws Exception {
+            SealedSessionPayload session = threeTokenSession();
+
+            String header = codec.toSetCookieHeader(codec.seal(session), LOGIN, LOGIN);
+
+            int headerBytes = header.getBytes(StandardCharsets.UTF_8).length;
+            assertTrue(headerBytes <= SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE,
+                    () -> "the value budget is not the browser's budget: what has to fit 4096 is the whole "
+                            + "Set-Cookie header, and this one is " + headerBytes + " bytes");
+        }
+
+        @Test
+        @DisplayName("Should round-trip the three-token session, so the measurement is of a usable value")
+        void shouldRoundTripTheThreeTokenSession() throws Exception {
+            SealedSessionPayload session = threeTokenSession();
+
+            assertEquals(Optional.of(new Unsealed(session)), codec.unseal(codec.seal(session)),
+                    "a size that no longer unseals would be a meaningless measurement");
         }
     }
 
@@ -497,7 +783,7 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should keep key material out of the exception message on an oversized seal")
         void shouldNotLeakKeyMaterialIntoTheOverBudgetMessage() {
-            String huge = "x".repeat(BUDGET * 2);
+            String huge = incompressible(BUDGET * 4);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
                     null, null, null, LOGIN, SESSION_NONCE);
 

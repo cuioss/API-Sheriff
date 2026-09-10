@@ -15,11 +15,11 @@
  */
 package de.cuioss.sheriff.gateway.bff.cookie;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -38,10 +38,18 @@ import org.jspecify.annotations.Nullable;
  * extend the session: the deadline is always recomputed from the original login.
  * <p>
  * <strong>Wire format.</strong> {@link #encode()} produces a compact, explicit, dependency-free
- * encoding: newline-separated fields in declaration order, each value URL-safe base64 of its UTF-8
- * bytes (so no field value can contain the separator), with an empty field standing for an absent
- * optional. It is an internal representation read only by {@link #decode(byte[])} after the GCM tag
- * has already authenticated the bytes — it is never parsed from unauthenticated input.
+ * encoding: the nine fields in declaration order, each written as a 2-byte big-endian unsigned
+ * length followed by its raw UTF-8 bytes ({@value #FIELD_COUNT} fields = {@value #FRAMING_BYTES}
+ * bytes of framing), with a zero length standing for an absent optional. Length prefixes rather
+ * than a separator character are what let the value bytes stay <em>raw</em>: nothing in a field can
+ * be confused with a delimiter, so no per-field base64 armouring — and the 4/3 expansion it costs —
+ * is needed. That expansion is the reason the format changed; the sealed value is base64url-encoded
+ * exactly once, for transport, by the codec.
+ * <p>
+ * It is an internal representation read only by {@link #decode(byte[])} after the GCM tag has
+ * already authenticated the bytes — it is never parsed from unauthenticated input. The reader is
+ * nonetheless bounded by {@link #MAX_PLAINTEXT_BYTES} so an authenticated-but-corrupt buffer cannot
+ * drive an unbounded allocation.
  * <p>
  * <strong>The plaintext never leaves the server unsealed.</strong> {@link #toString()} redacts every
  * credential-bearing component, mirroring {@code SessionRecord}.
@@ -73,9 +81,26 @@ String sub,
 Instant loginInstant,
 String sessionNonce) {
 
+    /**
+     * The largest encoded plaintext this format admits, in bytes — an <em>allocation</em> bound, not
+     * a business limit.
+     * <p>
+     * {@link #decode(byte[])} refuses a buffer past it, and the codec's bounded inflate stops there
+     * too, so a corrupt-but-authenticated compressed stream cannot expand without limit. The real
+     * size gate stays where it always was: the seal-time cookie-value budget, which rejects a
+     * session that does not fit the browser long before this bound is anywhere near.
+     * <p>
+     * It also keeps every field inside its 2-byte length prefix <em>by construction</em>, so no
+     * separate per-field guard is needed: with {@value #FRAMING_BYTES} bytes of framing always
+     * present, a single field can never exceed {@code MAX_PLAINTEXT_BYTES - FRAMING_BYTES}, which is
+     * below the 65535 a 2-byte unsigned length can carry.
+     */
+    public static final int MAX_PLAINTEXT_BYTES = 64 * 1024;
+
     private static final String REDACTED = "***REDACTED***";
-    private static final char FIELD_SEPARATOR = '\n';
     private static final int FIELD_COUNT = 9;
+    private static final int LENGTH_PREFIX_BYTES = 2;
+    private static final int FRAMING_BYTES = FIELD_COUNT * LENGTH_PREFIX_BYTES;
 
     /**
      * Canonical constructor rejecting absent mandatory components.
@@ -100,62 +125,97 @@ String sessionNonce) {
     }
 
     /**
-     * Serializes this payload into the compact wire form the codec seals.
+     * Serializes this payload into the compact wire form the codec compresses and seals.
      *
-     * @return the UTF-8 bytes of the encoded payload
+     * @return the length-prefixed raw UTF-8 bytes of the encoded payload
+     * @throws IllegalStateException when the framed payload would exceed
+     *         {@link #MAX_PLAINTEXT_BYTES} — refused rather than written, because a length silently
+     *         narrowed into its 2-byte prefix would produce a frame {@link #decode(byte[])} reads
+     *         back as different material
      */
     public byte[] encode() {
-        StringBuilder encoded = new StringBuilder();
-        appendField(encoded, accessToken);
-        appendField(encoded, refreshToken == null ? "" : refreshToken);
-        appendField(encoded, idToken);
-        appendField(encoded, sub);
-        appendField(encoded, sid == null ? "" : sid);
-        appendField(encoded, acr == null ? "" : acr);
-        appendField(encoded, authTime == null ? "" : Long.toString(authTime.getEpochSecond()));
-        appendField(encoded, Long.toString(loginInstant.getEpochSecond()));
-        appendField(encoded, sessionNonce);
-        return encoded.toString().getBytes(StandardCharsets.UTF_8);
+        byte[][] fields = {
+                utf8(accessToken),
+                utf8(refreshToken),
+                utf8(idToken),
+                utf8(sub),
+                utf8(sid),
+                utf8(acr),
+                utf8(authTime == null ? null : Long.toString(authTime.getEpochSecond())),
+                utf8(Long.toString(loginInstant.getEpochSecond())),
+                utf8(sessionNonce)
+        };
+        int total = FRAMING_BYTES;
+        for (byte[] field : fields) {
+            total += field.length;
+        }
+        if (total > MAX_PLAINTEXT_BYTES) {
+            throw new IllegalStateException("sealed session plaintext is %d bytes, over the %d byte bound"
+                    .formatted(total, MAX_PLAINTEXT_BYTES));
+        }
+        ByteBuffer encoded = ByteBuffer.allocate(total);
+        for (byte[] field : fields) {
+            encoded.putShort((short) field.length);
+            encoded.put(field);
+        }
+        return encoded.array();
     }
 
     /**
      * Reads a payload back from the wire form. The input MUST already have been authenticated by the
      * codec's GCM tag — this method is not a parser for untrusted input.
      *
-     * The field-count guard is strict: only the current nine-field shape is accepted. There is no
-     * legacy eight-field (pre-nonce) acceptance path — a clean break, so a payload predating the
-     * session nonce is rejected outright rather than admitted with a synthesized nonce that would
-     * silently change the derived session identity.
+     * The field-count guard is strict: only the current nine-field shape is accepted, and the buffer
+     * must be consumed exactly — trailing bytes after the ninth field are a foreign shape and are
+     * refused. There is no legacy acceptance path for any earlier framing: a clean break, so a
+     * payload predating this format is rejected outright rather than admitted with synthesized
+     * components that would silently change the derived session identity.
      *
-     * @param encoded the UTF-8 bytes produced by {@link #encode()}
-     * @return the decoded payload; empty when the bytes do not carry the expected field shape or
-     *         carry a blank session nonce (a defensive guard against a key that authenticates a
-     *         foreign format)
+     * @param encoded the length-prefixed UTF-8 bytes produced by {@link #encode()}
+     * @return the decoded payload; empty when the bytes do not carry the expected field shape,
+     *         exceed {@link #MAX_PLAINTEXT_BYTES}, or carry a blank session nonce (a defensive guard
+     *         against a key that authenticates a foreign format)
      */
     public static Optional<SealedSessionPayload> decode(byte[] encoded) {
         Objects.requireNonNull(encoded, "encoded");
-        String[] fields = new String(encoded, StandardCharsets.UTF_8).split(String.valueOf(FIELD_SEPARATOR), -1);
-        if (fields.length != FIELD_COUNT) {
+        if (encoded.length > MAX_PLAINTEXT_BYTES) {
+            return Optional.empty();
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(encoded);
+        String[] fields = new String[FIELD_COUNT];
+        for (int index = 0; index < FIELD_COUNT; index++) {
+            if (buffer.remaining() < LENGTH_PREFIX_BYTES) {
+                return Optional.empty();
+            }
+            int length = Short.toUnsignedInt(buffer.getShort());
+            if (buffer.remaining() < length) {
+                return Optional.empty();
+            }
+            byte[] value = new byte[length];
+            buffer.get(value);
+            fields[index] = new String(value, StandardCharsets.UTF_8);
+        }
+        if (buffer.hasRemaining()) {
             return Optional.empty();
         }
         try {
             return Optional.of(new SealedSessionPayload(
-                    decodeField(fields[0]),
+                    fields[0],
                     nullableField(fields[1]),
-                    decodeField(fields[2]),
-                    decodeField(fields[3]),
+                    fields[2],
+                    fields[3],
                     nullableField(fields[4]),
                     nullableField(fields[5]),
                     epochSecondField(fields[6]),
-                    Instant.ofEpochSecond(Long.parseLong(decodeField(fields[7]))),
-                    decodeField(fields[8])));
+                    Instant.ofEpochSecond(Long.parseLong(fields[7])),
+                    fields[8]));
         } catch (IllegalArgumentException | DateTimeException _) {
-            // Base64 decode failure, epoch-second parse failure, an epoch second that parses as a
-            // long but lies outside Instant's supported range, or a blank session nonce rejected by
-            // the canonical constructor, on bytes that authenticated: a
-            // foreign payload format under the same key. DateTimeException is NOT an
-            // IllegalArgumentException, so it must be caught explicitly or it escapes unseal() as an
-            // unhandled request error. Report "no session" rather than propagating.
+            // Epoch-second parse failure, an epoch second that parses as a long but lies outside
+            // Instant's supported range, or a blank session nonce rejected by the canonical
+            // constructor, on bytes that authenticated: a foreign payload format under the same key.
+            // DateTimeException is NOT an IllegalArgumentException, so it must be caught explicitly
+            // or it escapes unseal() as an unhandled request error. Report "no session" rather than
+            // propagating.
             return Optional.empty();
         }
     }
@@ -189,28 +249,15 @@ String sessionNonce) {
                         REDACTED, sub, sid, acr, authTime, loginInstant, REDACTED);
     }
 
-    private static void appendField(StringBuilder target, String value) {
-        if (!target.isEmpty()) {
-            target.append(FIELD_SEPARATOR);
-        }
-        target.append(Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(value.getBytes(StandardCharsets.UTF_8)));
-    }
-
-    private static String decodeField(String field) {
-        return new String(Base64.getUrlDecoder().decode(field), StandardCharsets.UTF_8);
+    private static byte[] utf8(@Nullable String value) {
+        return (value == null ? "" : value).getBytes(StandardCharsets.UTF_8);
     }
 
     private static @Nullable String nullableField(String field) {
-        if (field.isEmpty()) {
-            return null;
-        }
-        String decoded = decodeField(field);
-        return decoded.isEmpty() ? null : decoded;
+        return field.isEmpty() ? null : field;
     }
 
     private static @Nullable Instant epochSecondField(String field) {
-        String seconds = nullableField(field);
-        return seconds == null ? null : Instant.ofEpochSecond(Long.parseLong(seconds));
+        return field.isEmpty() ? null : Instant.ofEpochSecond(Long.parseLong(field));
     }
 }

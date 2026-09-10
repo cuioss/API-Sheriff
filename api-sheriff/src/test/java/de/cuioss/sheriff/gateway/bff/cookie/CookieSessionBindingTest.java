@@ -90,9 +90,18 @@ class CookieSessionBindingTest {
 
     /** Reads the key-id byte the emitted cookie value is stamped with (value layout: version, key-id, …). */
     private static byte keyIdOf(BoundSession bound) {
+        return sealedHeaderOf(bound)[1];
+    }
+
+    /** Reads the format-version byte the emitted cookie value is stamped with. */
+    private static byte formatVersionOf(BoundSession bound) {
+        return sealedHeaderOf(bound)[0];
+    }
+
+    private static byte[] sealedHeaderOf(BoundSession bound) {
         String cookie = cookieHeaderOf(bound);
         String value = cookie.substring(cookie.indexOf('=') + 1);
-        return Base64.getUrlDecoder().decode(value)[1];
+        return Base64.getUrlDecoder().decode(value);
     }
 
     private static SessionRecord session(String accessToken, Instant expiresAt) {
@@ -163,6 +172,16 @@ class CookieSessionBindingTest {
             assertEquals(SID, resolvedSession.sid());
             assertEquals(LOGIN.plus(TTL), resolvedSession.expiresAt(),
                     "the deadline is derived from the sealed login instant");
+        }
+
+        @Test
+        @DisplayName("Should stamp the emitted cookie with the current format version")
+        void shouldStampTheCurrentFormatVersion() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+
+            assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, formatVersionOf(bound),
+                    "the binding emits through the codec, so a format bump must reach the browser-facing "
+                            + "value rather than stopping at the codec's own tests");
         }
 
         @Test

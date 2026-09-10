@@ -70,6 +70,15 @@ happened.
 
 == The sealed-cookie wire format
 
+`FORMAT_VERSION` is *3*. The packaging pipeline has four stages, and the direction matters in both
+readings:
+
+[source]
+----
+seal:    encode -> deflate -> AES-256-GCM -> base64url
+unseal:  base64url -> AES-256-GCM -> inflate -> decode
+----
+
 The cookie value is a base64url-encoded *outer envelope*:
 
 [source]
@@ -82,18 +91,52 @@ fails the tag check rather than silently selecting a different parse. The gatewa
 sealing key: a stamped id that does not match it is refused outright -- never a try-every-key
 decrypt -- which is what makes withdrawing a key a clean, fail-closed break.
 
-The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is nine newline-separated
-fields in record-declaration order, each URL-safe base64 of its UTF-8 bytes so no value can collide
-with the separator; an empty field stands for an absent optional. It is read only *after* the GCM
-tag has authenticated the bytes -- `decode(...)` is never a parser for untrusted input.
+The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is the nine fields in
+record-declaration order, each written as a *2-byte big-endian unsigned length followed by its raw
+UTF-8 bytes* -- nine fields, so 18 bytes of framing. A zero length stands for an absent optional.
+It is read only *after* the GCM tag has authenticated the bytes -- `decode(...)` is never a parser
+for untrusted input.
+
+Length prefixes rather than a separator character are the point of the format, and the reason it
+replaced version 2. Version 2 joined the fields with a newline and URL-safe-base64-armoured each one
+so no value could collide with the separator; the whole sealed value was then base64url-encoded
+again for transport. That is a ~33 % expansion applied to material -- three JWTs -- that is already
+base64 text, and then a second expansion on top of it. Nothing can be confused with a delimiter when
+the length is stated up front, so the field bytes stay raw and the only base64 left is the single
+outer one transport requires.
+
+Deflating the framed plaintext before sealing is what turns the saved expansion into fitting the
+budget: base64 text carries about six bits of information per byte, so the header and payload
+segments of a JWT compress well. The signature segments do not -- they are random -- and neither
+does the 43-character session nonce, which is a fixed incompressible floor on any ratio this format
+reports.
+
+[NOTE]
+====
+*Compress-then-encrypt is safe here and is not a general licence.* The CRIME/BREACH class needs an
+attacker who can inject chosen plaintext next to a secret in the same compression context and then
+observe the compressed length. Neither half holds for this cookie: the plaintext is assembled by the
+gateway from IdP-issued tokens, and the sealed value is written once per session change rather than
+returned as a length-observable oracle. See
+link:../adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043]
+for the full discriminator.
+====
+
+Inflation on the unseal leg runs only over bytes the GCM tag has already authenticated, so it is not
+untrusted-input decompression. It is still bounded by `SealedSessionPayload.MAX_PLAINTEXT_BYTES`, so
+a corrupt-but-authenticated buffer cannot drive an unbounded allocation; a malformed or over-long
+stream takes the same `payload-format` rejection a malformed payload does -- "no session", never an
+error.
 
 [IMPORTANT]
 ====
 *Any change to the inner field set requires a `FORMAT_VERSION` bump.* The field-count guard is
-strict and there is no legacy-shape acceptance path: a cookie in the previous format must fail to
-unseal, not be admitted with a synthesized value. Bumping the version is what makes that failure
-clean, since the version byte is authenticated. A bump forces every existing cookie-mode session to
-re-login -- call that out in the operator documentation when you make one.
+strict, the reader refuses trailing bytes after the ninth field, and there is no legacy-shape
+acceptance path: a cookie in the previous format must fail to unseal, not be admitted with a
+synthesized value. Bumping the version is what makes that failure clean, since the version byte is
+authenticated and is read at an explicit gate *before* a `Cipher` is constructed -- so a version-2
+cookie is refused without any decryption or inflation being attempted. A bump forces every existing
+cookie-mode session to re-login -- call that out in the operator documentation when you make one.
 ====
 
 == The derived session identity
@@ -124,10 +167,12 @@ before a commit.
 
 Unit-test entry points:
 
-* `SealedSessionPayloadTest` -- the inner wire format: round trips, absent optionals,
-  separator-bearing values, the strict field-count guard, and credential redaction.
+* `SealedSessionPayloadTest` -- the inner wire format: round trips, absent optionals, values carrying
+  bytes that would have collided with the retired separator, the strict field-count and
+  trailing-byte guards, the `MAX_PLAINTEXT_BYTES` bound, and credential redaction.
 * `SealedSessionCookieCodecTest` -- seal/unseal, the version and key-id header, fail-closed rejection
-  of a tampered nonce/ciphertext/tag, unknown version or key id, and the size budget.
+  of a tampered nonce/ciphertext/tag, unknown version or key id, a malformed compressed stream, the
+  size budget, and the measured encoded length of a realistic three-token session.
 * `CookieSessionBindingTest` -- bind/resolve/persist, the server-side TTL enforcement, and the
   identity properties (stability across a re-seal, uniqueness within a clock second).
 * `TokenRefreshCoordinatorTest` -- its `CookieMode` group covers the stateless refresh: re-seal into
@@ -148,8 +193,10 @@ should leave them untouched and green.
 == How to extend
 
 * *A new sealed field* -- add the record component, append it in `encode()` in declaration order,
-  read it back in `decode(...)`, raise the field count, and *bump `FORMAT_VERSION`*. If it
-  participates in identity, mind the stability constraint above.
+  read it back in `decode(...)`, raise the field count (which raises the framing width with it), and
+  *bump `FORMAT_VERSION`*. If it participates in identity, mind the stability constraint above.
+  Budget the field by what it costs *after* deflation, not by its raw size: a random or
+  already-compressed value costs close to its full length, while structured text costs much less.
 * *A new session-runtime capability* -- write it against the `SessionBinding` seam so it stays
   mode-neutral; if it genuinely cannot work statelessly, gate it on a capability signal (as
   back-channel logout does) rather than on the mode name.
