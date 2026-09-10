@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -1677,6 +1678,221 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        /**
+         * A 48-byte {@code session.cookie_name} — more than double the 22-byte default — used to
+         * pin the derived threshold against a configured name. Nothing in the schema bounds the
+         * length, so this is an ordinary configuration rather than an extreme one.
+         */
+        private static final String LONG_COOKIE_NAME = "__Host-a-considerably-longer-session-cookie-name";
+
+        /**
+         * Matched positive/negative controls straddling the browser-safe <em>value</em> budget
+         * <em>under the default configuration</em>
+         * ({@code SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET}, 4019 = the 4096-byte
+         * RFC 6265 6.1 header guarantee less the 77 bytes of cookie name and attributes the codec
+         * emits for the default name and a four-digit {@code Max-Age}), every case inside the
+         * accepted {@code 40..8192} range so the boot never fails and the warning is the only
+         * variable. The sibling rows below vary the name and the TTL, where the threshold moves.
+         * <p>
+         * <strong>Both legs are required.</strong> The fire-only cases alone would pass against a
+         * validator that warned unconditionally — which is the failure this record exists to avoid,
+         * since a boot warning on every cookie-mode gateway is a warning operators learn to ignore.
+         * The silent cases are what pin the threshold, and 4019 / 4020 straddle it exactly, so
+         * moving the comparison off {@code BROWSER_SAFE_COOKIE_VALUE_BUDGET} in either direction —
+         * or flipping it from {@code >} to {@code >=} — turns at least one case red.
+         * <p>
+         * <strong>4096 is a firing case, and that is the regression control.</strong> Comparing the
+         * value budget against {@code DEFAULT_COOKIE_VALUE_BUDGET} (4096) left the band
+         * {@code 4020..4096} silent while the gateway emitted a {@code Set-Cookie} header past the
+         * guarantee — the same silent, browser-side, unobservable drop the record exists to
+         * announce. Restoring that comparison turns this row red.
+         */
+        static Stream<Arguments> browserGuaranteeThresholdControls() {
+            return Stream.of(
+                    Arguments.of("the floor is far below the browser guarantee", 40, false),
+                    Arguments.of("one byte below the browser-safe value budget", 4018, false),
+                    Arguments.of("exactly the browser-safe value budget", 4019, false),
+                    Arguments.of("one byte above the browser-safe value budget", 4020, true),
+                    Arguments.of("the codec default value budget derives an over-guarantee header", 4096, true),
+                    Arguments.of("the validated ceiling is above the guarantee", 8192, true));
+        }
+
+        @ParameterizedTest(name = "{0} (max_cookie_size = {1})")
+        @MethodSource("browserGuaranteeThresholdControls")
+        @DisplayName("Should warn only when the header derived from an accepted max_cookie_size exceeds the browser guarantee")
+        void shouldWarnOnlyAboveTheBrowserGuarantee(String label, int maxCookieSize, boolean expectWarning) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .mode(OidcConfig.Session.MODE_COOKIE)
+                            .maxCookieSize(maxCookieSize).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a budget inside 40..8192 must be warned about, never refused, got: " + errors);
+            if (expectWarning) {
+                assertBudgetWarning(maxCookieSize,
+                        maxCookieSize + SealedSessionCookieCodec.DEFAULT_SET_COOKIE_HEADER_OVERHEAD);
+            } else {
+                assertNoBudgetWarning(maxCookieSize
+                        + " derives a header inside the browser guarantee and must not warn");
+            }
+        }
+
+        /**
+         * The five-digit-{@code Max-Age} leg of the derived threshold. {@code toSetCookieHeader}
+         * writes the <em>configured</em> lifetime into {@code Max-Age}, so a TTL past 9999 seconds
+         * costs one more header byte than the default-configuration figure of 77 assumes: the
+         * overhead becomes 78 and the browser-safe value budget 4018, not 4019.
+         * <p>
+         * <strong>4019 is the discriminating case.</strong> It is exactly the default-configuration
+         * threshold and stays silent there, so a validator still comparing against a fixed 4019
+         * passes the default row above and fails this one — which is the whole content of the
+         * finding: the constant was standing in for a configurable quantity.
+         */
+        static Stream<Arguments> fiveDigitTtlThresholdControls() {
+            return Stream.of(
+                    Arguments.of("one byte below the TTL-widened browser-safe budget", 4017, false),
+                    Arguments.of("exactly the TTL-widened browser-safe budget", 4018, false),
+                    Arguments.of("the default-configuration threshold is already over-budget here", 4019, true));
+        }
+
+        @ParameterizedTest(name = "{0} (max_cookie_size = {1}, ttl_seconds = 86400)")
+        @MethodSource("fiveDigitTtlThresholdControls")
+        @DisplayName("Should widen the derived header by the Max-Age digits a five-digit ttl_seconds emits")
+        void shouldDeriveTheThresholdFromTheResolvedTtl(String label, int maxCookieSize, boolean expectWarning) {
+            // Arrange — 86400 seconds is five Max-Age digits against the default's four, so the
+            // overhead is 22 name bytes + '=' + "; Max-Age=" + 5 digits + 40 attribute bytes = 78.
+            // Every figure here is spelled independently of the production derivation on purpose.
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .mode(OidcConfig.Session.MODE_COOKIE)
+                            .ttlSeconds(86_400)
+                            .maxCookieSize(maxCookieSize).build())
+                    .build());
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            // Assert
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+            if (expectWarning) {
+                assertBudgetWarning(maxCookieSize, maxCookieSize + 78);
+            } else {
+                assertNoBudgetWarning(maxCookieSize + " fits the 4096-byte guarantee at a 78-byte overhead");
+            }
+        }
+
+        /**
+         * The long-cookie-name leg of the derived threshold, and the one with no ceiling on it:
+         * {@code session.cookie_name} is an unrestricted schema string, so the deviation from the
+         * default 22-byte name is unbounded. The name below is 48 bytes, putting the overhead at 103
+         * and the browser-safe value budget at 3993 — well under the default-configuration 4019,
+         * which therefore has to warn here.
+         */
+        static Stream<Arguments> longCookieNameThresholdControls() {
+            return Stream.of(
+                    Arguments.of("one byte below the name-widened browser-safe budget", 3992, false),
+                    Arguments.of("exactly the name-widened browser-safe budget", 3993, false),
+                    Arguments.of("one byte above the name-widened browser-safe budget", 3994, true),
+                    Arguments.of("the default-configuration threshold is already over-budget here", 4019, true));
+        }
+
+        @ParameterizedTest(name = "{0} (max_cookie_size = {1})")
+        @MethodSource("longCookieNameThresholdControls")
+        @DisplayName("Should widen the derived header by the configured cookie name's length")
+        void shouldDeriveTheThresholdFromTheResolvedCookieName(String label, int maxCookieSize,
+                boolean expectWarning) {
+            // Arrange — 48 name bytes + '=' + "; Max-Age=" + 4 digits + 40 attribute bytes = 103.
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .mode(OidcConfig.Session.MODE_COOKIE)
+                            .cookieName(LONG_COOKIE_NAME)
+                            .maxCookieSize(maxCookieSize).build())
+                    .build());
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            // Assert
+            assertEquals(48, LONG_COOKIE_NAME.length(),
+                    "the arithmetic in this row depends on the fixture name's length");
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+            if (expectWarning) {
+                assertBudgetWarning(maxCookieSize, maxCookieSize + 103);
+            } else {
+                assertNoBudgetWarning(maxCookieSize + " fits the 4096-byte guarantee at a 103-byte overhead");
+            }
+        }
+
+        /**
+         * Outside {@code session.mode: cookie} the gateway emits no sealed session
+         * {@code Set-Cookie} at all, so there is no header for the browser guarantee to govern and
+         * the record would be noise about a cookie that does not exist. The budget used here (8192)
+         * is the validated ceiling — the loudest firing case in cookie mode — so a validator that
+         * dropped the mode guard turns every row red.
+         */
+        @ParameterizedTest(name = "session.mode = {0} emits no browser-guarantee warning")
+        @ValueSource(strings = {OidcConfig.Session.MODE_SERVER, "", "bearer-only"})
+        @DisplayName("Should not warn about the browser guarantee outside cookie mode")
+        void shouldNotWarnOutsideCookieMode(String mode) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .mode(mode)
+                            .maxCookieSize(SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            // Scoped to this key: server mode brings its own companion rules (a store is required),
+            // which are not what this row is about.
+            assertTrue(errors.stream().noneMatch(error -> "/oidc/session/max_cookie_size".equals(error.pointer())),
+                    () -> "an in-range budget is never refused, whatever the mode, got: " + errors);
+            assertNoBudgetWarning("mode '" + mode + "' emits no session Set-Cookie to warn about");
+        }
+
+        @ParameterizedTest(name = "max_cookie_size = {0} is still range-checked outside cookie mode")
+        @ValueSource(ints = {39, 8193})
+        @DisplayName("Should range-check an explicit max_cookie_size in every mode, not only cookie mode")
+        void shouldRangeCheckMaxCookieSizeOutsideCookieMode(int maxCookieSize) {
+            // Only the WARNING is cookie-mode scoped: an out-of-range value is a misconfiguration
+            // whatever the mode, and refusing it at boot is what stops it going live the moment the
+            // mode is switched to cookie.
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .mode(OidcConfig.Session.MODE_SERVER)
+                            .maxCookieSize(maxCookieSize).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/oidc/session/max_cookie_size", "must be between");
+        }
+
+        private void assertBudgetWarning(int expectedBudget, int expectedHeaderBytes) {
+            String identifier = ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE
+                    .resolveIdentifierString();
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, identifier);
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, String.valueOf(expectedBudget));
+            // The DERIVED header size is what the guarantee governs, so the message must name it
+            // — a template carrying only the value budget is the drift these controls pin.
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    String.valueOf(expectedHeaderBytes));
+            // The remedy figure has to be this gateway's browser-safe budget, not a fixed 4019.
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, String.valueOf(
+                    SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE
+                            - (expectedHeaderBytes - expectedBudget)));
+        }
+
+        private void assertNoBudgetWarning(String because) {
+            String identifier = ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE
+                    .resolveIdentifierString();
+            assertTrue(TestLoggerFactory.getTestHandler()
+                            .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
+                    () -> because + ", so " + identifier + " must not be emitted");
         }
     }
 

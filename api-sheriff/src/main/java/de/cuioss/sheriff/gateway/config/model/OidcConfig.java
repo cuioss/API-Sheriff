@@ -167,6 +167,18 @@ List<String> scopes,
         public static final String MODE_SERVER = "server";
 
         /**
+         * The absolute session lifetime applied when {@code ttl_seconds} is omitted, in seconds.
+         * <p>
+         * Declared on the config model rather than on a single consumer because two independent
+         * readers resolve the same omitted key: the runtime producer, which builds the codec's
+         * {@code Duration}, and boot validation, which needs the same resolved lifetime to derive
+         * the {@code Set-Cookie} header size a configured {@code max_cookie_size} would emit. Two
+         * private copies of the figure would let the validator reason about a TTL the runtime does
+         * not use.
+         */
+        public static final int DEFAULT_TTL_SECONDS = 3600;
+
+        /**
          * Canonical constructor canonicalizing {@link #mode()} to its lower-case, trimmed
          * spelling.
          * <p>

@@ -195,12 +195,14 @@ no dedicated end-to-end review of the cookie variant has been performed. The ent
 are sound; the *coverage* is not claimed to be exhaustive.
 
 Integration-test coverage has recorded gaps::
-Two contributor documents enumerate them rather than leaving them implicit:
+Three contributor documents enumerate them rather than leaving them implicit:
 link:doc/development/declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
-records which declared gateway limits have a boundary assertion and which do not, and
+records which declared gateway limits have a boundary assertion and which do not,
 link:doc/development/test-corpus-integrity.adoc[Test-Corpus Integrity] records test methods whose
-assertions cannot support the behaviour their names claim. Read both before treating a green suite
-as proof of a specific bound.
+assertions cannot support the behaviour their names claim, and
+link:doc/development/cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness] records
+the properties the integration lane is structurally incapable of observing at all, however strong
+its assertions. Read all three before treating a green suite as proof of a specific bound.
 
 FAPI 2.0 is not conformant::
 Three mandatory client requirements are unmet -- PAR, sender-constrained tokens, and a

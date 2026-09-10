@@ -309,10 +309,17 @@
       "bundle": "pm-documents",
       "workflow_skill_extensions": {
         "triage": "pm-documents:ext-triage-docs"
-      }
+      },
+      "file_globs": [
+        "doc/**",
+        "**/*.adoc",
+        "**/*.md",
+        "README*"
+      ]
     },
     "general-dev": {
-      "bundle": "plan-marshall"
+      "bundle": "plan-marshall",
+      "always_on": true
     },
     "java": {
       "bundle": "pm-dev-java",
@@ -321,22 +328,47 @@
       },
       "project_skills": [
         "project:run-integration-tests"
+      ],
+      "file_globs": [
+        "**/*.java",
+        "**/pom.xml",
+        "**/src/main/resources/**",
+        "**/src/test/resources/**"
       ]
     },
     "java-cui": {
-      "bundle": "pm-dev-java-cui"
+      "bundle": "pm-dev-java-cui",
+      "file_globs": [
+        "**/*.java",
+        "**/pom.xml"
+      ]
     },
     "javascript": {
       "bundle": "pm-dev-frontend",
       "workflow_skill_extensions": {
         "triage": "pm-dev-frontend:ext-triage-js"
-      }
+      },
+      "file_globs": [
+        "**/*.js",
+        "**/*.mjs",
+        "**/*.ts",
+        "**/*.css",
+        "**/package.json"
+      ]
     },
     "oci-containers": {
       "bundle": "pm-dev-oci",
       "workflow_skill_extensions": {
         "triage": "pm-dev-oci:ext-triage-oci"
-      }
+      },
+      "file_globs": [
+        "**/Dockerfile*",
+        "**/docker-compose*.yml",
+        "**/docker-compose*.yaml",
+        "deployment/**",
+        "**/src/main/docker/**/*.yml",
+        "**/src/main/docker/**/*.yaml"
+      ]
     }
   },
   "system": {

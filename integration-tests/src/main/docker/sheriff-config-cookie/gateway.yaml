@@ -156,21 +156,22 @@ oidc:
     # lets a second instance unseal a cookie this one sealed: the instances share only this key.
     encryption_key: ${SESSION_ENCRYPTION_KEY}
     ttl_seconds: 3600
-    # Raised from the 4096 default because THIS instance seals three tokens, not two. Enabling
-    # refresh below means the callback seeds the refresh token into the session, and in cookie mode
-    # the session IS the cookie — so access + id + refresh seal to 5123 bytes here and the codec
-    # refuses the seal at the default budget (ApiSheriff-114), surfacing as a 500 on login. The
-    # budget is a per-instance number and 8192 is the validator's ceiling, so this raises it only
-    # on the cookie-mode test instance; every other instance keeps the browser-safe 4096 default.
-    #
-    # The tension this encodes is real and belongs to the product, not to the test: a cookie-mode
-    # session that also refreshes does not fit in the ~4 KB a browser guarantees per cookie. The
-    # gateway already treats that as an honest failure (CallbackEndpoint documents the refused
-    # bind as a 500), so the deployment-level answer is server mode, smaller claim sets, or an
-    # authorization server that issues no refresh token — not a larger default.
-    max_cookie_size: 8192
+    # No max_cookie_size override: this instance keeps the 4096 default VALUE budget. Note the two
+    # figures are not the same measure — 4096 here bounds the sealed cookie value, while the ~4 KB
+    # a browser guarantees covers the whole Set-Cookie header (name + value + attributes, a further
+    # 77 bytes for this cookie), so the browser-safe value budget is 4019. The tension is real and
+    # belongs to the product, not to the test — a cookie-mode session that ALSO refreshes does not
+    # fit in that budget at all, because in cookie mode the session IS the cookie and access + id +
+    # refresh seals far past it. Raising the budget does not solve it, it only moves the failure
+    # into the browser, which drops the oversized Set-Cookie silently. The deployment-level answer
+    # is server mode, a smaller claim set, or an authorization server that issues no refresh
+    # token — never a larger default.
     refresh:
-      enabled: true
+      # OFF so the seal carries access + id only and stays inside the browser-safe default above.
+      # leeway_seconds stays declared: declared-limit-assertion-coverage.adoc cites it as a ×4 row
+      # including this file, and its boundary is covered on the separate api-sheriff-refresh
+      # instance, which is where refresh is exercised.
+      enabled: false
       leeway_seconds: 30
     csrf:
       trusted_origins: ["https://localhost:10445"]

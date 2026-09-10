@@ -108,6 +108,23 @@ public final class SealedSessionCookieCodec {
      */
     public static final byte FORMAT_VERSION = 2;
 
+    /**
+     * The {@code Max-Age} attribute introducer, shared by the header assembly in
+     * {@link #toSetCookieHeader} and the overhead derivation in
+     * {@link #setCookieHeaderOverhead(String, Duration)} so the two can never count different bytes.
+     */
+    private static final String MAX_AGE_ATTRIBUTE = "; Max-Age=";
+
+    /**
+     * The invariant hardening attribute run, shared by the header assembly in
+     * {@link #toSetCookieHeader} and the overhead derivation in
+     * {@link #setCookieHeaderOverhead(String, Duration)}.
+     */
+    private static final String HARDENING_ATTRIBUTES = "; Path=/; Secure; HttpOnly; SameSite=Lax";
+
+    /** The {@code =} between the cookie name and its value. */
+    private static final int NAME_VALUE_SEPARATOR_BYTES = 1;
+
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
     private static final int NONCE_BYTES = 12;
     private static final int TAG_BITS = 128;
@@ -117,9 +134,75 @@ public final class SealedSessionCookieCodec {
     /**
      * The default sealed cookie-value size budget in bytes (~4 KB). Browsers are only required to
      * accept 4096 bytes per cookie, so a larger value risks being silently dropped by the browser —
-     * which is why the default sits exactly there rather than at the gateway's transport ceiling.
+     * which is why the default sits at that figure rather than at the gateway's transport ceiling.
+     * <p>
+     * <strong>It is a VALUE budget, and the browser's 4096 is a HEADER budget.</strong> The two are
+     * not the same number and must not be compared to each other directly: a value sealing to
+     * exactly this budget is emitted as a {@code Set-Cookie} header of
+     * {@code 4096 + }{@link #DEFAULT_SET_COOKIE_HEADER_OVERHEAD} bytes, which is already past what
+     * RFC 6265 6.1 guarantees. {@link #BROWSER_SAFE_COOKIE_VALUE_BUDGET} is the value budget that
+     * corresponds to the guarantee, and it is the number any browser-deliverability comparison
+     * belongs against. This default is deliberately left where it is — it is the documented,
+     * schema-described default and moving it is a separate decision from stating it accurately.
      */
     public static final int DEFAULT_COOKIE_VALUE_BUDGET = 4096;
+
+    /**
+     * The per-cookie budget RFC 6265 6.1 asks a user agent to honour, in bytes.
+     * <p>
+     * It governs the <em>whole</em> {@code Set-Cookie} header — the cookie's name, its value
+     * <em>and</em> its attributes summed together — never the value in isolation. Every
+     * browser-deliverability comparison <em>in the gateway</em> goes through this constant plus
+     * {@link #DEFAULT_SET_COOKIE_HEADER_OVERHEAD} rather than against
+     * {@link #DEFAULT_COOKIE_VALUE_BUDGET}, because the latter measures a different quantity.
+     * The integration suite deliberately does not: its own budget constant is declared
+     * independently of this one so the test cannot inherit a product-side mistake in the very
+     * number it exists to check.
+     */
+    public static final int BROWSER_PER_COOKIE_HEADER_GUARANTEE = 4096;
+
+    /**
+     * The bytes {@link #toSetCookieHeader} wraps around the sealed value <em>under the default
+     * cookie name and a 3600-second TTL</em> — the default-configuration case, and nothing wider:
+     * <ul>
+     *   <li><strong>23</strong> for {@code __Host-sheriff-session=} — 22 name bytes
+     *       ({@code SessionCookieCodec.DEFAULT_COOKIE_NAME}) plus the {@code =} separator;</li>
+     *   <li><strong>54</strong> for the attribute run
+     *       {@code ; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax} — 50 invariant bytes plus
+     *       the four {@code Max-Age} digits a 3600-second session TTL produces.</li>
+     * </ul>
+     * <strong>This constant is NOT the general answer, and no guard may be built on it.</strong>
+     * Both inputs are configurable ({@code session.cookie_name}, {@code session.ttl_seconds}) and
+     * {@link #toSetCookieHeader} uses the <em>configured</em> pair, so a longer cookie name or a TTL
+     * past 9999 seconds emits a larger header than this figure describes. The general answer is
+     * {@link #setCookieHeaderOverhead(String, Duration)}, which derives the overhead from the
+     * resolved configuration; {@code ConfigValidator} goes through that method, never through this
+     * constant. What survives here is the documented default-configuration figure the reference
+     * material and the {@code ApiSheriff-114} / {@code ApiSheriff-124} catalogue entries cite, kept
+     * pinned to the derivation by {@code SealedSessionCookieCodecTest} so the two cannot drift.
+     */
+    public static final int DEFAULT_SET_COOKIE_HEADER_OVERHEAD = 77;
+
+    /**
+     * The largest sealed cookie-<em>value</em> budget whose emitted {@code Set-Cookie} header still
+     * fits {@link #BROWSER_PER_COOKIE_HEADER_GUARANTEE} <em>under the default configuration</em>:
+     * {@code 4096 - 77 = 4019}.
+     * <p>
+     * It is the default-configuration case of
+     * {@code BROWSER_PER_COOKIE_HEADER_GUARANTEE - }{@link #setCookieHeaderOverhead(String, Duration)},
+     * carried as a named constant because it is the figure the operator-facing documentation quotes.
+     * A deliverability threshold is computed from the resolved configuration through that method
+     * rather than read from here — a gateway running a longer cookie name has a lower browser-safe
+     * value budget than 4019, and comparing against this constant would under-warn by exactly the
+     * configured deviation.
+     * <p>
+     * What the constant does still record is why the threshold is not
+     * {@link #DEFAULT_COOKIE_VALUE_BUDGET}: warning on 4096 leaves a 77-byte band — a value budget
+     * in {@code 4020..4096} — in which the gateway emits a header the browser is not obliged to keep
+     * and nothing anywhere says so.
+     */
+    public static final int BROWSER_SAFE_COOKIE_VALUE_BUDGET =
+            BROWSER_PER_COOKIE_HEADER_GUARANTEE - DEFAULT_SET_COOKIE_HEADER_OVERHEAD;
 
     /**
      * The smallest configurable budget: the encoded length of a sealed value carrying an
@@ -283,9 +366,11 @@ public final class SealedSessionCookieCodec {
         Objects.requireNonNull(sealedValue, "sealedValue");
         Objects.requireNonNull(loginInstant, "loginInstant");
         Objects.requireNonNull(now, "now");
-        long remaining = Math.max(0L, Duration.between(now, loginInstant.plus(sessionTtl)).toSeconds());
-        return "%s=%s; Max-Age=%d; Path=/; Secure; HttpOnly; SameSite=Lax"
-                .formatted(cookieName, sealedValue, remaining);
+        long configuredTtlSeconds = Math.max(0L, sessionTtl.toSeconds());
+        long remaining = Math.clamp(
+                Duration.between(now, loginInstant.plus(sessionTtl)).toSeconds(),
+                0L, configuredTtlSeconds);
+        return cookieName + "=" + sealedValue + MAX_AGE_ATTRIBUTE + remaining + HARDENING_ATTRIBUTES;
     }
 
     /**
@@ -294,7 +379,43 @@ public final class SealedSessionCookieCodec {
      * @return the clearing {@code Set-Cookie} header value
      */
     public String toClearingSetCookieHeader() {
-        return cookieName + "=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax";
+        return cookieName + "=" + MAX_AGE_ATTRIBUTE + "0" + HARDENING_ATTRIBUTES;
+    }
+
+    /**
+     * The bytes {@link #toSetCookieHeader} wraps around the sealed value for a given configuration —
+     * the ONE derivation every browser-deliverability comparison goes through.
+     * <p>
+     * <strong>Why it lives here rather than in the validator.</strong> A deliverability guard needs
+     * the size of the emitted {@code Set-Cookie} header, and the only place that header is assembled
+     * is {@link #toSetCookieHeader}. Deriving the overhead anywhere else means a second copy of the
+     * same arithmetic drifting away from the first — which is exactly how a fixed 77-byte figure came
+     * to stand in for a configurable quantity, leaving a gateway with a longer
+     * {@code session.cookie_name} or a five-digit {@code session.ttl_seconds} emitting an
+     * over-guarantee header with nothing to say so. This method and the header assembly count the
+     * same two constants, and {@code SealedSessionCookieCodecTest} pins them against a formatted
+     * header so a change to either alone turns a test red.
+     * <p>
+     * <strong>{@code Max-Age} is counted at its widest.</strong> The emitted attribute carries the
+     * <em>remaining</em> lifetime, which is at most {@code sessionTtl} (the value at the login
+     * instant) and shrinks from there, so the digit count of the full TTL is an upper bound on every
+     * header this codec will ever emit for that configuration. A deliverability guard wants exactly
+     * that bound: it must not report a header smaller than one the gateway can actually send.
+     *
+     * @param cookieName the resolved session-cookie name ({@code session.cookie_name}, or the
+     *                   {@code __Host-} default when the key is omitted)
+     * @param sessionTtl the resolved absolute session lifetime ({@code session.ttl_seconds})
+     * @return the number of bytes the emitted {@code Set-Cookie} header adds around the sealed value
+     */
+    public static int setCookieHeaderOverhead(String cookieName, Duration sessionTtl) {
+        requireNonBlank(cookieName);
+        Objects.requireNonNull(sessionTtl, "sessionTtl");
+        long widestMaxAge = Math.max(0L, sessionTtl.toSeconds());
+        return cookieName.getBytes(StandardCharsets.UTF_8).length
+                + NAME_VALUE_SEPARATOR_BYTES
+                + MAX_AGE_ATTRIBUTE.length()
+                + Long.toString(widestMaxAge).length()
+                + HARDENING_ATTRIBUTES.length();
     }
 
     /**

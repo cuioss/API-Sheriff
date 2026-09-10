@@ -288,6 +288,53 @@ public final class ConfigLogMessages {
                 .identifier(122)
                 .template("An operator-supplied default trust store is in effect. It REPLACES the platform trust bundle wholesale rather than being added to it, so every anchor the deployment did not put into that store stops being trusted — the public roots the platform shipped included. Legs holding a raw JDK TrustManager: %s. Legs resolving through the Quarkus TLS registry: %s. %s")
                 .build();
+
+        /**
+         * Warns once at boot that {@code oidc.session.max_cookie_size} resolved high enough that the
+         * {@code Set-Cookie} header derived from it exceeds the ~4096 bytes RFC 6265 6.1 guarantees
+         * a browser will keep per cookie, so a session sealing into that headroom is a session no
+         * browser is obliged to hold.
+         * <p>
+         * <strong>The comparison is against the derived HEADER, not the value budget.</strong> The
+         * key declares a sealed <em>value</em> budget; RFC 6265 6.1 budgets the cookie's name, value
+         * and attributes together. The threshold is therefore the 4096-byte guarantee less
+         * {@code SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, sessionTtl)} for the
+         * gateway's <em>resolved</em> {@code session.cookie_name} and {@code session.ttl_seconds} —
+         * 4019 under the default configuration, and lower for a longer cookie name or a five-digit
+         * {@code Max-Age}. Comparing against the 4096 value budget instead left a 77-byte band in
+         * which the gateway emitted an undeliverable header and this record stayed silent, which is
+         * the very failure the record exists to announce; comparing against a <em>fixed</em> 4019
+         * left the same band open for every configuration that is not the default one.
+         * <p>
+         * <strong>Cookie mode only.</strong> The record is emitted when {@code session.mode} is
+         * {@code cookie}. A server-mode or bearer-only gateway emits no sealed session
+         * {@code Set-Cookie} at all, so there is no header for the guarantee to govern and an
+         * explicit {@code max_cookie_size} there is inert rather than dangerous. Its range is still
+         * validated in every mode.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal, for the same reason as
+         * {@link #MANAGEMENT_PLAIN_HTTP} and {@link #EGRESS_HOSTNAME_VERIFICATION_DISABLED}: the
+         * validated range stays {@code 40..8192} and a budget whose header outgrows the guarantee is
+         * a legitimate posture for a non-browser client that keeps whatever it is sent. What must
+         * not happen is the relaxation reaching production silently.
+         * <p>
+         * <strong>Why this warning is the only signal there is.</strong> Every other budget failure
+         * in this area is loud: below the floor the codec refuses to construct, above the configured
+         * budget the seal is refused with {@code ApiSheriff-114} and login answers {@code 500}.
+         * Raising the budget past the browser-safe value removes that refusal without removing the
+         * problem — the gateway then emits a {@code Set-Cookie} the browser discards with no error,
+         * no header and no diagnostic on either side, and the user simply stays anonymous. The
+         * gateway cannot observe a drop that happens in the browser, so nothing downstream of this
+         * line will ever report it.
+         * <p>
+         * The template carries the resolved byte budget, the header size derived from it and the
+         * browser-safe budget only — never a cookie value, never key material.
+         */
+        public static final LogRecord COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(124)
+                .template("oidc.session.max_cookie_size is %s bytes, which the gateway emits as a Set-Cookie header of at least %s bytes once the cookie name and attributes are counted — above the ~4096 bytes RFC 6265 6.1 guarantees a browser will keep per cookie, a budget that governs the whole header rather than the sealed value alone. In cookie mode the session IS the cookie, so a session sealing into that headroom is accepted by the gateway and then dropped SILENTLY by the browser — no error surfaces on either side and the user simply stays anonymous, which the gateway cannot detect. Raising this budget moves the failure into the browser rather than removing it; the deployment-level answers are server-mode sessions, a smaller claim set, or an authorization server that issues no refresh token. Restore the browser-safe posture by removing the key or setting it to %s bytes or below in gateway.yaml")
+                .build();
     }
 
     /**

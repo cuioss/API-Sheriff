@@ -1,0 +1,475 @@
+= Cookie-Deliverability Blindness -- What the Integration Lane Cannot Observe
+:toc:
+:toclevels: 3
+:sectnums:
+
+Why nine cookie integration tests reported success against a session no real browser client could
+hold, which of the nine would have reported success anyway, what else the same gap hides, and where
+the integration/browser boundary belongs.
+
+This note is the third sibling of an existing pair, and it is written to join them rather than to
+start a second index. The companion note
+link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage] answers *which
+declared gateway limit has a boundary assertion* -- it indexes the descriptor surface and the test
+that pins each limit. The companion note
+link:test-corpus-integrity.adoc[Test-Corpus Integrity -- Assertions That Assert Nothing] answers
+*whether a test's assertions are strong enough to support the behaviour its name claims* -- it
+classifies assertion strength inside tests that do exercise the right thing. This note answers the
+question neither of them asks: *which properties the integration lane is structurally incapable of
+observing, however strong its assertions and however complete its limit index*. A limit can be
+indexed and a test can assert hard, and both can still be green about something the lane cannot see.
+
+All three follow the same discipline: enumerate the whole surface first, credit what already exists
+by name, and record the remainder as a *countable* standing backlog.
+
+== The Question
+
+The interesting question is not why a test failed. It is why nine tests reported success on a
+session a real browser client could not hold.
+
+In cookie mode the session *is* the cookie. Storing the refresh token alongside the access and ID
+tokens grew the sealed value to 5123 bytes
+(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164` *as that file stood
+before this note's remediation*), and browsers are only required to accept 4096 bytes per cookie
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:117-130`).
+A browser therefore drops the `Set-Cookie` silently: no error, no session, an anonymous SPA. The
+same change had raised the instance budget to 8192 (`:171` in that same pre-remediation file), so the
+gateway's own seal-time guard -- `if (encoded.length() > maxCookieValueBytes)` at
+`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java:264`
+-- no longer fired either.
+
+[NOTE]
+.Every `gateway.yaml` citation here is historical, deliberately
+====
+The `gateway.yaml` figures and line numbers in this note describe the cookie instance *as it was when
+the blindness was found*: `max_cookie_size: 8192` declared at `:171`, and the comment block at
+`:159-164` explaining the three-token seal that made it necessary.
+
+The remediation this note motivated has since landed on the same instance. It deleted the
+`max_cookie_size` override outright and set `refresh.enabled: false`, so the instance now seals
+access + ID only, declares no budget, and keeps the codec default. Neither cited line survives that
+edit -- `:171` is now `enabled: false`, and `:159-164` is the replacement "No max_cookie_size
+override" comment. Read every `gateway.yaml` citation below as history rather than as the present
+tree; re-derive the numbers from the pre-remediation revision of the file if you need to check one.
+====
+
+[IMPORTANT]
+.Two sizes are in play, and it matters which one the budget applies to
+====
+*5123 bytes is the sealed cookie value alone. 5200 bytes is the whole `Set-Cookie` header* -- and
+5200 is the figure the browser's budget actually governs, because RFC 6265 §6.1 budgets a cookie's
+name, value *and* attributes together rather than the value in isolation.
+
+The 77-byte difference is fully accounted for: 23 bytes of `+__Host-sheriff-session=+`, plus the
+attributes the codec always appends -- `+; Max-Age=…; Path=/; Secure; HttpOnly; SameSite=Lax+`
+(`SealedSessionCookieCodec.java:370`), 54 bytes with the four-digit `Max-Age` observed on this
+instance. So 5123 + 23 + 54 = 5200.
+
+*77 is this instance's overhead, not a constant of the design.* Both inputs are configured -- a
+longer `session.cookie_name` or a `ttl_seconds` past 9999 emits a wider header -- so the gateway
+derives the figure from the resolved pair through
+`SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, ttl)`, which the header assembly and
+boot validation both count against. `DEFAULT_SET_COOKIE_HEADER_OVERHEAD` survives as the
+default-configuration case the operator-facing catalogue quotes, pinned to that derivation by test,
+and no guard is built on it.
+
+Both figures exceed 4096, so nothing in the analysis below changes -- which is precisely why the
+distinction is easy to lose. It is recorded because the assertion this plan added measures the
+*header* and names 5200 in its failure message (`BffKeycloakLoginFlow.java`,
+`assertCookiesFitBrowserBudget`); a reader holding only 5123 would be left with two unexplained
+numbers. Throughout this note, "the sealed value" means 5123 and "the emitted header" means 5200.
+====
+
+Every one of the nine tests should have gone red the moment the payload crossed 4096. None did.
+
+[NOTE]
+====
+*The nine* are `BffCookieSessionIT` (six tests) and `BffCookieStatelessnessIT` (three), both under
+`integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/`. Both drive the dedicated
+cookie-mode instance `api-sheriff-cookie` on port 10445
+(`BffCookieSessionIT.java:83`, `BffCookieStatelessnessIT.java:68`).
+====
+
+== Why Each of the Nine Passed
+
+=== The counterfactual this section measures against
+
+"Would this test have gone red?" needs a precise counterfactual, so this note uses one throughout:
+
+* the browser receives the callback's `Set-Cookie`, applies the per-cookie budget, and *refuses to
+  store* the session cookie;
+* it therefore sends no session cookie on any subsequent request;
+* the short binding cookie is unaffected, so the login round trip itself still completes.
+
+That last clause matters. The login chain in
+`integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffKeycloakLoginFlow.java:253-312`
+asserts only status codes on its four request steps -- `302`, `200`, `302`, `302` -- and never uses
+the session it just established. A client that drops the session cookie still walks the whole chain
+green. (The deliverability assertion this plan added at `:309` is the one thing in that method that
+is not a status code, and it did not exist while the nine were passing.)
+
+=== The mechanism, confirmed
+
+The working hypothesis was that RestAssured enforces no per-cookie size limit. That is correct, and
+for *deliverability* it is the whole mechanism -- but it is one leg of a two-leg blindness, and the
+second leg is the one that turns a single defect into a class.
+
+*Leg one -- no size policy anywhere on the path.* The helper takes the callback's cookies into a
+plain `HashMap` (`BffKeycloakLoginFlow.java:255`, `:304`) and replays them with `.cookies(cookies)`
+(`:336`). No length is read at any of those three points. The library applies no per-cookie limit and
+the helper adds none, so the absence is doubly sourced rather than inherited.
+
+*Leg two -- the jar is keyed by name and discards every attribute.* `Session.gatewayCookies()` is a
+`Map<String, String>` (`BffKeycloakLoginFlow.java:179`), so `SameSite`, `Secure`, `Path`, `Domain`
+and the `__Host-` prefix rules survive only as a *name and a value*. The helper's own class Javadoc
+states this plainly: it "replays cookies from a `Map` it manages itself, so it applies no cookie
+policy: `SameSite`, `Secure` and `__Host-` are attributes it records but never enforces"
+(`BffKeycloakLoginFlow.java:43-51`). The same limitation is recorded independently in
+link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note] at `:78-81`.
+
+Leg one hides the size. Leg two hides everything else.
+
+=== What did NOT mask it
+
+Three specific maskers were checked and none is present. Recording the negatives is the point: a
+single confirmed explanation is worth more than a plausible one.
+
+A fixture that re-authenticates between steps:: Absent. Each test logs in exactly once, in its
+Arrange (`BffCookieSessionIT.java:99`, `:119`, `:151`, `:179`, `:201`, `:219`;
+`BffCookieStatelessnessIT.java:86`, `:111`, `:130`). The one mid-test re-login is at
+`BffCookieSessionIT.java:236`, and it is the property that test exists to prove, not a fixture
+smoothing over a failure.
+
+A helper that re-seals rather than replaying:: Absent. `tamper`
+(`BffCookieSessionIT.java:287-292`) and `restampKeyId` (`:267-272`) mutate decoded bytes and
+re-encode them; neither constructs a cipher and neither re-seals. Both exist to produce a value the
+gateway must *reject*, so neither sits on a green path. The green path replays the callback's value
+verbatim.
+
+An assertion that reads the response body rather than the session state:: Present, but not masking.
+`sealedSessionMediatesAndStaysUsable` asserts against the go-httpbin echo body
+(`BffCookieSessionIT.java:164-171`) -- but it only reaches that body through a request the session
+had to authenticate, since the same call asserts `statusCode(200)` at `:162`. The body read is
+downstream of a genuine session check, not a substitute for one.
+
+=== Per-test verdict
+
+Under the counterfactual above, *seven of the nine go red and two stay green*. The two that stay
+green are structurally incapable of observing deliverability, and they would have been green against
+any client at all.
+
+[cols="3,1,3,1",options="header"]
+|===
+| Test | Line | What its green actually establishes | Red under the counterfactual?
+
+| `sealedSessionCookieIsHardened`
+| `:97`
+| The attributes on the *emitted* `Set-Cookie`. It reads `callbackCookies()` -- the parsed response
+  header -- and never issues a request with the session.
+| *No*
+
+| `sealedCookieValueCarriesNoReadableToken`
+| `:117`
+| That the sealed value carries no readable token segment. Reads the jar at `:120` and asserts it
+  non-null at `:121`.
+| Yes -- at the fixture
+
+| `sealedSessionMediatesAndStaysUsable`
+| `:149`
+| Two mediated requests through one live session, `statusCode(200)` at `:162`.
+| Yes -- on the behaviour
+
+| `rpInitiatedLogoutClearsTheSealedCookie`
+| `:177`
+| A `302` plus a clearing `Set-Cookie`. See the note below -- the no-session branch emits the
+  identical pair.
+| *No*
+
+| `tamperedCookieIsUnauthenticatedNeverServerError`
+| `:199`
+| A `401` rather than a `500` for a tampered value. `tamper` asserts its input non-null at `:288`.
+| Yes -- at the fixture
+
+| `unauthenticatableCookieDrivesFullReAuthentication`
+| `:216`
+| A full re-authentication round trip. Proves the established session works first, `statusCode(200)`
+  at `:222`.
+| Yes -- on the behaviour
+
+| `aSessionSealedByOneInstanceIsServedByThePeer`
+| `:84`
+| Portability across two processes sharing only the key. Asserts the jar non-null at `:87`.
+| Yes -- at the fixture
+
+| `bothInstancesResolveTheSameIdentity`
+| `:109`
+| Both instances resolve one cookie to one identity, via a `200` at
+  `BffCookieStatelessnessIT.java:155`.
+| Yes -- on the behaviour
+
+| `thePeerRefusesACookieItCannotUnseal`
+| `:128`
+| The peer verifies rather than trusts. `tamper` asserts its input non-null at `:172`.
+| Yes -- at the fixture
+|===
+
+Rows 1-6 are `BffCookieSessionIT`; rows 7-9 are `BffCookieStatelessnessIT`. Line numbers are
+relative to each row's own class.
+
+[IMPORTANT]
+.The two green rows are green for different reasons, and both are worth naming
+====
+`sealedSessionCookieIsHardened` asserts on the *emitted header* and nothing else. That is a
+legitimate scope -- the gateway's compliance with the `__Host-` contract is exactly what the gateway
+can be held to -- but it means the test is indifferent to whether any client accepts the result.
+
+`rpInitiatedLogoutClearsTheSealedCookie` is the sharper case. `LogoutEndpoint` answers a logout
+*without* a live session with a `302` to `final_redirect` carrying the same
+`clearingSetCookieHeader()` the authenticated branch emits
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java:96-100`
+versus `:119-121`). That header is a fixed string --
+`+__Host-sheriff-session=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax+` at
+`SealedSessionCookieCodec.java:349-351` -- so every one of the test's three assertions (a `Location`,
+`Max-Age=0`, an empty value) holds identically on both branches. The test cannot distinguish
+"logged out" from "was never logged in".
+====
+
+*Of the four rows that go red at the fixture*, the redness is real but arrives at an
+`assertNotNull` in an Arrange step rather than at the assertion the test's name is about. That is
+worth recording because it changes what a failure report would have said: the suite would have
+reported "the login must establish a sealed session cookie", not "the cookie is too large for a
+browser". The diagnosis would still have needed a human.
+
+== When the Suite Stopped Being Honest
+
+*The tests never changed. The payload grew.* That boundary is the whole answer to whether this is a
+test defect or a missing invariant.
+
+Before the refresh token was stored, `CallbackEndpoint` seeded a session carrying the access and ID
+tokens only, and the sealed value sat under the 4096 default. The nine tests were measuring a round
+trip that genuinely worked -- for RestAssured *and* for a browser. They were correct, not lucky.
+
+Storing the refresh token is what moved the payload. `CallbackEndpoint` now seeds
+`.refreshToken(result.refreshToken())` into the session record
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java:239`, with
+the mechanism documented in the comment at `:231-238`), and in cookie mode the session is the cookie
+-- so access + ID + refresh sealed to 5123 bytes on this instance
+(`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164`, pre-remediation),
+which the codec emits as a 5200-byte `Set-Cookie` header once the name and attributes are counted.
+The same change had raised `max_cookie_size` to 8192 (`:171`, pre-remediation), which is what kept
+the gateway's own guard quiet. Both figures are historical in the sense set out at the top of this
+note: the instance now runs with refresh disabled and no budget override, so it seals two tokens
+rather than three.
+
+So the suite became blind at one identifiable instant, without a line of test code being touched.
+
+[CAUTION]
+====
+*The blindness predates that change and must not be recorded as its regression.* The cookie sat
+under 4096 only because the refresh token was not being stored -- the very bug that was fixed is
+what kept the suite accidentally honest. Removing the accident exposed a gap that was always there.
+
+The conclusion follows directly: this is a *missing invariant*, not a test defect. No existing
+assertion is wrong. What was never asserted is that the emitted value fits a budget the gateway does
+not control.
+====
+
+The absence is verified rather than assumed: neither cookie suite asserts the sealed value's length
+anywhere. The only length-shaped expressions in either class are byte-array indexing inside the
+mutation helpers -- `raw[raw.length - 1]` at `BffCookieSessionIT.java:290` and
+`BffCookieStatelessnessIT.java:174`.
+
+== What Else the Same Gap Hides
+
+Deliverability is one browser-enforced property. Leg two of the mechanism -- the attribute-discarding
+jar -- hides a whole class, so the useful output is an enumerated surface with a verdict per member,
+not a single fix.
+
+=== The enumerated property surface
+
+The surface is *six properties*: the per-cookie budget this note opens on, plus the five further
+cookie properties the same jar hides. It is bounded by a simple rule -- a property belongs here when
+*the client*, not the gateway, is the enforcing party. All six satisfy that rule, which is why the
+budget sits in the table alongside the other five rather than outside it.
+
+[cols="2,3,1,2",options="header"]
+|===
+| Property | Who enforces it | IT-lane verdict | Where the assertion is, if any
+
+| Per-cookie size budget (~4096 bytes)
+| The browser, by silently refusing to store an over-budget value.
+| *Size asserted, policy unobservable*
+| `BffKeycloakLoginFlow.assertCookiesFitBrowserBudget` measures the *emitted header* against the
+  test's own `BROWSER_COOKIE_BUDGET_BYTES` constant at the single login seam every `Bff*IT` funnels
+  through (`:158`, called at `:309`) -- added by this plan's emitted-header deliverable. The
+  gateway's own seal-time guard (`SealedSessionCookieCodec.java:264`) is *not* that assertion: it
+  fires against the *configured* budget, not the browser's.
+
+| `SameSite`
+| The browser, by withholding a `Lax` cookie on a cross-site send.
+| *Attribute asserted, policy unobservable*
+| `BffCookieSessionIT.java:111-112` asserts `SameSite=Lax` on the emitted header.
+
+| `__Host-` prefix rules
+| The browser, by rejecting a `__Host-`-named cookie that violates the required combination.
+| *Attribute asserted, policy unobservable*
+| `BffCookieSessionIT.java:106-109` asserts the name, `Secure`, `Path=/` and the absence of
+  `Domain` as one group.
+
+| `Secure`-over-plain rejection
+| The browser, by refusing to send a `Secure` cookie over plain HTTP.
+| *Attribute asserted, policy unobservable*
+| `BffCookieSessionIT.java:107` asserts the flag. The rejection itself is never exercised: every
+  origin in the lane is HTTPS (`BaseIntegrationTest.java:58`; `BffKeycloakLoginFlow.java:79`,
+  `:89`, `:100`, `:112`).
+
+| Per-domain cookie count
+| The browser, by evicting cookies past its per-domain cap.
+| *Not covered*
+| Nowhere. The gateway sets three `__Host-` cookies --
+  `+__Host-sheriff-binding+` (`bff/pending/BindingCookieCodec.java:57`),
+  `+__Host-sheriff-session+` (`bff/session/SessionCookieCodec.java:44`) and
+  `+__Host-sheriff-logout+` (`bff/logout/RpInitiatedLogout.java:58`) -- and a `HashMap` has no cap
+  to hit.
+
+| Aggregate per-domain cookie size
+| The browser, by evicting or refusing once the domain's total is exceeded.
+| *Not covered*
+| Nowhere. No test sums the bytes the gateway asks one origin to hold.
+|===
+
+=== The count
+
+Of the six properties enumerated:
+
+* *Three* carry an attribute assertion in the IT lane -- `SameSite`, the `__Host-` combination, and
+  the `Secure` flag. All three live in one test, `sealedSessionCookieIsHardened`
+  (`BffCookieSessionIT.java:97-113`).
+* *One* carries a size assertion -- the per-cookie budget, closed by this plan's emitted-header
+  assertion at the shared login seam (`BffKeycloakLoginFlow.java:309`).
+* *Two* carry no assertion at all -- per-domain count and aggregate size.
+* *Zero* have their browser-side enforcement exercised anywhere in the integration lane.
+
+The last line is the finding. The gap between *asserting* what the gateway emitted and *enforcing*
+the policy behind it is total here, not partial: four of six are asserted and none of six is
+enforced. A green `Bff*IT` run is evidence about what the gateway emitted, never about what a
+browser does with it.
+
+*Standing backlog: two properties with no assertion, and six with no enforcement observation, in the
+integration lane.* The per-cookie budget was the third, and it is closed by this plan's
+emitted-header assertion. The remaining two, and the enforcement half of all six, remain open and are
+recorded here rather than in a rival index.
+
+=== The one lane that does cover the class
+
+link:../../demo-client/doc/playwright-suite.adoc[The Playwright suite] drives a real Chromium against
+both session modes as two projects differing only in `baseURL` (`:43-46`), and it already generalises
+this exact class: "any control whose enforcement lives in the browser -- `SameSite`, `Secure`, the
+`__Host-` prefix, cookie partitioning, CORS, `Referrer-Policy`, CSP, and the navigation context a
+response arrives in -- cannot be proven by a programmatic HTTP client, however faithful" (`:84-88`).
+
+It also states its own limit, and the limit is the reason this plan exists: "This Playwright suite is
+the only suite in this repository that covers that class -- and it gates nothing" (`:88-91`). The
+workflow triggers on `push: branches: [main]` and `workflow_dispatch` only
+(`.github/workflows/demo-client-e2e.yml:11-14`), so a pull request that breaks one of these controls
+merges with the suite never having run.
+
+Coverage and enforcement are separate things here, and only the first one exists.
+
+== Why `[session-server]` Was Unaffected
+
+The server-session variant never approaches the budget, because nothing large crosses to the browser.
+`ServerSessionBinding` keeps the token material in the store and hands the browser only the opaque
+`SessionRecord.sessionId()` in the hardened `__Host-` cookie
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/ServerSessionBinding.java:30-32`,
+with the emission at `:66`). A handle is a handle whatever the claim set does, so the payload growth
+that moved the cookie-mode seal past 4096 moved nothing at all in server mode.
+
+This is a property of the variant, not of its tests. The server-mode suites are not better written;
+they are testing something a browser was always going to accept.
+
+=== A second permissive substitute in the same lane
+
+The audit question -- whether any other suite substitutes a permissive client for a real one --
+has one further answer, and it is the same shape rather than a different one.
+
+*TLS certificate validation is disabled lane-wide.* `BaseIntegrationTest` calls
+`RestAssured.useRelaxedHTTPSValidation()` for every suite that extends it
+(`integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BaseIntegrationTest.java:57`),
+and the BFF helper's own request specs relax it independently
+(`BffKeycloakLoginFlow.java:336`, `:351`). Certificate-chain validity is a *client*-enforced control,
+so the lane cannot observe it -- exactly as it cannot observe `SameSite`.
+
+The surface is wider than those four sites, and materially so: the substitution appears in *four
+mechanically distinct forms* across *14 files*, and a census for the single spelling above finds
+neither the per-specification form nor the two JDK-level ones. The enumerated surface, with the
+census mistake that hid it, is recorded in
+link:test-corpus-integrity.adoc[Test-Corpus Integrity] § "Shape (e)-2 -- the enumerated relaxed-TLS
+surface".
+
+That is a deliberate and correct choice, not a defect: the stack serves a self-signed `localhost`
+bundle, and the browser lane handles it the same way with `--ignore-certificate-errors`
+(link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note], `:299-321`). It is
+recorded here because it is the second member of the class, and because the class is the thing worth
+knowing. A wider sweep of the integration corpus for pro-forma tests belongs to
+link:test-corpus-integrity.adoc[Test-Corpus Integrity], not here.
+
+== Where the Integration/Browser Boundary Belongs
+
+The rule that falls out of the analysis is a clean split by *enforcing party*, and it is worth
+stating as a rule because it decides where the next assertion goes.
+
+Belongs in the integration lane -- everything the gateway *decides and emits*::
+The presence, name and exact attribute set of each `Set-Cookie`; the *size of the emitted header* --
+name, value and attributes together, the quantity RFC 6265 §6.1 budgets;
+status codes and redirect targets; the sealed wire format and its version gate; fail-closed rejection
+of a tampered or unauthenticatable value; two-instance portability. A programmatic client observes
+all of these faithfully, because they are facts about the response rather than about the client.
+
+Genuinely needs a browser -- everything the *client applies*::
+Whether a `Lax` cookie is withheld on a cross-site send; whether a `__Host-`-named cookie is accepted
+or rejected; whether a `Secure` cookie is refused over plain HTTP; per-domain count and aggregate-size
+eviction; and the navigation context a response arrives in. No programmatic client can stand in for
+these, however faithful -- which is the generalisation
+link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note] already records at
+`:84-88`.
+
+The size assertion sits on the *first* side of that line, and that is the load-bearing consequence.
+The emitted `Set-Cookie` header's length is a fact about the gateway's own output, observable by any
+client that can read a response header -- so it belongs on the pull request, in the integration lane,
+even though the *consequence* of exceeding it is browser-side. Nothing about the browser needs to be
+simulated to assert a number the gateway itself produced.
+
+[CAUTION]
+.The honest limit
+====
+Moving the size assertion onto the pull request closes one row of the six-row table. It does not
+close the other five, and it does not change the standing structural gap: the only lane that
+exercises browser-side enforcement still gates nothing
+(link:../../demo-client/doc/playwright-suite.adoc[Playwright suite], `:88-91`;
+`.github/workflows/demo-client-e2e.yml:11-14`).
+
+Until that changes, the honest reading of a green pull request is: every property the gateway
+*emits* has been checked, and every property the browser *applies* has not. This note exists so that
+sentence is available to a reader before the next cookie-shaped control is added, rather than after.
+====
+
+An assertion pinned to a *configured* constant would close nothing at all. The configured budget is
+the value that was wrong; a test comparing the seal against it would have stayed green at 8192
+exactly as the nine did. The assertion has to name the browser's number, not the gateway's.
+
+== Related
+
+* link:test-corpus-integrity.adoc[Test-Corpus Integrity -- Assertions That Assert Nothing] --
+  assertion *strength* across the whole test corpus, and the standing backlog of vacuous shapes.
+* link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage] -- which declared
+  gateway limit has a boundary assertion, per descriptor.
+* link:../../demo-client/doc/playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite]
+  -- the only lane driving a real browser, its coverage of the browser-enforced class, and the
+  trigger that keeps it off the pull request.
+* link:../user/bff-cookie.adoc[Cookie-Based BFF -- Operator Guide] -- the operator-facing cookie
+  size budget and the guidance for a token set that does not fit.
+
+This note stops at the integration lane's observational limits. It does not classify assertion
+strength inside the tests that do observe the right thing, and it proposes no remediation beyond
+naming which side of the boundary each property sits on.
