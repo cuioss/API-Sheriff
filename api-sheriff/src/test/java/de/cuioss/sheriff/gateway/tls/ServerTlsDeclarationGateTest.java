@@ -514,7 +514,7 @@ class ServerTlsDeclarationGateTest {
                     () -> assertTrue(message.contains("remove the tls.mtls block"),
                             "remedy one is 'drop the mTLS requirement': " + message),
                     () -> assertTrue(message.contains("remove " + OPT_IN)
-                                    && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES),
+                            && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES),
                             "remedy two is 'terminate TLS instead', which is worthless unless it "
                                     + "names how a certificate is declared: " + message),
                     () -> assertTrue(message.contains("silently inert"),
@@ -564,7 +564,7 @@ class ServerTlsDeclarationGateTest {
                     () -> assertTrue(message.contains("remove the tls.passthrough_sni block"),
                             "remedy one is 'drop the passthrough topology': " + message),
                     () -> assertTrue(message.contains("remove " + OPT_IN)
-                                    && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES),
+                            && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES),
                             "remedy two is 'terminate TLS instead', naming how a certificate is "
                                     + "declared: " + message));
         }

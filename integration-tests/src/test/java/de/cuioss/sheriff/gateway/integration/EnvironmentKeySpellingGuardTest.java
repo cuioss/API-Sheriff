@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.smallrye.config.common.utils.StringUtil;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.DirectoryStream;
@@ -44,7 +45,6 @@ import org.yaml.snakeyaml.nodes.SequenceNode;
 import org.yaml.snakeyaml.nodes.Tag;
 
 import de.cuioss.sheriff.gateway.tls.ServerTlsDeclarationGate;
-import io.smallrye.config.common.utils.StringUtil;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -115,7 +115,7 @@ class EnvironmentKeySpellingGuardTest {
 
     @Test
     @DisplayName("every QUARKUS_* key the committed compose descriptors declare decodes to a resolvable name")
-    void everyDeclaredQuarkusKeyDecodesToAResolvableName() throws IOException {
+    void everyDeclaredQuarkusKeyDecodesToAResolvableName() throws Exception {
         List<Path> descriptors = descriptors();
 
         DescriptorScan scan = scan(descriptors);
