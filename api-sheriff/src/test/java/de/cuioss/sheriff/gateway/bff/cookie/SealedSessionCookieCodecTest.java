@@ -445,7 +445,7 @@ class SealedSessionCookieCodecTest {
     class ThreeTokenMeasurement {
 
         // cui-rewrite:disable CuiLogRecordPatternRecipe
-        private static final CuiLogger MEASUREMENT = new CuiLogger(ThreeTokenMeasurement.class);
+        private static final CuiLogger LOGGER = new CuiLogger(ThreeTokenMeasurement.class);
 
         /**
          * The browser-safe value budget less a 10 % headroom reserve for future claim-set growth:
@@ -533,10 +533,10 @@ class SealedSessionCookieCodecTest {
             // Reported, not merely asserted: the settlement report quotes these figures, and an
             // assertion message that only surfaces on failure cannot supply them.
             // cui-rewrite:disable CuiLogRecordPatternRecipe
-            MEASUREMENT.info("FORMAT_VERSION 3 three-token measurement: framed plaintext %s bytes, "
-                            + "sealed value %s bytes (%s percent of framed), headroom floor %s bytes, "
-                            + "browser-safe value budget %s bytes; the %s-character session nonce is "
-                            + "random and incompressible and is a fixed floor on the ratio",
+            LOGGER.info("FORMAT_VERSION 3 three-token measurement: framed plaintext %s bytes, "
+                    + "sealed value %s bytes (%s percent of framed), headroom floor %s bytes, "
+                    + "browser-safe value budget %s bytes; the %s-character session nonce is "
+                    + "random and incompressible and is a fixed floor on the ratio",
                     framedBytes, sealedBytes,
                     // Locale.ROOT: the report quotes this figure, and a locale-dependent decimal
                     // comma would make the same run read differently on a different machine.

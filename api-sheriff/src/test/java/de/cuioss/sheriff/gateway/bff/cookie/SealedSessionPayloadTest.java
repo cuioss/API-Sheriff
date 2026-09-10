@@ -193,8 +193,8 @@ class SealedSessionPayloadTest {
         @Test
         @DisplayName("Should decode nothing from a version-2 newline-joined, per-field-base64 payload")
         void shouldDecodeNothingFromVersionTwoFraming() {
-            byte[] versionTwo = Arrays.stream(new String[] {ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
-                            Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE})
+            byte[] versionTwo = Arrays.stream(new String[]{ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
+                    Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE})
                     .map(field -> Base64.getUrlEncoder().withoutPadding()
                             .encodeToString(field.getBytes(StandardCharsets.UTF_8)))
                     .reduce((left, right) -> left + "\n" + right)
