@@ -28,6 +28,8 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import io.vertx.core.http.HttpServerOptions;
@@ -41,8 +43,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for {@link ServerTlsDeclarationGate}: the two refusal cases, the explicit plain-HTTP opt-in
- * that stands both down, and the hook the refusal actually travels through.
+ * Tests for {@link ServerTlsDeclarationGate}: the two certificate-absence refusals, the explicit
+ * plain-HTTP opt-in that stands both of those down, the three incoherence refusals that same opt-in
+ * selects instead, and the hook every refusal actually travels through.
  * <p>
  * <strong>Every case is decided against a real assembled {@link Config}.</strong> The gate reads
  * declared keys and enumerates TLS-registry bucket names, so a hand-assembled configuration is what
@@ -105,6 +108,19 @@ class ServerTlsDeclarationGateTest {
 
     private static final String CERTIFICATE_PATH = "/etc/certs/localhost.crt";
     private static final String KEYSTORE_PATH = "/etc/certs/keystore.p12";
+
+    /** The plain-HTTP opt-in as an operator types it, and as every incoherence refusal names it. */
+    private static final String OPT_IN = DeclaredKeyMaterialKeys.INSECURE_REQUESTS + "="
+            + DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED;
+
+    private static final String PASSTHROUGH_HOST = "relayed.example.com";
+    private static final String PASSTHROUGH_TARGET = "relay-upstream";
+
+    /**
+     * A gateway document with no {@code tls} block at all — the default every case that names only
+     * Quarkus keys is decided against, so those cases keep deciding on the keys they name.
+     */
+    private static final GatewayConfig TLS_LESS_GATEWAY = GatewayConfig.builder().build();
 
     @Test
     @DisplayName("The refusal travels through the customizer hook the recorder actually calls")
@@ -229,8 +245,7 @@ class ServerTlsDeclarationGateTest {
                                     + "first is what makes the gate verdict below meaningful: it "
                                     + "pins that SmallRye, not this harness, decides the mapping"),
                     () -> assertDoesNotThrow(
-                            () -> new ServerTlsDeclarationGate(config)
-                                    .assertServerTlsDeclarationIsCoherent(),
+                            () -> gateOver(config).assertServerTlsDeclarationIsCoherent(),
                             "the bucket is detected by enumerating names rather than by direct "
                                     + "lookup, so the canonicalisation is the only thing that lets "
                                     + "a bucket declared through the environment door be seen — "
@@ -251,7 +266,7 @@ class ServerTlsDeclarationGateTest {
                                     + "quarkus.tls.key.\"store.p12.path and EnvName.equals rejects "
                                     + "it. If this assertion ever fails, SmallRye changed its "
                                     + "mapping rule and the gate may widen to match"),
-                    () -> assertTrue(messageOfRefusal(new ServerTlsDeclarationGate(config))
+                    () -> assertTrue(messageOfRefusal(gateOver(config))
                                     .contains("No TLS key material is declared"),
                             "a declaration the runtime cannot resolve IS invalid configuration, so "
                                     + "it must reach this gate's remedy-bearing refusal. Accepting "
@@ -336,8 +351,7 @@ class ServerTlsDeclarationGateTest {
                                     + "__ in the environment — so " + ENV_DOTTED_BUCKET_MATERIAL
                                     + " really does resolve to " + DOTTED_BUCKET_MATERIAL),
                     () -> assertDoesNotThrow(
-                            () -> new ServerTlsDeclarationGate(config)
-                                    .assertServerTlsDeclarationIsCoherent(),
+                            () -> gateOver(config).assertServerTlsDeclarationIsCoherent(),
                             "this is the case that forbids closing the over-permissive match by "
                                     + "simply refusing every doubled underscore. These __ pairs are "
                                     + "legitimate quoting, the deployment is correctly configured, "
@@ -403,6 +417,185 @@ class ServerTlsDeclarationGateTest {
         }
     }
 
+    @Nested
+    @DisplayName("Refusal case (c) — the plain-HTTP opt-in is combined with declared key material")
+    class PlainHttpWithKeyMaterial {
+
+        @ParameterizedTest
+        @DisplayName("Every certificate spelling refuses, naming ITS key and BOTH remedies")
+        @ValueSource(strings = {
+                "quarkus.http.ssl.certificate.files",
+                "quarkus.http.ssl.certificate.key-files",
+                "quarkus.http.ssl.certificate.key-store-file",
+                "quarkus.http.ssl.certificate.credentials-provider"
+        })
+        void everyCertificateSpellingRefusesNamingItsKey(String declaredKey) {
+            String message = messageOfIncoherentPlainHttp(Map.of(declaredKey, CERTIFICATE_PATH));
+
+            assertAll("one listener cannot both serve cleartext and terminate TLS",
+                    () -> assertTrue(message.contains(declaredKey),
+                            "the offending key must be named, and it must be the one the deployment "
+                                    + "actually set rather than a representative spelling: " + message),
+                    () -> assertTrue(message.contains("Either remove " + declaredKey),
+                            "remedy one is 'drop the certificate', spelled out for THIS key: " + message),
+                    () -> assertTrue(message.contains("or remove " + OPT_IN),
+                            "remedy two is 'drop the opt-in, the declared certificate then terminates "
+                                    + "TLS' — a refusal naming only one way out leaves the operator "
+                                    + "to guess which declaration this gateway wanted: " + message));
+        }
+
+        @Test
+        @DisplayName("A default quarkus.tls.key-store.* bucket carrying material refuses too")
+        void defaultBucketMaterialRefuses() {
+            String message = messageOfIncoherentPlainHttp(Map.of(DEFAULT_BUCKET_MATERIAL, KEYSTORE_PATH));
+
+            assertTrue(message.contains("quarkus.tls.key-store."),
+                    "the registry bucket is a second route to the same key material, so refusing "
+                            + "only the ssl.certificate.* spellings would leave a bucket-configured "
+                            + "deployment serving cleartext with a certificate mounted: " + message);
+        }
+
+        @Test
+        @DisplayName("A SELECTED bucket carrying material refuses, naming the bucket and its selector")
+        void selectedBucketWithMaterialRefuses() {
+            String message = messageOfIncoherentPlainHttp(Map.of(
+                    DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME, NAMED_BUCKET,
+                    NAMED_BUCKET_MATERIAL, KEYSTORE_PATH));
+
+            assertAll("the third route to declared material is a named bucket the operator selected",
+                    () -> assertTrue(message.contains(NAMED_BUCKET),
+                            "the bucket actually carrying the material must be named: " + message),
+                    () -> assertTrue(message.contains(DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME),
+                            "so must the key that selected it — that key is what the operator edits: "
+                                    + message));
+        }
+
+        @Test
+        @DisplayName("The same opt-in over a bucket with no MATERIAL still passes in silence")
+        void theSameOptInWithoutKeyMaterialPasses() {
+            assertDoesNotThrow(() -> gateOver(Map.of("quarkus.tls.key-store.sni", "false"),
+                            DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED)
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "the matched negative control for the refusals above: this configuration touches "
+                            + "the very same bucket and differs only in declaring no material, so a "
+                            + "refusal here would mean the gate fires on the bucket's presence rather "
+                            + "than on the contradiction. That leaf is one Quarkus contributes to "
+                            + "every boot, so refusing it would refuse every plain-HTTP deployment");
+        }
+
+        @Test
+        @DisplayName("A key-less SELECTED bucket plus the opt-in is still accepted — the boundary case")
+        void keyLessSelectedBucketWithTheOptInIsAccepted() {
+            assertDoesNotThrow(() -> gateOver(Map.of(
+                                    DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME, NAMED_BUCKET,
+                                    "quarkus.tls." + NAMED_BUCKET + ".reload-period", "24H"),
+                            DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED)
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "selecting a bucket is not declaring material, and a bucket with nothing in it "
+                            + "contradicts nothing. Refusing here would satisfy this refusal by "
+                            + "refusing the SELECTION rather than the material, and would take the "
+                            + "already-shipped stand-down of the key-less-bucket refusal with it");
+        }
+    }
+
+    @Nested
+    @DisplayName("Refusal case (d) — the plain-HTTP opt-in is combined with tls.mtls.enabled")
+    class PlainHttpWithMtls {
+
+        @Test
+        @DisplayName("Refuses, naming tls.mtls.enabled and BOTH remedies")
+        void refusesNamingMtlsAndBothRemedies() {
+            String message = messageOfIncoherentPlainHttp(Map.of(), gatewayWithMtls(true));
+
+            assertAll("a gateway that terminates no TLS can verify no client certificate",
+                    () -> assertTrue(message.contains("tls.mtls.enabled"),
+                            "the offending key must be named in the gateway.yaml spelling the "
+                                    + "operator wrote it in: " + message),
+                    () -> assertTrue(message.contains("remove the tls.mtls block"),
+                            "remedy one is 'drop the mTLS requirement': " + message),
+                    () -> assertTrue(message.contains("remove " + OPT_IN)
+                                    && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES),
+                            "remedy two is 'terminate TLS instead', which is worthless unless it "
+                                    + "names how a certificate is declared: " + message),
+                    () -> assertTrue(message.contains("silently inert"),
+                            "the message must say WHY the combination is refused rather than "
+                                    + "ignored — the requirement does not weaken anything today, it "
+                                    + "simply never runs, and that is the whole point: " + message));
+        }
+
+        @Test
+        @DisplayName("The same opt-in with tls.mtls.enabled=false passes in silence")
+        void theSameOptInWithMtlsDisabledPasses() {
+            assertDoesNotThrow(() -> gateOver(Map.of(),
+                            DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED, gatewayWithMtls(false))
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "the matched negative control: the same tls.mtls block, differing only in the "
+                            + "one flag that expresses the requirement. A refusal here would mean the "
+                            + "gate fires on the block's presence rather than on what it requires");
+        }
+
+        @Test
+        @DisplayName("mTLS on a TLS-TERMINATING listener is untouched — the refusal is opt-in-scoped")
+        void mtlsOnATerminatingListenerIsUntouched() {
+            assertDoesNotThrow(() -> gateOver(
+                            Map.of(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES, CERTIFICATE_PATH),
+                            SHIPPED_DEFAULT, gatewayWithMtls(true))
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "requiring client certificates on a listener that really does terminate TLS is "
+                            + "the mTLS feature working as designed. This refusal exists to name a "
+                            + "combination that cannot mean anything, so breaking every working mTLS "
+                            + "gateway would be the one outcome worse than the silence it replaces");
+        }
+    }
+
+    @Nested
+    @DisplayName("Refusal case (e) — the plain-HTTP opt-in is combined with tls.passthrough_sni")
+    class PlainHttpWithPassthroughSni {
+
+        @Test
+        @DisplayName("Refuses, naming tls.passthrough_sni and BOTH remedies")
+        void refusesNamingPassthroughSniAndBothRemedies() {
+            String message = messageOfIncoherentPlainHttp(Map.of(),
+                    gatewayWithPassthroughSni(Map.of(PASSTHROUGH_HOST, PASSTHROUGH_TARGET)));
+
+            assertAll("the SNI front listener claims the public TLS port a plain port contradicts",
+                    () -> assertTrue(message.contains("tls.passthrough_sni"),
+                            "the offending key must be named in the gateway.yaml spelling: " + message),
+                    () -> assertTrue(message.contains("remove the tls.passthrough_sni block"),
+                            "remedy one is 'drop the passthrough topology': " + message),
+                    () -> assertTrue(message.contains("remove " + OPT_IN)
+                                    && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES),
+                            "remedy two is 'terminate TLS instead', naming how a certificate is "
+                                    + "declared: " + message));
+        }
+
+        @Test
+        @DisplayName("The same opt-in with an EMPTY passthrough_sni map passes in silence")
+        void theSameOptInWithAnEmptyPassthroughMapPasses() {
+            assertDoesNotThrow(() -> gateOver(Map.of(),
+                            DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED,
+                            gatewayWithPassthroughSni(Map.of()))
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "the matched negative control: the same tls block, differing only in whether any "
+                            + "hostname is actually relayed. An omitted passthrough_sni binds to the "
+                            + "empty map, so refusing on the block's presence would refuse every "
+                            + "gateway.yaml carrying a tls section at all");
+        }
+
+        @Test
+        @DisplayName("Passthrough on a TLS-TERMINATING listener is untouched — the refusal is opt-in-scoped")
+        void passthroughOnATerminatingListenerIsUntouched() {
+            assertDoesNotThrow(() -> gateOver(
+                            Map.of(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES, CERTIFICATE_PATH),
+                            SHIPPED_DEFAULT,
+                            gatewayWithPassthroughSni(Map.of(PASSTHROUGH_HOST, PASSTHROUGH_TARGET)))
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "the ADR-0017 topology pairs an L4 relay with a terminated listener, which is "
+                            + "the shipped passthrough deployment. Only the plain-HTTP opt-in makes "
+                            + "the pairing incoherent");
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------------------------
@@ -413,13 +606,27 @@ class ServerTlsDeclarationGateTest {
 
     /**
      * Builds the gate over a configuration carrying the shipped exposure default and the supplied
-     * deployment declarations.
+     * deployment declarations, against a gateway document declaring no {@code tls} block.
      *
      * @param declared the configuration a deployment declares
      * @param exposure the value of {@code quarkus.http.insecure-requests}
      * @return the gate, ready to be asked its question
      */
     private static ServerTlsDeclarationGate gateOver(Map<String, String> declared, String exposure) {
+        return gateOver(declared, exposure, TLS_LESS_GATEWAY);
+    }
+
+    /**
+     * Builds the gate over both of its inputs: the Quarkus-key configuration and the bound gateway
+     * document the {@code tls.mtls} and {@code tls.passthrough_sni} refusals read.
+     *
+     * @param declared the configuration a deployment declares
+     * @param exposure the value of {@code quarkus.http.insecure-requests}
+     * @param gateway  the bound gateway document
+     * @return the gate, ready to be asked its question
+     */
+    private static ServerTlsDeclarationGate gateOver(Map<String, String> declared, String exposure,
+            GatewayConfig gateway) {
         Map<String, String> deployment = new LinkedHashMap<>(declared);
         Config config = new SmallRyeConfigBuilder()
                 .withSources(new StandInSource("StandInApplicationProperties",
@@ -428,7 +635,37 @@ class ServerTlsDeclarationGateTest {
                 .withSources(new StandInSource("StandInEnvironmentSource", ENVIRONMENT_ORDINAL,
                         deployment))
                 .build();
-        return new ServerTlsDeclarationGate(config);
+        return new ServerTlsDeclarationGate(config, gateway);
+    }
+
+    /**
+     * @param config an already-assembled configuration, for the cases that build their own
+     * @return the gate over it, against a gateway document declaring no {@code tls} block
+     */
+    private static ServerTlsDeclarationGate gateOver(Config config) {
+        return new ServerTlsDeclarationGate(config, TLS_LESS_GATEWAY);
+    }
+
+    /**
+     * @param enabled whether client-certificate verification is required
+     * @return a gateway document whose {@code tls} block carries only that {@code mtls} setting
+     */
+    private static GatewayConfig gatewayWithMtls(boolean enabled) {
+        return GatewayConfig.builder()
+                .tls(TlsConfig.builder()
+                        .mtls(TlsConfig.Mtls.builder().enabled(enabled).build())
+                        .build())
+                .build();
+    }
+
+    /**
+     * @param passthroughSni the SNI hostnames relayed at L4, keyed to their topology alias
+     * @return a gateway document whose {@code tls} block carries only that passthrough map
+     */
+    private static GatewayConfig gatewayWithPassthroughSni(Map<String, String> passthroughSni) {
+        return GatewayConfig.builder()
+                .tls(TlsConfig.builder().passthroughSni(passthroughSni).build())
+                .build();
     }
 
     /**
@@ -471,6 +708,34 @@ class ServerTlsDeclarationGateTest {
      */
     private static String messageOfRefusal(Map<String, String> declared) {
         return messageOfRefusal(gateOver(declared, SHIPPED_DEFAULT));
+    }
+
+    /**
+     * @param declared the configuration a deployment declares alongside the plain-HTTP opt-in
+     * @return the thrown message
+     */
+    private static String messageOfIncoherentPlainHttp(Map<String, String> declared) {
+        return messageOfIncoherentPlainHttp(declared, TLS_LESS_GATEWAY);
+    }
+
+    /**
+     * Runs the gate over a plain-HTTP opt-in contradicted by a second declaration, and returns the
+     * refusal's message.
+     *
+     * @param declared the configuration a deployment declares alongside the opt-in
+     * @param gateway  the bound gateway document
+     * @return the thrown message
+     */
+    private static String messageOfIncoherentPlainHttp(Map<String, String> declared,
+            GatewayConfig gateway) {
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> gateOver(declared, DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED, gateway)
+                        .assertServerTlsDeclarationIsCoherent(),
+                "the plain-HTTP opt-in is declared alongside a declaration that can only mean "
+                        + "something on a listener that terminates TLS. Resolving that toward either "
+                        + "one silently would ship a posture nobody chose, so the boot must be "
+                        + "refused and the operator asked which they meant");
+        return String.valueOf(thrown.getMessage());
     }
 
     /**
