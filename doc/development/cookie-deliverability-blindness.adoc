@@ -61,10 +61,11 @@ tree; re-derive the numbers from the pre-remediation revision of the file if you
 name, value *and* attributes together rather than the value in isolation.
 
 The 77-byte difference is fully accounted for: 23 bytes of `+__Host-sheriff-session=+`, plus the
-attributes the codec always appends -- `+; Max-Age=…; Path=/; Secure; HttpOnly; SameSite=Lax+`
-(`SealedSessionCookieCodec.HARDENING_ATTRIBUTES`, appended by `toSetCookieHeader`), 54 bytes with
-the four-digit `Max-Age` observed on this
-instance. So 5123 + 23 + 54 = 5200.
+attributes the codec always appends -- `+; Max-Age=…; Path=/; Secure; HttpOnly; SameSite=Lax+`,
+which `SealedSessionCookieCodec.toSetCookieHeader` assembles from *two* constants:
+`MAX_AGE_ATTRIBUTE` (`+; Max-Age=+`) followed by the digits, then the 40-byte
+`HARDENING_ATTRIBUTES` (`+; Path=/; Secure; HttpOnly; SameSite=Lax+`). That is 54 bytes with the
+four-digit `Max-Age` observed on this instance. So 5123 + 23 + 54 = 5200.
 
 *77 is this instance's overhead, not a constant of the design.* Both inputs are configured -- a
 longer `session.cookie_name` or a `ttl_seconds` past 9999 emits a wider header -- so the gateway
@@ -162,63 +163,52 @@ Under the counterfactual above, *seven of the nine go red and two stay green*. T
 green are structurally incapable of observing deliverability, and they would have been green against
 any client at all.
 
-[cols="3,1,3,1",options="header"]
+[cols="3,3,1",options="header"]
 |===
-| Test | Line | What its green actually establishes | Red under the counterfactual?
+| Test | What its green actually establishes | Red under the counterfactual?
 
 | `sealedSessionCookieIsHardened`
-| `:97`
 | The attributes on the *emitted* `Set-Cookie`. It reads `callbackCookies()` -- the parsed response
   header -- and never issues a request with the session.
 | *No*
 
 | `sealedCookieValueCarriesNoReadableToken`
-| `:117`
-| That the sealed value carries no readable token segment. Reads the jar at `:120` and asserts it
-  non-null at `:121`.
+| That the sealed value carries no readable token segment. Reads the jar and asserts it non-null.
 | Yes -- at the fixture
 
 | `sealedSessionMediatesAndStaysUsable`
-| `:149`
-| Two mediated requests through one live session, `statusCode(200)` at `:162`.
+| Two mediated requests through one live session, each asserting `statusCode(200)`.
 | Yes -- on the behaviour
 
 | `rpInitiatedLogoutClearsTheSealedCookie`
-| `:177`
 | A `302` plus a clearing `Set-Cookie`. See the note below -- the no-session branch emits the
   identical pair.
 | *No*
 
 | `tamperedCookieIsUnauthenticatedNeverServerError`
-| `:199`
-| A `401` rather than a `500` for a tampered value. `tamper` asserts its input non-null at `:288`.
+| A `401` rather than a `500` for a tampered value. `tamper` asserts its input non-null.
 | Yes -- at the fixture
 
 | `unauthenticatableCookieDrivesFullReAuthentication`
-| `:216`
-| A full re-authentication round trip. Proves the established session works first, `statusCode(200)`
-  at `:222`.
+| A full re-authentication round trip. Proves the established session works first, via
+  `statusCode(200)`.
 | Yes -- on the behaviour
 
 | `aSessionSealedByOneInstanceIsServedByThePeer`
-| `:84`
-| Portability across two processes sharing only the key. Asserts the jar non-null at `:87`.
+| Portability across two processes sharing only the key. Asserts the jar non-null.
 | Yes -- at the fixture
 
 | `bothInstancesResolveTheSameIdentity`
-| `:109`
-| Both instances resolve one cookie to one identity, via a `200` at
-  `BffCookieStatelessnessIT.java:155`.
+| Both instances resolve one cookie to one identity, via a `200`.
 | Yes -- on the behaviour
 
 | `thePeerRefusesACookieItCannotUnseal`
-| `:128`
-| The peer verifies rather than trusts. `tamper` asserts its input non-null at `:172`.
+| The peer verifies rather than trusts. `tamper` asserts its input non-null.
 | Yes -- at the fixture
 |===
 
-Rows 1-6 are `BffCookieSessionIT`; rows 7-9 are `BffCookieStatelessnessIT`. Line numbers are
-relative to each row's own class.
+Rows 1-6 are `BffCookieSessionIT`; rows 7-9 are `BffCookieStatelessnessIT`. Each row names its test
+method rather than a line number, so an edit to either class cannot strand this table.
 
 [IMPORTANT]
 .The two green rows are green for different reasons, and both are worth naming
