@@ -52,9 +52,21 @@ cd "${SAMPLE_DIR}"
 # every step below is variant-agnostic because it derives what it needs from the resolved model.
 VARIANT="default"
 COMPOSE_FILES=(-f docker-compose.yml)
-# The Compose release that implements the `!reset` / `!override` merge tags the plain-HTTP override
-# depends on. Older releases do not honour them, and do so QUIETLY — see the guard below.
-COMPOSE_MERGE_TAG_MIN_VERSION="2.24.0"
+# The Compose release that implements the `!override` merge tag the plain-HTTP override depends on.
+# Older releases do not honour it, and do so QUIETLY — see the guard below.
+#
+# 2.24.4, not 2.24.0. The two tags landed in different releases: `!reset` in 2.24.0 and `!override` in
+# 2.24.4. The override document uses `!override` deliberately (it must keep the loopback management
+# publication the readiness probe is derived from, which `!reset` would drop), so a floor of 2.24.0
+# would let 2.24.0-2.24.3 pass this guard and then ignore the tag — admitting exactly the port
+# collision the guard exists to prevent.
+COMPOSE_MERGE_TAG_MIN_VERSION="2.24.4"
+
+# The compose-file KEY of the network both variants attach to. A selector, like the management
+# container port below — it picks the network out of the resolved model, and everything else about
+# that network (its real Docker name, its required subnet) is read back off the model rather than
+# restated here.
+SAMPLE_NETWORK="api-sheriff"
 
 usage() {
     echo "Usage: ${0##*/} [--plain-http]"
@@ -106,14 +118,16 @@ if [[ "$VARIANT" == "plain-http" ]]; then
     COMPOSE_VERSION="${COMPOSE_VERSION#v}"
     if [[ -z "$COMPOSE_VERSION" ]]; then
         echo "⚠️  Could not determine the Docker Compose version; --plain-http needs"
-        echo "   ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer for the !reset / !override merge tags."
+        echo "   ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer for the !override merge tag."
     elif [[ "$(printf '%s\n%s\n' "$COMPOSE_MERGE_TAG_MIN_VERSION" "$COMPOSE_VERSION" \
               | sort -V | head -n1)" != "$COMPOSE_MERGE_TAG_MIN_VERSION" ]]; then
         echo "❌ --plain-http needs Docker Compose ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer"
         echo "   (found ${COMPOSE_VERSION})."
-        echo "   Older releases silently ignore the !reset / !override merge tags that"
+        echo "   Older releases silently ignore the !override merge tag that"
         echo "   docker-compose.plain-http.yml uses to drop the gateway's published 8443, so the"
         echo "   gateway would collide with the TLS terminator on that host port."
+        echo "   Note 2.24.0 is NOT enough: that release implements !reset, and !override — the tag"
+        echo "   this override actually uses — arrived in ${COMPOSE_MERGE_TAG_MIN_VERSION}."
         exit 1
     fi
 fi
@@ -125,6 +139,71 @@ COMPOSE_CMD+=("${COMPOSE_FILES[@]}")
 if ! docker info >/dev/null 2>&1; then
     echo "❌ Docker daemon not running — start Docker/Rancher Desktop first"
     exit 1
+fi
+
+# ---- 0b. Preflight the variant's network IPAM ---------------------------------------------------
+# Compose does not RECONFIGURE an existing network. The base file declares the sample network with no
+# IPAM at all; the plain-HTTP override declares an explicit subnet, because the terminator holds a
+# static address on it and the gateway's trusted-proxy entry is that address as an exact /32.
+#
+# So after running the base variant, `--plain-http` reuses the subnet-less network that is already
+# there and the terminator cannot start: the daemon rejects it with "user specified IP address is
+# supported only when connecting to networks with user configured subnets". Nothing in that message
+# says which network, which variant, or that a teardown is what fixes it. Checking here turns it into
+# one line naming the cause and the one command that resolves it — the same shape as the version and
+# certificate guards above.
+#
+# The network's real name and the subnet it must carry are both DERIVED from the resolved model, the
+# same derive-don't-restate rule the image preflight and the readiness discovery follow.
+if [[ "$VARIANT" == "plain-http" ]]; then
+    if ! NETWORK_EXPECTATION="$("${COMPOSE_CMD[@]}" config --format json | python3 -c '
+import json
+import sys
+
+SAMPLE_NETWORK = sys.argv[1]
+
+try:
+    model = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
+             "version supporting `config --format json`." % exc)
+
+network = (model.get("networks") or {}).get(SAMPLE_NETWORK) or {}
+name = network.get("name")
+subnets = [entry.get("subnet")
+           for entry in ((network.get("ipam") or {}).get("config") or [])
+           if entry.get("subnet")]
+if not name or not subnets:
+    # The override is what declares this IPAM. A model carrying none means the override changed, and
+    # this guard would then check nothing at all -- fail rather than pass a check that cannot run.
+    sys.exit("the resolved Compose model declares no name or no IPAM subnet for the %r network. The "
+             "plain-HTTP override is what declares it, and the terminator needs it to hold the "
+             "static address the trusted-proxy /32 names." % SAMPLE_NETWORK)
+
+sys.stdout.write("%s %s" % (name, subnets[0]))
+' "${SAMPLE_NETWORK}")"; then
+        echo "❌ Could not derive the ${SAMPLE_NETWORK} network requirement from the compose model (see above)"
+        exit 1
+    fi
+    read -r NETWORK_NAME REQUIRED_SUBNET <<< "${NETWORK_EXPECTATION}"
+
+    # An ABSENT network is the good case: compose creates it from the merged model, with the subnet.
+    # Only an EXISTING one can be wrong, so the inspect failing is not an error here.
+    if EXISTING_SUBNETS="$(docker network inspect "${NETWORK_NAME}" \
+            --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null)"; then
+        if [[ " ${EXISTING_SUBNETS} " != *" ${REQUIRED_SUBNET} "* ]]; then
+            echo "❌ The Docker network ${NETWORK_NAME} already exists without the subnet this variant"
+            echo "   needs (wants ${REQUIRED_SUBNET}, has: ${EXISTING_SUBNETS:-none})."
+            echo "   A network's IPAM is fixed when it is created and Compose does not reconfigure an"
+            echo "   existing one, so switching BETWEEN the two variants needs a teardown first —"
+            echo "   this network was almost certainly created by the base sample, which declares no"
+            echo "   subnet. Without it the TLS terminator cannot hold the static address the"
+            echo "   gateway's trusted-proxy /32 names, and it would fail to start."
+            echo "   Tear the stack down, then re-run this script:"
+            echo "     ./scripts/stop-sample.sh"
+            exit 1
+        fi
+    fi
 fi
 
 # The TLS material is generated, never committed (docker/certificates/.gitignore). Both Keycloak and

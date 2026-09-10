@@ -13,13 +13,17 @@
 # the TLS work, and re-terminating in the gateway would be duplicated work at best and a second,
 # separately-configured trust decision at worst.
 #
-# REQUIRES DOCKER COMPOSE v2.24.0 OR NEWER. Two of the merge behaviours below are Compose-Spec merge
-# tags (`!reset` and `!override`) that older releases do not implement. An older Compose does NOT
-# fail loudly on them — the behaviour varies by version, and the outcome to expect is that the tag
-# is not honoured and the base value survives the merge. Concretely: the gateway would keep
-# publishing 8443 alongside the terminator's own binding on the same host port, which is a port
-# collision at best and a dead container port published off-host at worst. Check with
-# `docker compose version` before reporting a problem with this file.
+# REQUIRES DOCKER COMPOSE v2.24.4 OR NEWER. The gateway's `ports:` below carries the Compose-Spec
+# `!override` merge tag, and 2.24.4 is the release that implements THAT tag. 2.24.0 — the figure this
+# file used to name — is where the sibling `!reset` tag landed, and the two are not interchangeable
+# here: the note on `ports:` explains why this variant needs `!override` specifically. A floor of
+# 2.24.0 would therefore admit 2.24.0 through 2.24.3, on which the tag is written, accepted and not
+# implemented, which is precisely the state the floor exists to keep out.
+#
+# An older Compose does NOT fail loudly on it — the tag is not honoured and the base value survives
+# the merge. Concretely: the gateway would keep publishing 8443 alongside the terminator's own binding
+# on the same host port, which is a port collision at best and a dead container port published
+# off-host at worst. Check with `docker compose version` before reporting a problem with this file.
 #
 # WHY EVERY CLEARED VALUE IS CLEARED RATHER THAN OMITTED. Compose MERGES an override into the base;
 # it does not replace it. Omitting a key here therefore leaves the BASE's value standing, which is

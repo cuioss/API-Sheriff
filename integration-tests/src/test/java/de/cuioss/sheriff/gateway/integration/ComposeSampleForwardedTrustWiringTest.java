@@ -33,6 +33,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -49,6 +50,7 @@ import org.yaml.snakeyaml.nodes.ScalarNode;
 import org.yaml.snakeyaml.nodes.SequenceNode;
 import org.yaml.snakeyaml.nodes.Tag;
 
+import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -128,12 +130,22 @@ class ComposeSampleForwardedTrustWiringTest {
     private static final String INSECURE_REQUESTS_ENABLED = "enabled";
 
     /**
-     * The main listener's certificate variables the override must clear. Blanking them is what makes
-     * the opt-in coherent: a declared certificate alongside it is a combination the gateway refuses.
+     * The prefix every MAIN-listener certificate variable carries, in its environment spelling — the
+     * selector the override-must-clear set is derived by rather than mirrored from.
+     * <p>
+     * Blanking those variables is what makes the opt-in coherent: a declared certificate alongside it
+     * is a combination the gateway refuses to boot on. A hardcoded two-element list here would
+     * therefore be a correctness gap and not merely a style one: let the base descriptor add a third
+     * {@code QUARKUS_HTTP_SSL_CERTIFICATE_*} variable and the override retain material through it, and
+     * {@code ServerTlsDeclarationGate} would refuse the variant's boot while this test stayed green.
+     * <p>
+     * It is derived from {@link DeclaredKeyMaterialKeys#HTTP_CERTIFICATE_PREFIX}, the same constant the
+     * gate reads its own key set from. The management listener's variables carry the disjoint
+     * {@code QUARKUS_MANAGEMENT_SSL_CERTIFICATE_} prefix, so they are excluded by construction — and
+     * {@link #MANAGEMENT_CERTIFICATE_VARIABLE} below stays as the matched control proving that.
      */
-    private static final List<String> CLEARED_CERTIFICATE_VARIABLES = List.of(
-            "QUARKUS_HTTP_SSL_CERTIFICATE_FILES",
-            "QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES");
+    private static final String CERTIFICATE_ENVIRONMENT_PREFIX =
+            environmentSpelling(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_PREFIX);
 
     /**
      * The management listener's certificate, which the override must NOT clear — it is a separate
@@ -237,6 +249,19 @@ class ComposeSampleForwardedTrustWiringTest {
                 () -> "the merged base+override model carries no environment entries at all, so every"
                         + " assertion below would pass without checking anything");
 
+        // DERIVED from the base descriptor by prefix, never mirrored into a constant: a certificate
+        // variable added to the base later must be covered here the moment it lands, because the
+        // override retaining material through it is a boot the gateway refuses.
+        List<String> clearedCertificateVariables = base.keySet().stream()
+                .filter(variable -> variable.startsWith(CERTIFICATE_ENVIRONMENT_PREFIX))
+                .toList();
+        assertFalse(clearedCertificateVariables.isEmpty(),
+                () -> "no '" + CERTIFICATE_ENVIRONMENT_PREFIX + "*' variable was derived from the base"
+                        + " descriptor's '" + GATEWAY_SERVICE + "' service, so the per-variable loop"
+                        + " below would assert nothing while passing green. The base declares the"
+                        + " gateway's own TLS material through exactly this prefix — an empty"
+                        + " derivation means the descriptor stopped doing so, or the prefix moved.");
+
         assertEquals(INSECURE_REQUESTS_ENABLED, merged.get(INSECURE_REQUESTS_VARIABLE),
                 () -> "the merged model must declare " + INSECURE_REQUESTS_VARIABLE + "="
                         + INSECURE_REQUESTS_ENABLED + ". Plain HTTP is DECLARED, never inferred from a"
@@ -244,7 +269,7 @@ class ComposeSampleForwardedTrustWiringTest {
                         + " certificates cleared, because it would serve neither HTTPS nor a"
                         + " deliberately-declared cleartext listener.");
 
-        for (String variable : CLEARED_CERTIFICATE_VARIABLES) {
+        for (String variable : clearedCertificateVariables) {
             assertAll("the cleared certificate variable " + variable,
                     // The override's effect, stated positively: the key is PRESENT and BLANK. Asserting
                     // its absence instead would also pass on an override that simply forgot it, since
@@ -500,6 +525,23 @@ class ComposeSampleForwardedTrustWiringTest {
                 "trusted_proxies must be a single placeholder string — the whole list arrives from one"
                         + " variable, so a YAML sequence here would defeat the mechanism the sample shows");
         return (String) trusted;
+    }
+
+    /**
+     * Renders a configuration-property name in the environment-variable spelling a compose
+     * {@code environment:} block declares it under: upper-cased, with every non-alphanumeric
+     * character mapped to a single {@code _}.
+     * <p>
+     * One underscore per character, never a collapsed run — that is SmallRye's own
+     * {@code EnvConfigSource} rule, and the reason a doubled {@code __} means something else entirely
+     * (see {@code EnvironmentKeySpellingGuardTest}). Deriving the spelling rather than writing it out
+     * is what lets the property-side constant stay the single definition of which keys these are.
+     *
+     * @param propertyName the property name or prefix, in dotted spelling
+     * @return its environment spelling
+     */
+    private static String environmentSpelling(String propertyName) {
+        return propertyName.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "_");
     }
 
     private static List<String> splitAndStrip(String value) {

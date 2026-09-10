@@ -26,7 +26,10 @@ the one `integration-tests` brings up, and draws the topology.
 
 An optional override file adds a fourth service, a TLS-terminating hop in front of the gateway, to
 demonstrate the ingress / sidecar deployment shape in which the gateway itself serves plain HTTP.
-It carries the same hardening posture as the three above. See <<_the_plain_http_variant>>.
+It carries the same *security* directives as the three above -- non-root, `cap_drop: ALL`,
+`no-new-privileges`, `read_only` with explicitly sized `tmpfs` -- and, like the identity provider and
+the upstream and unlike the gateway, declares *no resource limits*, for the reason given just above.
+See <<_the_plain_http_variant>>.
 
 WARNING: Every credential and every piece of key material in this sample is a placeholder. Read
 <<_what_must_change_before_this_is_real>> before this stack is reachable by anything you care about.
@@ -193,16 +196,48 @@ The request you drive through it is the same one, at the same address: the termi
 port the gateway used to publish, so `curl -k https://localhost:8443/api` still works. What changed
 is which component answers the handshake.
 
-=== Requires Docker Compose 2.24.0 or newer
+=== Requires Docker Compose 2.24.4 or newer
 
 The override drops the gateway's published `8443` using the Compose-Spec `!override` merge tag.
-Releases older than 2.24.0 do not implement the merge tags, and they *do not reject the file* -- the
-tag is ignored and the base's value survives the merge. The gateway would then keep publishing
-`8443` alongside the terminator's binding on the same host port, which surfaces as an opaque port
-conflict or as a published container port that answers nothing.
+Releases older than 2.24.4 do not implement *that* tag, and they *do not reject the file* -- the tag
+is ignored and the base's value survives the merge. The gateway would then keep publishing `8443`
+alongside the terminator's binding on the same host port, which surfaces as an opaque port conflict
+or as a published container port that answers nothing.
+
+NOTE: 2.24.0 is not enough, and the difference is easy to miss. The sibling `!reset` tag arrived in
+2.24.0; `!override` -- the one this override actually uses, because `!reset` would also drop the
+loopback management publication the readiness gate is derived from -- arrived in 2.24.4. On 2.24.0
+through 2.24.3 the file parses, the tag is silently ignored, and the collision above is what you get.
 
 `start-sample.sh --plain-http` checks the version first and refuses with that explanation rather than
 letting you debug the collision. Check yours with `docker compose version`.
+
+=== Switching between the variants needs a teardown first
+
+Bring the *other* variant up without stopping the current one and the terminator fails to start, with
+a daemon message that names neither the variant nor the cause:
+
+....
+user specified IP address is supported only when connecting to networks with user configured subnets
+....
+
+A Docker network's IPAM is fixed when the network is created, and Compose does *not* reconfigure a
+network that already exists. The base sample declares the network with no subnet at all; the
+plain-HTTP override declares `10.89.0.0/24`, because the terminator holds a static address on it and
+the gateway's trusted-proxy entry is that address as an exact `/32`. Layering the override onto a
+network the base already created therefore reuses the subnet-less one, and the static address cannot
+be honoured.
+
+So tear the stack down between variants -- which removes the network along with the containers:
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/stop-sample.sh
+----
+
+`start-sample.sh --plain-http` preflights this too: if the network is already there without the
+required subnet, it refuses with that explanation and names the teardown command, rather than letting
+the terminator die on the daemon's message.
 
 === Why values are cleared rather than omitted
 
