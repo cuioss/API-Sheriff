@@ -731,6 +731,11 @@ class SealedSessionCookieCodecTest {
                             "__Host-sheriff-session", Duration.ofSeconds(3600)),
                     "the default-configuration constant is the derivation's default-configuration case");
             assertEquals(4019, SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET);
+            assertEquals(SealedSessionCookieCodec.BROWSER_SAFE_COOKIE_VALUE_BUDGET,
+                    SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET,
+                    "the shipped default IS the browser-safe budget: a default above it puts every "
+                            + "gateway that declares nothing into the band where the emitted header is "
+                            + "past the guarantee and nothing says so");
         }
 
         @Test

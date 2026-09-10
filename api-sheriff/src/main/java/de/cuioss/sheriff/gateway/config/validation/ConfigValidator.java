@@ -1229,16 +1229,17 @@ public final class ConfigValidator {
      * failing at runtime. The ceiling keeps the budget below what the transport will carry: the same
      * number also raises the gateway's pre-route {@code Cookie} header-value cap, and a budget at or
      * above the inbound header-block limit would produce a value the seal accepts but the transport
-     * rejects with {@code 431}. A no-op when the key is omitted (the codec default applies).
+     * rejects with {@code 431}. The <em>range</em> check is a no-op when the key is omitted; the
+     * deliverability warning below is not — see "the EFFECTIVE budget" further down.
      * <p>
      * <strong>An in-range budget whose emitted header outgrows the browser guarantee is warned,
      * never refused.</strong> The validated range stays {@code 40..8192} exactly as it is. The
      * comparison is against the emitted {@code Set-Cookie} <em>header</em>, not against the value
      * budget: this key declares a sealed <em>value</em> budget, while the ~4096 bytes RFC 6265 6.1
      * guarantees govern the whole header — name, value and attributes together. Comparing the value
-     * budget against the header guarantee left the band {@code 4020..4096} silent while the gateway
-     * emitted a header no browser is obliged to keep — the same false guarantee this record exists
-     * to announce. A budget above the threshold is still a legitimate posture for a client that
+     * budget against the header guarantee would leave a band silent while the gateway emitted a
+     * header no browser is obliged to keep — the same false guarantee this record exists to
+     * announce. A budget above the threshold is still a legitimate posture for a client that
      * keeps whatever it is sent, so it boots — and it emits
      * {@link ConfigLogMessages.WARN#COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE}, because raising the
      * budget that far silences the {@code ApiSheriff-114} seal refusal without removing the problem:
@@ -1265,35 +1266,50 @@ public final class ConfigValidator {
      * explicitly declared out-of-range value is a misconfiguration whatever the mode, and refusing
      * it at boot is what stops it becoming live the moment the mode is switched.
      * <p>
-     * <strong>Residual, stated rather than hidden.</strong> The rule is a no-op when the key is
-     * omitted, and the codec default that then applies (4096) is itself above the browser-safe value
-     * budget. Warning on the omitted case would fire on every cookie-mode gateway, which is the one
-     * outcome that reliably teaches operators to ignore the record, so the residual is left in place
-     * and recorded here.
+     * <strong>The comparison runs on the EFFECTIVE budget, declared or defaulted.</strong> The
+     * gateway emits a {@code Set-Cookie} of exactly the same size whether the operator wrote
+     * {@code max_cookie_size} down or left it to the default, so a guard that only looked at
+     * declared values was blind to the configuration most gateways actually run. That blindness had
+     * a concrete band: with the default at {@code 4096} and the key omitted, every default
+     * cookie-mode gateway emitted a header past the browser guarantee and nothing said so. Closing it
+     * takes both halves — the default is now the browser-safe {@code 4019}
+     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}), and the comparison below reads
+     * the effective budget rather than returning early on an omitted key.
+     * <p>
+     * Warning on the omitted case therefore no longer fires on every cookie-mode gateway — under the
+     * default name and TTL the default budget lands exactly ON the guarantee, not past it. What it
+     * does still catch is the case that used to be silent: a gateway running a longer
+     * {@code cookie_name} or a wider {@code Max-Age}, where the same default budget produces a header
+     * the browser is not obliged to keep.
+     * <p>
+     * The <em>range</em> check stays gated on a declared value, because there is nothing to range-check
+     * when nothing was declared and the default is in range by construction.
      */
     private static void validateSessionMaxCookieSize(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig.Session session = oidcSession(gateway);
-        Integer size = session == null ? null : session.maxCookieSize();
-        if (size == null) {
+        if (session == null) {
             return;
         }
-        if (size < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
-                || size > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING) {
+        Integer declared = session.maxCookieSize();
+        if (declared != null && (declared < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
+                || declared > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING)) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_SIZE_POINTER,
                     "oidc session max_cookie_size must be between %d and %d bytes, but was %d"
                             .formatted(SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR,
-                                    SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, size)));
+                                    SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, declared)));
             return;
         }
         // isCookieMode() is the SHARED mode predicate — the spelling is never re-derived here.
         if (!session.isCookieMode()) {
             return;
         }
+        int effectiveBudget = Objects.requireNonNullElse(declared,
+                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
         int overhead = SealedSessionCookieCodec.setCookieHeaderOverhead(
                 resolvedCookieName(session), resolvedSessionTtl(session));
-        int headerBytes = size + overhead;
+        int headerBytes = effectiveBudget + overhead;
         if (headerBytes > SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE) {
-            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, size,
+            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, effectiveBudget,
                     headerBytes,
                     SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE - overhead);
         }

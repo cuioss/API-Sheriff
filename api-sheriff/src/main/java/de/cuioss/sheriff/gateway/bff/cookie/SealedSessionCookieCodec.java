@@ -97,7 +97,8 @@ import org.jspecify.annotations.Nullable;
  * seal-time budget enforced here, and the gateway's pre-route {@code Cookie} header-value cap in
  * {@code GatewayEdgeRoute}. Encoding the same limit as two independent constants is what made
  * cookie mode unusable before — every request carrying a live sealed cookie was rejected {@code 400}
- * at the edge by a 2048-character header-value cap the 4096-byte seal budget contradicted.
+ * at the edge by a 2048-character header-value cap that the seal budget of the day (then 4096)
+ * contradicted.
  * <p>
  * <strong>Absolute lifetime.</strong> {@link #toSetCookieHeader} sets {@code Max-Age} to the
  * <em>remaining</em> lifetime computed from the payload's login instant, so a re-seal after a token
@@ -161,22 +162,6 @@ public final class SealedSessionCookieCodec {
     private static final int ZIP_CHUNK_BYTES = 1024;
 
     /**
-     * The default sealed cookie-value size budget in bytes (~4 KB). Browsers are only required to
-     * accept 4096 bytes per cookie, so a larger value risks being silently dropped by the browser —
-     * which is why the default sits at that figure rather than at the gateway's transport ceiling.
-     * <p>
-     * <strong>It is a VALUE budget, and the browser's 4096 is a HEADER budget.</strong> The two are
-     * not the same number and must not be compared to each other directly: a value sealing to
-     * exactly this budget is emitted as a {@code Set-Cookie} header of
-     * {@code 4096 + }{@link #DEFAULT_SET_COOKIE_HEADER_OVERHEAD} bytes, which is already past what
-     * RFC 6265 6.1 guarantees. {@link #BROWSER_SAFE_COOKIE_VALUE_BUDGET} is the value budget that
-     * corresponds to the guarantee, and it is the number any browser-deliverability comparison
-     * belongs against. This default is deliberately left where it is — it is the documented,
-     * schema-described default and moving it is a separate decision from stating it accurately.
-     */
-    public static final int DEFAULT_COOKIE_VALUE_BUDGET = 4096;
-
-    /**
      * The per-cookie budget RFC 6265 6.1 asks a user agent to honour, in bytes.
      * <p>
      * It governs the <em>whole</em> {@code Set-Cookie} header — the cookie's name, its value
@@ -225,13 +210,34 @@ public final class SealedSessionCookieCodec {
      * value budget than 4019, and comparing against this constant would under-warn by exactly the
      * configured deviation.
      * <p>
-     * What the constant does still record is why the threshold is not
-     * {@link #DEFAULT_COOKIE_VALUE_BUDGET}: warning on 4096 leaves a 77-byte band — a value budget
-     * in {@code 4020..4096} — in which the gateway emits a header the browser is not obliged to keep
-     * and nothing anywhere says so.
+     * What the constant also records is why the shipped default is this figure and not the round
+     * {@code 4096}: a default of 4096 left a 77-byte band — a value budget in {@code 4020..4096} — in
+     * which the gateway emitted a header the browser is not obliged to keep and nothing anywhere said
+     * so. The default now IS this constant, which closes the band at its widest and most common
+     * instance: the gateway that declared no budget at all.
      */
     public static final int BROWSER_SAFE_COOKIE_VALUE_BUDGET =
             BROWSER_PER_COOKIE_HEADER_GUARANTEE - DEFAULT_SET_COOKIE_HEADER_OVERHEAD;
+
+    /**
+     * The default sealed cookie-<em>value</em> size budget in bytes — the browser-safe
+     * {@link #BROWSER_SAFE_COOKIE_VALUE_BUDGET}, {@code 4019}.
+     * <p>
+     * <strong>It is a VALUE budget, and the browser's 4096 is a HEADER budget.</strong> The two are
+     * not the same number and must not be compared to each other directly: RFC 6265 6.1 asks a user
+     * agent to honour ~4096 bytes for the whole {@code Set-Cookie} header — name, value <em>and</em>
+     * attributes together. A default of 4096 was therefore not "the browser's limit" but 77 bytes
+     * past it under the default configuration, and every gateway that left the key omitted ran there.
+     * Deriving the default from the guarantee instead of restating it means the two can never drift.
+     * <p>
+     * <strong>It is the default-configuration case, not a universal safe value.</strong> The
+     * overhead it subtracts is the default cookie name and a four-digit {@code Max-Age}; a gateway
+     * running a longer {@code session.cookie_name} or a TTL past 9999 seconds emits a wider header
+     * around the same value and is still over the guarantee. That case is exactly what
+     * {@code ConfigValidator} warns on, deriving the overhead from the resolved configuration via
+     * {@link #setCookieHeaderOverhead(String, Duration)} rather than from any constant here.
+     */
+    public static final int DEFAULT_COOKIE_VALUE_BUDGET = BROWSER_SAFE_COOKIE_VALUE_BUDGET;
 
     /**
      * The smallest configurable budget: the encoded length of the sealed envelope alone

@@ -63,9 +63,15 @@ class BasicChecksStageTest {
     /**
      * The cookie-mode budget the pre-route cap is derived from — the sealed session cookie's own
      * size budget plus the header overhead {@code GatewayEdgeRoute} adds for the cookie name and
-     * any co-resident cookies.
+     * any co-resident cookies: {@code 4019 + 512 = 4531}.
+     * <p>
+     * The 4019 is the shipped default value budget, which is the browser-safe figure (the ~4096-byte
+     * per-header guarantee less the 77 bytes the default cookie name and attributes cost) rather than
+     * the round 4096 it used to be. Spelled as literals here on purpose: this constant exists to
+     * catch the pre-route cap drifting away from that derivation, and a symbolic copy of the
+     * production arithmetic could not.
      */
-    private static final int COOKIE_HEADER_CAP = 4096 + 512;
+    private static final int COOKIE_HEADER_CAP = 4019 + 512;
 
     /** The {@code Authorization} carve-out budget, as an omitted configuration key resolves it. */
     private static final int AUTHORIZATION_CAP =

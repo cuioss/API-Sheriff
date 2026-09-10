@@ -1703,11 +1703,13 @@ class ConfigValidatorTest {
          * moving the comparison off {@code BROWSER_SAFE_COOKIE_VALUE_BUDGET} in either direction —
          * or flipping it from {@code >} to {@code >=} — turns at least one case red.
          * <p>
-         * <strong>4096 is a firing case, and that is the regression control.</strong> Comparing the
-         * value budget against {@code DEFAULT_COOKIE_VALUE_BUDGET} (4096) left the band
+         * <strong>4096 is a firing case, and that is the regression control.</strong> 4096 was once
+         * the shipped default value budget, and comparing against it left the band
          * {@code 4020..4096} silent while the gateway emitted a {@code Set-Cookie} header past the
          * guarantee — the same silent, browser-side, unobservable drop the record exists to
-         * announce. Restoring that comparison turns this row red.
+         * announce. The default has since moved to the browser-safe 4019, but the row stays: a
+         * validator that reintroduced a 4096 comparison would turn it green again, and this is what
+         * keeps that impossible. It is now an ordinary declared budget like any other in the range.
          */
         static Stream<Arguments> browserGuaranteeThresholdControls() {
             return Stream.of(
@@ -1715,7 +1717,7 @@ class ConfigValidatorTest {
                     Arguments.of("one byte below the browser-safe value budget", 4018, false),
                     Arguments.of("exactly the browser-safe value budget", 4019, false),
                     Arguments.of("one byte above the browser-safe value budget", 4020, true),
-                    Arguments.of("the codec default value budget derives an over-guarantee header", 4096, true),
+                    Arguments.of("the retired 4096 default derives an over-guarantee header", 4096, true),
                     Arguments.of("the validated ceiling is above the guarantee", 8192, true));
         }
 
@@ -1826,6 +1828,64 @@ class ConfigValidatorTest {
             } else {
                 assertNoBudgetWarning(maxCookieSize + " fits the 4096-byte guarantee at a 103-byte overhead");
             }
+        }
+
+        /**
+         * The omitted-key control pair — the path this guard was blind to.
+         * <p>
+         * The gateway emits the same {@code Set-Cookie} whether the operator wrote
+         * {@code max_cookie_size} down or left it defaulted, so the check reads the <em>effective</em>
+         * budget. It used to return early on an absent key, which meant the single most common
+         * cookie-mode configuration — declare nothing — was never examined at all. With the default
+         * then at 4096, every one of those gateways emitted a header 77 bytes past the guarantee and
+         * nothing anywhere said so.
+         * <p>
+         * <strong>Both legs are required, and they fail for different reasons.</strong> The silent
+         * leg fails if the default is ever moved back above the browser-safe budget, or if the
+         * comparison is made unconditional — a warning on every default cookie-mode gateway is the
+         * outcome that teaches operators to ignore the record. The firing leg fails if the early
+         * return on an omitted key is ever restored: the budget is identical in both rows and only
+         * the cookie name differs, so nothing but reading the effective budget can tell them apart.
+         */
+        @Test
+        @DisplayName("Should not warn when max_cookie_size is omitted under the default cookie name")
+        void shouldNotWarnOnOmittedBudgetUnderTheDefaultName() {
+            // Arrange — no maxCookieSize at all: the shipped default (4019) applies, and under the
+            // default 22-byte name plus a four-digit Max-Age the emitted header is 4019 + 77 = 4096,
+            // exactly ON the guarantee rather than past it.
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .mode(OidcConfig.Session.MODE_COOKIE).build())
+                    .build());
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            // Assert
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+            assertNoBudgetWarning("the shipped default lands exactly on the browser guarantee under "
+                    + "the default cookie name, and warning here would fire on every cookie-mode gateway");
+        }
+
+        @Test
+        @DisplayName("Should warn when max_cookie_size is omitted under a longer cookie name")
+        void shouldWarnOnOmittedBudgetUnderALongerCookieName() {
+            // Arrange — the SAME omitted budget as the row above. Only the 48-byte cookie name
+            // differs, widening the overhead to 103 so the default budget derives a 4122-byte header.
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder()
+                            .mode(OidcConfig.Session.MODE_COOKIE)
+                            .cookieName(LONG_COOKIE_NAME).build())
+                    .build());
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            // Assert
+            assertTrue(errors.isEmpty(),
+                    () -> "an undeliverable default is warned about, never refused, got: " + errors);
+            assertBudgetWarning(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET,
+                    SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET + 103);
         }
 
         /**

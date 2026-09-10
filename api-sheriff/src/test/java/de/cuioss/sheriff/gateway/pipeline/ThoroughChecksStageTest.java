@@ -62,8 +62,13 @@ class ThoroughChecksStageTest {
     private static final int AUTHORIZATION_CAP =
             SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH;
 
-    /** A cookie-mode gateway's sealed-cookie budget plus the header overhead the edge adds. */
-    private static final int COOKIE_HEADER_CAP = 4096 + 512;
+    /**
+     * A cookie-mode gateway's sealed-cookie budget plus the header overhead the edge adds:
+     * {@code 4019 + 512 = 4531}. The 4019 is the shipped default value budget — the browser-safe
+     * figure rather than the round 4096 it used to be — and both halves are spelled as literals so
+     * this constant can catch the pre-route cap drifting away from that derivation.
+     */
+    private static final int COOKIE_HEADER_CAP = 4019 + 512;
 
     private final SecurityConfiguration defaultConfiguration = SecurityConfiguration.defaults();
     private final SecurityEventCounter counter = new SecurityEventCounter();
