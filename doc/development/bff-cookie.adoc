@@ -139,6 +139,164 @@ cookie is refused without any decryption or inflation being attempted. A bump fo
 cookie-mode session to re-login -- call that out in the operator documentation when you make one.
 ====
 
+== The four routes to a session that fits, and where each one landed
+
+A cookie-mode session that also *refreshes* is the largest this variant ever carries: the seal holds
+a live access token, a refresh token and the ID token at once. Whether that fits is the question this
+section settles, and it settles all four routes that were open rather than only the one that shipped
+-- a route recorded as considered-and-declined is what stops it being re-proposed as new.
+
+The bar is *4019 bytes of sealed cookie value*, and it does not move in any of the four. It is the
+RFC 6265 section 6.1 per-cookie header guarantee of 4096 less the 77 bytes the default cookie name
+and attribute run wrap around the value. The bar is a *floor every browser guarantees*, not a limit
+any one browser enforces, and that distinction is what decides route 1.
+
+=== Route 1 -- enlarge the budget: settled, NOT built
+
+`oidc.session.max_cookie_size` is configurable up to 8192, so raising it is a one-line change. It is
+declined because *it changes nothing about what a browser keeps.* The gateway's budget governs when
+the gateway refuses to seal; the browser's limit governs when the browser silently drops the
+`Set-Cookie` it was sent. Raising the first past the second does not buy space -- it converts a loud,
+diagnosable, server-side failure into an invisible client-side one, and the session then simply never
+exists. That is the exact failure this variant already shipped once, and the reason the shipped
+default was moved down to 4019 rather than left at the round 4096.
+
+The gateway does not leave that decision unmarked. `ConfigValidator` derives the *emitted header*
+size from the resolved configuration -- the effective budget plus the actual cookie name and the
+widest `Max-Age` -- and warns at boot (`COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE`) when it exceeds the
+4096-byte guarantee, naming the value budget that would fit instead. An operator who raises the
+budget anyway is doing so against a boot-time warning that says what it costs, which is the correct
+place for that decision to sit: it is a deployment's to make, on its own knowledge of the browsers it
+serves, and not one the gateway makes silently on everybody's behalf.
+
+The measurement that would bound the headroom is now executable rather than assumed:
+`demo-client/tests/05-cookie-size-budget.spec.js` bisects the storable size from inside a real
+Chromium page over two arms, because the two specifications budget different things -- RFC 6265
+section 6.1 counts the whole header, RFC 6265bis section 5.6 counts name and value only. Chromium
+stores more than the floor, and the spec reports how much.
+
+[WARNING]
+====
+*That spec has not been run against this change, so no Chromium threshold is quoted here.* It is
+opt-in (`verify -Pe2e-demo -pl demo-client`) and gates nothing on a pull request. A number would have
+to come from a run, and inventing one would turn an executable measurement into a claim -- which is
+precisely the failure mode the spec exists to end. Run it deliberately and record the figure here.
+
+The same restraint applies to the other engines. Firefox and WebKit each enforce a per-cookie limit
+in the same ~4 KB region, and RFC 6265bis is the convergence point they are moving toward, but this
+repository measures neither and no figure for them is stated. That gap does not weaken the verdict:
+the gateway ships to every engine, so the bar is the floor all of them guarantee, and a measurement
+above it in any single engine is *headroom observed*, never a bar relaxed.
+====
+
+=== Route 2 -- split across several cookies: settled, NOT built
+
+The budget is per cookie, so a session too large for one could be carried in chunks and reassembled
+on read. It is declined as a product decision on complexity, and the decisive detail is a property of
+this gateway rather than a general objection: *the chunks do not arrive separately.* A browser
+concatenates every cookie it holds for the origin into one `Cookie` request header value, so N chunks
+arrive as one header value measured against one cap -- and that cap is
+`GatewayEdgeRoute.cookieHeaderConfigurationFor`'s `max(baseline, budget + 512)`, derived from the
+*single declared budget* and sized for one cookie plus co-resident cookies. Under the shipped default
+that is 4531 bytes. Splitting the value therefore does not divide the problem; it moves it to a
+pre-route header cap that the same one declared number drives, and making that cap chunk-aware means
+teaching the edge how many chunks a session is allowed to be.
+
+The rest is the ordinary cost of chunking: a partial arrival has no clean answer (a session missing
+its third chunk is neither present nor absent), the `__Host-` prefix discipline has to hold for every
+chunk independently, and the per-domain cookie count -- which nothing in this repository asserts --
+becomes load-bearing.
+
+The route is *reversible*, and the condition is worth stating: if the packaging route's headroom is
+ever exhausted -- a claim set that grows past what deflation absorbs -- splitting is the next
+structural option, and it is a smaller change then than reducing the payload would be.
+
+=== Route 3 -- reduce the payload: settled, held in reserve
+
+Two levers exist, and they are held rather than declined because each costs something the gateway
+should not spend before it must.
+
+*Trim the claims the IdP mints.* The access and ID tokens carry whatever the realm's mappers and
+default client scopes put in them. The integration realm alone declares realm-role, group-membership,
+audience and three user-property mappers, on top of the role, scope and origin material Keycloak adds
+by default -- and every one of those bytes travels in the seal. All of it is chosen in Keycloak, not
+in the gateway, which is exactly why it is not the gateway's lever to pull: it is a deployment-level
+decision with consequences for every consumer of those tokens, not only for the cookie.
+
+*Drop the ID token from the seal.* This is the single largest reclaimable component, and what makes
+it a candidate at all is that the seal carries the *raw* token while every claim the gateway actually
+uses from it has already been extracted. `CallbackEndpoint` reads the validated ID token at login and
+stores `sub`, `sid`, `acr` and `auth_time` as their own payload components; the raw token itself has
+exactly one consumer, `RpInitiatedLogout`, which sends it as the `id_token_hint` on the end-session
+redirect. So dropping it costs precisely that one thing -- without the hint the IdP cannot reliably
+identify which session to end, and RP-initiated logout degrades to best-effort -- and costs neither
+the identity claims nor anything else. It stays in reserve because a logout that reliably ends the
+IdP session is worth more than bytes the packaging route currently supplies for free.
+
+=== Route 4 -- package and compress: settled and BUILT
+
+This is the route that shipped, and it is the wire format the section above describes: length-prefixed
+raw UTF-8 framing (which removes the inner base64 armouring entirely) followed by deflation before
+the seal.
+
+The measurement, from `SealedSessionCookieCodecTest`'s three-token fixture -- an access, refresh and
+ID token built to the shape Keycloak issues for the `integration` realm, with random signature
+segments of the right width for RS256 and HS512, because a repeating filler in the one part of a JWT
+deflation cannot help with would report a ratio no real token reaches:
+
+[cols="3,2"]
+|===
+| Quantity | Measured
+
+| Framed plaintext (nine fields, length-prefixed raw UTF-8)
+| 3433 bytes
+
+| Sealed cookie value, as emitted
+| 2700 bytes -- *78.6 %* of the framed plaintext
+
+| Deflated ciphertext behind that value
+| ~1995 bytes -- about *58 %* of the framed plaintext; the difference between the two rows is the
+  14-byte envelope, the 16-byte GCM tag and the single 4/3 base64url transport expansion
+
+| Margin under the 4019-byte bar
+| *1319 bytes*, i.e. the seal uses 67.2 % of the budget and *32.8 % remains* for claim-set growth
+
+| Against the 10 % headroom reserve (3617 bytes)
+| clears it by 917 bytes
+|===
+
+The ratio has a floor that no compression level can beat: the 43-character session nonce is 32 random
+bytes and is incompressible, as are the three signature segments. What deflation actually recovers is
+the JWT header and claim segments, which are base64 text carrying about six bits per byte.
+
+Read the margin as a budget for *growth*, not as spare capacity: the figures above are one realm's
+claim set, and a deployment whose IdP mints larger tokens spends that 32.8 % first. The fast gate is
+the unit measurement above, which fails before any browser is involved;
+`BffCookieRefreshIT` is what measures the real thing against a running IdP.
+
+The safety of compress-then-encrypt in this construction -- the CRIME/BREACH discriminator, the nine
+components and who controls each -- is settled in
+link:../adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043]
+and is not restated here.
+
+=== What this settlement does not close
+
+Four residuals survive it, and none is closed by any of the four routes:
+
+* *The browser lane still gates nothing.* The Playwright suite runs on pushes to `main` and on demand,
+  never on a pull request, so a change that pushes the seal past a browser's limit can merge with the
+  measurement never having run. See
+  link:cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness] for what that lane can
+  and cannot observe.
+* *The Chromium threshold is unmeasured here.* Route 1's spec exists and is lint-clean; it has not
+  been executed, so the headroom above the floor is currently a shape rather than a figure.
+* *Per-domain cookie count and aggregate per-domain size carry no assertion anywhere.* Both are real
+  browser limits, both would bite a chunked session first (route 2), and neither the Java suite nor
+  the browser suite observes either.
+* *The other cookie properties stay unobserved on a pull request.* `SameSite`, `Secure` and the
+  `__Host-` prefix are browser-enforced, so the Java integration suite structurally cannot prove them
+  -- it replays a cookie map and applies no policy at all.
+
 == The derived session identity
 
 `SessionRecord.sessionId()` is the one identity model the seam defines, and it is the key the refresh
