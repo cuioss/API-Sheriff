@@ -150,12 +150,20 @@ Nothing in the gateway weakens a cookie attribute for a cleartext listener, and 
 state and clearing headers with the same attributes. The `__Host-` prefix is fixed on the binding and
 logout cookies and is the default session-cookie name.
 
-A browser that reaches the gateway over `http://` drops every one of them, so *the BFF cannot
-function on a plain-HTTP port exposed directly to a browser*. The mode supports the BFF only behind a
-hop the browser reaches over HTTPS -- that hop is what preserves the secure context the `__Host-`
-prefix requires. This is a property of the topology, not a knob: there is no setting that relaxes the
-attributes for cleartext, and asking for one is asking to have the session cookie stolen off the
-wire.
+A browser that reaches the gateway over `http://` on any *non-loopback* origin drops every one of
+them, so *the BFF cannot function on a plain-HTTP port exposed directly to a browser*. The mode
+supports the BFF only behind a hop the browser reaches over HTTPS -- that hop is what preserves the
+secure context the `__Host-` prefix requires. This is a property of the topology, not a knob: there
+is no setting that relaxes the attributes for cleartext, and asking for one is asking to have the
+session cookie stolen off the wire.
+
+*Loopback is the one exception, and it is named here so it is not mistaken for a deployment option.*
+W3C Secure Contexts treats `http://localhost`, `http://127.0.0.1` and `http://[::1]` as
+potentially-trustworthy origins, and Chrome, Firefox and Safari all accept `Secure` and `__Host-`
+cookies on them -- so a BFF flow driven against a plain-HTTP gateway on your own machine really does
+work. That is a local-development convenience and nothing else. No origin a deployment is reached on
+is loopback, so carrying the observation across to one is exactly the inference the sentence above
+exists to prevent: it would read a working developer setup as evidence that the port may be exposed.
 
 That browser-side half is asserted here from the cookie rules and the topology, *not* from any test
 in this repository. The integration lane drives a Java HTTP client that accepts what a browser would

@@ -839,9 +839,11 @@ link:user/environment-variable-overrides.adoc[Environment-variable overrides] do
 (Quarkus refuses the literal name `<default>` and reaches that bucket only through the unnamed
 prefix). Material bound under a profile name therefore does *not* move the registry-resolved legs,
 and `ApiSheriff-17` reporting that tier as still on the platform bundle is the correct answer rather
-than a stale one. No descriptor in this repository declares such a profile: the only trust profiles
-any `gateway.yaml` names are `benchmark-idp` and `it-upstream`, and the private-CA trust the
-integration stack actually uses arrives through the `-Djavax.net.ssl.trustStore` triple above.
+than a stale one. No *tracked descriptor* declares such a profile: across the `gateway.yaml` files
+committed to this repository the only trust profiles named are `benchmark-idp` and `it-upstream`, and
+the private-CA trust the integration stack actually uses arrives through the
+`-Djavax.net.ssl.trustStore` triple above. The `corporate-ca` and `corporate-idp` names appearing in
+this document's own snippets are illustrative examples -- no shipped descriptor declares either.
 
 The two levers are *independent*: moving only one leaves the other half of the gateway's outbound
 surface on the platform bundle. That split state is exactly the one an operator would never think to
