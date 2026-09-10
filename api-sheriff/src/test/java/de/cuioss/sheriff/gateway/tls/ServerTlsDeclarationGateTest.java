@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -122,6 +124,14 @@ class ServerTlsDeclarationGateTest {
      */
     private static final GatewayConfig TLS_LESS_GATEWAY = GatewayConfig.builder().build();
 
+    /**
+     * The fully-qualified reference to {@link #certificateSpellings()}. The qualification is what a
+     * {@code @Nested} class needs: {@code @MethodSource} resolves a bare name against the class it
+     * annotates, never against the enclosing one.
+     */
+    private static final String CERTIFICATE_SPELLINGS =
+            "de.cuioss.sheriff.gateway.tls.ServerTlsDeclarationGateTest#certificateSpellings";
+
     @Test
     @DisplayName("The refusal travels through the customizer hook the recorder actually calls")
     void refusalTravelsThroughTheCustomizerHook() {
@@ -166,13 +176,8 @@ class ServerTlsDeclarationGateTest {
         }
 
         @ParameterizedTest
-        @DisplayName("Any single certificate spelling satisfies it — all four are honoured")
-        @ValueSource(strings = {
-                "quarkus.http.ssl.certificate.files",
-                "quarkus.http.ssl.certificate.key-files",
-                "quarkus.http.ssl.certificate.key-store-file",
-                "quarkus.http.ssl.certificate.credentials-provider"
-        })
+        @DisplayName("Any single certificate spelling satisfies it — every honoured spelling")
+        @MethodSource(CERTIFICATE_SPELLINGS)
         void anySingleCertificateSpellingSatisfiesIt(String declaredKey) {
             assertDoesNotThrow(() -> validate(Map.of(declaredKey, CERTIFICATE_PATH)),
                     declaredKey + " is a spelling TlsUtils.computeKeyStoreOptions accepts, so a "
@@ -423,12 +428,7 @@ class ServerTlsDeclarationGateTest {
 
         @ParameterizedTest
         @DisplayName("Every certificate spelling refuses, naming ITS key and BOTH remedies")
-        @ValueSource(strings = {
-                "quarkus.http.ssl.certificate.files",
-                "quarkus.http.ssl.certificate.key-files",
-                "quarkus.http.ssl.certificate.key-store-file",
-                "quarkus.http.ssl.certificate.credentials-provider"
-        })
+        @MethodSource(CERTIFICATE_SPELLINGS)
         void everyCertificateSpellingRefusesNamingItsKey(String declaredKey) {
             String message = messageOfIncoherentPlainHttp(Map.of(declaredKey, CERTIFICATE_PATH));
 
@@ -495,6 +495,28 @@ class ServerTlsDeclarationGateTest {
                             + "contradicts nothing. Refusing here would satisfy this refusal by "
                             + "refusing the SELECTION rather than the material, and would take the "
                             + "already-shipped stand-down of the key-less-bucket refusal with it");
+        }
+
+        @Test
+        @DisplayName("A key-less SELECTED bucket is not rescued by a legacy certificate key either")
+        void keyLessSelectedBucketWithALegacyCertificateAndTheOptInIsAccepted() {
+            assertDoesNotThrow(() -> gateOver(Map.of(
+                                    DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME, NAMED_BUCKET,
+                                    DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES, CERTIFICATE_PATH),
+                            DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED)
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "selecting a bucket REPLACES the legacy certificate rather than adding to it: "
+                            + "Quarkus resolves the selected bucket and never reads "
+                            + "quarkus.http.ssl.certificate.* on that branch. The key-less selection "
+                            + "therefore declares nothing at all, so nothing contradicts the opt-in. "
+                            + "Refusing here would name a certificate key that could not have "
+                            + "terminated anything — a FALSE refusal of a valid plain-HTTP listener "
+                            + "— and it is exactly what consulting the legacy keys before the "
+                            + "selected bucket produces. This is the precedence "
+                            + "assertServerTlsDeclarationIsCoherent already applies, and "
+                            + "legacyCertificateDoesNotRescueASelectedKeyLessBucket is its "
+                            + "TLS-terminating mirror: the same replacement rule, refusing there "
+                            + "because no opt-in stands the emptiness down");
         }
     }
 
@@ -599,6 +621,24 @@ class ServerTlsDeclarationGateTest {
     // ---------------------------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The certificate-spelling population, DERIVED from the constant the production code iterates
+     * rather than restated beside it.
+     * <p>
+     * {@code declaredLegacyCertificateKey()} walks
+     * {@link DeclaredKeyMaterialKeys#HTTP_CERTIFICATE_KEYS} and nothing else, so that list IS the set
+     * of spellings the gate honours. A hardcoded copy here would let a fifth spelling be added to the
+     * constant — changing what the gate accepts and what it refuses — with no case covering it, and
+     * the suite would stay green while the new spelling went untested in both directions. Deriving
+     * the population makes the test follow the constant, the same drift guard
+     * {@code DeclaredKeyMaterialKeysDriftTest} already applies to the startup audits.
+     *
+     * @return every certificate spelling the main listener honours
+     */
+    static List<String> certificateSpellings() {
+        return DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS;
+    }
 
     private static void validate(Map<String, String> declared) {
         gateOver(declared, SHIPPED_DEFAULT).assertServerTlsDeclarationIsCoherent();

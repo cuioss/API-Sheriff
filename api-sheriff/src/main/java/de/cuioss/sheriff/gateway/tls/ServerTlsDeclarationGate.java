@@ -271,23 +271,45 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
 
     /**
      * Names the declaration that supplies server key material for the terminated main listener,
-     * through any of the three routes this class already owns.
+     * through whichever of the three routes Quarkus would actually resolve.
+     *
+     * <h4>The selected bucket is resolved first, and it is resolved exclusively</h4>
+     *
+     * When {@code quarkus.http.tls-configuration-name} names a bucket, Quarkus takes the main
+     * listener's key material from that bucket <em>alone</em>: the legacy
+     * {@code quarkus.http.ssl.certificate.*} keys and the default {@code quarkus.tls.key-store.*}
+     * bucket are inactive on that branch, so neither can supply material and neither may be
+     * consulted. Falling through to them would name a key that could never have terminated anything
+     * — refusing a valid plain-HTTP listener over a legacy certificate the boot would have ignored.
+     * <p>
+     * This mirrors the precedence {@link #assertServerTlsDeclarationIsCoherent()} already applies:
+     * it tests {@code bucket != null} first and never consults the legacy keys on that branch. The
+     * two methods answer the same question about the same deployment, so they must answer it the
+     * same way. A selected but key-less bucket consequently yields {@code null} here — it declares
+     * nothing, which is exactly what {@link #assertPlainHttpDeclarationIsCoherent()} documents as
+     * deliberately not refused.
+     * <p>
+     * The legacy keys and the default bucket are reached only when no bucket is selected, in the
+     * order {@code HttpServerOptionsUtils} itself would consider them.
      *
      * @return an operator-facing name for the declaring key or bucket, or {@code null} when no route
      *         declares material
      */
     private @Nullable String declaredServerKeyMaterial() {
+        String bucket = declaredValue(DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME);
+        if (bucket != null) {
+            if (declaresKeyMaterialUnder(namedKeyStorePrefix(bucket))) {
+                return "the TLS registry bucket '" + bucket + "' selected by "
+                        + DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME;
+            }
+            return null;
+        }
         String legacyKey = declaredLegacyCertificateKey();
         if (legacyKey != null) {
             return legacyKey;
         }
         if (declaresKeyMaterialUnder(DEFAULT_KEY_STORE_PREFIX)) {
             return "the default " + DEFAULT_KEY_STORE_PREFIX + "* bucket";
-        }
-        String bucket = declaredValue(DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME);
-        if (bucket != null && declaresKeyMaterialUnder(namedKeyStorePrefix(bucket))) {
-            return "the TLS registry bucket '" + bucket + "' selected by "
-                    + DeclaredKeyMaterialKeys.HTTP_TLS_CONFIGURATION_NAME;
         }
         return null;
     }
