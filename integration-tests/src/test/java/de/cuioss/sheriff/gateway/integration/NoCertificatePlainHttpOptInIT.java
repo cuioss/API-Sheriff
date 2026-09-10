@@ -17,8 +17,11 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -32,6 +35,9 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -54,7 +60,19 @@ import org.junit.jupiter.api.Test;
  * {@code VertxHttpRecorder.initializeMainHttpServer} has to still invoke the customizer loop before
  * its own {@code getKeyCertOptions()} guard. Neither is observable from a JVM-mode boot. Nothing
  * rebuilds anything for this test — the opt-in instance runs the same {@code api-sheriff:distroless}
- * image as every other gateway service, and the refusal leg runs that same image once.
+ * image as every other gateway service, and every refusal leg runs that same image once.
+ * <p>
+ * <strong>A third leg class covers the combinations the opt-in does NOT stand down.</strong> The
+ * opt-in declares the posture of a <em>coherent</em> deployment; declared key material, inbound mTLS
+ * and an SNI passthrough topology each only mean something on a listener that terminates TLS, so
+ * each is refused rather than ignored. {@link IncoherentCombinations} drives all three through the
+ * same one-off container harness the withheld-opt-in leg uses, over gateway.yaml overlays that
+ * already ship — no new compose service, no new configuration directory.
+ * <p>
+ * <strong>A fourth covers what the mode changes about a RUNNING gateway,</strong> asserted against
+ * the long-lived opt-in instance on its published plain port: client-address attribution, and the
+ * cookie hardening the gateway emits for a cleartext listener. See {@link ObservableInteractions}
+ * for what each of those two legs does and does not establish.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -255,6 +273,296 @@ class NoCertificatePlainHttpOptInIT {
         }
     }
 
+    /**
+     * The three combinations the opt-in does <em>not</em> stand down.
+     * <p>
+     * Each leg sets {@code QUARKUS_HTTP_INSECURE_REQUESTS=enabled} — so none of them is the
+     * certificate-absence refusal the class above covers — and then adds exactly one declaration
+     * that only means something on a listener which terminates TLS. All three run through the same
+     * one-off container harness, over configuration that already ships: the passthrough-empty
+     * overlay for R1, the mTLS overlay for R2, and for R3 <em>no</em> overlay at all, so the shared
+     * gateway.yaml with its non-empty {@code passthrough_sni} applies.
+     * <p>
+     * Each keeps the {@link NoCertificatePlainHttpOptInIT#reachedTheListenerSeam} positive control,
+     * so a container dying anywhere before the gate cannot pass for a refusal.
+     */
+    @Nested
+    @DisplayName("With the opt-in declared, an incoherent TLS declaration still refuses the boot")
+    class IncoherentCombinations {
+
+        @Test
+        @DisplayName("R1: declared server key material alongside the opt-in refuses, naming the key")
+        void declaredKeyMaterialRefuses() {
+            RefusalRun run = runRefusal(
+                    List.of(OPT_IN,
+                            "QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt",
+                            "QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key"),
+                    overlayMount(PASSTHROUGH_EMPTY_GATEWAY));
+            String output = run.output();
+
+            assertAll("one listener cannot both serve cleartext and terminate TLS",
+                    () -> assertNotEquals(0, run.exitCode(),
+                            () -> "the container started on a configuration declaring both a "
+                                    + "certificate and the plain-HTTP opt-in. Output: " + output),
+                    () -> assertFalse(output.contains(STARTED_MARKER),
+                            () -> "the refusal must land while the listener is initialized, before it "
+                                    + "ever binds. Output: " + output),
+                    () -> assertTrue(output.contains("quarkus.http.ssl.certificate.files"),
+                            () -> "the refusal must name the offending key, and it must be the one "
+                                    + "this deployment actually set: " + output),
+                    () -> assertTrue(output.contains("Either remove quarkus.http.ssl.certificate.files"),
+                            () -> "remedy one is 'drop the certificate', spelled out for THAT key: "
+                                    + output),
+                    () -> assertTrue(output.contains("remove " + OPT_IN_KEY),
+                            () -> "remedy two is 'drop the opt-in, the declared certificate then "
+                                    + "terminates TLS': " + output),
+                    () -> assertFalse(output.contains(FRAMEWORK_REFUSAL),
+                            () -> "reaching the framework's own message means this gate did not act "
+                                    + "first: " + output));
+        }
+
+        @Test
+        @DisplayName("R2: tls.mtls.enabled alongside the opt-in refuses, naming the key")
+        void inboundMtlsRefuses() {
+            RefusalRun run = runRefusal(List.of(OPT_IN), overlayMount(MTLS_GATEWAY));
+            String output = run.output();
+
+            assertAll("a gateway that terminates no TLS can verify no client certificate",
+                    () -> assertNotEquals(0, run.exitCode(),
+                            () -> "the container started with a client-certificate requirement that "
+                                    + "no handshake could ever enforce. Output: " + output),
+                    () -> assertFalse(output.contains(STARTED_MARKER),
+                            () -> "the refusal must land before the listener binds. Output: " + output),
+                    () -> assertTrue(output.contains("tls.mtls.enabled"),
+                            () -> "the refusal must name the offending key in the gateway.yaml "
+                                    + "spelling the operator wrote it in: " + output),
+                    () -> assertTrue(output.contains("remove the tls.mtls block"),
+                            () -> "remedy one is 'drop the mTLS requirement': " + output),
+                    () -> assertTrue(output.contains("remove " + OPT_IN_KEY),
+                            () -> "remedy two is 'terminate TLS instead': " + output),
+                    () -> assertTrue(output.contains("silently inert"),
+                            () -> "the message must say WHY the combination is refused rather than "
+                                    + "ignored — the requirement never runs at all: " + output));
+        }
+
+        @Test
+        @DisplayName("R3: a non-empty tls.passthrough_sni alongside the opt-in refuses, naming the key")
+        void passthroughSniRefuses() {
+            // No overlay: the SHARED sheriff-config/gateway.yaml applies, and it is the document that
+            // declares passthrough_sni. Mounting nothing is what selects this leg's configuration.
+            RefusalRun run = runRefusal(List.of(OPT_IN), List.of());
+            String output = run.output();
+
+            assertAll("the front listener claims the public TLS port a plain port contradicts",
+                    () -> assertNotEquals(0, run.exitCode(),
+                            () -> "the container started with both an SNI passthrough topology and a "
+                                    + "plain-HTTP application port. Output: " + output),
+                    () -> assertFalse(output.contains(STARTED_MARKER),
+                            () -> "the refusal must land before the listener binds. Output: " + output),
+                    () -> assertTrue(output.contains("tls.passthrough_sni"),
+                            () -> "the refusal must name the offending key: " + output),
+                    () -> assertTrue(output.contains("remove the tls.passthrough_sni block"),
+                            () -> "remedy one is 'drop the passthrough topology': " + output),
+                    () -> assertTrue(output.contains("remove " + OPT_IN_KEY),
+                            () -> "remedy two is 'terminate TLS instead': " + output));
+        }
+    }
+
+    /**
+     * What the mode changes about a gateway that is actually running, asserted end to end against
+     * the long-lived opt-in instance.
+     * <p>
+     * Both legs are bounded deliberately, and the bounds are the point:
+     * <ul>
+     *   <li><strong>Leg A</strong> asserts that NO {@code X-Forwarded-For} reaches the upstream, as a
+     *       matched pair. What differs by posture is <em>not</em> the VALUE the gateway regenerates
+     *       but WHETHER it regenerates one at all — none under zero trust, the honoured chain under
+     *       a declared trusted peer. This instance declares no {@code forwarded.trusted_proxies}, so
+     *       {@code TcpPeerGate} trusts no peer and
+     *       {@code ForwardPolicyStage.applyRegeneratedForwarding} (:387-399) hands the resolver an
+     *       empty list for every forwarding name, while cui-http's
+     *       {@code ForwardedHeaderResolver.resolveClientIp} returns empty unconditionally on an
+     *       empty {@code trustedProxies} — so {@code ResolvedForwarding.toXForwardedHeaders} emits
+     *       nothing. The gateway never synthesises a chain from the TCP peer instead: that resolver
+     *       ({@code ForwardedHeaderResolver.java:53,62-63}) is never handed the socket remote address
+     *       and by design does not accept it as a parameter. Declaring the caller's own peer — or
+     *       any range containing it — in {@code forwarded.trusted_proxies} makes run A's spoofed
+     *       {@code 203.0.113.9} honoured and regenerated upstream, so the leg goes red; that is what
+     *       makes the absence discriminate the zero-trust default rather than restate an
+     *       unconditional strip. A marker header the gateway has no opinion about, echoed back by
+     *       the upstream on both runs, is what keeps the null reading a real observation rather than
+     *       a broken route or an empty echo.</li>
+     *   <li><strong>Leg B</strong> asserts the emitted {@code Set-Cookie} and claims nothing about
+     *       what a browser does with it. This lane drives a Java HTTP client that accepts what a
+     *       browser would refuse — the limitation
+     *       {@code doc/development/cookie-deliverability-blindness.adoc} owns — so the browser-side
+     *       half of the cookie verdict belongs to the operator documentation's topology statement,
+     *       not to this test.</li>
+     * </ul>
+     */
+    @Nested
+    @DisplayName("What the plain-HTTP mode changes about a running gateway")
+    class ObservableInteractions {
+
+        /**
+         * RFC 5737 TEST-NET-3 — reserved for documentation and never routable, so it cannot collide
+         * with a real address this stack might legitimately see.
+         */
+        private static final String SPOOFED_CLIENT = "203.0.113.9";
+
+        private static final String FORWARDED_FOR = "X-Forwarded-For";
+
+        /**
+         * A header the gateway has no opinion about, sent on both runs of Leg A purely so its echo
+         * proves the upstream saw the request.
+         * <p>
+         * It is in neither {@code ForwardPolicyStage.FORWARDING_HEADERS} nor
+         * {@code ConnectionHeaders.REQUEST_STRIP}, and the forward-all route declares no
+         * {@code headers_deny}, so the copy carries it verbatim. That is what makes it a vacuity
+         * guard for an assertion whose subject is an ABSENT header: without it a null
+         * {@code X-Forwarded-For} would read the same whether the gateway withheld one or the route
+         * never answered at all.
+         */
+        private static final String ECHO_PROBE = "X-Sheriff-Echo-Probe";
+
+        /** The login path the shared oidc block carves out on the {@code localhost} oidc host. */
+        private static final String LOGIN_PATH = "/auth/login";
+
+        private static final String BINDING_COOKIE = "__Host-sheriff-binding";
+
+        @Test
+        @DisplayName("Leg A: an untrusted peer gets NO regenerated forwarding attribution, spoof or no spoof")
+        void noForwardingAttributionIsRegeneratedForAnUntrustedPeer() {
+            // Arrange + Act — the SAME instance and the SAME public route twice, differing only in
+            // whether the caller claims a forwarded chain. Each run carries its own marker value so
+            // an echo can never be mistaken for the other run's.
+            String spoofedProbe = "run-a-with-spoof";
+            String unspoofedProbe = "run-b-no-inbound-header";
+
+            EchoedRequest withSpoof = echoOnce(SPOOFED_CLIENT, spoofedProbe);
+            EchoedRequest withoutSpoof = echoOnce(null, unspoofedProbe);
+
+            assertAll("under zero trust the gateway attributes nobody, and says so by emitting nothing",
+                    () -> assertEquals(spoofedProbe, withSpoof.marker(),
+                            "the vacuity guard for run A: the upstream must echo " + ECHO_PROBE
+                                    + " back, or the absent " + FORWARDED_FOR + " below is a broken "
+                                    + "route rather than a gateway decision"),
+                    () -> assertEquals(unspoofedProbe, withoutSpoof.marker(),
+                            "the vacuity guard for run B, for the same reason"),
+                    () -> assertNull(withSpoof.forwardedFor(),
+                            "THIS is the assertion that carries the verdict. Run A claimed "
+                                    + SPOOFED_CLIENT + " and the upstream must see NO "
+                                    + FORWARDED_FOR + " at all: the peer is untrusted, so "
+                                    + "ForwardPolicyStage.applyRegeneratedForwarding (:387-399) "
+                                    + "blanks the inbound claim AND the resolver — whose "
+                                    + "trustedProxies is empty — regenerates nothing to put in its "
+                                    + "place. Declare the caller's own peer (or any range containing "
+                                    + "it) in forwarded.trusted_proxies and the chain IS honoured: "
+                                    + "the upstream then sees '" + SPOOFED_CLIENT + "' here and this "
+                                    + "assertion goes red, which is what makes the absence "
+                                    + "discriminate the zero-trust default rather than restate an "
+                                    + "unconditional strip"),
+                    () -> assertNull(withoutSpoof.forwardedFor(),
+                            "the matched control: with no inbound header the upstream sees none "
+                                    + "either. The gateway emits no forwarding attribution for "
+                                    + "anyone under this posture — it never derives one from the TCP "
+                                    + "peer, because cui-http's ForwardedHeaderResolver "
+                                    + "(:53,62-63) is never handed the socket remote address and by "
+                                    + "design does not accept it"));
+        }
+
+        @Test
+        @DisplayName("Leg B: the login-time binding cookie keeps Secure on a cleartext listener")
+        void bindingCookieStaysHardenedOnThePlainListener() {
+            // Arrange + Act — the reserved login path emits the BINDING cookie at redirect time.
+            // The session cookie is emitted only at callback, after the IdP round trip, and this
+            // instance's redirect_uri names a different origin — so the binding cookie is the
+            // artifact this leg can actually observe, and it is the one the leg is named for.
+            var response = given()
+                    .baseUri(plainBaseUri())
+                    .basePath("")
+                    .redirects().follow(false)
+                    .when()
+                    .get(LOGIN_PATH)
+                    .then()
+                    .statusCode(302)
+                    .extract();
+
+            String bindingCookie = setCookieFor(response.headers().getValues("Set-Cookie"));
+
+            // Assert — the gateway does not weaken a cookie attribute because the listener is plain.
+            assertNotNull(bindingCookie,
+                    () -> "the login redirect must emit " + BINDING_COOKIE + "; Set-Cookie headers "
+                            + "were: " + response.headers().getValues("Set-Cookie"));
+            assertAll("nothing relaxes the hardening for cleartext — that is the whole verdict",
+                    () -> assertTrue(bindingCookie.contains("Secure"),
+                            () -> "Secure is emitted unconditionally, which is exactly why a browser "
+                                    + "reaching this port over http:// would drop the cookie: "
+                                    + bindingCookie),
+                    () -> assertTrue(bindingCookie.contains("HttpOnly"),
+                            () -> "HttpOnly is unconditional too: " + bindingCookie),
+                    () -> assertTrue(bindingCookie.contains("Path=/"),
+                            () -> "Path=/ is one of the three attributes the __Host- prefix requires: "
+                                    + bindingCookie),
+                    () -> assertTrue(bindingCookie.contains("SameSite=Lax"),
+                            () -> "SameSite=Lax pairs with the query response mode the gateway drives: "
+                                    + bindingCookie));
+        }
+
+        /**
+         * What one run of the forward-all echo route observed at the upstream.
+         *
+         * @param forwardedFor the {@code X-Forwarded-For} the gateway regenerated, or {@code null}
+         *                     when the upstream saw none — the leg's subject
+         * @param marker       the echoed {@link #ECHO_PROBE} value, or {@code null} when the upstream
+         *                     saw none — the guard that makes a {@code null} above an observation
+         */
+        private record EchoedRequest(String forwardedFor, String marker) {
+        }
+
+        /**
+         * Drives the forward-all echo route once and reports what crossed to the upstream.
+         *
+         * @param spoofedChain the forwarding chain the caller claims, or {@code null} to send none
+         * @param probeValue   the {@link #ECHO_PROBE} value this run sends, distinct per run so an
+         *                     echo cannot be confused with the other run's
+         * @return the regenerated forwarding attribution and the echoed marker
+         */
+        private EchoedRequest echoOnce(String spoofedChain, String probeValue) {
+            var request = given()
+                    .baseUri(plainBaseUri())
+                    .basePath("")
+                    .header(ECHO_PROBE, probeValue);
+            if (spoofedChain != null) {
+                request = request.header(FORWARDED_FOR, spoofedChain);
+            }
+            var response = request
+                    .when()
+                    .get(ECHO_ROUTE)
+                    .then()
+                    .statusCode(200)
+                    .extract();
+
+            Map<String, ?> echoed = response.path("headers");
+            assertNotNull(echoed, "go-httpbin echoes the headers it received");
+            return new EchoedRequest(firstValueIgnoringCase(echoed, FORWARDED_FOR),
+                    firstValueIgnoringCase(echoed, ECHO_PROBE));
+        }
+
+        /**
+         * @param setCookies every {@code Set-Cookie} header on the login redirect
+         * @return the binding cookie's header value, or {@code null} when it was not emitted
+         */
+        private String setCookieFor(List<String> setCookies) {
+            for (String header : setCookies) {
+                if (header.startsWith(BINDING_COOKIE + "=")) {
+                    return header;
+                }
+            }
+            return null;
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------------------------
@@ -289,16 +597,39 @@ class NoCertificatePlainHttpOptInIT {
             Path.of("src", "main", "docker", "sheriff-config-passthrough-empty", "gateway.yaml");
 
     /**
+     * The already-shipped overlay whose {@code tls} block enables inbound mTLS. Mounted by the R2
+     * leg; no new configuration directory is added for it.
+     */
+    private static final Path MTLS_GATEWAY =
+            Path.of("src", "main", "docker", "sheriff-config-mtls", "gateway.yaml");
+
+    /** The explicit plain-HTTP opt-in, as an environment entry and as the key the refusals name. */
+    private static final String OPT_IN_KEY = "quarkus.http.insecure-requests=enabled";
+    private static final String OPT_IN = "QUARKUS_HTTP_INSECURE_REQUESTS=enabled";
+
+    /** The forward-all echo route: no forward block, so the upstream echoes what actually crossed. */
+    private static final String ECHO_ROUTE = "/proxy/forward-all";
+
+    /**
      * Proof that the container got as far as the seam the gate acts at.
      * <p>
-     * {@code TerminatedListenerTlsAudit} emits this from a {@code StartupEvent} observer, so its
-     * presence means configuration loading, CDI bean creation and token-validator construction all
-     * succeeded and the only remaining step was starting the HTTP listener. It is the positive
-     * control that stops "the container exited non-zero without a startup line" from passing for an
-     * unrelated crash — which is exactly how this test previously passed its refusal assertion while
-     * the container was in fact dying on a missing JWKS file, several steps before the gate.
+     * {@code DefaultTrustSourceAudit} emits this from a {@code StartupEvent} observer, so its
+     * presence means configuration loading, CDI bean creation, token-validator construction and TLS
+     * registry resolution all succeeded and the only remaining step was starting the HTTP listener.
+     * It is the positive control that stops "the container exited non-zero without a startup line"
+     * from passing for an unrelated crash — which is exactly how this test once passed its refusal
+     * assertion while the container was in fact dying on a missing JWKS file, several steps before
+     * the gate.
+     * <p>
+     * <strong>It is deliberately NOT {@code ApiSheriff-121}, and the difference is load-bearing.</strong>
+     * That record is emitted only when the listener resolves to plain HTTP, so it holds for the legs
+     * whose deployment declares no key material — but the R1 leg declares a certificate, resolves to
+     * HTTPS, and would never emit it. A control that silently failed on one leg would make that leg
+     * unrunnable rather than merely weaker. {@code ApiSheriff-17} is emitted on every boot whatever
+     * the listener resolved to, so one control serves every leg, and the surefire evidence is that it
+     * lands before the gate refuses.
      */
-    private static final String REACHED_LISTENER_SEAM = "ApiSheriff-121";
+    private static final String REACHED_LISTENER_SEAM = "ApiSheriff-17";
 
     /**
      * The outcome of one refusal container.
@@ -313,8 +644,9 @@ class NoCertificatePlainHttpOptInIT {
      * Runs the shipped image once with neither key material nor the plain-HTTP opt-in, and reports
      * how it ended.
      * <p>
-     * <strong>Everything below mirrors the {@code api-sheriff-no-certificate} compose service except
-     * the one variable under test.</strong> That is a correctness requirement rather than tidiness:
+     * <strong>{@link #runRefusal} mirrors the {@code api-sheriff-no-certificate} compose service
+     * except the variables each leg puts under test.</strong> That is a correctness requirement
+     * rather than tidiness:
      * the gate runs after every {@code StartupEvent} observer, so any under-provisioning that kills
      * one of those observers stops the container before the gate is ever consulted — and produces a
      * non-zero exit with no startup line, which is precisely the shape a genuine refusal has. The
@@ -330,44 +662,75 @@ class NoCertificatePlainHttpOptInIT {
      * @return the exit status and merged output of that container
      */
     private static RefusalRun runWithoutCertificateOrOptIn() {
-        ProcessBuilder builder = new ProcessBuilder(
+        return runRefusal(List.of(), overlayMount(PASSTHROUGH_EMPTY_GATEWAY));
+    }
+
+    /**
+     * The {@code -v} argument pair mounting a gateway.yaml overlay over the shared configuration
+     * directory. A leg that passes {@link List#of()} instead keeps the shared document, which is how
+     * the passthrough leg selects the only document that declares {@code passthrough_sni}.
+     *
+     * @param overlay the overlay document to mount
+     * @return the two docker arguments mounting it
+     */
+    private static List<String> overlayMount(Path overlay) {
+        return List.of("-v", overlay.toAbsolutePath() + ":/app/sheriff-config/gateway.yaml:ro");
+    }
+
+    /**
+     * Runs the shipped image once over a deployment that must refuse, and reports how it ended.
+     *
+     * @param extraEnv     the environment entries this leg adds, in {@code NAME=value} form
+     * @param overlayMount the gateway.yaml overlay mount, or empty to keep the shared document
+     * @return the exit status and merged output of that container
+     */
+    private static RefusalRun runRefusal(List<String> extraEnv, List<String> overlayMount) {
+        List<String> command = new ArrayList<>(List.of(
                 "docker", "run", "--rm",
                 "-e", "QUARKUS_PROFILE=it",
                 "-e", "QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties",
                 // The MANAGEMENT listener's material. A different key family from the main
-                // listener's, which is the one this test withholds; the gate never reads these.
+                // listener's, which is the one these legs govern; the gate never reads these.
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt",
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key",
                 "-e", "SHERIFF_CONFIG_DIR=/app/sheriff-config",
-                "-e", "OIDC_CLIENT_SECRET=integration-secret",
-                "-v", CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro",
-                "-v", SHERIFF_CONFIG.toAbsolutePath() + ":/app/sheriff-config:ro",
-                "-v", PASSTHROUGH_EMPTY_GATEWAY.toAbsolutePath() + ":/app/sheriff-config/gateway.yaml:ro",
-                IMAGE,
-                "-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12",
-                "-Djavax.net.ssl.trustStorePassword=localhost-trust",
-                "-Djavax.net.ssl.trustStoreType=PKCS12");
+                "-e", "OIDC_CLIENT_SECRET=integration-secret"));
+        for (String entry : extraEnv) {
+            command.add("-e");
+            command.add(entry);
+        }
+        command.add("-v");
+        command.add(CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro");
+        command.add("-v");
+        command.add(SHERIFF_CONFIG.toAbsolutePath() + ":/app/sheriff-config:ro");
+        command.addAll(overlayMount);
+        command.add(IMAGE);
+        command.add("-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12");
+        command.add("-Djavax.net.ssl.trustStorePassword=localhost-trust");
+        command.add("-Djavax.net.ssl.trustStoreType=PKCS12");
+
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.redirectErrorStream(true);
         Path captured = null;
         try {
-            captured = Files.createTempFile("api-sheriff-no-optin-", ".out");
+            captured = Files.createTempFile("api-sheriff-refusal-", ".out");
             builder.redirectOutput(captured.toFile());
             Process process = builder.start();
             if (!process.waitFor(Duration.ofSeconds(REFUSAL_TIMEOUT_SECONDS))) {
                 process.destroyForcibly();
-                return fail("the certificate-less container was still running after "
-                        + REFUSAL_TIMEOUT_SECONDS + "s, so it did not refuse at all — it is serving "
-                        + "on a configuration that declares neither key material nor an opt-in. "
-                        + "Output so far: " + readQuietly(captured));
+                return fail("the container was still running after " + REFUSAL_TIMEOUT_SECONDS
+                        + "s, so it did not refuse at all — it is serving on a configuration this "
+                        + "gate is supposed to reject. Environment under test: " + extraEnv
+                        + ". Output so far: " + readQuietly(captured));
             }
             return reachedTheListenerSeam(
                     new RefusalRun(process.exitValue(), Files.readString(captured)));
         } catch (IOException e) {
-            throw new UncheckedIOException("cannot run the certificate-less container — is "
+            throw new UncheckedIOException("cannot run the refusal container — is "
                     + IMAGE + " built?", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted while running the certificate-less container", e);
+            throw new IllegalStateException("interrupted while running the refusal container", e);
         } finally {
             deleteQuietly(captured);
         }
@@ -376,24 +739,54 @@ class NoCertificatePlainHttpOptInIT {
     /**
      * Asserts the container got far enough for the gate to have been consulted at all.
      * <p>
-     * Both refusal tests read properties — a non-zero exit, an absent startup line, an absent
+     * Every refusal test reads properties — a non-zero exit, an absent startup line, an absent
      * framework message — that a container dying anywhere before the listener seam satisfies just as
      * well as a container the gate refused. This is the discriminator between the two, and it is
-     * checked in the harness rather than in either test so that neither can be satisfied by a run
-     * that never reached the code under test.
+     * checked in the harness rather than in any single test so that none of them can be satisfied by
+     * a run that never reached the code under test.
      *
      * @param run the finished refusal container
      * @return that same run, when it reached the seam
      */
     private static RefusalRun reachedTheListenerSeam(RefusalRun run) {
         assertTrue(run.output().contains(REACHED_LISTENER_SEAM),
-                () -> "the certificate-less container never reached the seam the gate acts at, so "
-                        + "this run cannot say anything about the gate: it died before the HTTP "
-                        + "listener was initialized and its non-zero exit is some OTHER failure. "
-                        + "Provision the run to match the api-sheriff-no-certificate compose service "
-                        + "— the whole environment, minus QUARKUS_HTTP_INSECURE_REQUESTS. Output: "
+                () -> "the container never reached the seam the gate acts at, so this run cannot say "
+                        + "anything about the gate: it died before the HTTP listener was initialized "
+                        + "and its non-zero exit is some OTHER failure. Provision the run to match "
+                        + "the api-sheriff-no-certificate compose service — the whole environment, "
+                        + "plus only the declarations the leg puts under test. Output: "
                         + run.output());
         return run;
+    }
+
+    /**
+     * Case-insensitive lookup of one echoed header's value.
+     * <p>
+     * The lookup ignores case because HTTP field names are case-insensitive and both the gateway and
+     * the upstream may canonicalise them, so an exact-key read could report a regenerated header as
+     * absent merely because its casing changed in transit. The value is normalized because
+     * go-httpbin renders a field as a JSON list, and a generic path read yields either that list or
+     * a bare string depending on the echo's shape — the caller compares values, not representations.
+     *
+     * @param headers the echoed header map
+     * @param name    the field name to look for
+     * @return the value, comma-joined when the echo carried several, or {@code null} when the
+     *         upstream saw no such field
+     */
+    private static String firstValueIgnoringCase(Map<String, ?> headers, String name) {
+        for (Map.Entry<String, ?> entry : headers.entrySet()) {
+            if (!entry.getKey().equalsIgnoreCase(name)) {
+                continue;
+            }
+            Object value = entry.getValue();
+            if (value instanceof List<?> values) {
+                return values.isEmpty()
+                        ? null
+                        : values.stream().map(String::valueOf).reduce((a, b) -> a + ", " + b).orElse(null);
+            }
+            return value == null ? null : String.valueOf(value);
+        }
+        return null;
     }
 
     private static String readQuietly(Path captured) {
