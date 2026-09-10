@@ -1476,8 +1476,8 @@ services:
   # --- The cookie-mode-WITH-REFRESH proof rig ----------------------------------------------------
   # The one combination no other instance can carry. Session mode, the refresh switch and the
   # minting client are each process-wide, so this instance cannot be folded into either sibling:
-  # api-sheriff-cookie holds refresh OFF (that is what keeps its seal inside the browser-safe
-  # budget) and api-sheriff-refresh holds session mode SERVER. Flipping either would destroy the
+  # api-sheriff-cookie holds refresh OFF and api-sheriff-refresh holds session mode SERVER.
+  # Flipping either would destroy the
   # contract that instance exists to prove, so the combination gets its own process, published on
   # 10455 with management port 19011.
   #

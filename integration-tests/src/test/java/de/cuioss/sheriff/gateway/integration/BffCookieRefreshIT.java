@@ -41,8 +41,8 @@ import org.junit.jupiter.api.Test;
  * <strong>Why a dedicated instance.</strong> Three process-wide properties have to hold at once here,
  * and no existing instance holds all three: the session mode must be {@code cookie}, refresh must be
  * enabled, and the access token must be short-lived enough for a test to reach the near-expiry
- * window. {@code api-sheriff-cookie} runs cookie mode with refresh <em>off</em> — that is what keeps
- * its seal inside the browser-safe budget — and {@code api-sheriff-refresh} runs the refresh path in
+ * window. {@code api-sheriff-cookie} runs cookie mode with refresh <em>off</em>, and
+ * {@code api-sheriff-refresh} runs the refresh path in
  * <em>server</em> mode, where the browser holds an opaque handle and a rotation writes server-side.
  * This instance is the only place the two meet: it authenticates as {@code refresh-client} (whose
  * client-level {@code access.token.lifespan} is 45, so with {@code leeway_seconds: 30} the window is

@@ -154,11 +154,11 @@ class BffCookieSessionIT {
         Session session = BffKeycloakLoginFlow.login(SESSION_ROUTE, COOKIE_ORIGIN);
 
         // Act + Assert — two sequential mediated requests both reach the upstream through the same
-        // sealed session. This instance runs with oidc.session.refresh.enabled: false (the cookie
-        // instance keeps its seal to access + ID so it stays inside the browser-safe budget), so no
+        // sealed session. This instance runs with oidc.session.refresh.enabled: false, so no
         // re-seal can occur between the two requests at all: what is asserted here is the plain
         // continuity path — one sealed value, unsealed and replayed on every request. Refresh
-        // behaviour belongs to the api-sheriff-refresh instance and is exercised there.
+        // behaviour in cookie mode belongs to the api-sheriff-cookie-refresh instance and is
+        // exercised by BffCookieRefreshIT; api-sheriff-refresh covers the server-mode refresh path.
         for (int request = 0; request < 2; request++) {
             Response response = BffKeycloakLoginFlow.gateway(session.gatewayCookies(), COOKIE_ORIGIN)
                     .when().get(SESSION_ROUTE)
