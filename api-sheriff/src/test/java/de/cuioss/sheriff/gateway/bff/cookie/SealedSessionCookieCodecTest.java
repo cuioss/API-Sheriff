@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
@@ -381,7 +382,8 @@ class SealedSessionCookieCodecTest {
             String header = configured.toSetCookieHeader(sealed, LOGIN, LOGIN);
 
             // Assert
-            assertEquals(header.length() - sealed.length(),
+            assertEquals(header.getBytes(StandardCharsets.UTF_8).length
+                    - sealed.getBytes(StandardCharsets.UTF_8).length,
                     SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, ttl),
                     () -> "the derivation must count the same bytes the assembly emits: " + header);
         }
@@ -403,6 +405,27 @@ class SealedSessionCookieCodecTest {
 
             assertTrue(halfway.length() - sealed.length() <= derived, halfway);
             assertTrue(expired.length() - sealed.length() <= derived, expired);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("configurations")
+        @DisplayName("Should never emit a Max-Age above the configured TTL, even when now precedes the login instant")
+        void shouldCapMaxAgeAtTheConfiguredTtl(String label, String cookieName, Duration ttl) throws Exception {
+            // A clock reading BEFORE the login instant makes the naive remaining lifetime exceed the
+            // configured TTL, which both emits a longer-lived cookie than configured and can add a
+            // Max-Age digit the derivation did not count. The cap is what the javadoc already claims
+            // ("at most sessionTtl"); this control is what makes the claim true rather than stated.
+            SealedSessionCookieCodec configured =
+                    new SealedSessionCookieCodec(cookieName, ttl, BUDGET, key, KEY_ID);
+            String sealed = configured.seal(payload());
+            int derived = SealedSessionCookieCodec.setCookieHeaderOverhead(cookieName, ttl);
+
+            String beforeLogin = configured.toSetCookieHeader(sealed, LOGIN, LOGIN.minusSeconds(1));
+
+            assertTrue(beforeLogin.contains("; Max-Age=" + ttl.toSeconds() + ";"),
+                    () -> "Max-Age must be capped at the configured TTL: " + beforeLogin);
+            assertTrue(beforeLogin.getBytes(StandardCharsets.UTF_8).length
+                    - sealed.getBytes(StandardCharsets.UTF_8).length <= derived, beforeLogin);
         }
 
         @Test
