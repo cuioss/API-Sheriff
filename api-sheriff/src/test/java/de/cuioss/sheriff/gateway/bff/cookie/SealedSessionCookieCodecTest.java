@@ -362,6 +362,8 @@ class SealedSessionCookieCodecTest {
                             "__Host-sheriff-session", Duration.ofSeconds(86_400)),
                     Arguments.of("the shorter name the documented examples use",
                             "__Host-sheriff", Duration.ofSeconds(3600)),
+                    Arguments.of("a non-ASCII cookie name, where a byte differs from a code unit",
+                            "__Host-sheriff-名", Duration.ofSeconds(3600)),
                     Arguments.of("a cookie name well past the default length",
                             "__Host-a-considerably-longer-session-cookie-name", Duration.ofHours(8)),
                     Arguments.of("a single-digit Max-Age", "s", Duration.ofSeconds(9)),
@@ -403,8 +405,10 @@ class SealedSessionCookieCodecTest {
             String halfway = configured.toSetCookieHeader(sealed, LOGIN, LOGIN.plus(ttl.dividedBy(2)));
             String expired = configured.toSetCookieHeader(sealed, LOGIN, LOGIN.plus(ttl).plusSeconds(60));
 
-            assertTrue(halfway.length() - sealed.length() <= derived, halfway);
-            assertTrue(expired.length() - sealed.length() <= derived, expired);
+            assertTrue(halfway.getBytes(StandardCharsets.UTF_8).length
+                    - sealed.getBytes(StandardCharsets.UTF_8).length <= derived, halfway);
+            assertTrue(expired.getBytes(StandardCharsets.UTF_8).length
+                    - sealed.getBytes(StandardCharsets.UTF_8).length <= derived, expired);
         }
 
         @ParameterizedTest(name = "{0}")
