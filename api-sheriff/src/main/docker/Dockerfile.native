@@ -48,7 +48,16 @@ WORKDIR /app
 # Copy pre-built native executable
 COPY --chmod=0755 target/*-runner /app/application
 
-EXPOSE 8443 9000
+# 8080 is the PLAIN HTTP port, and listing it is a correction to the metadata rather than a widening
+# of the surface: EXPOSE opens nothing, and the listener already bound that port in both shipped
+# postures — issuing redirects to 8443 under the default quarkus.http.insecure-requests=redirect, and
+# serving real cleartext when the deployment declares quarkus.http.insecure-requests=enabled, which
+# is the explicit plain-HTTP opt-in and the only route to cleartext (ApiSheriff-121 reports the
+# resolved plain-HTTP listener at boot). What it does change is `docker run
+# -P`, which publishes every EXPOSEd port to a random host port. Publish ports explicitly instead, as
+# deployment/compose-sample does, and put 8080 behind a TLS-terminating boundary or leave it
+# unpublished.
+EXPOSE 8080 8443 9000
 
 # Exec (JSON) form is required, not a style preference: this base carries no executable other than
 # /app/application, so the shell form — and every Compose `healthcheck.test` string form, which

@@ -55,6 +55,43 @@ Operating rules:
   disposition of every key that used to live there is recorded in
   link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
+== Serving plain HTTP
+
+*Plain HTTP is something you declare, never something the gateway infers.* Set
+`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` and the terminated listener serves cleartext, deliberately
+and without argument -- that is the supported deployment behind a TLS-terminating ingress. Expose
+that port only behind such a boundary.
+
+If you supply *no server key material* and do *not* set that variable, the gateway *refuses to
+start*. It does not fall back to cleartext. A missing certificate cannot tell "this gateway is
+deliberately behind a TLS terminator" apart from "the certificate did not get mounted", and guessing
+cleartext would turn the second into a silently unencrypted gateway. So the gateway asks instead of
+guessing, and the refusal names both ways out:
+
+* *Declare a certificate* -- through `QUARKUS_HTTP_TLS_CONFIGURATION_NAME`, a default
+  `quarkus.tls.key-store.*` bucket, or any of
+  `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` (with `..._KEY_FILES`), `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_STORE_FILE`,
+  or `QUARKUS_HTTP_SSL_CERTIFICATE_CREDENTIALS_PROVIDER`. All four count; a keystore-based deployment
+  carries no `..._FILES` key at all and is perfectly valid.
+* *Or declare plain HTTP* with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`.
+
+A second refusal catches the same mistake one level in: if `QUARKUS_HTTP_TLS_CONFIGURATION_NAME`
+names a TLS bucket that carries no key material -- almost always a typo in the name, or a bucket
+nobody populated -- the boot is refused naming that bucket, rather than starting a listener with
+nothing to terminate with. Setting `QUARKUS_HTTP_INSECURE_REQUESTS=enabled` stands this refusal down
+too, because you have then said what posture you want.
+
+What you see at boot when the listener really is on plain HTTP is `ApiSheriff-121`, which reports the
+*resolved* state of the listener -- the key material that actually reached it, whatever route
+supplied it. It is a `WARN` and never a refusal: at that point the cleartext is the cleartext you
+asked for, and the record is there so it is never a surprise in a log nobody read.
+
+The mechanism -- which seam refuses, why it has to act before the listener is built, and why
+inference was rejected -- is in
+link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts] and in the seam
+amendment to
+link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
+
 == Passthrough SNI
 
 A passthrough entry maps an *SNI hostname* to a *topology alias*; every connection whose TLS
@@ -136,6 +173,39 @@ Plan trust-root rotation as a coordinated event: stage the new client certificat
 *before* switching `client_ca`, because the switch is atomic and unforgiving. For a single
 compromised client where you cannot rotate the whole fleet immediately, the compensating control is
 network-level (drop the client at the perimeter), not certificate-level.
+
+== Operator Consideration: Outbound trust material replaces the platform bundle
+
+The section above is about the anchor the gateway *accepts clients against*. The mirror-image hazard
+sits on the outbound side, and it catches operators for the same reason: *supplying a default trust
+store substitutes for the platform trust bundle rather than adding to it.* A store holding only your
+private CA has not added an anchor -- it has removed every public root the platform shipped, and the
+loss surfaces later as an opaque handshake failure against something that used to work.
+
+Do not improvise a store from that sentence. The full operator route -- why the native, distroless
+image has no `update-ca-trust`, why the JDK triple must arrive as command-line `-D` arguments on the
+runner (and why `JAVA_TOOL_OPTIONS` is silently ignored by a native executable), how to build a store
+that keeps the public roots *and* adds a private CA, and which boot records tell you which store is
+actually in force -- is in
+link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+platform bundle]. Read `ApiSheriff-17` and `ApiSheriff-122` in the boot log after any trust change.
+
+One leg is reachable *only* through that default store, which is worth knowing before you decide
+whether you need one. The BFF's own back-channel to the identity provider -- discovery, the
+authorization-code exchange and refresh -- is dialled by `token-sheriff-client`, which
+exposes no per-client TLS-trust seam
+(https://github.com/cuioss/token-sheriff/issues/597[token-sheriff-client#597]). A per-issuer
+`jwks.tls_profile` does not cover it. Against an identity provider behind a private CA, that leg is
+served by the JVM default trust store or not at all, so the store is not optional there -- and the
+replacement rule above applies to it in full. See link:bff-session.adoc[BFF session management] for
+the rest of that back-channel's operator surface.
+
+*Logout is deliberately absent from that list: it is not a back-channel leg and does not depend on
+this store.* RP-initiated logout builds an `end_session_endpoint` redirect URL and hands it to the
+browser -- the gateway opens no connection to the identity provider for it, so the trust in play is
+the *browser's*, not the gateway's. The token-revocation seam that flow carries is bound to a no-op
+in the production wiring and issues no request today; it would acquire a trust dependency only if it
+were ever given a real implementation, and this paragraph is the place to revisit if it is.
 
 == The management interface (health and metrics)
 

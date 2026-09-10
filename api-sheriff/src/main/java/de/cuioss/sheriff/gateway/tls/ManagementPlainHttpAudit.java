@@ -21,9 +21,9 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.StartupEvent;
-import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -42,6 +42,26 @@ import org.jspecify.annotations.Nullable;
  * A configuration key can be renamed, superseded, or silently ignored, and an audit keyed on one
  * would then report a comfortable fiction. The resolved key material cannot: if there is none, the
  * port is plain, whatever route got it there.
+ * <p>
+ * <strong>The default-bucket leg, and the false positive that used to live here.</strong> The
+ * verdict comes from the shared {@link ResolvedServerTlsMaterial} discriminator, which re-derives
+ * all three legs of {@code HttpServerOptionsUtils#getTlsConfiguration} — including the one this
+ * audit previously missed. It was built on {@code TlsConfiguration.from}, an SPI helper that
+ * returns empty for an absent configuration name and <em>never consults the registry's default
+ * bucket</em>; the recorder does consult it, and takes it whenever it carries key material. A
+ * deployment that populated a default {@code quarkus.tls.key-store.*} bucket therefore got a
+ * management listener on HTTPS while this audit reported plain HTTP. That is the silent-upgrade
+ * path {@code application.properties} documents as upstream quarkus-43380 — and an audit built to
+ * catch silent downgrades was blind to it in the opposite direction. Sharing one discriminator with
+ * {@link TerminatedListenerTlsAudit} is what keeps the fix from having to be made twice.
+ * <p>
+ * <strong>It reads every certificate spelling the runtime honours.</strong> The legacy-certificate
+ * leg asks its question through the shared {@link DeclaredKeyMaterialKeys} vocabulary rather than
+ * through {@code quarkus.management.ssl.certificate.files} alone. A management interface whose
+ * certificate arrives as a keystore file, as a PEM key without a chain file, or through a
+ * credentials provider is on HTTPS, and an audit that read the chain file alone emitted
+ * {@code ApiSheriff-115} against it — a false plain-HTTP report on a properly terminated port. The
+ * shared names are what keep this leg and the main listener's from drifting apart again.
  * <p>
  * <strong>Why a WARN and never a boot refusal.</strong> A plain-HTTP management port behind a trusted
  * network boundary is a legitimate deployment, and the gateway must not block it. But because Quarkus'
@@ -71,24 +91,41 @@ public class ManagementPlainHttpAudit {
     private final int managementPort;
 
     /**
-     * @param registry             the live TLS registry, resolved exactly as the management recorder
-     *                             resolves it
-     * @param tlsConfigurationName the selected named TLS bucket, empty when the deployment selects
-     *                             none
-     * @param certificateFiles     the management certificate chain, empty when the deployment
-     *                             supplies none
-     * @param managementPort       the management port, reported in the warning
+     * @param registry                      the live TLS registry, resolved exactly as the management
+     *                                      recorder resolves it
+     * @param tlsConfigurationName          the selected named TLS bucket, empty when the deployment
+     *                                      selects none
+     * @param certificateFiles              the management PEM certificate chain, empty when the
+     *                                      deployment supplies none
+     * @param certificateKeyFiles           the PEM private keys matching that chain, empty when the
+     *                                      deployment supplies none
+     * @param certificateKeyStoreFile       the keystore file carrying chain and key, empty when the
+     *                                      deployment supplies none
+     * @param certificateCredentialsProvider the credentials provider supplying the keystore
+     *                                      password, empty when the deployment supplies none
+     * @param managementPort                the management port, reported in the warning
      */
     @Inject
+    @SuppressWarnings("java:S107") // one parameter per certificate spelling: @ConfigProperty needs a compile-time constant name each
     public ManagementPlainHttpAudit(
             TlsConfigurationRegistry registry,
-            @ConfigProperty(name = "quarkus.management.tls-configuration-name") Optional<String> tlsConfigurationName,
-            @ConfigProperty(name = "quarkus.management.ssl.certificate.files") Optional<List<String>> certificateFiles,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.MANAGEMENT_TLS_CONFIGURATION_NAME) Optional<String> tlsConfigurationName,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_FILES) Optional<List<String>> certificateFiles,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEY_FILES) Optional<List<String>> certificateKeyFiles,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEY_STORE_FILE) Optional<String> certificateKeyStoreFile,
+            @ConfigProperty(name = DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER) Optional<String> certificateCredentialsProvider,
             @ConfigProperty(name = "quarkus.management.port", defaultValue = "9000") int managementPort) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.tlsConfigurationName = Objects.requireNonNull(tlsConfigurationName, "tlsConfigurationName")
                 .orElse(null);
-        this.managementCertificateConfigured = certificateFiles.filter(files -> !files.isEmpty()).isPresent();
+        // Every certificate spelling the management recorder honours, not just the chain file. A
+        // key-store-file or key-files deployment terminates TLS on this port, and reading one
+        // spelling reported ApiSheriff-115 against it.
+        this.managementCertificateConfigured =
+                certificateFiles.filter(files -> !files.isEmpty()).isPresent()
+                        || certificateKeyFiles.filter(files -> !files.isEmpty()).isPresent()
+                        || certificateKeyStoreFile.filter(value -> !value.isBlank()).isPresent()
+                        || certificateCredentialsProvider.filter(value -> !value.isBlank()).isPresent();
         this.managementPort = managementPort;
     }
 
@@ -111,36 +148,13 @@ public class ManagementPlainHttpAudit {
      * @return {@code true} when the management interface resolved to plain HTTP
      */
     public boolean auditManagementTls() {
-        // TlsConfiguration.from is a Quarkus API that both takes and returns an Optional, so the
-        // nullable field is re-wrapped and the result unwrapped at this single call site rather
-        // than either being stored or propagated as an Optional.
-        Optional<TlsConfiguration> resolved = TlsConfiguration.from(registry,
-                Optional.ofNullable(tlsConfigurationName));
-        boolean plain = resolvesToPlainHttp(resolved.orElse(null), managementCertificateConfigured);
+        boolean plain = ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
+                tlsConfigurationName, managementCertificateConfigured);
         if (plain) {
             LOGGER.warn(ConfigLogMessages.WARN.MANAGEMENT_PLAIN_HTTP, managementPort);
         } else {
             LOGGER.debug("Management interface resolved to HTTPS on port %s", managementPort);
         }
         return plain;
-    }
-
-    /**
-     * Decides whether the resolved TLS state leaves the management listener on plain HTTP, mirroring
-     * the recorder's own test: a selected TLS configuration that carries no key material replaces the
-     * deployment's certificate rather than adding to it, so the listener ends up with no key/cert and
-     * the recorder swaps in the plain options.
-     *
-     * @param resolved               the TLS configuration the management interface resolved to,
-     *                               {@code null} when none applies
-     * @param certificateConfigured  whether {@code quarkus.management.ssl.certificate.files} supplies
-     *                               a chain
-     * @return {@code true} when no key material reaches the management listener
-     */
-    static boolean resolvesToPlainHttp(@Nullable TlsConfiguration resolved, boolean certificateConfigured) {
-        if (resolved != null) {
-            return resolved.getKeyStoreOptions() == null;
-        }
-        return !certificateConfigured;
     }
 }

@@ -7,8 +7,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Every server-TLS knob is classified as policy, deployment-bound, or build-time; policy is named neutrally in gateway.yaml and reaches the runtime through exactly two seams — an HttpServerOptionsCustomizer for the terminated listener and one single-ordinal, policy-keys-only ConfigSource for the management interface — while ports, certificate and trust material stay deployment-supplied and build-time knobs leave the runtime surface entirely.
-// tags: configuration-surface, tls, management-interface, layering, portability, config-source-ordinal, secure-by-default, framework-seam, build-time-config
+// summary: Every server-TLS knob is classified as policy, deployment-bound, or build-time; policy is named neutrally in gateway.yaml and reaches the runtime through an HttpServerOptionsCustomizer for the terminated listener and one single-ordinal, policy-keys-only ConfigSource for the management interface — while ports, certificate and trust material stay deployment-supplied and build-time knobs leave the runtime surface entirely. AMENDED: an earlier three-seam amendment is itself withdrawn and the count returns to two — the plain-HTTP degrade that projected quarkus.http.insecure-requests=enabled from a missing certificate is removed, because absence cannot express intent and a ConfigSourceFactory that refuses also fails the build. The terminated-listener customizer now REFUSES a boot whose declared configuration leaves the main listener with neither key material nor an explicit quarkus.http.insecure-requests=enabled. Plain HTTP is declared, never inferred.
+// tags: configuration-surface, tls, management-interface, layering, portability, config-source-ordinal, secure-by-default, framework-seam, build-time-config, fail-closed-config
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -249,6 +249,109 @@ or hands the still-encrypted stream on -- so it neither applies nor could apply 
 a passthrough hostname the backend's own TLS policy is the effective one, end to end. Scoping the
 policy to the terminated listener is therefore a statement of what the policy *can* mean, not a
 limitation that more code could lift.
+
+== Amendment: no third seam — the declaration is gated at an existing one
+
+*This record is amended, and the amendment restores rather than revises the decision above. An
+earlier amendment superseded the* exactly two seams *claim with a three-seam claim, on the strength
+of a policy-free `ConfigSourceFactory` that projected the permissive exposure strategy when no
+certificate was declared. That projection is withdrawn, and with it the third seam. The count is
+two, exactly as the decision above states; what this section records is why the seam that was added
+turned out to be the wrong answer, and what replaced it.*
+
+=== What was withdrawn, and why
+
+The withdrawn seam read the declared certificate keys while the configuration system was being built
+and, finding none, projected `quarkus.http.insecure-requests=enabled` -- turning the runtime's boot
+refusal into a running plain-HTTP gateway. Two independent findings retired it.
+
+*It could only ever have been inference.* `quarkus.http.insecure-requests=enabled` already _is_ the
+explicit plain-HTTP opt-in, and it already wins where it matters: the environment source outranks the
+properties file, so a deployment that means to serve cleartext says so and is obeyed. The projecting
+source added exactly one capability on top of that -- deriving intent from the ABSENCE of a
+certificate -- and absence cannot express intent. "Deliberately placed behind a TLS-terminating
+ingress" and "the certificate failed to mount" are the same observation at that moment, and no key,
+ordering or amount of care separates them. Resolving that ambiguity toward cleartext converts a
+mounting mistake into a silently unencrypted gateway, which on a security gateway is the one outcome
+that must never be reachable without someone asking for it. The standing rule is that invalid or
+unrecognised configuration is warned about or refused, never quietly compensated for; a downgrade
+nobody declared is precisely the compensating behaviour that rule forbids.
+
+*A configuration source is also the wrong place to refuse from.* A `ConfigSourceFactory` runs
+wherever configuration is assembled, and that includes the build: the code-generation and
+augmentation phases initialize application configuration from the module's own properties file,
+where no certificate is declared and none should be -- the shipped artifact declares no deployment
+material. A factory that threw would therefore fail the *build* of every module carrying this
+artifact, over a state that is correct at build time and only meaningful at boot. This is a
+structural property of the mechanism, not a detail that better code could avoid.
+
+=== What replaced it: a gate on an existing seam
+
+The refusal now lives on the *terminated-listener customizer* -- seam one of the two this record
+already names. It changes no option; it reads the declared server-TLS keys and throws.
+
+It has to act before the runtime's own guard, because that guard refuses the same state with the
+wrong words: the SSL options are dropped when no key or certificate options survived the customizer
+hooks, and the failure is then reported as an `IllegalStateException` naming the exposure key -- a
+sentence that names `enabled` to an operator who set `redirect`, says nothing about the certificate
+that is actually missing, and offers no remedy. The customizer hooks run strictly before that test,
+which is what makes this seam the earliest one that both qualifies and exists only in a real boot.
+Failing the boot from a customizer is already this record's own pattern: the same seam refuses an
+unusable cipher allowlist rather than binding a listener that could never complete a handshake.
+
+Two states are refused, and each refusal names the offending configuration and *both* ways out:
+
+* *No key material is declared anywhere, and the exposure strategy is not `enabled`.* Remedy:
+  declare a certificate -- through the named-TLS-configuration key, a default TLS registry bucket, or
+  any of the four legacy `ssl.certificate.*` spellings -- or declare plain HTTP explicitly.
+* *A named TLS registry bucket is selected for which no key material is declared.* Almost always a
+  typo in the bucket name, or a bucket nobody populated. Remedy: give that bucket material, point the
+  key at a bucket that has some, use the legacy certificate route instead, or declare plain HTTP
+  explicitly.
+
+An explicit `enabled` stands *both* refusals down, in silence. That key is the operator stating the
+posture in the one key that means it, and the gate exists to make plain HTTP explicit rather than to
+second-guess an operator who has been explicit.
+
+=== The limit it accepts: declared versus resolved key material
+
+The gate runs before the listener is built, so it decides from *declared* keys. That limit is real,
+and it cuts in exactly one direction.
+
+* *Declared key material* -- key material visible as configuration keys. It is what the gate can
+  observe at the moment it can still act.
+* *Resolved key material* -- the key material the registry actually produced for the listener, the
+  same question the recorder asks when it chooses between the SSL and the plain options. It is the
+  audits' discriminator.
+
+A declaration that later resolves to nothing usable is therefore accepted by the gate and caught
+downstream: the main-listener audit reports the *resolved* state as `ApiSheriff-121`. The gate never
+converts an absent declaration into a permissive posture, so the limit costs strictness, never
+confidentiality -- the inverse of the withdrawn projecting form, where the same limit produced
+cleartext.
+
+The set of declared keys is a single shared vocabulary rather than a per-component list. Every
+spelling the legacy `ssl.certificate.*` block accepts counts -- the PEM chain, the PEM key, a
+keystore file, a credentials provider -- and the gate and both effective-state audits read the same
+set, asserted equal by a drift guard. A narrower set at any one site is not a simplification: on the
+audits it reports a plain-HTTP downgrade against a listener that is terminating TLS correctly.
+
+This is consistent with the audit ruling above -- an audit keyed on a configuration key reports a
+comfortable fiction -- and does not weaken it. The audits are still keyed on observed effective
+state. It is the *gate*, a boot-time refusal rather than an audit, that necessarily keys on the
+declared view.
+
+=== What is unchanged
+
+* The three-way classification, and every disposition it assigns.
+* The two-seam count, and the policy-keys-only constraint on the projecting policy source: it still
+  projects never a port, never trust material, never key material. Nothing was added to its projected
+  set, and no third source exists.
+* The hard prohibition on projecting key material into the default TLS registry bucket. The gate
+  *reads* that bucket to decide; it writes nothing to it, and projects no material anywhere.
+* The management interface's default, its opt-out, and the two-doors arrangement.
+* The deployment-bound status of every port, and of `quarkus.http.insecure-requests` itself. The
+  environment keeps the last word on it; nothing outranks a deployment on a deployment-bound knob.
 
 == Consequences
 

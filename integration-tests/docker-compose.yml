@@ -1018,6 +1018,130 @@ services:
       - api-sheriff
     restart: unless-stopped
 
+  # --- The explicit plain-HTTP opt-in instance ------------------------------------------------------
+  # The ONE instance in this stack that supplies NO server key material for the terminated main
+  # listener. All four QUARKUS_HTTP_SSL_CERTIFICATE_* variables are absent, and that absence IS half
+  # the configuration under test — do not "fix" it by copying the pair every sibling instance carries.
+  #
+  # The other half is QUARKUS_HTTP_INSECURE_REQUESTS=enabled below, and the two belong together. A
+  # certificate-less deployment that does NOT declare that variable is REFUSED at boot: plain HTTP is
+  # something an operator declares, never something the gateway infers from a missing certificate,
+  # because absence cannot tell "deliberately behind a TLS terminator" apart from "the certificate
+  # failed to mount". This instance is the deliberate deployment, spelled out. Removing the variable
+  # does not make it serve cleartext quietly — it makes the container refuse to start, which is the
+  # matched negative leg NoCertificatePlainHttpOptInIT drives itself with a one-off `docker run`
+  # rather than as a permanently-failing service here (an api-sheriff* service that never becomes
+  # healthy would break the stack's own readiness gate).
+  #
+  # It overlays the no-passthrough_sni gateway.yaml for the same reason api-sheriff-passthrough-empty
+  # does, and here the reason is load-bearing for the test rather than for a benchmark: the shared
+  # gateway.yaml declares passthrough_sni, which STARTS the accept-time SNI front listener on 8443.
+  # That front listener terminates nothing and needs no certificate, so it would happily accept on the
+  # published HTTPS port — and the IT's "the HTTPS port does not answer" assertion would be asserting
+  # the front listener's presence rather than the absence of a terminated HTTPS listener. With the
+  # overlay there is no front listener, nothing supplies key material, and 8443 is genuinely dead.
+  #
+  # It sets NO QUARKUS_HTTP_SSL_PORT, for the same reason as api-sheriff-passthrough-empty: with no
+  # passthrough_sni there is no front listener to move the terminated listener out of the way of.
+  api-sheriff-no-certificate:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597).
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    # It stays HTTPS: the management interface takes its certificate from the SEPARATE
+    # quarkus.management.ssl.certificate.* keys below, which the main-listener declaration gate does
+    # not read, so this instance's management port behaves exactly like every other one's. Only the
+    # MAIN listener is certificate-less here.
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
+
+    ports:
+      # The PLAIN HTTP port is the one under test — every other gateway instance publishes 8443 here.
+      - "10453:8080"  # Plain HTTP, served by the declared opt-in (test.no.certificate.plain.port)
+      # Published deliberately with NOTHING behind it. The IT asserts that a TLS dial to this port
+      # fails, and it can only assert that against a published port; the matched positive control is
+      # the plain port above answering 200, so "it failed" cannot pass for the wrong reason.
+      - "10454:8443"  # Terminated HTTPS — deliberately dead (test.no.certificate.https.port)
+      - "19010:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
+      # NoCertificatePlainHttpOptInIT reads this container's log FILE for the ApiSheriff-121
+      # resolved-plain-HTTP warning and for the framework's own "started in" line, so the enable flag
+      # is load-bearing here, not decorative.
+      - QUARKUS_LOG_FILE_ENABLED=true
+      - LOG_FILE_PATH=/logs/quarkus-no-certificate.log
+      # THE CONFIGURATION UNDER TEST, expressed as an absence: no QUARKUS_HTTP_SSL_CERTIFICATE_FILES,
+      # no _KEY_FILES, no _KEY_STORE_FILE, no _CREDENTIALS_PROVIDER, and no
+      # QUARKUS_HTTP_TLS_CONFIGURATION_NAME. Nothing declares server key material for the main
+      # listener.
+      #
+      # …and THE OPT-IN that makes that absence a supported deployment rather than a refused one.
+      # This is the whole point of the pairing: the gateway serves cleartext because this variable
+      # says so, not because a certificate happened to be missing. Deleting it turns this service
+      # into a boot refusal naming both remedies — it does NOT turn it into a silent downgrade.
+      - QUARKUS_HTTP_INSECURE_REQUESTS=enabled
+      #
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. It is a DIFFERENT key
+      # family from the main listener's and the declaration gate never reads it, so supplying it here does not
+      # weaken the state under test.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
+      # (oidc.client_secret) resolves to via EnvSecretResolver.
+      - OIDC_CLIENT_SECRET=integration-secret
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the no-passthrough_sni variant — see
+      # the service comment for why the overlay is what makes the dead-HTTPS-port assertion honest.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-passthrough-empty/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      # The /assets/static route the IT's positive control fetches is served from this directory.
+      - ./src/main/docker/assets:/app/assets:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    # 256M rather than the suite-serving instances' 512M: this instance serves four assertions against
+    # one static asset and its own log, never the IT suite, and it is never benchmarked — so ADR-0012's
+    # equal-budget rule, which binds the benchmark-compared instances, does not reach it.
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '2.0'
+        reservations:
+          memory: 128M
+          cpus: '0.5'
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. It is
+    # a bare TCP accept on the MANAGEMENT port, so it is unaffected by the main listener having no
+    # certificate.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
   # --- The egress hostname-verification matched control, positive leg ------------------------------
   # egress_tls.upstream_verify_hostname is bound at Vert.x client construction, so it is a property of
   # the whole gateway process (ADR-0040) — one instance can only ever exhibit one side of the control.
