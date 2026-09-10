@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *seventeen files* under `integration-tests/src/main/docker/`.
+The declared surface is *eighteen files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -53,8 +53,9 @@ disk without touching this table and the guard fails.
 | Surface | Count | Files
 
 | `sheriff-config*/gateway.yaml`
-| 8
+| 9
 | `sheriff-config/gateway.yaml` (base), `sheriff-config-cookie/gateway.yaml`,
+  `sheriff-config-cookie-refresh/gateway.yaml`,
   `sheriff-config-egress-verify-off/gateway.yaml`,
   `sheriff-config-egress-verify-on/gateway.yaml`,
   `sheriff-config-mtls/gateway.yaml`, `sheriff-config-passthrough-empty/gateway.yaml`,
@@ -74,9 +75,9 @@ disk without touching this table and the guard fails.
 |===
 // end::inventory[]
 
-Only the base directory carries `endpoints/` and `topology.properties`; the seven overlay
+Only the base directory carries `endpoints/` and `topology.properties`; the eight overlay
 directories replace `gateway.yaml` and nothing else, which is why the endpoints tree resolves
-identically for all ten booted gateway instances.
+identically for every booted gateway instance.
 
 *No limit-shaped key lives outside this surface.* The sweep is a key-name pattern, applied to
 declared key names only -- never to raw file text, so the descriptors' extensive prose comments
@@ -86,11 +87,12 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all seventeen files it returns hits in exactly thirteen of them:
+Over all eighteen files it returns hits in exactly fourteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
 * `sheriff-config-cookie/gateway.yaml`
+* `sheriff-config-cookie-refresh/gateway.yaml`
 * `sheriff-config-egress-verify-off/gateway.yaml`
 * `sheriff-config-egress-verify-on/gateway.yaml`
 * `sheriff-config-mtls/gateway.yaml`
@@ -107,7 +109,7 @@ Over all seventeen files it returns hits in exactly thirteen of them:
 The remaining four -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/untrusted.yaml` and
 `sheriff-config/topology.properties` -- declare none. That complement is the other half of the same
-claim, so asserting the thirteen exactly asserts both halves at once.
+claim, so asserting the fourteen exactly asserts both halves at once.
 
 `sheriff-config/endpoints/untrusted.yaml` is the newest of the four and is limit-free by
 construction rather than by accident: it is the egress hostname-verification pair's chain-trust
@@ -119,13 +121,13 @@ Matrix row.
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the thirteen limit-bearing paths -- and uses them
+runtime -- the inventory table, the sweep pattern and the fourteen limit-bearing paths -- and uses them
 as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-thirteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+fourteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -171,6 +173,25 @@ near-expiry window 870 seconds into a session and out of a test's reach; this ov
 as `refresh-client`, whose client-level `access.token.lifespan` is 45, moving that window to
 15s--45s. The declared `refresh.leeway_seconds: 30` is unchanged here -- the overlay changes what the
 leeway is measured *against*, never the leeway itself.
+
+`sheriff-config-cookie-refresh/gateway.yaml` is outside the `×N` notation for the same reason, and it
+is derived from the *cookie* document rather than the base one: it is
+`sheriff-config-cookie/gateway.yaml` with three values repointed -- `oidc.client_id` to
+`refresh-client`, `session.refresh.enabled` from `false` to `true`, and the gateway origin from 10445
+to 10455 -- and no key added or removed. It therefore declares exactly the key set the cookie document
+declares, and the `×4` rows are **not** re-cited to include it. None of the three repointed values is
+limit-shaped: `client_id` and `enabled` match no alternative in the sweep pattern, and the origin
+appears inside `redirect_uri`, `post_logout_redirect_uri` and `csrf.trusted_origins`, whose *keys*
+are already cited. It is limit-bearing purely on the keys it shares with the cookie document, so it
+needs no Coverage Matrix row of its own.
+
+What makes this overlay worth naming is the one thing it deliberately does *not* declare:
+`session.max_cookie_size`. Omitting it is what puts the instance on the lowered browser-safe default,
+so the sealed-cookie size budget is *measured* against a session that also refreshes rather than
+assumed. An override here would silently move that measurement's ceiling and make the row it feeds
+report on a budget no browser enforces -- which is the deliverability blindness
+link:cookie-deliverability-blindness.adoc[the companion note] describes, reintroduced through a
+descriptor rather than through a client.
 
 *Fourteen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
 `csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *seven* base-only
@@ -568,17 +589,17 @@ enlarge exactly the hole this note has chosen to report.
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
 paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
-thirteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+fourteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
 *boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
 so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *thirteen already limit-bearing* files
+The consequence: adding a limit-shaped key to one of the *fourteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
 row is forced. Only a key that makes one of the remaining four --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
 `sheriff-config/endpoints/untrusted.yaml` or `sheriff-config/topology.properties` -- limit-bearing
-crosses the partition and fails the build. Thirteen of seventeen is the *majority* of the surface,
-so this is the ordinary case rather than an edge one: for those thirteen files the "add its row here
+crosses the partition and fails the build. Fourteen of eighteen is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those fourteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard.
 
@@ -604,14 +625,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (seventeen files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (eighteen files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the thirteen limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the fourteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the thirteen/four partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the fourteen/four partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -620,7 +641,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the seventeen files, add its row here in the same change --
+When you add a limit-shaped key to any of the eighteen files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix

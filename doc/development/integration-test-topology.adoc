@@ -12,7 +12,7 @@ reverse-engineering `integration-tests/docker-compose.yml`.
 ====
 This is the *integration-test* topology. It is not a production deployment and not a recommended
 one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend, the deliberately
-hostname-mismatched TLS backend and the nine variant gateway
+hostname-mismatched TLS backend and the variant gateway
 instances exist to make specific tests possible. For a deployment-shaped stack, read
 link:compose-sample.adoc[the Compose sample] instead -- it is drawn and documented separately for
 exactly this reason. No Kubernetes topology is drawn.
@@ -48,12 +48,12 @@ in both cases the material sits in the already-mounted `certificates/` directory
 volume:
 
 * `benchmark-idp` binds the *JWKS back-channel* to `localhost-truststore.p12`
-  (`benchmark-idp-trust.properties`). Every one of the ten gateway instances loads it, because every
+  (`benchmark-idp-trust.properties`). Every gateway instance in the stack loads it, because every
   one names `jwks.tls_profile: benchmark-idp`.
 * `it-upstream` binds *terminated upstream dials* to `upstream-truststore.p12`
   (`it-upstream-trust.properties`). Only the two `api-sheriff-egress-verify-*` instances load it --
-  they are the only ones naming `egress_tls.upstream_tls_profile`; the other eight name none and so
-  keep the JVM default trust store on that leg.
+  they are the only ones naming `egress_tls.upstream_tls_profile`; no other instance names one, so
+  they keep the JVM default trust store on that leg.
 
 A named profile *replaces* a client's anchors rather than adding to them, which is why
 `upstream-truststore.p12` holds only the mismatched upstream's own certificate: it is exactly the set
@@ -77,13 +77,13 @@ link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split].
 
 === The collapsed variant group
 
-Nine further gateway instances run the *same* `api-sheriff:distroless` image and differ only in
+Ten further gateway instances run the *same* `api-sheriff:distroless` image and differ only in
 configuration: their published ports, an overlaid `gateway.yaml` *where one applies*, and -- for
 some instances -- their environment. Neither lever is universal: `api-sheriff-plain-mgmt` overlays no
 `gateway.yaml` at all and is configured by a single environment variable. The per-instance
 differences are named where they matter below; do not read this sentence as an exhaustive list.
-Drawing all ten in full would bury the affordances the diagram exists to show, so they are collapsed
-into one annotated group that still names every instance and every port pair:
+Drawing all eleven in full would bury the affordances the diagram exists to show, so they are
+collapsed into one annotated group that names each of them with its port pair:
 
 [cols="2,1,1,3"]
 |===
@@ -155,7 +155,32 @@ into one annotated group that still names every instance and every port pair:
   authenticates as `refresh-client`, whose client-level `access.token.lifespan` is 45, moving that
   window to 15s--45s so `BffTokenRefreshIT` can drive all three `RefreshOutcome.Kind` branches. It
   stays in server session mode; only the minting client and the origin differ.
+
+| `api-sheriff-cookie-refresh`
+| 10455
+| 19011
+| Session mode, the refresh switch and the minting client are each process-wide, so the one
+  combination that matters most to a cookie-mode operator -- a *stateless sealed-cookie session that
+  also refreshes* -- fits on neither sibling: `api-sheriff-cookie` holds refresh off (which is what
+  keeps its seal inside the browser-safe budget) and `api-sheriff-refresh` stays in server mode.
+  This instance is the proof rig for that combination. It overlays the cookie document with exactly
+  three behavioural differences -- `refresh-client` as the minting client, `session.refresh.enabled:
+  true`, and the 10455 gateway origin -- and declares *no* `max_cookie_size` override, so it runs on
+  the lowered 4019-byte browser-safe default and the size question `BffCookieRefreshIT` exists to
+  answer is measured rather than assumed.
 |===
+
+[NOTE]
+====
+*This table is not the port allocator; `docker-compose.yml` is.* The stack starts one further
+gateway service that neither this table nor the diagram has ever enumerated:
+`api-sheriff-no-certificate`, which publishes `10453` (plain HTTP, the configuration under test),
+`10454` (a deliberately dead HTTPS port) and `19010`. It is not in the collapsed group because it
+was never added to it -- an omission of the same class as the `api-sheriff-plain-mgmt` one the
+readiness-change diagram check below records, and one this change found by colliding with it:
+`api-sheriff-cookie-refresh` was planned for `10453 / 19010`, which the runtime would have refused
+to bind, and was moved to `10455 / 19011`. Allocate host ports by reading `docker-compose.yml`.
+====
 
 The two `api-sheriff-egress-verify-*` instances are one matched pair in this table that must be read
 *together*. `api-sheriff-cookie` and `api-sheriff-cookie-2` are the other, and the two pairs are
@@ -212,9 +237,8 @@ copy of the first leg while still going red on the verify-off instance, which is
 The route itself lives in the shared `sheriff-config/endpoints/untrusted.yaml` under the existing
 `api` anchor rather than at a top-level `/untrusted`. A new top-level path would need a new anchor,
 and ADR-0007 requires the anchor to be declared in every gateway document that resolves the route --
-which would mean editing all eight, two of which are the matched pair whose entire value rests on
-differing in exactly one scalar. The other eight instances resolve the alias and simply never dial
-it.
+which would mean editing all nine, two of which are the matched pair whose entire value rests on
+differing in exactly one scalar. Every other instance resolves the alias and simply never dials it.
 
 === Mounted material
 
@@ -263,7 +287,8 @@ budget exists to absorb the interval between asking too early and being ready; b
 assertion runs the runtime has already reported the instance healthy, so a non-`UP` answer is a
 defect rather than an early ask, and retrying would only delay reporting it.
 
-Both layers cover all ten instances from one derivation: the service set, each instance's published
+Both layers cover every gateway instance in the resolved Compose model from one derivation: the
+service set, each instance's published
 management port, the scheme its management interface speaks and the *root path* its management
 endpoints sit beneath -- the latter two from the `de.cuioss.sheriff.management-scheme` and
 `de.cuioss.sheriff.management-root-path` labels -- are read from the resolved Compose model, so
@@ -394,10 +419,10 @@ workers on 16 cores:
 |===
 
 This table is evidence from a dated run, not a claim about today's instance set, so it is
-deliberately *not* restated as the set grows. The instance set has since reached ten, and the four
-that postdate the run -- `api-sheriff-passthrough-empty`, `api-sheriff-egress-verify-on`,
-`api-sheriff-egress-verify-off` and `api-sheriff-refresh` -- are absent from it by design rather
-than by omission. No row may
+deliberately *not* restated as the set grows. Every instance that postdates the run --
+`api-sheriff-passthrough-empty`, `api-sheriff-no-certificate`, `api-sheriff-egress-verify-on`,
+`api-sheriff-egress-verify-off`, `api-sheriff-refresh` and `api-sheriff-cookie-refresh` -- is absent
+from it by design rather than by omission. No row may
 be invented for any of them: a fabricated timing would turn measured evidence into an assertion while
 leaving the table looking exactly as authoritative. The headroom argument below therefore stands on
 the six instances actually measured.
@@ -421,8 +446,8 @@ not a live-to-ready figure -- that delta is 0.00s (see above) and would justify 
 all.
 
 The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
-`--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than ten,
-which is why the two differ. That leaves one bound duplicated per script instead of a whole retry
+`--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than the
+whole set, which is why the two differ. That leaves one bound duplicated per script instead of a whole retry
 budget per script, and ADR-0031 records the residual duplication rather than claiming it away.
 
 === The demo bring-up does *not* gate this way
@@ -450,7 +475,7 @@ to fix.*
 It is handled structurally rather than as a special case: each service declares the scheme its
 management interface speaks in a `de.cuioss.sheriff.management-scheme` label, and the layer-2
 readiness assertion adds `-k` only when that label says `https`. The scheme difference is therefore
-data, not a branch on a service name -- which is what lets one loop cover all ten instances.
+data, not a branch on a service name -- which is what lets one loop cover every instance.
 
 Layer 1 is unaffected either way. A bare TCP accept has no scheme to get wrong, so this instance's
 baked container probe is identical to every other instance's; the plain-HTTP downgrade is visible
@@ -557,3 +582,48 @@ the `viewBox` edge, the appended row's two columns align on the same left edges 
 it, and the group's bottom edge is visibly inside the compose-network rectangle. The same pass
 discharged the older egress-control obligation recorded in the section above. Rendered PNGs are
 verification artifacts and are not committed.
+
+=== Diagram check for the cookie-refresh instance
+
+This change *does* alter facts the diagram depicts: it adds one gateway instance and one published
+port pair. The diagram was therefore redrawn rather than left alone.
+
+The collapsed variant group is relabelled `variant instances (10)` and grows by one row --
+`api-sheriff-cookie-refresh` at `10455 · 19011` -- on the group's existing 18-pixel row pitch. The
+growth is taken *upwards* rather than downwards, and that direction is the one number worth stating
+because it is what could have gone wrong quietly: the group's bottom edge at `826` already sits only
+`10` pixels inside the compose-network rectangle's bottom edge at `836`, so growing downwards by a
+row pitch would have pushed the group through its own enclosure. The rectangle's top edge therefore
+moves from `600` to `582` and its height from `226` to `244`, leaving the bottom edge unmoved at
+`826`; every text row inside the group moves up by the same `18`, so the appended row lands on the
+coordinate the previous last row vacated, and the own-bar's top edge moves with them while its
+bottom edge stays at `818` with the rectangle's. Above the
+group, the mounted-material pills end at `566`, so the gap there narrows from `34` to `16` pixels
+and no element overlaps. The `viewBox` is unchanged. The `<desc>` accessibility narrative carries
+the new counts and names `api-sheriff-cookie-refresh` last in the member enumeration, with the
+sentence explaining what the instance is for.
+
+[WARNING]
+====
+*The two-theme read-back is owed for this edit and has NOT been performed.* The environment this
+edit was made in has no SVG renderer, so the geometry above was placed by coordinate arithmetic
+against the existing elements rather than by rendering the result and looking at it -- the same
+situation the egress-control edit was in, and it is recorded here for the same reason rather than
+being quietly skipped.
+
+What *was* checked is mechanical and is stated so it is not mistaken for the visual check: the
+document parses as well-formed XML; the added row reuses the existing `.item` class and the
+theme-neutral palette, so it introduces no colour that resolves differently on a light or a dark
+background; the arithmetic above keeps every element inside the `viewBox` and inside its own
+enclosing rectangle; and the two added text rows sit on the same `x` coordinates (`76` and `304`) as
+the nine above them.
+
+What is *not* established is everything only a render shows: actual glyph advance width against the
+group rectangle's right edge, legibility at the published size, and the absence of collision with
+the neighbouring L4-relay polyline and the `mismatched-tls-backend` egress arrow after the upward
+shift. Re-render at 1200px against the GitHub light (`#ffffff`) and dark (`#0d1117`) backgrounds per
+the deployment diagram-type standard
+(`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`), read both renders back, and
+replace this warning with the result. Rendered PNGs remain verification artifacts and are never
+committed.
+====

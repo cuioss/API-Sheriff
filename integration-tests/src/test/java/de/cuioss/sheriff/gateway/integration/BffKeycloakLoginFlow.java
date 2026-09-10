@@ -111,6 +111,25 @@ final class BffKeycloakLoginFlow {
      */
     static final String REFRESH_GATEWAY_ORIGIN = "https://localhost:10452";
 
+    /**
+     * Browser-facing origin of the <em>cookie-mode-with-refresh</em> gateway instance
+     * ({@code api-sheriff-cookie-refresh}, published host port {@code 10455 -> } container
+     * {@code 8443}).
+     * <p>
+     * Three properties this instance combines are each a property of the whole gateway process, so
+     * the combination fits on no existing instance: {@link #COOKIE_GATEWAY_ORIGIN} runs cookie mode
+     * with {@code refresh.enabled: false} — which is exactly what keeps its seal inside the
+     * browser-safe budget — and {@link #REFRESH_GATEWAY_ORIGIN} runs the refresh path in
+     * <em>server</em> mode, where the session lives server-side and the cookie carries only an opaque
+     * handle. Only here does a sealed cookie that <em>is</em> the session also have to absorb a
+     * rotated token set. {@code BffCookieRefreshIT} drives this origin.
+     * <p>
+     * The port is {@code 10455} rather than the next number after {@link #REFRESH_GATEWAY_ORIGIN}'s
+     * {@code 10452}: {@code api-sheriff-no-certificate} already publishes {@code 10453} and
+     * {@code 10454}.
+     */
+    static final String COOKIE_REFRESH_GATEWAY_ORIGIN = "https://localhost:10455";
+
     /** The container-internal Keycloak authority the {@code integration} realm frontendUrl pins. */
     static final String KEYCLOAK_INTERNAL_AUTHORITY = "keycloak:8443";
 

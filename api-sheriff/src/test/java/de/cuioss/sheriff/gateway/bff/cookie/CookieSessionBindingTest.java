@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.cookie;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,7 +46,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Tests for {@link CookieSessionBinding} — the stateless seam implementation. Covers the
  * bind/resolve/persist/destroy round trip, the server-side absolute-TTL enforcement (an expired
  * cookie the browser still holds is refused), the {@code Max-Age} reflecting the remaining rather
- * than the reset lifetime on a re-seal, the single-key change semantics (a cookie sealed under a
+ * than the reset lifetime on a re-seal, the re-seal emitting exactly one hardened {@code Set-Cookie}
+ * distinct from the one {@code bind} emitted and carrying the login nonce verbatim, the single-key
+ * change semantics (a cookie sealed under a
  * withdrawn key is no session, and every fresh login seals under the one active key id), the
  * stable-but-never-emitted session identity, the {@code UNSUPPORTED} IdP-driven destruction
  * capability, and the {@link SessionRecord} session-nonce contract (absent is the valid server-mode
@@ -253,6 +256,53 @@ class CookieSessionBindingTest {
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow();
             assertEquals("rotated-access-token", reResolved.accessToken());
             assertEquals("rotated-refresh-token", reResolved.refreshToken());
+        }
+
+        @Test
+        @DisplayName("Should emit exactly one hardened Set-Cookie, distinct from the one bind emitted")
+        void shouldEmitOneHardenedCookieDistinctFromBind() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+
+            BoundSession reBound = binding.persist(withRotatedAccessToken(resolved, "rotated-access-token"),
+                    LOGIN.plusSeconds(60));
+
+            // In this mode the cookie IS the session, so the re-seal is the ONLY place the rotated
+            // material can be kept — and it must arrive with the same hardening a login's cookie
+            // carries, since it replaces that cookie in the browser wholesale.
+            assertEquals(1, reBound.setCookieHeaders().size(),
+                    "a re-seal replaces the session cookie, so it emits exactly one Set-Cookie");
+            String setCookie = reBound.setCookieHeaders().getFirst();
+            assertTrue(setCookie.startsWith(COOKIE_NAME + "="), setCookie);
+            assertTrue(setCookie.contains("Secure"), setCookie);
+            assertTrue(setCookie.contains("HttpOnly"), setCookie);
+            assertTrue(setCookie.contains("SameSite=Lax"), setCookie);
+            assertFalse(setCookie.contains("rotated-access-token"),
+                    "rotated material is sealed, never emitted in the clear");
+            assertNotEquals(cookieHeaderOf(bound), cookieHeaderOf(reBound),
+                    "a re-seal reproducing bind's value byte for byte would leave the browser holding "
+                            + "the pre-rotation tokens while every other assertion still passed");
+        }
+
+        @Test
+        @DisplayName("Should re-seal the original session nonce verbatim rather than mint a new one")
+        void shouldResealTheOriginalNonceVerbatim() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+            String nonceAtLogin = resolved.sessionNonce();
+            assertNotNull(nonceAtLogin, "bind mints the session's one nonce");
+
+            BoundSession reBound = binding.persist(withRotatedAccessToken(resolved, "rotated-access-token"),
+                    LOGIN.plusSeconds(60));
+
+            SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
+                    .orElseThrow();
+            // Asserted on the NONCE itself rather than only on the derived identity: the identity is a
+            // digest over three inputs, so an identity assertion alone could be satisfied by a
+            // compensating change elsewhere, and the nonce is the input a re-mint would move.
+            assertEquals(nonceAtLogin, reResolved.sessionNonce(),
+                    "the nonce is an identity input fixed at login; re-minting it on a re-seal would "
+                            + "change the session identity mid-flight and break single-flight coalescing");
         }
 
         @Test
