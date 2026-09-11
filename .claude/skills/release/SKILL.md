@@ -992,6 +992,15 @@ cosign verify "$IMAGE@$VERSION_DIGEST" \
   --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$'
 ```
 
+⚠ **Verify with Cosign v3, not v2.** The workflow installs Cosign through `sigstore/cosign-installer`
+v4.x, which defaults to Cosign **v3**, and v3 attaches the signature in the new Sigstore bundle format.
+Cosign **v2 cannot see it** and reports *"no signatures found"* — a result that reads exactly like a
+supply-chain failure and is not one. Without a local install, the official image works — **pinned by
+digest**, because a verification step must not pull its own verifier by a mutable tag:
+`docker run --rm ghcr.io/sigstore/cosign/cosign:v3.0.6@sha256:de9c65609e6bde17e6b48de485ee788407c9502fa08b8f4459f595b21f56cd00 verify …`
+with the same two identity flags (the digest is the multi-arch index `v3.0.6` resolved to at the 0.2.1
+cut). At that cut v2.4.1 reported no signatures and v3.0.6 verified the same digest cleanly.
+
 **Both release paths sign under `refs/heads/main`, and that is read off the certificates rather than
 inferred from the trigger config.** 0.1.0 (`github_workflow_trigger = workflow_dispatch`) and 0.1.1
 (`github_workflow_trigger = pull_request`) both carry
@@ -1145,6 +1154,7 @@ and a hit here that 10a does not also produce means the enumeration has regresse
 | `doc/user/README.adoc` | the same ALPHA callout again — ⛔ **there are THREE, not two** | pass 2 / 3 |
 | `doc/fapi_status.adoc`, `doc/fapi_next_steps.adoc`, `doc/features-analysis.adoc` | *"as of the X alpha"* — ⛔ **stale since 0.1.0, see pass 3** | pass 3 ONLY |
 | `deployment/compose-sample/docker-compose.yml` | the **`VERSION SKEW, until X ships` comment block** — see 10d | pass 2 |
+| `doc/user/context-path.adoc` | the published-consumer `<parent><version>` (*"The API Sheriff release you are adopting"*) | pass 2 — ⛔ **missing from this table until the 0.2.1 cut** |
 
 > **Do NOT "fix" `doc/user/container-image.adoc`.** It uses a literal `<version>` placeholder
 > throughout, deliberately — it is the reference layer and is written to stay true across releases.

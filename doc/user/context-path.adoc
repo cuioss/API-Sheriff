@@ -159,7 +159,7 @@ no profile: the parent supplies the `api-sheriff` dependency, the Quarkus platfo
         <artifactId>api-sheriff-build-parent</artifactId>
         <!-- The API Sheriff release you are adopting. Bumping this bumps the gateway with it:
              the parent declares the api-sheriff dependency at ${project.parent.version}. -->
-        <version>0.2.0</version>
+        <version>0.2.1</version>
         <relativePath/>
     </parent>
 
