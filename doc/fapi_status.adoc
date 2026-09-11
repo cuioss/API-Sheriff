@@ -5,7 +5,7 @@
 :sectnumlevels: 2
 
 This document states, requirement by requirement, where API Sheriff's BFF stands against the
-*FAPI 2.0 Security Profile (Final)* as of the 0.1.0 alpha release. It exists because the profile is
+*FAPI 2.0 Security Profile (Final)* as of the 0.2.1 alpha release. It exists because the profile is
 frequently claimed loosely, and because an earlier revision of
 link:features-analysis.adoc[the feature analysis] claimed capabilities the shipped code does not
 have (corrected in the same change that added this document).

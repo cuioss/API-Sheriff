@@ -4,7 +4,7 @@
 :sectnums:
 :sectnumlevels: 2
 
-The route from the 0.1.0 alpha position recorded in link:fapi_status.adoc[FAPI 2.0 Conformance
+The route from the 0.2.1 alpha position recorded in link:fapi_status.adoc[FAPI 2.0 Conformance
 Status] to a genuinely conformant FAPI 2.0 relying party. This document scopes the work and names
 the decisions that must be taken before it starts; it does not schedule it.
 

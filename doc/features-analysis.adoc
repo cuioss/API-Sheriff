@@ -217,7 +217,7 @@ architecture makes it uniquely able to close all three.
   See link:adr/0003-forwarded-headers.adoc[ADR-0003].
 
 | *PAR-driven, FAPI-2.0-aligned confidential-client flow* -- *TARGET, NOT SHIPPED IN 0.1.0*
-| A *major* differentiator -- and, as of the 0.1.0 alpha, an *unrealised* one. The intended posture
+| A *major* differentiator -- and, as of the 0.2.1 alpha, an *unrealised* one. The intended posture
   drives the authorization-code flow through *Pushed Authorization Requests* (PAR, RFC 9126) --
   pushing the authorization parameters over the back channel and redirecting with the returned
   `request_uri`, so parameters are never exposed or tamperable in the browser -- as part of a
