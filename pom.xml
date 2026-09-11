@@ -9,7 +9,7 @@
     </parent>
     <groupId>de.cuioss.sheriff.gateway</groupId>
     <artifactId>api-sheriff-parent</artifactId>
-    <version>0.2.1</version>
+    <version>0.2.2-SNAPSHOT</version>
     <packaging>pom</packaging>
     <!-- Must be declared: <inceptionYear> is inherited, and the license plugin binds
          the copyright ${year} to it. Without this, this project would report
@@ -52,7 +52,7 @@
         <developerConnection>
             scm:git:https://github.com/cuioss/api-sheriff/
         </developerConnection>
-        <tag>0.2.1</tag>
+        <tag>HEAD</tag>
     </scm>
     <issueManagement>
         <url>https://github.com/cuioss/api-sheriff/issues</url>
