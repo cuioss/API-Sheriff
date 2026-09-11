@@ -29,11 +29,12 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>What it mirrors, and against which version.</strong> This is a faithful re-derivation of
  * {@code io.quarkus.vertx.http.runtime.options.HttpServerOptionsUtils#getTlsConfiguration(Optional,
- * TlsConfigurationRegistry)} (quarkus-vertx-http <strong>3.39.2</strong>, lines 112-129) together
- * with the leg its two callers add — {@code createSslOptions} (lines 72-110) for the main listener
- * and {@code createSslOptionsForManagementInterface} (lines 192-228) for the management interface.
- * Both callers use the same helper and then fall through to the same legacy
- * {@code ssl.certificate.*} block, which is why one discriminator serves both listeners. The
+ * TlsConfigurationRegistry)} (quarkus-vertx-http <strong>3.39.3</strong>, lines 112-129; the file is
+ * byte-identical to 3.39.2) together with the leg its two callers add — {@code createSslOptions}
+ * (lines 72-110) for the main listener and {@code createSslOptionsForManagementInterface} (lines
+ * 192-228) for the management interface. Both callers use the same helper and then fall through to
+ * the same legacy {@code ssl.certificate.*} block, which is why one discriminator serves both
+ * listeners. The
  * upstream method and its version are named here deliberately: this file is the one place the logic
  * lives, so an upstream change is traceable to exactly one site rather than to two approximate
  * copies (the state this class was extracted to end).

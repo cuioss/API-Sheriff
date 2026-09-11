@@ -32,7 +32,7 @@
 
          It declares exactly four things a consumer needs, and nothing else:
            (1) the consumer-facing context-path knob and its mapping onto the stock Quarkus keys,
-           (2) the api-sheriff dependency plus the Quarkus platform BOM,
+           (2) the api-sheriff dependency (the Quarkus platform BOM is inherited - see 2b),
            (3) the quarkus-maven-plugin binding, with the main class pinned,
            (4) the native profile.
          Plus one defensive concern: neutralising this project's own hygiene toolchain, which a consumer
@@ -236,20 +236,15 @@
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.gateway.consumer</maven.jar.plugin.automatic.module.name>
     </properties>
 
-    <dependencyManagement>
-        <dependencies>
-            <!-- ==== (2b) The Quarkus platform ============================================== -->
-            <!-- Imported here as well as in api-sheriff-parent so this POM states the platform it
-                 binds a consumer to, rather than leaving it to be discovered up the parent chain. -->
-            <dependency>
-                <groupId>io.quarkus</groupId>
-                <artifactId>quarkus-bom</artifactId>
-                <version>${version.quarkus}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+    <!-- ==== (2b) The Quarkus platform ================================================== -->
+    <!-- Deliberately NOT imported here. api-sheriff-parent imports io.quarkus:quarkus-bom FIRST
+         in its <dependencyManagement> - ahead of java-ee-10-bom and token-sheriff-bom, which is the
+         order the smallrye-config convergence depends on - and a consumer inherits that list,
+         order included. A second import at this level would only ever duplicate that entry: it
+         names the same coordinate at the same inherited ${version.quarkus}, and it would take
+         precedence over the ordered list without changing a single resolved version. The consumer
+         example's effective POM was compared before and after this import was removed, and its
+         managed dependencies are identical. -->
 
     <dependencies>
         <!-- ==== (2c) The application ==================================================== -->
@@ -280,25 +275,22 @@
         <plugins>
             <!-- ==== (3b) The Quarkus build binding ========================================= -->
             <!-- BOUND, not merely managed: a consumer's `mvn package` must augment without the
-                 consumer declaring a plugin. The version and the three goals are stated explicitly
-                 rather than left to the inherited pluginManagement entry, so this binding is legible
-                 in the one file a consumer reads.
+                 consumer declaring a plugin. pluginManagement is only a template, so THIS declaration
+                 is what activates it - and it is the one line that must stay here.
+
+                 Everything else comes from de.cuioss:cui-quarkus-parent's pluginManagement entry, which
+                 reaches the consumer down the whole parent chain: the version (${version.quarkus}, the
+                 same inherited property the platform BOM reads), <extensions>true</extensions>, and the
+                 build / generate-code / generate-code-tests goals. This declaration used to restate the
+                 extensions flag and the goals; that copy could only drift from the parent's, never
+                 improve on it. The consumer example's effective POM was compared before and after the
+                 restatement was removed, and the resolved binding is identical.
 
                  Running on this module itself is harmless: both mojos short-circuit on pom packaging
                  ("Type of the artifact is POM, skipping build goal"), so the reactor leg costs nothing. -->
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
-                <extensions>true</extensions>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>build</goal>
-                            <goal>generate-code</goal>
-                            <goal>generate-code-tests</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
         </plugins>
     </build>

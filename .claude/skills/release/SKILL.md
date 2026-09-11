@@ -534,6 +534,8 @@ check never evaluated and is therefore not a pass.
 **(v) Confirm smallrye-config still matches the Quarkus this project resolves.**
 
 ```bash
+# The check resolves sibling modules at the current -SNAPSHOT - install the reactor first (see below).
+python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "install -DskipTests"
 python3 .claude/skills/release/check-quarkus-alignment.py --repo . --check-resolved
 ```
 
@@ -545,7 +547,7 @@ python3 .claude/skills/release/check-quarkus-alignment.py --repo . --check-resol
 
 ⛔ **`version.quarkus` is INHERITED here, not project-owned — corrected 2026-09-11, and the previous
 wording had silently disabled this gate.** The parent is `de.cuioss:cui-quarkus-parent`, which
-declares `version.quarkus` (3.39.2 at the time of writing) and drives **both** the
+declares `version.quarkus` (3.39.3 as of `cui-quarkus-parent` 1.7.4) and drives **both** the
 `quarkus-maven-plugin` version and the `io.quarkus:quarkus-bom` import from that one property.
 Properties **do** inherit through a real `<parent>`; what cannot supply them is an *imported* BOM.
 `pom.xml` restates the `quarkus-bom` import deliberately — first, so it wins the smallrye-config
@@ -565,12 +567,21 @@ the plugin and the platform still cannot drift apart.
 
 **What this check still measures, and why the parent does not subsume it.** The risk is a *second*
 Quarkus line entering the build and splitting the `io.smallrye.config` family. `token-sheriff-bom`
-carries its own `version.quarkus`, inherited from `token-sheriff-parent` — **a separate input that
-currently resolves equal only because both parents sit on `cui-quarkus-parent` 1.7.3.** `pom.xml`
-records that explicitly: *"That agreement is a coincidence of the moment, not a guarantee."* The
-moment the lines diverge, the import ordering is what keeps a single smallrye-config line, and
-`--check-resolved` is what proves it. Verified at `7fce677`: Quarkus `3.39.2`, every
-`io.smallrye.config` artifact `3.17.2`, unsplit.
+carries its own `version.quarkus`, inherited from `token-sheriff-parent` — **a separate input, and
+since `cui-quarkus-parent` 1.7.4 a different one:** `token-sheriff` 0.9.5 was built on Quarkus 3.39.2
+while this project inherits 3.39.3. With the lines diverged, the import ordering is what keeps a single
+Quarkus line in the build, and `--check-resolved` is what proves smallrye-config did not split.
+Re-measured on the 1.7.4 bump (#300): Quarkus `3.39.3`, `token-sheriff`'s Quarkus artifacts resolved
+onto 3.39.3, every `io.smallrye.config` artifact `3.17.2`, unsplit. The `token-sheriff-bom` paragraph in
+`pom.xml` carries the same measurement.
+
+⚠ **Run `install -DskipTests` before `--check-resolved`.** The check lists the reactor's classpath with
+a bare `dependency:list`, which cannot take a sibling module's jar from the reactor. So
+`integration-tests` resolves `api-sheriff` at the current `-SNAPSHOT` from `~/.m2` or a remote
+repository, and without a fresh local install the check can return exit **2** (*"CANNOT DETERMINE:
+dependency:list exited 1"*). That happened on the 1.7.4 bump. An exit 2 is still a stop, never a pass:
+install, then re-run. This is the same resolution gap as the org workflow's `quarkus-alignment` job
+(cuioss/cuioss-organization#274). Keep the two copies in step when that is fixed.
 
 Why it matters: Quarkus' deployment classes are compiled against one specific smallrye-config
 release, so a newer version — even an internally coherent one — fails augmentation with
