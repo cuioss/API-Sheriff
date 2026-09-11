@@ -253,32 +253,76 @@ Read the release block in `.github/project.yml`:
 **`current-version` is what the release publishes.** Both the `release` job and the `publish-image`
 job read it; the version-identity assertion compares it against the checked-out `project.version`.
 
-#### 1a — Confirm `current-version` against the trunk's SNAPSHOT line
+#### 1a — Derive every version once, from `.github/project.yml`
 
-**`Read` the reactor version out of `pom.xml`.** The expected relationship *before* a cut is
-`pom.xml` = `<current-version>-SNAPSHOT`; `maven-release-plugin` owns the `X.Y.Z-SNAPSHOT` → `X.Y.Z`
-transition during `release:prepare`.
+`.github/project.yml` is the source of truth for **every** version this runbook touches. Derive
+them into shell variables **once** and thread those variables verbatim through the branch name,
+commit subject, PR title and body, the tag check and the release notes. **Never hand-substitute a
+literal `<version>` placeholder**, and never take the number from a git tag, a previous GitHub
+release, or your memory of the last cycle.
 
-> **Read it, do not `grep -m1` it.** The **first** `<version>` in `pom.xml` is the *parent's*
-> (`cui-java-parent`). The reactor version is the `<version>` that follows `</parent>`. A first-match
-> grep picks the parent and reports a mismatch that is not there.
+> **This repository's semantics, which are NOT TokenSheriff's — read before copying anything
+> across.** Here `release.current-version` is *the version the cut publishes*: the `release` job and
+> the `publish-image` job both read it, and Path A bumps it **to** the version being released.
+> TokenSheriff's skill instead treats `current-version` as the *last released* version and derives
+> the release from `next-version`. **Do not port that derivation.** The two repos genuinely differ,
+> and the evidence is in this repo's own history: commit `f3b9ed6` (*"declare version 0.1.1"*) moved
+> `current-version` `0.1.0 → 0.1.1` and **left `next-version` untouched at `0.2.0-SNAPSHOT`** — so
+> `next-version` here has been stale across a release and cannot be trusted as the input.
+
+```bash
+eval "$(python3 -c '
+import pathlib, re
+text = pathlib.Path(".github/project.yml").read_text()
+def field(key):
+    m = re.search(r"^\s*" + key + r":\s*(\S+)\s*$", text, re.M)
+    if not m:
+        raise SystemExit(key + " not found in .github/project.yml")
+    return m.group(1)
+print("PREV_VERSION=" + field("current-version"))
+print("DECLARED_NEXT=" + field("next-version"))
+')"
+echo "declared: current=$PREV_VERSION next=$DECLARED_NEXT"
+```
+
+`PREV_VERSION` must be captured **before** the Step 1c edit — once `current-version` is bumped the
+previous release is no longer recoverable from the file, and the release notes' `**Full Changelog**`
+compare range needs it.
+
+**Now read the reactor version through Maven, not by grepping the file:**
+
+```bash
+POM_VERSION=$(./mvnw -B -q help:evaluate -Dexpression=project.version -DforceStdout -N)
+echo "pom.xml reactor version: $POM_VERSION"
+```
+
+> **`help:evaluate` is used deliberately instead of a grep.** The **first** `<version>` in `pom.xml`
+> is the *parent's* (`cui-quarkus-parent`); the reactor version is the one following `</parent>`. A
+> first-match grep picks the parent and reports a mismatch that is not there. Resolving through Maven
+> removes that trap by construction rather than warning about it.
 
 > **Do NOT hand-edit `project.version` in `pom.xml`.** It would collide with the release plugin and
 > break the version-identity assertion in the `Assert the checked-out project version matches the
 > released version` step.
 
-**A mismatch is a decision to put to the user, never a default to pick.** Read the actual
-numbers out of `.github/project.yml` and `pom.xml` — never carry a remembered pair into the
-decision. The common shape after a release is a tree whose pom already floats on the *next*
-minor snapshot while `current-version` still names the version just published. Cutting a
-patch from that tree releases **backwards** from the declared development line: the
-transition is `X.(Y+1).0-SNAPSHOT` → `X.Y.Z`, not the `X.Y.Z-SNAPSHOT` → `X.Y.Z` shape the
-convention describes, and it forces a second decision about what `next-version` then becomes
-(back to the minor snapshot, or on to the next patch snapshot?).
+**Set `RELEASE_VERSION` and `NEXT_VERSION` explicitly, and confirm both with the user.** The usual
+shape is `RELEASE_VERSION` = `$POM_VERSION` with `-SNAPSHOT` stripped — the trunk is already floating
+on the line being cut:
 
-**Stop and get an explicit answer on both** — the version being cut *and* the resulting
-`next-version` — **before opening the version-bump PR.** On Path A that PR's merge is the release,
-so there is no later point at which to reconsider.
+```bash
+RELEASE_VERSION="${POM_VERSION%-SNAPSHOT}"
+# NEXT_VERSION is a DECISION, not a derivation - see below.
+echo "$PREV_VERSION -> $RELEASE_VERSION (then NEXT_VERSION=?)"
+```
+
+⛔ **`NEXT_VERSION` is a decision and has no safe default here.** Because `next-version` went stale
+across the 0.1.1 cut it cannot be believed, and the choice — next patch (`X.Y.(Z+1)-SNAPSHOT`) or
+next minor (`X.(Y+1).0-SNAPSHOT`) — changes what the trunk floats on afterwards.
+
+**Put both numbers to the user with `AskUserQuestion` before opening the version-bump PR** — the
+version being cut *and* the resulting `next-version`. On Path A that PR's merge **is** the release,
+so there is no later point at which to reconsider. State the determined pair and proceed only once
+it is confirmed.
 
 #### 1b — Choose the path
 
@@ -289,25 +333,41 @@ so there is no later point at which to reconsider.
 
 #### 1c — Path A only: prepare the version-bump PR, and do not merge it
 
-```bash
-git checkout -b chore/release_<version>
-# edit .github/project.yml: current-version / next-version
-git add .github/project.yml
-git commit -m "chore(release): declare version <version>"
-git push -u origin chore/release_<version>
-gh pr create --repo cuioss/API-Sheriff --base main \
-  --title 'chore(release): declare version <version>' \
-  --body 'Declare `current-version` `<version>`, `next-version` `<next>-SNAPSHOT`.
+Uses the variables exported in 1a verbatim — no placeholder is hand-substituted anywhere below.
 
-**MERGING THIS PR CUTS THE RELEASE.** The central version-changed guard sees `current-version` move
-with no `<version>` tag present, so the merge publishes the jars to Maven Central and the container
-image to GHCR. Do NOT merge until the release runbook (`.claude/skills/release/SKILL.md`) Steps 2-4
-have passed.'
+```bash
+git checkout -b "chore/release_${RELEASE_VERSION}"
+# edit .github/project.yml: current-version -> ${RELEASE_VERSION}, next-version -> ${NEXT_VERSION}
+git add .github/project.yml
+git commit -m "chore(release): declare version ${RELEASE_VERSION}"
+git push -u origin "chore/release_${RELEASE_VERSION}"
+
+# Ensure the label exists before it is used; harmless and idempotent when it already does.
+gh label create skip-bot-review --repo cuioss/API-Sheriff \
+  --description "Skip automated bot review" --color ededed 2>/dev/null || true
+
+gh pr create --repo cuioss/API-Sheriff --base main \
+  --label "skip-bot-review" \
+  --title "chore(release): declare version ${RELEASE_VERSION}" \
+  --body "Declare \`current-version\` \`${RELEASE_VERSION}\`, \`next-version\` \`${NEXT_VERSION}\`.
+
+**MERGING THIS PR CUTS THE RELEASE.** The central version-changed guard sees \`current-version\` move
+with no \`${RELEASE_VERSION}\` tag present, so the merge publishes the jars to Maven Central and the
+container image to GHCR. Do NOT merge until the release runbook (\`.claude/skills/release/SKILL.md\`)
+Steps 2-4 have passed."
 ```
 
-> **Single-quote that body.** It carries backticks, and inside a double-quoted shell string a
-> backtick opens a command substitution — the PR body would silently lose the placeholders and the
-> shell would run whatever sat between them.
+> **The body is double-quoted here so `${RELEASE_VERSION}` and `${NEXT_VERSION}` expand, which means
+> every backtick inside it MUST be backslash-escaped.** In a double-quoted shell string an unescaped
+> backtick opens a command substitution: the body would silently lose the literal and the shell would
+> run whatever sat between the backticks. The earlier single-quoted form avoided that by forbidding
+> expansion altogether — this form buys variable threading and pays for it with the escapes. **Keep
+> both halves of the trade in mind when editing this block.**
+
+> **`skip-bot-review` matches the other cuioss release skills.** The version-bump PR is mechanical —
+> a two-line change to `.github/project.yml` — so a bot review adds nothing and costs a review cycle
+> on the one PR whose merge is irrevocable. ⚠ **This label skips the *bot* review only. It does not
+> skip CI, and it does not skip Steps 2-4**, which are what actually gate the cut.
 
 > **THIS PR IS THE RELEASE. Do not merge it here.** Steps 2, 3 and 4 are the pre-cut safety
 > assertions, and on Path A they exist to gate *this merge* — the Trivy posture, the tag-absence
@@ -324,7 +384,7 @@ gh pr list --repo cuioss/API-Sheriff --state open --json number,title,isDraft
 The expected count differs by path, and the difference is exact:
 
 - **Path B (dispatch)** — **zero** open PRs.
-- **Path A (version-bump merge)** — **exactly one** open PR: the `chore/release_<version>` PR from
+- **Path A (version-bump merge)** — **exactly one** open PR: the `chore/release_${RELEASE_VERSION}` PR from
   Step 1c, and nothing else. It is open by construction; every *other* open PR is the same hazard it
   is on Path B.
 - **Any other open PR, on either path** → these would normally merge before a release. Surface the
@@ -337,7 +397,7 @@ git rev-parse HEAD origin/main
 ```
 
 The working tree must be clean. On Path B, `HEAD` must equal `origin/main`. On Path A you are on the
-`chore/release_<version>` branch, so `HEAD` is the PR head — what must be true there is that the
+`chore/release_${RELEASE_VERSION}` branch, so `HEAD` is the PR head — what must be true there is that the
 branch is **up to date with `origin/main`** (`git merge-base --is-ancestor origin/main HEAD`), so the
 commit the queue produces is the `origin/main` the rest of this step gates on plus the version bump
 and nothing else.
@@ -408,7 +468,7 @@ git fetch origin main && git rev-parse origin/main
 ```
 
 A queue entry requires an open PR, so the open-PR list bounds the queue. **Path B: zero open PRs
-means an empty queue. Path A: the only permitted entry is the `chore/release_<version>` PR itself** —
+means an empty queue. Path A: the only permitted entry is the `chore/release_${RELEASE_VERSION}` PR itself** —
 anything else open can land ahead of it and move the commit your release is cut from.
 
 > **CONCURRENCY HAZARD — this is a check-then-act (TOCTOU) window on two shared resources: the merge
@@ -471,7 +531,7 @@ check never evaluated and is therefore not a pass.
 > nothing central refuses at all — the dispatch is unconditional — so this is the only check standing
 > between a re-dispatch and a moved release tag.
 
-**(v) Confirm smallrye-config still matches the Quarkus this project pins.**
+**(v) Confirm smallrye-config still matches the Quarkus this project resolves.**
 
 ```bash
 python3 .claude/skills/release/check-quarkus-alignment.py --repo . --check-resolved
@@ -483,12 +543,34 @@ python3 .claude/skills/release/check-quarkus-alignment.py --repo . --check-resol
 | 1 | **misaligned** — stop, fix, restart |
 | 2 | **could not determine** — also a stop. An unresolvable check is never a pass. |
 
-`version.quarkus` here is a **project-owned pin, not an override**: the parent chain declares no
-Quarkus version at all, and it cannot — Maven does not propagate properties from *imported* BOMs,
-and `quarkus-maven-plugin` needs the value as a build extension. So this project's Quarkus moves
-independently of `cuioss-parent-pom`, and nothing upstream validates it. `--check-resolved` asserts
-every `io.smallrye.config` artifact actually resolves to what **this** project's Quarkus was built
-against.
+⛔ **`version.quarkus` is INHERITED here, not project-owned — corrected 2026-09-11, and the previous
+wording had silently disabled this gate.** The parent is `de.cuioss:cui-quarkus-parent`, which
+declares `version.quarkus` (3.39.2 at the time of writing) and drives **both** the
+`quarkus-maven-plugin` version and the `io.quarkus:quarkus-bom` import from that one property.
+Properties **do** inherit through a real `<parent>`; what cannot supply them is an *imported* BOM.
+`pom.xml` restates the `quarkus-bom` import deliberately — first, so it wins the smallrye-config
+convergence over `java-ee-10-bom` and `token-sheriff-bom` — using the same inherited property, so
+the plugin and the platform still cannot drift apart.
+
+> **Why this paragraph is worth its length.** The earlier text asserted the opposite — *"the parent
+> chain declares no Quarkus version at all, and it cannot"* — and the script was written to match,
+> scanning reactor POM **text** only. Once the project adopted `cui-quarkus-parent`, an inherited pin
+> read as *"not declared anywhere"* and the check returned exit **2** on every invocation. **Exit 2 is
+> a hard blocker by design, so the gate went from protecting the release to blocking it — and a gate
+> that cannot run is the one that gets waved through, which is precisely the outage it exists to
+> prevent.** TokenSheriff hit this identically on the 0.9.5 cut and fixed the script rather than
+> removing it; that fix is ported here. **Do not "simplify" this check away because the stack now
+> comes from the parent** — the inheritance is what made the *plugin-versus-platform* drift
+> inexpressible, and it is not what this check measures.
+
+**What this check still measures, and why the parent does not subsume it.** The risk is a *second*
+Quarkus line entering the build and splitting the `io.smallrye.config` family. `token-sheriff-bom`
+carries its own `version.quarkus`, inherited from `token-sheriff-parent` — **a separate input that
+currently resolves equal only because both parents sit on `cui-quarkus-parent` 1.7.3.** `pom.xml`
+records that explicitly: *"That agreement is a coincidence of the moment, not a guarantee."* The
+moment the lines diverge, the import ordering is what keeps a single smallrye-config line, and
+`--check-resolved` is what proves it. Verified at `7fce677`: Quarkus `3.39.2`, every
+`io.smallrye.config` artifact `3.17.2`, unsplit.
 
 Why it matters: Quarkus' deployment classes are compiled against one specific smallrye-config
 release, so a newer version — even an internally coherent one — fails augmentation with
@@ -496,7 +578,10 @@ release, so a newer version — even an internally coherent one — fails augmen
 twice through `cuioss-parent-pom` and cost five weeks of red builds the first time. The
 `requireSameVersions` enforcer guard cannot catch it: nothing is split, so it stays correctly silent.
 
-Keep the script in sync with `cuioss-parent-pom`'s copy; there is no shared parent to inherit it from.
+⚠ **Keep the script in sync with the TokenSheriff copy** — the two are maintained in parallel and
+there is no shared parent to inherit it from. ⚠ **Re-measure the `token-sheriff-bom` paragraph in
+`pom.xml` on every `${version.token-sheriff}` bump**; that is a dependency-bump-time obligation this
+release gate does not discharge.
 
 **(vi) Confirm the non-reactor example POM's parent version still tracks the reactor.**
 
@@ -554,7 +639,7 @@ gh run list --repo cuioss/API-Sheriff --commit "$MAIN_SHA" \
 > which is `$MAIN_SHA` plus the version bump. So Path A owes **both** legs:
 > 1. `$MAIN_SHA` green, exactly as the table above requires — it is the base the merge commit is
 >    built on; **and**
-> 2. the `chore/release_<version>` PR's own required checks green
+> 2. the `chore/release_${RELEASE_VERSION}` PR's own required checks green
 >    (`gh pr checks <n> --repo cuioss/API-Sheriff`), plus the merge queue's `merge_group` run green
 >    before the entry lands.
 >
@@ -578,7 +663,7 @@ PREV_RUN_ID=$(gh run list --repo cuioss/API-Sheriff --workflow "Release" --limit
 echo "$PREV_RUN_ID"
 ```
 
-Then merge the `chore/release_<version>` PR:
+Then merge the `chore/release_${RELEASE_VERSION}` PR:
 
 ```bash
 gh pr merge <n> --repo cuioss/API-Sheriff --squash
