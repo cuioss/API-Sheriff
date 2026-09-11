@@ -603,11 +603,25 @@ reason this item exists: **no version-bump tooling reaches it.** `release:prepar
 `versions-maven-plugin` or `maven-release-plugin` of its own, and nothing else edits that file. Its
 `<parent><version>` is a hand-maintained pin.
 
-`BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` asserts that pin equals the reactor
+`BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` asserts that pin *tracks* the reactor
 root version, so a missed bump is not silent — it turns `main` red on the first build after the cut.
 This item catches a drift that already exists *before* spending a release on it; **Step 10's
 `build-parent/example/pom.xml` sub-step is what stops the cut itself creating one.** Both are
 required: this one looks backward, that one forward.
+
+⛔ **NEITHER of them can see the release-tag skew, and at the 0.2.0 cut that cost a release.** The two
+checks compare the example against the reactor **as it stands on the trunk**, where the two agree by
+construction before a cut and again after Step 10. The commit the release *tags* is a third state
+neither one reads: `release:prepare` transitions the reactor to the released version (`0.2.0`) and
+walks past the non-reactor example, which still carries `0.2.0-SNAPSHOT`. `publish-image` checks out
+**that tag** and runs the suite there. So an assertion demanding exact equality fails every release,
+and it fails *after* the Maven deployment step — which is exactly what happened on 2026-09-11.
+
+**Do not "fix" this by re-tightening the assertion.** `exampleParentVersionTracksReactor` now admits
+that one state — a release reactor against exactly that version's `-SNAPSHOT` — and nothing else; a
+genuine lag names a *different* version and still fails, on the trunk and at a tag alike. Test `(2a)`
+exercises the release-tag branch directly, because the trunk only ever takes the equality branch and
+the branch would otherwise stay unproven until the next cut failed on it.
 
 ### Step 4 — Gate on a green `main`
 
@@ -884,10 +898,47 @@ gh release list --repo cuioss/API-Sheriff --limit 10
 **3 — one Maven Central deployment** of `de.cuioss.sheriff.gateway:*:<version>`. Propagation lags
 the run; allow time before treating an absence as a failure:
 
+⛔ **A `404` here is lag, not "unpublished" — and the release log will tempt you to read it the other way.**
+The effective release profile configures `central-publishing-maven-plugin` with `autoPublish=true` and
+`waitUntil=validated`, so the `release` job returns as soon as the deployment is validated and the
+Portal then publishes it on its own. The plugin nevertheless prints *"Deployment `<uuid>` has been
+validated. To finish publishing visit https://central.sonatype.com/publishing/deployments"* — that line
+is **boilerplate emitted at the validated state regardless of `autoPublish`**. The line that states what
+actually happens is the one **before** it: *"Uploaded bundle successfully … Deployment will publish
+automatically"*.
+
+At the 0.2.0 cut that boilerplate was misread as "validated, awaiting a manual Publish, still
+droppable", and on that premise the `0.2.0` tag and GitHub release were deleted — while the Portal was
+already publishing. Both had to be restored. The measured lag was ~38 minutes (validated `08:21:44`,
+`maven-metadata.xml` `lastUpdated` `08:59:28`). **A green `release` job means the jars are irrevocable,
+exactly as *The release is NOT atomic* says. Never act on "it is still droppable" without reading the
+deployment's state in the Portal itself.**
+
+The release stages exactly **three** coordinates — `api-sheriff`, `api-sheriff-parent` and
+`api-sheriff-build-parent` (read off the `central-staging/…` lines of the `release` job log at the 0.2.0
+cut; the other reactor modules are not deployed). Probe all three, and classify the status rather than
+collapsing every failure into "lag":
+
 ```bash
-curl -sSf "https://repo1.maven.org/maven2/de/cuioss/sheriff/gateway/api-sheriff/<version>/" > /dev/null \
-  && echo "present on Central" || echo "not yet propagated"
+V='<version>'
+BASE=https://repo1.maven.org/maven2/de/cuioss/sheriff/gateway
+present=0; lag=0; broken=0
+for a in api-sheriff api-sheriff-parent api-sheriff-build-parent; do
+  code=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/$a/$V/") || code=transport-error
+  case "$code" in
+    200) present=$((present+1)); echo "OK   $a:$V" ;;
+    404) lag=$((lag+1));         echo "LAG  $a:$V (404 - propagation, re-check later)" ;;
+    *)   broken=$((broken+1));   echo "FAIL $a:$V ($code - NOT a propagation signal)" >&2 ;;
+  esac
+done
+[ "$broken" -eq 0 ] || { echo "ERROR: the check did not evaluate cleanly - this is NOT a pass" >&2; exit 1; }
+[ "$present" -eq 3 ] || { echo "NOT YET: $present/3 present, $lag still 404 - re-run later" >&2; exit 1; }
+echo "OK: all three coordinates present on Central"
 ```
+
+Only a `404` is propagation; any other status, or a transport failure, means the check never
+evaluated and is reported as such. **All three must be present** — one coordinate showing up is not
+the release showing up.
 
 **4 — one container image, at the matching version.** Precisely: **one manifest digest carrying two
 tags.**

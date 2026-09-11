@@ -128,6 +128,9 @@ class BuildParentContractTest {
      *
      * @see #BUILD_PARENT_ARTIFACT_ID
      */
+    /** The suffix distinguishing a development version from the released one it becomes. */
+    private static final String SNAPSHOT_SUFFIX = "-SNAPSHOT";
+
     private static final String BUILD_PARENT_GROUP_ID = "de.cuioss.sheriff.gateway";
 
     /**
@@ -233,7 +236,7 @@ class BuildParentContractTest {
     }
 
     @Test
-    @DisplayName("(2) Bump-is-enough promise: the example inherits THIS parent, at the reactor version")
+    @DisplayName("(2) Bump-is-enough promise: the example inherits THIS parent, tracking the reactor version")
     void adoptingAReleaseIsAParentVersionBump() throws Exception {
         String reactorVersion = textOf(firstChild(rootOf(ROOT_POM), "version"));
         Element exampleParent = firstChild(rootOf(EXAMPLE_POM), "parent");
@@ -256,8 +259,8 @@ class BuildParentContractTest {
                                 + "quarkus-maven-plugin binding, and assertion (1) cannot catch it: that assertion "
                                 + "checks the ABSENCE of <build>, <dependencies> and <profiles>, which an "
                                 + "unrelated parent satisfies just as well"),
-                () -> assertEquals(reactorVersion, exampleParentVersion,
-                        () -> "the example's <parent><version> must equal the reactor version (" + reactorVersion
+                () -> assertTrue(exampleParentVersionTracksReactor(reactorVersion, exampleParentVersion),
+                        () -> "the example's <parent><version> must track the reactor version (" + reactorVersion
                                 + "); found " + rendered(exampleParentVersion) + ". A drifting example stops "
                                 + "exercising the parent it documents, and the runbook in "
                                 + "doc/user/downstream-parent.adoc would then be building an old contract"),
@@ -269,6 +272,66 @@ class BuildParentContractTest {
                                 + "${project.version} resolves to the CONSUMER's own version and the build fails "
                                 + "with 'Could not find artifact'. ${project.parent.version} resolves to the "
                                 + "version of the parent the consumer inherits, which is the promise being made"));
+    }
+
+    /**
+     * Whether the example's {@code <parent><version>} still tracks the reactor, across BOTH commits a
+     * release produces.
+     *
+     * <p>Exact equality is the rule on the trunk, and it is what catches the drift this assertion exists
+     * for: {@code build-parent/example} is deliberately NOT a reactor module, so {@code release:prepare}
+     * rewrites every reactor POM's version and walks straight past this one. When a release force-pushes
+     * {@code main} to the next development version, the example is left behind at the previous one and
+     * exact equality fires — which is precisely what happened on the first build of {@code main} after
+     * the 0.2.0 cut.
+     *
+     * <p>The release TAG is the one commit where exact equality cannot hold, and demanding it there is a
+     * contradiction rather than a guard. On that commit {@code release:prepare} has set the reactor to the
+     * released version ({@code 0.2.0}) while the example still carries the development version it is
+     * pinned to ({@code 0.2.0-SNAPSHOT}) — the same two versions, one transitioned and one not. Nothing in
+     * this repository can make them equal there: {@code release:prepare} runs inside the pinned
+     * {@code cuioss-organization} reusable workflow, and the example's {@code -SNAPSHOT} pin plus its
+     * sibling {@code <relativePath>} are the documented design (see the file's own header and
+     * {@code doc/user/downstream-parent.adoc}), which is what keeps it exercising THIS tree rather than a
+     * published artifact. Left as exact equality, this assertion failed {@code publish-image} at the 0.2.0
+     * release tag, after the Maven Central publication had already happened — a partial release.
+     *
+     * <p>So the release-tag case is admitted, and ONLY it: the reactor must be a release version and the
+     * example must be exactly that version's {@code -SNAPSHOT}. A genuine lag still fails, because a stale
+     * example names a DIFFERENT version ({@code 0.2.0-SNAPSHOT} against a {@code 0.2.1} reactor), which
+     * satisfies neither branch.
+     */
+    private static boolean exampleParentVersionTracksReactor(String reactorVersion, String exampleParentVersion) {
+        if (reactorVersion.equals(exampleParentVersion)) {
+            return true;
+        }
+        return !reactorVersion.endsWith(SNAPSHOT_SUFFIX)
+                && exampleParentVersion.equals(reactorVersion + SNAPSHOT_SUFFIX);
+    }
+
+    @Test
+    @DisplayName("(2a) The version-tracking rule admits the release tag and nothing else")
+    void versionTrackingAdmitsTheReleaseTagOnly() {
+        assertAll("the release-tag branch must be reachable, and must not swallow a genuine lag",
+                () -> assertTrue(exampleParentVersionTracksReactor("0.2.1-SNAPSHOT", "0.2.1-SNAPSHOT"),
+                        "the trunk case: both carry the same development version"),
+                () -> assertTrue(exampleParentVersionTracksReactor("0.2.1", "0.2.1-SNAPSHOT"),
+                        "the release-tag case: release:prepare transitioned the reactor and walked past the "
+                                + "non-reactor example. This branch is the whole reason the rule is not plain "
+                                + "equality, and without this case nothing would exercise it — the trunk only "
+                                + "ever takes the equality branch, so the release lane would stay unproven "
+                                + "until the next cut failed on it, after Maven Central had already published"),
+                () -> assertFalse(exampleParentVersionTracksReactor("0.2.1-SNAPSHOT", "0.2.0-SNAPSHOT"),
+                        "a genuine lag on the trunk must still fail: this is exactly the drift the 0.2.0 "
+                                + "release left behind on main"),
+                () -> assertFalse(exampleParentVersionTracksReactor("0.2.1", "0.2.0-SNAPSHOT"),
+                        "a lagging example at a release tag must still fail: the widened branch admits only "
+                                + "the SAME version's -SNAPSHOT, never an older one"),
+                () -> assertFalse(exampleParentVersionTracksReactor("0.2.1-SNAPSHOT", "0.2.1"),
+                        "the inverse must not be admitted: an example pinned to a RELEASED version has "
+                                + "stopped tracking this tree and resolves its parent from a repository "
+                                + "instead, which is the published-consumer form the example is documented "
+                                + "NOT to be"));
     }
 
     @Test
