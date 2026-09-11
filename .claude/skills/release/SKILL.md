@@ -141,8 +141,21 @@ happened** by the time any image step runs. This cannot be reordered away: the r
 not exist until the release job has cut it.
 
 **A failure in the integration-test suite, the SBOM step, the Trivy gate, the registry push, the
-smoke test or the Cosign signature leaves a *partial release*** — the jars are on Maven Central and
-are irrevocable, while no image, or an unsigned image, exists in GHCR.
+smoke test or the Cosign signature leaves a *partial release*** — the jars have been deployed, while
+no image, or an unsigned image, exists in GHCR.
+
+⚠ **"Deployed" is not yet "on Central", and that distinction is the one lever you have.** This project
+publishes with `autoPublish` **off**: a green `release` job leaves the deployment **VALIDATED** in the
+Central Portal, not released. The log says so verbatim — *"Deployment `<uuid>` has been validated. To
+finish publishing visit https://central.sonatype.com/publishing/deployments"* — and until someone
+clicks **Publish** there, `repo1.maven.org` returns `404` and no consumer can resolve the version.
+
+**A validated-but-unpublished deployment can still be DROPPED**, which makes the whole cut reversible:
+drop it, delete the tag and the GitHub release, fix the cause, and cut again. Once **Publish** is
+clicked the version is on Central and is irrevocable in the ordinary way. So on any partial release,
+**check the portal before assuming you are past the point of no return** — at the 0.2.0 cut the jars
+had *not* reached Central, and the whole version was retired cleanly instead of shipping jars with no
+image.
 
 Everywhere this file or the workflow says a step runs "before anything is pushed", read it as
 **before anything is pushed to GHCR**.
@@ -603,11 +616,25 @@ reason this item exists: **no version-bump tooling reaches it.** `release:prepar
 `versions-maven-plugin` or `maven-release-plugin` of its own, and nothing else edits that file. Its
 `<parent><version>` is a hand-maintained pin.
 
-`BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` asserts that pin equals the reactor
+`BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` asserts that pin *tracks* the reactor
 root version, so a missed bump is not silent — it turns `main` red on the first build after the cut.
 This item catches a drift that already exists *before* spending a release on it; **Step 10's
 `build-parent/example/pom.xml` sub-step is what stops the cut itself creating one.** Both are
 required: this one looks backward, that one forward.
+
+⛔ **NEITHER of them can see the release-tag skew, and at the 0.2.0 cut that cost a release.** The two
+checks compare the example against the reactor **as it stands on the trunk**, where the two agree by
+construction before a cut and again after Step 10. The commit the release *tags* is a third state
+neither one reads: `release:prepare` transitions the reactor to the released version (`0.2.0`) and
+walks past the non-reactor example, which still carries `0.2.0-SNAPSHOT`. `publish-image` checks out
+**that tag** and runs the suite there. So an assertion demanding exact equality fails every release,
+and it fails *after* the Maven deployment step — which is exactly what happened on 2026-09-11.
+
+**Do not "fix" this by re-tightening the assertion.** `exampleParentVersionTracksReactor` now admits
+that one state — a release reactor against exactly that version's `-SNAPSHOT` — and nothing else; a
+genuine lag names a *different* version and still fails, on the trunk and at a tag alike. Test `(2a)`
+exercises the release-tag branch directly, because the trunk only ever takes the equality branch and
+the branch would otherwise stay unproven until the next cut failed on it.
 
 ### Step 4 — Gate on a green `main`
 
@@ -705,7 +732,7 @@ would still be a first observation:
 | No `Release` run at all | The trigger did not match: the merge touched no `.github/project.yml` path, or the PR's base was not `main`. The `paths:`/`branches:` prefilter, not the guard | nothing |
 | Run exists, `release` job **skipped** | The caller-side `merged == true` gate — the PR was closed **without** merging | nothing |
 | Run exists, `release` ran, `publish-image` **skipped** on `released-version != ''` | **The central guard refused**: `release.current-version` did not change between the merge commit and its first parent, **or** a tag for it already exists. Both are correct refusals | nothing |
-| `release` succeeded and `publish-image` is running | The guard proceeded — **the release is being cut** | jars are, or shortly will be, irrevocable — go to Step 6 |
+| `release` succeeded and `publish-image` is running | The guard proceeded — **the release is being cut** | jars are deployed to the Central Portal as **VALIDATED**, not yet published — go to Step 6 |
 
 **Tell a correct refusal apart from a broken guard BEFORE reaching for a dispatch.** A dispatch on
 top of a refusal you have not diagnosed publishes while the defect goes unreported:
@@ -839,7 +866,9 @@ gh run watch "$RUN_ID" --repo cuioss/API-Sheriff
 
 Two legs, and they fail differently:
 
-- The **`release` job** publishes to Maven Central. Once it is green, **the jars are irrevocable.**
+- The **`release` job** deploys to the Central Portal. Once it is green the deployment exists, but with
+  `autoPublish` off it is **VALIDATED, not published** — still droppable, and still `404` on
+  `repo1.maven.org`. It becomes irrevocable when someone clicks **Publish** in the portal.
 - The **`publish-image` job** (`timeout-minutes: 90`) runs the integration-test suite, which
   performs a **GraalVM native compile** — the dominant and most variable term. A long wait here is
   the native compile or Maven Central propagation, not a hang.
@@ -881,13 +910,22 @@ gh release view '<version>' --repo cuioss/API-Sheriff --json tagName,name,create
 gh release list --repo cuioss/API-Sheriff --limit 10
 ```
 
-**3 — one Maven Central deployment** of `de.cuioss.sheriff.gateway:*:<version>`. Propagation lags
-the run; allow time before treating an absence as a failure:
+**3 — one Maven Central deployment** of `de.cuioss.sheriff.gateway:*:<version>`:
 
 ```bash
 curl -sSf "https://repo1.maven.org/maven2/de/cuioss/sheriff/gateway/api-sheriff/<version>/" > /dev/null \
-  && echo "present on Central" || echo "not yet propagated"
+  && echo "present on Central" || echo "NOT on Central"
 ```
+
+⛔ **A `404` here usually means "not published", NOT "not propagated yet" — do not wait it out.** With
+`autoPublish` off the `release` job leaves the deployment **VALIDATED** in the Central Portal, and it
+stays `404` **forever** until someone clicks **Publish** at
+https://central.sonatype.com/publishing/deployments. Propagation after that click is real but short.
+So on a `404`, **open the portal and read the deployment's state** before attributing it to lag: at the
+0.2.0 cut a `404` forty minutes in was a validated deployment nobody had published, and reading it as
+propagation lag would have hidden that the release was still fully reversible.
+
+Confirm the version in the portal and click **Publish** to complete the release.
 
 **4 — one container image, at the matching version.** Precisely: **one manifest digest carrying two
 tags.**
@@ -1339,7 +1377,9 @@ authenticated check passes.
   It is not a reactor module, so `release:prepare` walks past it and no plugin in this repository
   updates it. `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` turns `main` red on the
   first build after a missed bump — fix the POM, never the assertion.
-- **The release is not atomic.** A green `release` job means the jars are already irrevocable. On an
+- **The release is not atomic.** A green `release` job means the jars are deployed — but with
+  `autoPublish` off they sit **VALIDATED** in the Central Portal and are still droppable, so check
+  there before treating a partial release as unrecoverable. On an
   image-lane failure, never re-run the whole workflow — and re-run **`publish-image` alone** only
   for a *transient* failure. A re-run replays the original event context and checks out the release
   tag, so it **cannot** pick up a fix merged to `main`; a cause carried in the tree or the workflow
