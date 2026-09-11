@@ -995,9 +995,11 @@ cosign verify "$IMAGE@$VERSION_DIGEST" \
 ⚠ **Verify with Cosign v3, not v2.** The workflow installs Cosign through `sigstore/cosign-installer`
 v4.x, which defaults to Cosign **v3**, and v3 attaches the signature in the new Sigstore bundle format.
 Cosign **v2 cannot see it** and reports *"no signatures found"* — a result that reads exactly like a
-supply-chain failure and is not one. Without a local install, the official image works:
-`docker run --rm ghcr.io/sigstore/cosign/cosign:v3.0.6 verify …` with the same two identity flags. At
-the 0.2.1 cut v2.4.1 reported no signatures and v3.0.6 verified the same digest cleanly.
+supply-chain failure and is not one. Without a local install, the official image works — **pinned by
+digest**, because a verification step must not pull its own verifier by a mutable tag:
+`docker run --rm ghcr.io/sigstore/cosign/cosign:v3.0.6@sha256:de9c65609e6bde17e6b48de485ee788407c9502fa08b8f4459f595b21f56cd00 verify …`
+with the same two identity flags (the digest is the multi-arch index `v3.0.6` resolved to at the 0.2.1
+cut). At that cut v2.4.1 reported no signatures and v3.0.6 verified the same digest cleanly.
 
 **Both release paths sign under `refs/heads/main`, and that is read off the certificates rather than
 inferred from the trigger config.** 0.1.0 (`github_workflow_trigger = workflow_dispatch`) and 0.1.1
