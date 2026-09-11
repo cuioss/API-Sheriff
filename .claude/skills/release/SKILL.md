@@ -111,7 +111,7 @@ actually did (Step 5, *Path A*), instead of inferring the outcome from the merge
 
 | job | publishes |
 |---|---|
-| `release` (job `release` in `release.yml`) — `uses: reusable-maven-release.yml` | Maven artifacts to Maven Central; the SCM tag; the GitHub release |
+| `release` (job `release` in `release.yml`) — `uses: reusable-maven-release.yml` | Maven artifacts to the **Central Portal**, as a VALIDATED deployment awaiting a manual **Publish** (`autoPublish` is off); the SCM tag; the GitHub release |
 | `publish-image` (job `publish-image` in `release.yml`) — local, `needs: [release]` | the container image to GHCR at the **same** version, plus an SPDX SBOM and a Cosign signature |
 
 ---
@@ -136,9 +136,9 @@ GHCR**.
 
 ### The release is NOT atomic
 
-`publish-image` declares `needs: [release]`, so **the Maven Central publication has already
-happened** by the time any image step runs. This cannot be reordered away: the released version does
-not exist until the release job has cut it.
+`publish-image` declares `needs: [release]`, so **the Maven deployment has already happened** by the
+time any image step runs. This cannot be reordered away: the released version does not exist until the
+release job has cut it. The tag and the GitHub release are likewise already in place.
 
 **A failure in the integration-test suite, the SBOM step, the Trivy gate, the registry push, the
 smoke test or the Cosign signature leaves a *partial release*** — the jars have been deployed, while
@@ -165,12 +165,17 @@ Everywhere this file or the workflow says a step runs "before anything is pushed
 
 ### If the image lane fails after the Maven release
 
-1. **Do not re-run the whole workflow, and do not reach for the other path.** A second dispatch would
-   attempt another Maven release of a version that is already published — the dispatch path is
+1. **First, read the Central Portal — the cut may still be fully reversible.** With `autoPublish` off
+   the deployment is **VALIDATED, not published**, so nothing has reached consumers. Dropping it,
+   deleting the tag and the GitHub release, fixing the cause and cutting again is then available and is
+   usually the cleanest outcome: no version ever ships half-released. Once **Publish** has been
+   clicked that option is gone and the steps below apply.
+2. **Do not re-run the whole workflow, and do not reach for the other path.** A second dispatch would
+   attempt another Maven release of a version that is already deployed — the dispatch path is
    unconditional and will not refuse it. The merge path *would* refuse (the tag now exists), so
    re-declaring the same version and merging it again achieves nothing but a confusing no-op run.
    Neither is the remedy; the classification below is.
-2. **Classify the failure before doing anything — a re-run cannot pick up a fix.** *Re-run failed
+3. **Classify the failure before doing anything — a re-run cannot pick up a fix.** *Re-run failed
    jobs* creates a new **attempt of the same run**: it reuses the original event context and the
    original workflow definition, and `publish-image` checks out the **release tag**, not `main`. A
    commit merged to `main` after the cut is therefore invisible to the re-run. "Fix it on
@@ -184,12 +189,13 @@ Everywhere this file or the workflow says a step runs "before anything is pushed
      pin, a `.trivyignore`, `release.yml` itself. A re-run reproduces the same inputs and so fails
      the same way, every time. Fix the cause on `main` and **cut a new patch version**. Do not
      re-run.
-3. If the failure was the Trivy gate on an unfixable base-image CVE, see the next section for the
+4. If the failure was the Trivy gate on an unfixable base-image CVE, see the next section for the
    remedy — but note that both remedies (re-pinning the base, adding a `.trivyignore`) are **tree**
-   changes, so they land under the second bullet above and need a new patch version rather than a
-   re-run.
-4. If the version has to be abandoned: **cut a patch version and publish relocation stubs.** Maven
-   Central artifacts are never deleted.
+   changes, so they land under the *second* bullet of item 3 and need a new patch version rather than
+   a re-run.
+5. If the version has to be abandoned **after it has been published**: **cut a patch version and
+   publish relocation stubs.** Once Publish has been clicked, Maven Central artifacts are never
+   deleted. Before that click, item 1 applies instead and the version can simply be dropped.
 
 ### If the scan blocks on an unfixable base-image CVE
 
