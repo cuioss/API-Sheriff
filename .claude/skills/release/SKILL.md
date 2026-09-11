@@ -914,10 +914,31 @@ already publishing. Both had to be restored. The measured lag was ~38 minutes (v
 exactly as *The release is NOT atomic* says. Never act on "it is still droppable" without reading the
 deployment's state in the Portal itself.**
 
+The release stages exactly **three** coordinates — `api-sheriff`, `api-sheriff-parent` and
+`api-sheriff-build-parent` (read off the `central-staging/…` lines of the `release` job log at the 0.2.0
+cut; the other reactor modules are not deployed). Probe all three, and classify the status rather than
+collapsing every failure into "lag":
+
 ```bash
-curl -sSf "https://repo1.maven.org/maven2/de/cuioss/sheriff/gateway/api-sheriff/<version>/" > /dev/null \
-  && echo "present on Central" || echo "not yet propagated"
+V='<version>'
+BASE=https://repo1.maven.org/maven2/de/cuioss/sheriff/gateway
+present=0; lag=0; broken=0
+for a in api-sheriff api-sheriff-parent api-sheriff-build-parent; do
+  code=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/$a/$V/") || code=transport-error
+  case "$code" in
+    200) present=$((present+1)); echo "OK   $a:$V" ;;
+    404) lag=$((lag+1));         echo "LAG  $a:$V (404 - propagation, re-check later)" ;;
+    *)   broken=$((broken+1));   echo "FAIL $a:$V ($code - NOT a propagation signal)" >&2 ;;
+  esac
+done
+[ "$broken" -eq 0 ] || { echo "ERROR: the check did not evaluate cleanly - this is NOT a pass" >&2; exit 1; }
+[ "$present" -eq 3 ] || { echo "NOT YET: $present/3 present, $lag still 404 - re-run later" >&2; exit 1; }
+echo "OK: all three coordinates present on Central"
 ```
+
+Only a `404` is propagation; any other status, or a transport failure, means the check never
+evaluated and is reported as such. **All three must be present** — one coordinate showing up is not
+the release showing up.
 
 **4 — one container image, at the matching version.** Precisely: **one manifest digest carrying two
 tags.**
