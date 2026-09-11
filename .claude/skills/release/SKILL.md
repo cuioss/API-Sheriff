@@ -111,7 +111,7 @@ actually did (Step 5, *Path A*), instead of inferring the outcome from the merge
 
 | job | publishes |
 |---|---|
-| `release` (job `release` in `release.yml`) — `uses: reusable-maven-release.yml` | Maven artifacts to the **Central Portal**, as a VALIDATED deployment awaiting a manual **Publish** (`autoPublish` is off); the SCM tag; the GitHub release |
+| `release` (job `release` in `release.yml`) — `uses: reusable-maven-release.yml` | Maven artifacts to Maven Central; the SCM tag; the GitHub release |
 | `publish-image` (job `publish-image` in `release.yml`) — local, `needs: [release]` | the container image to GHCR at the **same** version, plus an SPDX SBOM and a Cosign signature |
 
 ---
@@ -136,26 +136,13 @@ GHCR**.
 
 ### The release is NOT atomic
 
-`publish-image` declares `needs: [release]`, so **the Maven deployment has already happened** by the
-time any image step runs. This cannot be reordered away: the released version does not exist until the
-release job has cut it. The tag and the GitHub release are likewise already in place.
+`publish-image` declares `needs: [release]`, so **the Maven Central publication has already
+happened** by the time any image step runs. This cannot be reordered away: the released version does
+not exist until the release job has cut it.
 
 **A failure in the integration-test suite, the SBOM step, the Trivy gate, the registry push, the
-smoke test or the Cosign signature leaves a *partial release*** — the jars have been deployed, while
-no image, or an unsigned image, exists in GHCR.
-
-⚠ **"Deployed" is not yet "on Central", and that distinction is the one lever you have.** This project
-publishes with `autoPublish` **off**: a green `release` job leaves the deployment **VALIDATED** in the
-Central Portal, not released. The log says so verbatim — *"Deployment `<uuid>` has been validated. To
-finish publishing visit https://central.sonatype.com/publishing/deployments"* — and until someone
-clicks **Publish** there, `repo1.maven.org` returns `404` and no consumer can resolve the version.
-
-**A validated-but-unpublished deployment can still be DROPPED**, which makes the whole cut reversible:
-drop it, delete the tag and the GitHub release, fix the cause, and cut again. Once **Publish** is
-clicked the version is on Central and is irrevocable in the ordinary way. So on any partial release,
-**check the portal before assuming you are past the point of no return** — at the 0.2.0 cut the jars
-had *not* reached Central, and the whole version was retired cleanly instead of shipping jars with no
-image.
+smoke test or the Cosign signature leaves a *partial release*** — the jars are on Maven Central and
+are irrevocable, while no image, or an unsigned image, exists in GHCR.
 
 Everywhere this file or the workflow says a step runs "before anything is pushed", read it as
 **before anything is pushed to GHCR**.
@@ -165,17 +152,12 @@ Everywhere this file or the workflow says a step runs "before anything is pushed
 
 ### If the image lane fails after the Maven release
 
-1. **First, read the Central Portal — the cut may still be fully reversible.** With `autoPublish` off
-   the deployment is **VALIDATED, not published**, so nothing has reached consumers. Dropping it,
-   deleting the tag and the GitHub release, fixing the cause and cutting again is then available and is
-   usually the cleanest outcome: no version ever ships half-released. Once **Publish** has been
-   clicked that option is gone and the steps below apply.
-2. **Do not re-run the whole workflow, and do not reach for the other path.** A second dispatch would
-   attempt another Maven release of a version that is already deployed — the dispatch path is
+1. **Do not re-run the whole workflow, and do not reach for the other path.** A second dispatch would
+   attempt another Maven release of a version that is already published — the dispatch path is
    unconditional and will not refuse it. The merge path *would* refuse (the tag now exists), so
    re-declaring the same version and merging it again achieves nothing but a confusing no-op run.
    Neither is the remedy; the classification below is.
-3. **Classify the failure before doing anything — a re-run cannot pick up a fix.** *Re-run failed
+2. **Classify the failure before doing anything — a re-run cannot pick up a fix.** *Re-run failed
    jobs* creates a new **attempt of the same run**: it reuses the original event context and the
    original workflow definition, and `publish-image` checks out the **release tag**, not `main`. A
    commit merged to `main` after the cut is therefore invisible to the re-run. "Fix it on
@@ -189,13 +171,12 @@ Everywhere this file or the workflow says a step runs "before anything is pushed
      pin, a `.trivyignore`, `release.yml` itself. A re-run reproduces the same inputs and so fails
      the same way, every time. Fix the cause on `main` and **cut a new patch version**. Do not
      re-run.
-4. If the failure was the Trivy gate on an unfixable base-image CVE, see the next section for the
+3. If the failure was the Trivy gate on an unfixable base-image CVE, see the next section for the
    remedy — but note that both remedies (re-pinning the base, adding a `.trivyignore`) are **tree**
-   changes, so they land under the *second* bullet of item 3 and need a new patch version rather than
-   a re-run.
-5. If the version has to be abandoned **after it has been published**: **cut a patch version and
-   publish relocation stubs.** Once Publish has been clicked, Maven Central artifacts are never
-   deleted. Before that click, item 1 applies instead and the version can simply be dropped.
+   changes, so they land under the second bullet above and need a new patch version rather than a
+   re-run.
+4. If the version has to be abandoned: **cut a patch version and publish relocation stubs.** Maven
+   Central artifacts are never deleted.
 
 ### If the scan blocks on an unfixable base-image CVE
 
@@ -738,7 +719,7 @@ would still be a first observation:
 | No `Release` run at all | The trigger did not match: the merge touched no `.github/project.yml` path, or the PR's base was not `main`. The `paths:`/`branches:` prefilter, not the guard | nothing |
 | Run exists, `release` job **skipped** | The caller-side `merged == true` gate — the PR was closed **without** merging | nothing |
 | Run exists, `release` ran, `publish-image` **skipped** on `released-version != ''` | **The central guard refused**: `release.current-version` did not change between the merge commit and its first parent, **or** a tag for it already exists. Both are correct refusals | nothing |
-| `release` succeeded and `publish-image` is running | The guard proceeded — **the release is being cut** | jars are deployed to the Central Portal as **VALIDATED**, not yet published — go to Step 6 |
+| `release` succeeded and `publish-image` is running | The guard proceeded — **the release is being cut** | jars are, or shortly will be, irrevocable — go to Step 6 |
 
 **Tell a correct refusal apart from a broken guard BEFORE reaching for a dispatch.** A dispatch on
 top of a refusal you have not diagnosed publishes while the defect goes unreported:
@@ -872,9 +853,7 @@ gh run watch "$RUN_ID" --repo cuioss/API-Sheriff
 
 Two legs, and they fail differently:
 
-- The **`release` job** deploys to the Central Portal. Once it is green the deployment exists, but with
-  `autoPublish` off it is **VALIDATED, not published** — still droppable, and still `404` on
-  `repo1.maven.org`. It becomes irrevocable when someone clicks **Publish** in the portal.
+- The **`release` job** publishes to Maven Central. Once it is green, **the jars are irrevocable.**
 - The **`publish-image` job** (`timeout-minutes: 90`) runs the integration-test suite, which
   performs a **GraalVM native compile** — the dominant and most variable term. A long wait here is
   the native compile or Maven Central propagation, not a hang.
@@ -916,22 +895,29 @@ gh release view '<version>' --repo cuioss/API-Sheriff --json tagName,name,create
 gh release list --repo cuioss/API-Sheriff --limit 10
 ```
 
-**3 — one Maven Central deployment** of `de.cuioss.sheriff.gateway:*:<version>`:
+**3 — one Maven Central deployment** of `de.cuioss.sheriff.gateway:*:<version>`. Propagation lags
+the run; allow time before treating an absence as a failure:
+
+⛔ **A `404` here is lag, not "unpublished" — and the release log will tempt you to read it the other way.**
+The effective release profile configures `central-publishing-maven-plugin` with `autoPublish=true` and
+`waitUntil=validated`, so the `release` job returns as soon as the deployment is validated and the
+Portal then publishes it on its own. The plugin nevertheless prints *"Deployment `<uuid>` has been
+validated. To finish publishing visit https://central.sonatype.com/publishing/deployments"* — that line
+is **boilerplate emitted at the validated state regardless of `autoPublish`**. The line that states what
+actually happens is the one **before** it: *"Uploaded bundle successfully … Deployment will publish
+automatically"*.
+
+At the 0.2.0 cut that boilerplate was misread as "validated, awaiting a manual Publish, still
+droppable", and on that premise the `0.2.0` tag and GitHub release were deleted — while the Portal was
+already publishing. Both had to be restored. The measured lag was ~38 minutes (validated `08:21:44`,
+`maven-metadata.xml` `lastUpdated` `08:59:28`). **A green `release` job means the jars are irrevocable,
+exactly as *The release is NOT atomic* says. Never act on "it is still droppable" without reading the
+deployment's state in the Portal itself.**
 
 ```bash
 curl -sSf "https://repo1.maven.org/maven2/de/cuioss/sheriff/gateway/api-sheriff/<version>/" > /dev/null \
-  && echo "present on Central" || echo "NOT on Central"
+  && echo "present on Central" || echo "not yet propagated"
 ```
-
-⛔ **A `404` here usually means "not published", NOT "not propagated yet" — do not wait it out.** With
-`autoPublish` off the `release` job leaves the deployment **VALIDATED** in the Central Portal, and it
-stays `404` **forever** until someone clicks **Publish** at
-https://central.sonatype.com/publishing/deployments. Propagation after that click is real but short.
-So on a `404`, **open the portal and read the deployment's state** before attributing it to lag: at the
-0.2.0 cut a `404` forty minutes in was a validated deployment nobody had published, and reading it as
-propagation lag would have hidden that the release was still fully reversible.
-
-Confirm the version in the portal and click **Publish** to complete the release.
 
 **4 — one container image, at the matching version.** Precisely: **one manifest digest carrying two
 tags.**
@@ -1383,9 +1369,7 @@ authenticated check passes.
   It is not a reactor module, so `release:prepare` walks past it and no plugin in this repository
   updates it. `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` turns `main` red on the
   first build after a missed bump — fix the POM, never the assertion.
-- **The release is not atomic.** A green `release` job means the jars are deployed — but with
-  `autoPublish` off they sit **VALIDATED** in the Central Portal and are still droppable, so check
-  there before treating a partial release as unrecoverable. On an
+- **The release is not atomic.** A green `release` job means the jars are already irrevocable. On an
   image-lane failure, never re-run the whole workflow — and re-run **`publish-image` alone** only
   for a *transient* failure. A re-run replays the original event context and checks out the release
   tag, so it **cannot** pick up a fix merged to `main`; a cause carried in the tree or the workflow
