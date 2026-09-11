@@ -1011,46 +1011,147 @@ docker pull ghcr.io/cuioss/api-sheriff:<version>
 >
 > `200` means public; `401` means it is not, whatever the settings page appears to show.
 
-### Step 10 — Update the version-bearing examples
+### Step 10 — Update the version-bearing content
 
-**Every example that names a concrete version must name the version just released.** These are the
-files a new user copy-pastes first, so a stale pin here is the most visible possible defect: it
-sends them to an image that either does not exist or is not the release they think they are running.
+**Every file that names a concrete version must name the version just released — and every note
+written as *"until `$RELEASE_VERSION` ships"* must be deleted, not left to be puzzled over.** These
+are the files a new user copy-pastes first, so a stale pin here is the most visible possible defect:
+it sends them to an image that either does not exist or is not the release they think they are
+running.
 
 **This step runs AFTER the image is verified (Step 8) and public (Step 9), never before.** Pointing
-an example at a version that has not finished publishing is the same defect aimed forward instead
-of backward.
+an example at a version that has not finished publishing is the same defect aimed forward instead of
+backward. ⛔ **That ordering is not a preference — `deployment/compose-sample/.env` states the rule
+about itself: it names an image that exists.** Bumping it inside the version-bump PR would make the
+sample name an unpublished tag for the whole window between merge and publish.
 
-Enumerate the current pins rather than trusting this list — files move:
+#### 10a — Enumerate, in TWO passes, because one grep cannot see both classes
+
+**Pass 1 — image pins.** Catches every literal `ghcr.io` coordinate:
 
 ```bash
-grep -rn --include='*.adoc' --include='*.md' --include='*.env' --include='*.yml' --include='*.yaml' \
-  -e 'ghcr\.io/cuioss/api-sheriff:[0-9]' . \
-  | grep -v node_modules | grep -v '/target/' | grep -v '^\./\.plan/'
+git grep -n -e 'ghcr\.io/cuioss/api-sheriff:[0-9]'
 ```
 
-Known version-bearing locations, as of the 0.1.0 cut:
+**Pass 2 — version-stamped prose.** The maturity callouts, the verification stamps and the
+*"until X ships"* notes carry the version as ordinary text, so pass 1 is structurally blind to them:
 
-| file | what carries the version |
-|---|---|
-| `deployment/compose-sample/.env` | `API_SHERIFF_IMAGE=ghcr.io/cuioss/api-sheriff:<version>` — the sample's single image pin |
-| `doc/user/compose-sample.adoc` | the `docker pull ghcr.io/cuioss/api-sheriff:<version>` in *Route A* |
-| `README.adoc` | the ALPHA/maturity callout and the known-limitations preamble, both naming the cut |
-| `doc/user/README.adoc` | the same maturity callout, stated for the user-doc layer |
+```bash
+git grep -n "$PREV_VERSION"
+```
+
+**Pass 3 — stale stamps, keyed on the PHRASE and not on any version.** ⛔ **Passes 1 and 2 are both
+keyed to `$PREV_VERSION`, so neither can see a document that ALREADY fell behind**: once a file
+misses one re-stamp it names an older version and becomes permanently invisible to a
+`$PREV_VERSION` grep. Sweep the stamp wording itself:
+
+```bash
+git grep -n -i -e 'is an ALPHA release' -e 'as of the .* alpha' -e 'at the .* cut' -e 'as of the [0-9]'
+```
+
+⚠ **This pass is not hypothetical — it is the one that found a live miss.** At the `0.2.0` cut,
+`doc/fapi_status.adoc:8`, `doc/fapi_next_steps.adoc:7` and `doc/features-analysis.adoc:220` were all
+still stamped *"the 0.1.0 alpha"* **through the entire 0.1.1 release**, and the repo's own audit had
+already recorded it as finding `DOC-8`. A `$PREV_VERSION` grep at the 0.2.0 cut would have looked
+for `0.1.1` and walked straight past all three. **Run pass 3 every time.**
+
+⛔ **Pass 2 and pass 3 return BOTH classes of hit, and they are opposites. Partition every hit before editing
+anything:**
+
+| class | what to do | why |
+|---|---|---|
+| **Release-coupled** — a claim about *the current release* | **update to `$RELEASE_VERSION`** | it is asserting something about the cut that just happened |
+| **Historical record** — a claim about *what a past version shipped* | ⛔ **NEVER touch** | bumping it rewrites a record of a past fact into a false claim about the present |
+
+**The NEVER-touch set, with the reason each one is in it** — re-derive it, but start here:
+
+- `doc/adr/**` — ADRs record what a named version *actually shipped* (`0005` *"as 0.1.0 actually
+  ships it"*, `0015` *"not wired at 0.1.0"*, `0035`'s signing evidence). **An ADR is immutable.**
+- `.github/workflows/release.yml` — the `0.1.0` / `0.1.1` comments are *signing evidence* proving
+  which trigger produced which certificate. Bumping them destroys the evidence.
+- `doc/development/release-process.adoc` — cites the `0.1.1` cut as a worked historical example.
+- `doc/quality-report/**` — dated audit reports. They *describe* stale stamps (`DOC-8` is literally
+  titled *"FAPI status not re-stamped for 0.1.1"*); rewriting the finding would erase the record of
+  the defect instead of fixing it. **Fix what the finding points at, never the finding.**
+- `doc/user/container-image.adoc` — carries `0.1.1` as *signing evidence* (*"the 0.1.1 case is the
+  one that settles it"*), in addition to its `<version>` placeholders. Both reasons to leave it alone.
+- Anything that is not a version at all. ⚠ `git grep "0.1.1"` also matches the CIDR `10.1.0.0/16` in
+  `ConfigValidatorTest` and `"regexp-tree": "~0.1.1"` in `demo-client/package-lock.json`.
+  **Read each hit; do not stream-edit the grep output.**
+
+#### 10b — The release-coupled set
+
+Re-derive it with 10a rather than trusting this table — but it is exhaustive as of the `0.1.1` cut,
+and a hit here that 10a does not also produce means the enumeration has regressed:
+
+| file | what carries the version | found by |
+|---|---|---|
+| `deployment/compose-sample/.env` | `API_SHERIFF_IMAGE=ghcr.io/cuioss/api-sheriff:<version>` — the sample's single image pin | pass 1 |
+| `doc/user/compose-sample.adoc` | the `docker pull ghcr.io/cuioss/api-sheriff:<version>` in *Route A* | pass 1 |
+| `README.adoc` | the **ALPHA maturity callout** (*"X is an ALPHA release"*) | pass 2 / 3 |
+| `README.adoc` | the **Known Limitations preamble** (*"Verified as still open at the X cut"*) — see 10c | pass 2 / 3 |
+| `doc/README.adoc` | the same ALPHA callout, stated for the doc layer | pass 2 / 3 |
+| `doc/user/README.adoc` | the same ALPHA callout again — ⛔ **there are THREE, not two** | pass 2 / 3 |
+| `doc/fapi_status.adoc`, `doc/fapi_next_steps.adoc`, `doc/features-analysis.adoc` | *"as of the X alpha"* — ⛔ **stale since 0.1.0, see pass 3** | pass 3 ONLY |
+| `deployment/compose-sample/docker-compose.yml` | the **`VERSION SKEW, until X ships` comment block** — see 10d | pass 2 |
 
 > **Do NOT "fix" `doc/user/container-image.adoc`.** It uses a literal `<version>` placeholder
 > throughout, deliberately — it is the reference layer and is written to stay true across releases.
 > Substituting a concrete version there would make it wrong at the *next* cut. A placeholder is not
 > a stale pin; leave it alone.
 
-**Never leave an example carrying a caveat the release has overtaken.** The 0.1.0 cut shipped
+#### 10c — `README.adoc` Known Limitations: RE-VERIFY the content, not just the stamp
+
+⛔ **The preamble says *"Verified as still open at the `$PREV_VERSION` cut"*, and
+`doc/README.adoc` plus `doc/user/README.adoc` both cite that section as "the verified limitations at
+this cut". It is therefore a claim of verification, and re-stamping it without re-checking the
+entries makes the claim false in the most damaging possible way — it asserts an audit nobody ran.**
+
+**Walk every entry and confirm it is still true at `$RELEASE_VERSION`.** Delete what the cycle
+fixed; add what it introduced. **This is not optional polish** — it is the one section of the README
+whose correctness the release explicitly vouches for.
+
+⚠ **Precedent from the 0.2.0 cycle, kept because it is the shape this fails in:** two entries went
+false *during* the cycle and neither was noticed until a pre-cut review. The
+`token-sheriff 0.9.5-SNAPSHOT` limitation was resolved by an out-of-band dependency PR, and *"cookie
+mode and refresh do not work together"* was superseded by the cookie-packaging work — **both were
+fixed by merges that never looked at the README.** Expect that: a limitation is retired by whoever
+fixes the underlying gap, not by whoever wrote the entry.
+
+#### 10d — `deployment/compose-sample/docker-compose.yml`: retire the VERSION SKEW block
+
+✅ **The compose files carry no image pin to bump, by design.** `docker-compose.yml` declares
+`image: ${API_SHERIFF_IMAGE}` with **no inline `:-default`**, so the pin lives once in `.env` and the
+compose file derives it. `docker-compose.plain-http.yml` introduces no gateway image at all (it adds
+only the nginx TLS-terminating hop), and every `integration-tests/docker-compose*.yml` uses the
+locally built `api-sheriff:distroless` tag, which is never a released coordinate. **None of them is
+release-coupled for the image.**
+
+⛔ **What IS release-coupled there is PROSE.** `docker-compose.yml` carries a comment block opening
+*"VERSION SKEW, until 0.2.0 ships"* that explains why the pinned default cannot boot the sample and
+tells the reader to override with a locally built image. **The moment `$RELEASE_VERSION` is published
+and `.env` is bumped, that entire block is false** — it describes a skew that no longer exists and
+sends readers to a workaround they no longer need.
+
+**Delete the block in the same change that bumps the pin.** The two are one act: the block exists
+*because* the pin lagged, so retiring one without the other leaves the sample self-contradictory.
+
+⚠ **A block of this shape is self-identifying — grep for its own expiry:**
+
+```bash
+git grep -n -i -e 'until .* ships' -e 'not published yet' -e 'PREDATES'
+```
+
+**Never leave an example carrying a caveat the release has overtaken.** The `0.1.0` cut shipped
 `deployment/compose-sample/.env` still reading *"0.1.0 is not published yet"* — accurate when
 written, false the moment the release landed, and contradicted by the pin on the very next line.
-When a release makes such a note obsolete, delete the note rather than leaving it to be puzzled over.
+
+#### 10e — Report what you checked, including the nothing-to-do case
 
 If the version-bearing files are already correct — the common case, since they are usually written
-during the cycle leading up to the cut — say so explicitly in the Step 12 report rather than
-silently skipping the step. "Checked, already correct" and "forgot to check" must not look alike.
+during the cycle leading up to the cut — say so explicitly in the Step 12 report rather than silently
+skipping the step. **"Checked, already correct" and "forgot to check" must not look alike.** Report
+the counts from both 10a passes, so a zero states which zero it is.
 
 #### `build-parent/example/pom.xml` — the one pin the release moves *past* rather than *to*
 
