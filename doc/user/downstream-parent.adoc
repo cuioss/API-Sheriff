@@ -117,7 +117,7 @@ what is built:
     <parent>
         <groupId>de.cuioss.sheriff.gateway</groupId>
         <artifactId>api-sheriff-build-parent</artifactId>
-        <version>0.2.0-SNAPSHOT</version>
+        <version>0.2.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -149,7 +149,7 @@ what is built:
 | `<relativePath/>` (empty) -- resolves the parent from your Maven repository.
 
 | `<parent><version>`
-| `0.2.0-SNAPSHOT` -- this repository's development version.
+| `0.2.1-SNAPSHOT` -- this repository's development version.
 | A *released* version.
 |===
 
@@ -316,7 +316,7 @@ Executed once, end to end, against commit `9ccda16`. The responses below were ob
 
 *This step is not optional, and skipping it is the first way this procedure fails.* The example is
 deliberately not a reactor module, so nothing builds `api-sheriff` on its behalf: its inherited
-dependency resolves to `de.cuioss.sheriff.gateway:api-sheriff:0.2.0-SNAPSHOT` from the local Maven
+dependency resolves to `de.cuioss.sheriff.gateway:api-sheriff:0.2.1-SNAPSHOT` from the local Maven
 repository, and a clean checkout has no such artifact. Install it once:
 
 [source,bash]
