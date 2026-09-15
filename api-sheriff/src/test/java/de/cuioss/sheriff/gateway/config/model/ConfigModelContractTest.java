@@ -122,6 +122,7 @@ class ConfigModelContractTest {
                 .hsts(new SecurityHeadersConfig.Hsts(31536000, true))
                 .contentTypeNosniff(true)
                 .frameDeny(true)
+                .contentSecurityPolicy("default-src 'self'")
                 .cors(new SecurityHeadersConfig.Cors(true, List.of("https://app.example.com"),
                         List.of("GET"), List.of("Authorization"), false))
                 .build();
@@ -306,6 +307,12 @@ class ConfigModelContractTest {
                             new TlsConfig.Mtls(true, "/ca"), new TlsConfig.Mtls(false, null)),
                     voCase("SecurityHeadersConfig", securityHeadersConfig(), securityHeadersConfig(),
                             SecurityHeadersConfig.builder().build()),
+                    // content_security_policy participates in identity: the unequal instance varies only
+                    // that component, so dropping it from equals() fails this case alone.
+                    voCase("SecurityHeadersConfig (content_security_policy)",
+                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null),
+                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null),
+                            new SecurityHeadersConfig(null, true, true, "default-src 'none'", null)),
                     voCase("SecurityHeadersConfig.Hsts",
                             new SecurityHeadersConfig.Hsts(1, true),
                             new SecurityHeadersConfig.Hsts(1, true),
@@ -503,6 +510,18 @@ class ConfigModelContractTest {
         }
 
         @Test
+        void securityHeadersConfigBuilderMatchesConstructor() {
+            SecurityHeadersConfig.Hsts hsts = new SecurityHeadersConfig.Hsts(600, false);
+            SecurityHeadersConfig viaCtor = new SecurityHeadersConfig(hsts, null, true, "default-src 'self'", null);
+            SecurityHeadersConfig viaBuilder = SecurityHeadersConfig.builder().hsts(hsts).frameDeny(true)
+                    .contentSecurityPolicy("default-src 'self'").build();
+            assertAll("the positional content_security_policy component sits between frame_deny and cors",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals("default-src 'self'", viaCtor.contentSecurityPolicy()),
+                    () -> assertNull(viaCtor.cors()));
+        }
+
+        @Test
         void redirectConfigBuilderMatchesConstructor() {
             RedirectConfig viaCtor = new RedirectConfig("/new-home", 308, true, false);
             RedirectConfig viaBuilder = redirectConfig();
@@ -541,6 +560,17 @@ class ConfigModelContractTest {
             assertNull(cfg.oidc());
             assertNull(cfg.edgeHardening());
             assertNull(cfg.egressTls());
+        }
+
+        @Test
+        void securityHeadersConfigKeepsAnAbsentContentSecurityPolicyAbsent() {
+            SecurityHeadersConfig cfg = new SecurityHeadersConfig(null, null, null, null, null);
+            assertAll("every security_headers component round-trips null — an absent policy emits no header",
+                    () -> assertNull(cfg.hsts()),
+                    () -> assertNull(cfg.contentTypeNosniff()),
+                    () -> assertNull(cfg.frameDeny()),
+                    () -> assertNull(cfg.contentSecurityPolicy()),
+                    () -> assertNull(cfg.cors()));
         }
 
         @Test

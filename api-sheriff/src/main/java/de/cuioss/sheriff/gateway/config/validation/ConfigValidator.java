@@ -245,6 +245,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateContentSecurityPolicy(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
@@ -1431,6 +1432,37 @@ public final class ConfigValidator {
      */
     private static void validateCors(GatewayConfig gateway, List<ConfigError> errors) {
         checkCors(gateway.securityHeaders(), "/security_headers/cors", errors);
+    }
+
+    /**
+     * Rule: a {@code content_security_policy} value must carry no CR, LF or other control character,
+     * on the global block and on every anchor block alike.
+     * <p>
+     * The value is served verbatim as the {@code Content-Security-Policy} response header, so a line
+     * terminator would inject a header (CWE-113). The bundled schema already bounds the value's shape;
+     * this rule is the boot-time authority that names the offending block, echoing the value only
+     * through the injection-safe {@code renderForMessage} (CWE-117). Every violation collects into the
+     * shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateContentSecurityPolicy(GatewayConfig gateway, List<ConfigError> errors) {
+        checkContentSecurityPolicy(gateway.securityHeaders(), "/security_headers/content_security_policy", errors);
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            checkContentSecurityPolicy(anchor.securityHeaders(),
+                    "/anchors/%s/security_headers/content_security_policy".formatted(anchor.name()), errors);
+        }
+    }
+
+    private static void checkContentSecurityPolicy(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
+            List<ConfigError> errors) {
+        String policy = securityHeaders == null ? null : securityHeaders.contentSecurityPolicy();
+        if (policy == null) {
+            return;
+        }
+        if (policy.isBlank() || policy.chars().anyMatch(Character::isISOControl)) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    "content_security_policy %s must be a non-blank value without CR, LF or other control characters; it is served verbatim as a response header"
+                            .formatted(renderForMessage(policy))));
+        }
     }
 
     private static void checkCors(@Nullable SecurityHeadersConfig securityHeaders, String pointer,

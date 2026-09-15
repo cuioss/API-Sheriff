@@ -49,14 +49,21 @@
         "include_subdomains": { "type": "boolean" }
       }
     },
+    "contentSecurityPolicy": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
+      "description": "The Content-Security-Policy response header value, served VERBATIM (e.g. \"default-src 'self'\"). Omitted emits no Content-Security-Policy header. The value becomes a response header, so a CR, LF or any other control character would be a response-header-injection vector: this schema enforces the cheap half of that bound (a length cap and a control-character-free, non-empty value, terminated with a negative lookahead rather than '$' because '$' also matches before a final line terminator), and the configuration validator refuses the same characters at boot, naming the offending block."
+    },
     "responseHeaders": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The gateway-owned response security headers of an anchor block. An anchor block replaces the global security_headers block WHOLESALE for the anchor's routes (no key-by-key merge) and is applied right after route selection; responses produced before a route is selected keep the global block. CORS is global only and is not accepted here.",
+      "description": "The gateway-owned response security headers of an anchor block. An anchor block replaces the global security_headers block WHOLESALE for the anchor's routes (no key-by-key merge — an anchor block without content_security_policy drops the global one) and is applied right after route selection; responses produced before a route is selected keep the global block. CORS is global only and is not accepted here.",
       "properties": {
         "hsts": { "$ref": "#/$defs/hsts" },
         "content_type_nosniff": { "type": "boolean" },
-        "frame_deny": { "type": "boolean" }
+        "frame_deny": { "type": "boolean" },
+        "content_security_policy": { "$ref": "#/$defs/contentSecurityPolicy" }
       }
     },
     "securityHeaders": {
@@ -67,6 +74,7 @@
         "hsts": { "$ref": "#/$defs/hsts" },
         "content_type_nosniff": { "type": "boolean" },
         "frame_deny": { "type": "boolean" },
+        "content_security_policy": { "$ref": "#/$defs/contentSecurityPolicy" },
         "cors": {
           "type": "object",
           "additionalProperties": false,
