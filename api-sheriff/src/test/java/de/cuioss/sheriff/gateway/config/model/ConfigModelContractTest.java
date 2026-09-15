@@ -897,7 +897,7 @@ class ConfigModelContractTest {
             ResolvedUpstream upstream = resolvedUpstream();
             ResolvedUpstream noUpstream = null;
             ResolvedAsset noAsset = null;
-            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC);
+            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, null);
             RedirectConfig noRedirect = null;
             RedirectConfig redirect = redirectConfig();
 
@@ -935,7 +935,7 @@ class ConfigModelContractTest {
                     () -> assertNotNull(resolvedRouteWith("proxy", match, auth, resolvedUpstream(), null, null)
                             .upstream()),
                     () -> assertNotNull(resolvedRouteWith("asset", match, auth, null,
-                            ResolvedAsset.directory("/srv", AccessLevel.PUBLIC), null).asset()),
+                            ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, null), null).asset()),
                     () -> assertEquals(redirectConfig(),
                             resolvedRouteWith("redirect", match, auth, null, null, redirectConfig()).redirect()));
         }
@@ -1125,7 +1125,7 @@ class ConfigModelContractTest {
         @Test
         void assetRouteIsNotAProxyRoute() {
             RouteConfig route = RouteConfig.builder().id("assets").match(matchConfig())
-                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null)).build();
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, null, null)).build();
 
             assertFalse(route.isProxyRoute(), "an asset route needs no base_url");
         }
@@ -1143,7 +1143,7 @@ class ConfigModelContractTest {
         @Test
         void routeDeclaringAssetAndRedirectIsNotAProxyRoute() {
             RouteConfig route = RouteConfig.builder().id("both").match(matchConfig())
-                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null))
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, null, null))
                     .redirect(redirectConfig()).build();
 
             assertFalse(route.isProxyRoute(),
@@ -1168,6 +1168,76 @@ class ConfigModelContractTest {
             assertAll("unset flags are the secure default",
                     () -> assertFalse(redirect.keepQuery(), "the query is not carried unless opted in"),
                     () -> assertFalse(redirect.allowExternal(), "an external target is not allowed unless opted in"));
+        }
+    }
+
+    // --- Asset index and fallback (AS-12) ------------------------------------
+
+    @Nested
+    @DisplayName("Asset index and fallback components (AS-12)")
+    class AssetIndexAndFallback {
+
+        private static ResolvedUpstream secondary() {
+            return new ResolvedUpstream("https", "cdn.internal", 443, "");
+        }
+
+        @Test
+        void assetConfigCarriesIndexAndFallbackAndParticipatesInIdentity() {
+            AssetConfig spa = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv")
+                    .index("index.html").fallback("shell.html").build();
+
+            assertAll("index and fallback are record components",
+                    () -> assertEquals("index.html", spa.index()),
+                    () -> assertEquals("shell.html", spa.fallback()),
+                    () -> assertEquals(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, "index.html",
+                            "shell.html"), spa, "the builder matches the canonical constructor"),
+                    () -> assertNotEquals(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, null,
+                            "shell.html"), spa, "the index participates in equals"),
+                    () -> assertNotEquals(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, "index.html",
+                            null), spa, "the fallback participates in equals"),
+                    () -> assertNull(AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).build().index(),
+                            "an omitted index stays absent"));
+        }
+
+        @Test
+        void directoryFactoryCarriesIndexAndFallback() {
+            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, "index.html", "shell.html");
+
+            assertAll("the four-argument directory factory",
+                    () -> assertEquals(AssetConfig.Source.DIRECTORY, asset.source()),
+                    () -> assertEquals("/srv", asset.directory()),
+                    () -> assertEquals("index.html", asset.index()),
+                    () -> assertEquals("shell.html", asset.fallback()),
+                    () -> assertNotEquals(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, "index.html", null),
+                            asset, "the fallback participates in equals"),
+                    () -> assertNotEquals(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, "shell.html"),
+                            asset, "the index participates in equals"));
+        }
+
+        @Test
+        void upstreamAssetRefusesIndexOrFallback() {
+            ResolvedUpstream upstream = secondary();
+
+            IllegalArgumentException withIndex = assertThrows(IllegalArgumentException.class,
+                    () -> upstreamAssetWith(upstream, "index.html", null));
+            assertThrows(IllegalArgumentException.class, () -> upstreamAssetWith(upstream, null, "shell.html"));
+
+            assertAll("index and fallback belong to a directory source only",
+                    () -> assertEquals(
+                            "UPSTREAM asset carries no index or fallback; both apply to a DIRECTORY source only",
+                            withIndex.getMessage()),
+                    () -> assertNull(ResolvedAsset.upstream(upstream, AccessLevel.PUBLIC).index(),
+                            "the upstream factory carries no index"),
+                    () -> assertNull(ResolvedAsset.upstream(upstream, AccessLevel.PUBLIC).fallback(),
+                            "the upstream factory carries no fallback"));
+        }
+
+        /**
+         * Builds an UPSTREAM {@link ResolvedAsset} varying only index and fallback, keeping each
+         * {@code assertThrows} lambda to a single invocation.
+         */
+        private static ResolvedAsset upstreamAssetWith(ResolvedUpstream upstream, String index, String fallback) {
+            return new ResolvedAsset(AssetConfig.Source.UPSTREAM, AccessLevel.PUBLIC, null, upstream, index, fallback);
         }
     }
 
