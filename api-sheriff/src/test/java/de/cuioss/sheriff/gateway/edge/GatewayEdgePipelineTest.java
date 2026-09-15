@@ -29,6 +29,7 @@ import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -37,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -80,6 +82,13 @@ class GatewayEdgePipelineTest {
     private static final String ORIGIN = "https://app.example";
     /** The {@code max_body_bytes} the {@code profile: minimal} route declares, retained under that mode. */
     private static final int MINIMAL_ROUTE_BODY_CAP = 1024;
+    /** The status every redirect route of this fixture answers with. */
+    private static final int REDIRECT_STATUS = 308;
+    /** The gateway path every redirect route of this fixture points at. */
+    private static final String REDIRECT_LOCATION = "/echo/new-home";
+
+    /** Counts the requests that actually reached the stub upstream. */
+    private final AtomicInteger upstreamHits = new AtomicInteger();
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -94,8 +103,10 @@ class GatewayEdgePipelineTest {
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
         // Stub upstream: echoes the received method, URI, and body so the forward path is observable.
+        upstreamHits.set(0);
         upstreamServer = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
                 request.body().onComplete(body -> {
+                    upstreamHits.incrementAndGet();
                     String payload = body.succeeded() && body.result() != null ? body.result().toString() : "";
                     request.response()
                             .putHeader("X-Upstream-Echo", "hit")
@@ -110,7 +121,9 @@ class GatewayEdgePipelineTest {
         RouteTable routeTable = new RouteTable(List.of(
                 route("secure", "/secure", Require.BEARER, upstreamPort, HttpMethod.GET),
                 route("echo", "/echo", Require.NONE, upstreamPort, HttpMethod.GET, HttpMethod.POST),
-                minimalModeRoute(upstreamPort)));
+                minimalModeRoute(upstreamPort),
+                redirectRoute("moved", "/moved", Require.NONE),
+                redirectRoute("secure-moved", "/secure-moved", Require.BEARER)));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
@@ -325,6 +338,33 @@ class GatewayEdgePipelineTest {
                 "a benign in-allowlist request on the minimal route is served");
     }
 
+    @Test
+    @DisplayName("answers a redirect route at the gateway with status, Location and stage headers, never contacting the upstream")
+    void answersRedirectRouteWithoutUpstreamContact() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/moved/old-page?lang=de",
+                Map.of("Origin", ORIGIN), null);
+
+        assertEquals(REDIRECT_STATUS, response.status(), "the configured redirect status is answered");
+        assertEquals(REDIRECT_LOCATION + "?lang=de", response.headers().get("Location"),
+                "the configured location is written verbatim with the kept raw query");
+        assertEquals(ORIGIN, response.headers().get("Access-Control-Allow-Origin"),
+                "the stage-0 headers accumulated on the request ride on the redirect");
+        assertTrue(response.body().isEmpty(), "a redirect answer carries no body: " + response.body());
+        assertEquals(0, upstreamHits.get(), "a redirect route must never contact the upstream");
+    }
+
+    @Test
+    @DisplayName("challenges an unauthenticated request on an authenticated redirect route before disclosing the location")
+    void challengesAuthenticatedRedirectRouteBeforeRedirecting() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure-moved/old-page", Map.of(), null);
+
+        assertEquals(401, response.status(), "the authentication stage runs before the redirect terminal");
+        assertEquals("Bearer", response.headers().get("WWW-Authenticate"),
+                "the missing bearer token is challenged");
+        assertNull(response.headers().get("Location"), "the location must not be disclosed before authentication");
+        assertEquals(0, upstreamHits.get(), "a challenged redirect route never contacts the upstream");
+    }
+
     private Response send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> requestHeaders,
             String body) throws Exception {
         RequestOptions options = new RequestOptions()
@@ -374,6 +414,25 @@ class GatewayEdgePipelineTest {
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .effectiveSecurityFilter(filter)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                .build();
+    }
+
+    /**
+     * A redirect route answering {@value #REDIRECT_STATUS} towards {@value #REDIRECT_LOCATION} with
+     * {@code keep_query} on; it resolves no upstream, so any upstream contact is a defect.
+     */
+    private static ResolvedRoute redirectRoute(String id, String pathPrefix, Require require) {
+        return ResolvedRoute.builder()
+                .id(id)
+                .protocol(Protocol.HTTP)
+                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                .effectiveAuth(AuthConfig.builder().require(require).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .redirect(RedirectConfig.builder()
+                        .location(REDIRECT_LOCATION)
+                        .status(REDIRECT_STATUS)
+                        .keepQuery(true)
+                        .build())
                 .build();
     }
 
