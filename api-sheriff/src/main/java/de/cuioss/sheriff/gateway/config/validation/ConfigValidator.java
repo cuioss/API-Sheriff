@@ -34,6 +34,7 @@ import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
+import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -254,6 +255,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRewriteLocationProtocol(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateAssetIndexAndFallback(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
@@ -1838,6 +1840,44 @@ public final class ConfigValidator {
                                     .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
                 }
             }
+        }
+    }
+
+    /**
+     * Rule (AS-12): {@code asset.index} and {@code asset.fallback} apply to a {@code source: directory}
+     * action only, and each value must be a single file-name segment. On {@code source: upstream} the
+     * keys would be silently ignored, so they are refused. A value carrying {@code /}, {@code \}, a
+     * control character, or naming {@code .} / {@code ..} — or an empty value — is refused, because
+     * the source resolves it beneath the requested directory (index) or the root (fallback), and a
+     * path-shaped value would widen what the confinement is asked to serve. The segment predicate is
+     * the one {@link DirectoryAssetSource} itself enforces, so boot and runtime cannot disagree. The
+     * offending value is never echoed. Every violation collects into the shared list (ADR-0009).
+     */
+    private static void validateAssetIndexAndFallback(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                AssetConfig asset = route.asset();
+                if (asset != null) {
+                    validateAssetFileName(endpoint, route, asset, "index", asset.index(), errors);
+                    validateAssetFileName(endpoint, route, asset, "fallback", asset.fallback(), errors);
+                }
+            }
+        }
+    }
+
+    private static void validateAssetFileName(EndpointConfig endpoint, RouteConfig route, AssetConfig asset,
+            String key, @Nullable String value, List<ConfigError> errors) {
+        if (value == null) {
+            return;
+        }
+        if (asset.source() != AssetConfig.Source.DIRECTORY) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "asset route '%s' declares asset.%s but its source is 'upstream'; index and fallback apply to source: directory only"
+                            .formatted(route.id(), key)));
+        } else if (!DirectoryAssetSource.isSingleFileName(value)) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "asset route '%s' asset.%s must be a single file-name segment (not empty, no '/', no '\\', no '.' or '..', no control characters)"
+                            .formatted(route.id(), key)));
         }
     }
 

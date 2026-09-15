@@ -39,17 +39,29 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  * The configuration values ({@code directory} / {@code upstream}) are lowercase; the
  * case-insensitive YAML binding maps them onto the {@link Source} constants.
+ * <p>
+ * A {@link Source#DIRECTORY} source may additionally declare an {@code index} file served for a
+ * directory address and a {@code fallback} file served for an unknown extensionless path (the
+ * single-page-application shape). Both are single file names; that they appear only on a
+ * directory source and name exactly one segment is enforced by the configuration validator.
  *
  * @param source    the source discriminator (mandatory)
  * @param directory the local directory root, present for {@link Source#DIRECTORY}
  * @param upstream  the topology alias of the secondary origin, present for
  *                  {@link Source#UPSTREAM}
+ * @param index     the directory index file name, {@code null} when omitted
+ * @param fallback  the root-level fallback file name, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 // cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record AssetConfig(Source source, @Nullable String directory, @Nullable String upstream) {
+public record AssetConfig(
+Source source,
+@Nullable String directory,
+@Nullable String upstream,
+@Nullable String index,
+@Nullable String fallback) {
 
     /**
      * The asset content source (decision: ADR-0014).
