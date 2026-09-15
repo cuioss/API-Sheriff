@@ -57,12 +57,15 @@ import org.jspecify.annotations.Nullable;
  *                               (meaningful only for a proxy route)
  * @param upstream               the resolved upstream target for a proxy route,
  *                               present when the route's terminal action is proxy and
- *                               {@code null} for an asset route
+ *                               {@code null} for an asset or redirect route
  * @param asset                  the resolved asset terminal action, present when the
- *                               route serves assets and {@code null} for a proxy route; a
- *                               route resolves to exactly one terminal action, so
- *                               {@code upstream} and {@code asset} are mutually
- *                               exclusive (ADR-0014)
+ *                               route serves assets and {@code null} otherwise
+ * @param redirect               the redirect terminal action, present when the route is
+ *                               answered at the gateway with a redirect and {@code null}
+ *                               otherwise; a route resolves to exactly one terminal
+ *                               action, so {@code upstream}, {@code asset} and
+ *                               {@code redirect} are mutually exclusive (ADR-0014 and its
+ *                               Amendment A1)
  * @param effectiveForward       the materialized {@code forward} filter consumed by
  *                               stage 5 — a per-dimension positive-list, negative-list
  *                               or forward-all posture; an all-absent
@@ -93,6 +96,7 @@ boolean retryEnabled,
 boolean notModifiedEnabled,
 @Nullable ResolvedUpstream upstream,
 @Nullable ResolvedAsset asset,
+@Nullable RedirectConfig redirect,
 ForwardConfig effectiveForward,
 Set<String> effectiveAllowedOrigins,
 @Nullable Integer effectiveWebSocketIdleTimeoutSeconds) {
@@ -103,8 +107,8 @@ Set<String> effectiveAllowedOrigins,
      * an absent {@code protocol} to {@link Protocol#HTTP}, defaulting an absent
      * {@code effectiveForward} to an all-absent {@link ForwardConfig} — the
      * <em>forward-all</em> posture on both dimensions, not a nothing-crosses one — and
-     * enforcing the terminal-action invariant: exactly one of {@code upstream} (proxy)
-     * or {@code asset} resolves.
+     * enforcing the terminal-action invariant: exactly one of {@code upstream} (proxy),
+     * {@code asset} or {@code redirect} resolves.
      */
     public ResolvedRoute {
         Objects.requireNonNull(id, "id");
@@ -112,21 +116,24 @@ Set<String> effectiveAllowedOrigins,
         Objects.requireNonNull(match, "match");
         Objects.requireNonNull(effectiveAuth, "effectiveAuth");
         effectiveAllowedMethods = effectiveAllowedMethods == null ? List.of() : List.copyOf(effectiveAllowedMethods);
-        if ((upstream != null) == (asset != null)) {
-            throw new IllegalArgumentException(
-                    "route '" + id + "' must resolve exactly one terminal action (upstream XOR asset)");
+        int terminalActions = (upstream != null ? 1 : 0) + (asset != null ? 1 : 0) + (redirect != null ? 1 : 0);
+        if (terminalActions != 1) {
+            throw new IllegalArgumentException("route '" + id
+                    + "' must resolve exactly one terminal action (one of upstream, asset, redirect)");
         }
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
         effectiveAllowedOrigins = effectiveAllowedOrigins == null ? Set.of() : Set.copyOf(effectiveAllowedOrigins);
     }
 
     /**
-     * The route's {@code path_prefix} — the precedence and ordering key carried by
-     * the {@link #match()} block.
+     * The route's match key — the exact {@code path} of an exact route, otherwise its
+     * {@code path_prefix} — the precedence and ordering key carried by the
+     * {@link #match()} block.
      *
-     * @return the literal path prefix of this route
+     * @return the declared exact path or path prefix of this route
+     * @see MatchConfig#matchKey()
      */
-    public String pathPrefix() {
-        return match.pathPrefix();
+    public String matchKey() {
+        return match.matchKey();
     }
 }

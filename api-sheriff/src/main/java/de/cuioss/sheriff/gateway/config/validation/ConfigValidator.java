@@ -556,11 +556,19 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: no two enabled routes share a (normalized) {@code match.path_prefix}
-     * without being distinguished by host, method, or a header matcher. The
-     * same-prefix disjointness check runs here in the all-violations pass rather than
-     * being thrown during route-table assembly (ADR-0009 single-reporter principle);
-     * prefix normalization makes {@code /api} and {@code /api/} collide.
+     * Rule: no two enabled routes share a path matcher without being distinguished by host, method,
+     * or a header matcher. The disjointness check runs here in the all-violations pass rather than
+     * being thrown during route-table assembly (ADR-0009 single-reporter principle).
+     * <ul>
+     *   <li>Two prefix routes collide when their normalized {@code match.path_prefix} values are
+     *       equal — prefix normalization makes {@code /api} and {@code /api/} collide.</li>
+     *   <li>Two exact routes collide when their {@code match.path} strings are equal. An exact path
+     *       is compared un-normalized, so {@code /a} and {@code /a/} are distinct addresses and do
+     *       not collide.</li>
+     *   <li>An exact route never collides with a prefix route, even for the same string: the exact
+     *       route is selected first by design, and the prefix route keeps serving every other path
+     *       below it.</li>
+     * </ul>
      */
     private static void validateRouteDisjointness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         List<RouteWithOwner> routes = new ArrayList<>();
@@ -573,16 +581,27 @@ public final class ConfigValidator {
             for (int j = i + 1; j < routes.size(); j++) {
                 RouteWithOwner first = routes.get(i);
                 RouteWithOwner second = routes.get(j);
-                String firstPrefix = RouteTableBuilder.normalizePrefix(first.route().match().pathPrefix());
-                String secondPrefix = RouteTableBuilder.normalizePrefix(second.route().match().pathPrefix());
-                if (firstPrefix.equals(secondPrefix)
-                        && overlaps(first.route().match(), second.route().match())) {
+                MatchConfig firstMatch = first.route().match();
+                MatchConfig secondMatch = second.route().match();
+                if (firstMatch.isExact() != secondMatch.isExact()) {
+                    continue;
+                }
+                String firstKey = disjointnessKey(firstMatch);
+                if (firstKey.equals(disjointnessKey(secondMatch)) && overlaps(firstMatch, secondMatch)) {
+                    String kind = firstMatch.isExact() ? "path" : "prefix";
                     errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
-                            "routes '%s' and '%s' share prefix '%s' and are not disjoint".formatted(
-                                    first.route().id(), second.route().id(), firstPrefix)));
+                            "routes '%s' and '%s' share %s '%s' and are not disjoint".formatted(
+                                    first.route().id(), second.route().id(), kind, firstKey)));
                 }
             }
         }
+    }
+
+    /**
+     * The key two same-form routes collide on: the exact path verbatim, or the normalized prefix.
+     */
+    private static String disjointnessKey(MatchConfig match) {
+        return match.isExact() ? match.matchKey() : RouteTableBuilder.normalizePrefix(match.matchKey());
     }
 
     private record RouteWithOwner(EndpointConfig endpoint, RouteConfig route) {
@@ -630,12 +649,25 @@ public final class ConfigValidator {
         return presentA != null && presentB != null && !presentA.equals(presentB);
     }
 
+    /**
+     * Rule: {@code base_url} is mandatory exactly when the endpoint carries a proxy route
+     * ({@link RouteConfig#isProxyRoute()} — the same predicate the route-table builder resolves the
+     * alias on), and a declared alias must resolve in the topology whether or not a proxy route uses
+     * it. An endpoint serving only {@code asset} and/or {@code redirect} routes may omit
+     * {@code base_url}.
+     */
     private static void validateBaseUrlResolvable(List<EndpointConfig> endpoints, ResolvedTopology topology,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
-            if (topology.lookup(endpoint.baseUrl()).isEmpty()) {
+            String baseUrl = endpoint.baseUrl();
+            if (baseUrl == null) {
+                if (endpoint.routes().stream().anyMatch(RouteConfig::isProxyRoute)) {
+                    errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
+                            "endpoint '%s' declares proxy route(s) but no base_url".formatted(endpoint.id())));
+                }
+            } else if (topology.lookup(baseUrl).isEmpty()) {
                 errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
-                        "unresolved topology alias: " + endpoint.baseUrl()));
+                        "unresolved topology alias: " + baseUrl));
             }
         }
     }
@@ -683,7 +715,8 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rules: (3) every enabled route's {@code match.path_prefix} lies inside its
+     * Rules: (3) every enabled route's match key ({@code match.path_prefix}, or the exact
+     * {@code match.path}) lies inside its
      * declared anchor's namespace; (4) every enabled route whose path lies inside
      * any anchor namespace declares exactly that anchor — an undeclared squatter
      * fails the boot (ADR-0007).
@@ -713,7 +746,7 @@ public final class ConfigValidator {
                     continue;
                 }
                 String declaredName = declaredAnchorName(endpoint, route);
-                String routePrefix = route.match().pathPrefix();
+                String routePrefix = route.match().matchKey();
                 checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routePrefix, errors);
                 checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routePrefix, errors);
             }

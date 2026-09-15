@@ -44,6 +44,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
@@ -157,7 +158,7 @@ class RouteRuntimeAssemblerTest {
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertEquals(List.of("first", "second"), runtimes.stream().map(RouteRuntime::getId).toList(),
-                "Assembly preserves the longest-prefix-first order");
+                "Assembly preserves the route-table order");
     }
 
     @Test
@@ -318,6 +319,34 @@ class RouteRuntimeAssemblerTest {
         assertNull(runtime.getUpstream(), "an asset route holds no proxy upstream");
         assertNull(runtime.getHttpClient(), "an asset route holds no Vert.x client");
         assertNull(runtime.getResilienceGuard(), "an asset route holds no resilience guard");
+    }
+
+    @Test
+    @DisplayName("Should assemble a redirect route carrying its redirect and no client, guard, source or upstream")
+    void shouldAssembleRedirectRouteWithoutClientOrGuard() {
+        RedirectConfig redirect = new RedirectConfig("/new-home", 301, false, false);
+        ResolvedRoute redirectRoute = ResolvedRoute.builder()
+                .id("moved").protocol(Protocol.HTTP)
+                .match(MatchConfig.builder().path("/old-home").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .redirect(redirect)
+                .build();
+        RouteTable table = new RouteTable(List.of(redirectRoute));
+        List<RouteRuntimeAssembler.UpstreamTarget> requestedClients = new ArrayList<>();
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory,
+                capturingClientFactory(requestedClients), guardFactory, assetSourceFactory);
+
+        RouteRuntime runtime = runtimes.getFirst();
+        assertAll("a redirect route never touches the proxy data plane",
+                () -> assertEquals(redirect, runtime.getRedirect(), "the redirect block reaches the runtime"),
+                () -> assertTrue(runtime.getMatcher().isExact(), "the exact matcher is compiled for the route"),
+                () -> assertNull(runtime.getUpstream(), "a redirect route holds no proxy upstream"),
+                () -> assertNull(runtime.getHttpClient(), "a redirect route holds no Vert.x client"),
+                () -> assertNull(runtime.getResilienceGuard(), "a redirect route holds no resilience guard"),
+                () -> assertNull(runtime.getAssetSource(), "a redirect route holds no asset source"),
+                () -> assertTrue(requestedClients.isEmpty(), "no upstream client is requested for a redirect"));
     }
 
     @Test

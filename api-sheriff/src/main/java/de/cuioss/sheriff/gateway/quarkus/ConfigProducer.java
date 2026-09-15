@@ -134,7 +134,7 @@ public class ConfigProducer {
      * normal scope such as {@code @ApplicationScoped} would require. The bean is
      * immutable and assembled once at boot, so a single instance is exact.
      *
-     * @return the immutable, longest-prefix-ordered {@link RouteTable}
+     * @return the immutable, exact-first then longest-prefix-ordered {@link RouteTable}
      */
     @Produces
     @Singleton
@@ -145,7 +145,9 @@ public class ConfigProducer {
 
     /**
      * Produces the immutable, fully-resolved topology assembled at boot: every topology alias
-     * referenced by an enabled endpoint or a {@code tls.passthrough_sni} target, decomposed into its
+     * declared as an enabled endpoint's {@code base_url} (an endpoint without proxy routes may
+     * declare none), referenced by a {@code source: upstream} asset route, or named as a
+     * {@code tls.passthrough_sni} target, decomposed into its
      * upstream endpoint. Published (rather than recomputed) so {@code tls.TlsEdgeProducer} can build
      * the accept-time SNI relay map from the same resolved data the validator already accepted.
      * <p>
@@ -264,10 +266,11 @@ public class ConfigProducer {
      * {@code base_url}: the {@code tls.passthrough_sni} relay targets and every
      * {@code source: upstream} asset route's upstream alias (ADR-0014). An asset route's
      * upstream is a per-route topology reference that the proxy-oriented {@code base_url}
-     * collection in {@link TopologyResolver} does not see, so it is gathered here and
-     * passed alongside the passthrough targets, otherwise the {@link ConfigValidator} and
-     * {@link RouteTableBuilder} asset-source lookup would reject a well-formed
-     * {@code /assets/cdn}-style upstream asset route as unresolved.
+     * collection in {@link TopologyResolver} does not see — and its endpoint may declare no
+     * {@code base_url} at all, since {@code base_url} is mandatory only for an endpoint carrying a
+     * proxy route — so it is gathered here and passed alongside the passthrough targets, otherwise
+     * the {@link ConfigValidator} and {@link RouteTableBuilder} asset-source lookup would reject a
+     * well-formed {@code /assets/cdn}-style upstream asset route as unresolved.
      *
      * @param loaded  the loaded gateway configuration (source of the passthrough targets)
      * @param enabled the enabled endpoints whose asset routes are scanned for upstream aliases
