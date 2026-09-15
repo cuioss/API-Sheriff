@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.net.http.HttpClient;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -151,8 +152,8 @@ class EgressTlsPostureArchTest {
                     new ConstructionTarget(Vertx.class, CREATE_WEB_SOCKET_CLIENT, WebSocketClientOptions.class),
                     new PostureCall(WebSocketClientOptions.class, Set.of(SET_VERIFY_HOST)), true),
             new EgressFamily("a JDK HTTP client",
-                    new ConstructionTarget(java.net.http.HttpClient.class, "newBuilder", null),
-                    new PostureCall(java.net.http.HttpClient.Builder.class, Set.of("sslContext", "sslParameters")),
+                    new ConstructionTarget(HttpClient.class, "newBuilder", null),
+                    new PostureCall(HttpClient.Builder.class, Set.of("sslContext", "sslParameters")),
                     true),
             new EgressFamily("a token-sheriff OIDC client configuration",
                     new ConstructionTarget(ClientConfiguration.class, BUILDER, null),
@@ -170,7 +171,7 @@ class EgressTlsPostureArchTest {
                     "createHttpClient(new HttpClientOptions().setVerifyHost(...))"),
             new UnpinnableTarget(Vertx.class, CREATE_WEB_SOCKET_CLIENT, WebSocketClientOptions.class,
                     "createWebSocketClient(new WebSocketClientOptions().setVerifyHost(...))"),
-            new UnpinnableTarget(java.net.http.HttpClient.class, "newHttpClient", null,
+            new UnpinnableTarget(HttpClient.class, "newHttpClient", null,
                     "HttpClient.newBuilder().sslContext(...)"));
 
     private static final JavaClasses PRODUCTION_CLASSES = new ClassFileImporter()
@@ -451,7 +452,7 @@ class EgressTlsPostureArchTest {
      *                            guard then requires its matcher to recognise
      */
     private record EgressFamily(String label, ConstructionTarget construction, PostureCall posture,
-            boolean productionSiteToday) {
+    boolean productionSiteToday) {
     }
 
     /**
@@ -500,7 +501,7 @@ class EgressTlsPostureArchTest {
      * @param replacement      the pinnable spelling a violation message recommends
      */
     private record UnpinnableTarget(Class<?> owner, String method, @Nullable Class<?> absentParameter,
-            String replacement) {
+    String replacement) {
 
         boolean matches(MethodCallTarget target) {
             return method.equals(target.getName())
