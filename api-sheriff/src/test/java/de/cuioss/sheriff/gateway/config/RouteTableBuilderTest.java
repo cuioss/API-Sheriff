@@ -67,6 +67,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
@@ -193,8 +194,8 @@ class RouteTableBuilderTest {
     class UpstreamPathMaterialization {
 
         @Test
-        @DisplayName("Should materialize a non-blank route upstream.path as the effective base path")
-        void shouldMaterializeRouteUpstreamPath() {
+        @DisplayName("Should use the route upstream.path as the whole base path when the alias has no base path")
+        void shouldAppendRouteUpstreamPathToEmptyAliasBase() {
             EndpointConfig endpoint = endpoint("grpc", "GRPC")
                     .routes(List.of(routeWithUpstreamPath("grpc-echo",
                             "/de.cuioss.sheriff.api.integration.grpc.Echo",
@@ -204,27 +205,63 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("GRPC"));
 
             ResolvedUpstream upstream = find(table, "grpc-echo").upstream();
-            assertAll("the route upstream.path becomes the effective base path so the service segment survives",
+            assertAll("an empty alias base plus the route upstream.path keeps the gRPC service segment",
                     () -> assertEquals("/de.cuioss.sheriff.api.integration.grpc.Echo", upstream.basePath(),
-                            "the bare-service route path is materialized as the upstream base path"),
+                            "the bare-service route path is the whole effective base path"),
                     () -> assertEquals("grpc.internal", upstream.host(),
                             "the alias host is carried through unchanged"),
-                    () -> assertEquals(443, upstream.port(), "the alias port is carried through unchanged"));
+                    () -> assertEquals(443, upstream.port(), "the alias port is carried through unchanged"),
+                    () -> assertEquals("https", upstream.scheme(), "the alias scheme is carried through unchanged"));
         }
 
         @Test
-        @DisplayName("Should replace a non-empty alias base path with the route upstream.path (not append)")
-        void shouldReplaceAliasBasePathWithRouteUpstreamPath() {
+        @DisplayName("Should append the route upstream.path to a non-empty alias base path")
+        void shouldAppendRouteUpstreamPathToAliasBasePath() {
             EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
-                    .routes(List.of(routeWithUpstreamPath("httpbin-graphql", "/graphql", "/anything/graphql")))
+                    .routes(List.of(routeWithUpstreamPath("httpbin-graphql", "/graphql", "/graphql")))
                     .build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint),
                     topologyWithBasePath("UPSTREAM", "/anything"));
 
             assertEquals("/anything/graphql", find(table, "httpbin-graphql").upstream().basePath(),
-                    "the route upstream.path replaces the alias base path wholesale — it must not be doubled to "
-                            + "/anything/anything/graphql");
+                    "the alias carries the environment base and the route carries its own path");
+        }
+
+        @ParameterizedTest(name = "alias base ''{0}'' + upstream.path ''{1}''")
+        @CsvSource({
+                "/anything, graphql",
+                "/anything/, /graphql",
+                "/anything/, graphql",
+                "/anything//, //graphql",
+                "/, /graphql"
+        })
+        @DisplayName("Should join the alias base path and upstream.path on exactly one slash")
+        void shouldJoinOnExactlyOneSlash(String aliasBasePath, String upstreamPath) {
+            String expected = "/".equals(aliasBasePath) ? "/graphql" : "/anything/graphql";
+            EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
+                    .routes(List.of(routeWithUpstreamPath("httpbin-graphql", "/graphql", upstreamPath)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint),
+                    topologyWithBasePath("UPSTREAM", aliasBasePath));
+
+            assertEquals(expected, find(table, "httpbin-graphql").upstream().basePath(),
+                    "no doubled and no missing slash may survive the join");
+        }
+
+        @Test
+        @DisplayName("Should keep a trailing slash the route upstream.path declares")
+        void shouldKeepDeclaredTrailingSlashOfUpstreamPath() {
+            EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
+                    .routes(List.of(routeWithUpstreamPath("httpbin-upload", "/upload", "/upload/")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint),
+                    topologyWithBasePath("UPSTREAM", "/anything"));
+
+            assertEquals("/anything/upload/", find(table, "httpbin-upload").upstream().basePath(),
+                    "the join normalizes only the seam, the dispatch strips the trailing slash later");
         }
 
         @Test

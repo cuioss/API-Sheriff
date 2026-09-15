@@ -26,8 +26,10 @@ import org.jspecify.annotations.Nullable;
  * an absent toggle inherits the resolved value. The effective values are
  * materialized once by the route-table builder.
  *
- * @param path             the upstream path that replaces the matched prefix,
- *                         {@code null} when omitted
+ * @param path             the upstream path appended to the alias base path, joined on
+ *                         exactly one {@code /} (ADR-0004 Amendment A2); the request
+ *                         remainder after the match key follows it. {@code null} (or blank)
+ *                         keeps the alias base path unchanged
  * @param connectTimeoutMs the connect timeout in milliseconds, {@code null} when omitted
  * @param readTimeoutMs    the read timeout in milliseconds, {@code null} when omitted
  * @param retry            the retry settings, {@code null} when omitted
