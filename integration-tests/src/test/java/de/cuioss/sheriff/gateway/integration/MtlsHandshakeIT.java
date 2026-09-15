@@ -16,15 +16,20 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.security.KeyStoreException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.Collections;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -82,14 +87,48 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
                 "a missing client certificate must be rejected at the TLS handshake, not as an HTTP status");
     }
 
+    /**
+     * The foreign identity must genuinely be offered before its rejection means anything. With
+     * {@code test.mtls.wrong.keystore} unset, {@link #clientContext(String, String)} builds a context
+     * with no key manager — byte-identical to {@link #noClientCertRejected()} — and this test would
+     * pass for that sibling's reason. So the keystore is first proven to exist, be readable and hold a
+     * key entry; only then is the handshake driven.
+     */
     @Test
     @DisplayName("a client cert signed by a foreign CA is rejected at the handshake")
     void wrongCaClientCertRejected() throws Exception {
-        SSLContext context = clientContext(
-                System.getProperty("test.mtls.wrong.keystore"),
-                System.getProperty("test.mtls.wrong.password", "wrong-trust"));
+        String keystorePath = System.getProperty("test.mtls.wrong.keystore");
+        String password = System.getProperty("test.mtls.wrong.password", "wrong-trust");
+        assertNotNull(keystorePath, "test.mtls.wrong.keystore must be set — without it the client offers"
+                + " no certificate and this test would only repeat noClientCertRejected");
+        Path keystore = Path.of(keystorePath);
+        assertTrue(Files.isRegularFile(keystore) && Files.isReadable(keystore),
+                "test.mtls.wrong.keystore must name a readable file, was: " + keystore.toAbsolutePath());
+        KeyStore loaded = loadPkcs12(keystore, password);
+        assertTrue(holdsKeyEntry(loaded),
+                "the wrong-CA keystore must hold at least one key entry, or no client identity is offered");
+
+        SSLContext context = clientContext(keystorePath, password);
         assertThrows(SSLException.class, () -> handshake(context),
                 "a client certificate signed by a CA the client_ca does not trust must be rejected");
+    }
+
+    private static KeyStore loadPkcs12(Path keystore, String password)
+            throws IOException, GeneralSecurityException {
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        try (InputStream in = Files.newInputStream(keystore)) {
+            keyStore.load(in, password == null ? new char[0] : password.toCharArray());
+        }
+        return keyStore;
+    }
+
+    private static boolean holdsKeyEntry(KeyStore keyStore) throws KeyStoreException {
+        for (String alias : Collections.list(keyStore.aliases())) {
+            if (keyStore.isKeyEntry(alias)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -113,10 +152,7 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
     private static SSLContext clientContext(String keystorePath, String password) throws Exception {
         KeyManager[] keyManagers = null;
         if (keystorePath != null) {
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
-            try (InputStream in = Files.newInputStream(Path.of(keystorePath))) {
-                keyStore.load(in, password == null ? new char[0] : password.toCharArray());
-            }
+            KeyStore keyStore = loadPkcs12(Path.of(keystorePath), password);
             KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             kmf.init(keyStore, password == null ? new char[0] : password.toCharArray());
             keyManagers = kmf.getKeyManagers();

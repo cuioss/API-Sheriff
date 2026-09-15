@@ -35,6 +35,11 @@ import org.junit.jupiter.api.Test;
  */
 class MetricsIT extends BaseIntegrationTest {
 
+    private static final String REQUESTS_TOTAL = "sheriff_requests_total";
+    private static final String HTTPBIN_ROUTE_LABEL = "route=\"httpbin-proxy\"";
+    private static final String SECURITY_EVENTS_TOTAL = "sheriff_security_events_total";
+    private static final String FAILURE_TYPE_LABEL = "failure_type=";
+
     @Test
     @DisplayName("the management metrics endpoint serves the Prometheus exposition format")
     void metricsEndpointServesPrometheusFormat() {
@@ -56,8 +61,12 @@ class MetricsIT extends BaseIntegrationTest {
     @Test
     @DisplayName("the sheriff_* meters appear and move on the metrics endpoint after proxy traffic")
     void sheriffMetersAppearAndMoveAfterProxyTraffic() {
-        // Arrange + Act — drive a successful proxied GET so the edge records its request, duration,
-        // and upstream-duration meters. A 200 means the request traversed the full pipeline and the
+        // Arrange — capture the route's request count before the act. Micrometer only emits a meter
+        // once it has been recorded, so on a fresh instance the series may be absent and sums to 0.0.
+        double baseline = meterSum(scrapeMetrics(), REQUESTS_TOTAL, HTTPBIN_ROUTE_LABEL);
+
+        // Act — drive a successful proxied GET so the edge records its request, duration, and
+        // upstream-duration meters. A 200 means the request traversed the full pipeline and the
         // downstream call completed, exercising every non-error sheriff_* recording surface.
         given()
                 .when()
@@ -83,6 +92,13 @@ class MetricsIT extends BaseIntegrationTest {
                 "the request counter must carry the config-fixed, bounded route label");
         assertTrue(body.contains("status_family=\"2xx\""),
                 "the request counter must carry the bounded status_family label, not the raw status");
+
+        // Assert — the counter MOVED: presence alone is satisfied by a series recorded by any earlier
+        // request, so only a strictly greater route sum proves this request was counted.
+        double after = meterSum(body, REQUESTS_TOTAL, HTTPBIN_ROUTE_LABEL);
+        assertTrue(after > baseline,
+                "a proxied request must move sheriff_requests_total for route httpbin-proxy: before="
+                        + baseline + ", after=" + after);
     }
 
     @Test
@@ -93,7 +109,7 @@ class MetricsIT extends BaseIntegrationTest {
         String before = scrapeMetrics();
         assertTrue(before.contains("sheriff_security_events_total"),
                 "sheriff_security_events_total must be exposed once the shared counter is bound at boot");
-        double baseline = securityEventsTotal(before);
+        double baseline = meterSum(before, SECURITY_EVENTS_TOTAL, FAILURE_TYPE_LABEL);
 
         // Act — drive a filter rejection: a query-parameter value carrying an encoded path-traversal
         // attack. urlEncodingEnabled(false) sends the pre-encoded value verbatim so cui-http decodes
@@ -114,20 +130,27 @@ class MetricsIT extends BaseIntegrationTest {
         String after = scrapeMetrics();
         assertTrue(after.contains("sheriff_security_events_total"),
                 "sheriff_security_events_total must remain exposed after the rejection");
-        assertTrue(securityEventsTotal(after) > baseline,
+        assertTrue(meterSum(after, SECURITY_EVENTS_TOTAL, FAILURE_TYPE_LABEL) > baseline,
                 "a security-filter rejection must move sheriff_security_events_total on the metrics endpoint");
     }
 
     /**
-     * Sums every {@code sheriff_security_events_total} sample in a Prometheus exposition body across all
-     * {@code failure_type} series. Micrometer may append the {@code _total} counter suffix, so lines are
-     * matched by prefix and filtered to the labelled series (skipping {@code # HELP} / {@code # TYPE}
-     * comment lines, which begin with {@code #}).
+     * Sums every sample of one meter in a Prometheus exposition body across the labelled series that
+     * carry {@code requiredLabel}. A sample line starts with the meter name followed directly by its
+     * label set, so {@code # HELP} / {@code # TYPE} comment lines (which begin with {@code #}) and
+     * meters that merely share the name as a prefix are never counted. A meter with no matching series
+     * — for example one not yet recorded — sums to {@code 0.0}.
+     *
+     * @param body the scraped exposition body
+     * @param meterName the exposed meter name, including any {@code _total} suffix Micrometer appends
+     * @param requiredLabel a label fragment every counted series must contain, such as
+     *            {@code route="httpbin-proxy"}
+     * @return the summed sample value of the matching series
      */
-    private static double securityEventsTotal(String body) {
+    private static double meterSum(String body, String meterName, String requiredLabel) {
         double sum = 0.0;
         for (String line : body.split("\n")) {
-            if (line.startsWith("sheriff_security_events_total") && line.contains("failure_type=")) {
+            if (line.startsWith(meterName + "{") && line.contains(requiredLabel)) {
                 int lastSpace = line.lastIndexOf(' ');
                 if (lastSpace >= 0) {
                     sum += Double.parseDouble(line.substring(lastSpace + 1).strip());

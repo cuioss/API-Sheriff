@@ -44,6 +44,31 @@ import org.junit.jupiter.api.Test;
  */
 class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
 
+    /**
+     * The positive control for both {@code 404} rows below. A {@code 404} for an unmounted path, or
+     * for a declared anchor with no endpoint, is also what a gateway that loaded no route table at
+     * all would answer — so those rows discriminate only when the mounted {@code /proxy} route is
+     * proven live in the same class. The echoed {@code method} proves the request crossed the
+     * gateway to the {@code go-httpbin} upstream the mounted topology resolves, not merely that some
+     * listener answered {@code 200}.
+     * <p>
+     * {@link #managementHealthReportsUp()} is deliberately not this control: readiness reports
+     * {@code UP} whether or not a route was assembled.
+     */
+    @Test
+    @DisplayName("the mounted /proxy route is live — the control that makes the 404 rows discriminating")
+    void mountedProxyRouteIsServed() {
+        var response = given()
+                .when()
+                .get("/proxy/get")
+                .then()
+                .statusCode(200)
+                .extract();
+
+        assertEquals("GET", response.path("method"),
+                "the go-httpbin echo must carry the forwarded method, proving the mounted route reached the upstream");
+    }
+
     @Test
     @DisplayName("only the mounted route set is served — unmatched paths deny by default")
     void unmountedPathDeniedByDefault() {

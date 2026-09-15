@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
@@ -25,6 +26,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.SecureRandom;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.List;
 import javax.net.ssl.SNIHostName;
@@ -51,8 +54,10 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The fault is driven entirely through Toxiproxy's REST control API (JDK {@link HttpClient}, no
  * Toxiproxy client dependency): the test creates a proxy in front of {@code passthrough-backend:8443}
- * and adds a {@code reset_peer} toxic, then relays a passthrough connection through the gateway and
- * observes the abort.
+ * and adds a named {@code reset_peer} toxic, then relays a passthrough connection through the gateway
+ * and observes the abort. A matched control removes only that toxic and completes a handshake over
+ * the identical path, so the abort is attributable to the injected fault rather than to a route that
+ * never relayed at all.
  * <p>
  * <strong>Runtime preconditions</strong> (supplied by the {@code -Pintegration-tests} stack): the
  * Toxiproxy control API is reachable at {@code -Dtest.toxiproxy.url} (default
@@ -63,6 +68,8 @@ import org.junit.jupiter.api.Test;
 class PassthroughFaultIT extends BaseIntegrationTest {
 
     private static final String PROXY_NAME = "passthrough-fault";
+
+    private static final String TOXIC_NAME = "passthrough-reset-peer";
 
     private final HttpClient control = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10)).build();
@@ -94,8 +101,10 @@ class PassthroughFaultIT extends BaseIntegrationTest {
         String body = "{\"name\":\"" + PROXY_NAME + "\",\"listen\":\"" + proxyListen()
                 + "\",\"upstream\":\"" + proxyUpstream() + "\",\"enabled\":true}";
         send("POST", "/proxies", body);
-        // A reset_peer toxic tears the connection down mid-stream after a short delay.
-        String toxic = "{\"type\":\"reset_peer\",\"attributes\":{\"timeout\":200}}";
+        // A reset_peer toxic tears the connection down mid-stream after a short delay. It is named
+        // explicitly so the relay control can remove exactly this toxic by name.
+        String toxic = "{\"name\":\"" + TOXIC_NAME
+                + "\",\"type\":\"reset_peer\",\"attributes\":{\"timeout\":200}}";
         send("POST", "/proxies/" + PROXY_NAME + "/toxics", toxic);
     }
 
@@ -113,6 +122,46 @@ class PassthroughFaultIT extends BaseIntegrationTest {
                 "a mid-stream reset must propagate to the client as a connection abort");
         assertFalse(failure instanceof SocketTimeoutException,
                 "the relay must tear the client leg down promptly (abort), not leave it hanging until timeout");
+    }
+
+    /**
+     * The control that makes {@link #midStreamResetSurfacesAsAbort()} attributable. Its
+     * {@code IOException} is equally produced by an unmapped fault SNI, an unreachable Toxiproxy or a
+     * listener that is down; this test removes only the {@code reset_peer} toxic and proves the very
+     * same path — gateway, fault SNI, Toxiproxy, backend — relays a complete TLS handshake, surfacing
+     * the backend's {@code CN=passthrough-backend} identity exactly as {@code TlsPassthroughIT} observes
+     * it on the fault-free SNI. The abort above is therefore the toxic's doing, not a broken route.
+     */
+    @Test
+    @DisplayName("with the reset toxic removed the same fault path relays a handshake to the backend")
+    void faultPathRelaysToBackendWithoutToxic() throws Exception {
+        send("DELETE", "/proxies/" + PROXY_NAME + "/toxics/" + TOXIC_NAME, "");
+
+        X509Certificate peerLeaf = handshakePeerLeaf(faultSni());
+
+        String subject = peerLeaf.getSubjectX500Principal().getName();
+        assertTrue(subject.contains("CN=passthrough-backend"),
+                "the toxic-free fault path must relay to the passthrough backend, was: " + subject);
+    }
+
+    /**
+     * Completes a TLS handshake through the gateway's public listener with the given SNI and returns
+     * the negotiated leaf certificate (trust-all, the stack's self-signed material).
+     */
+    private static X509Certificate handshakePeerLeaf(String sni) throws Exception {
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(null, new TrustManager[]{new TrustAllManager()}, new SecureRandom());
+        SSLSocketFactory factory = context.getSocketFactory();
+        try (SSLSocket socket = (SSLSocket) factory.createSocket("localhost", httpsPort())) {
+            SSLParameters params = socket.getSSLParameters();
+            params.setServerNames(List.of(new SNIHostName(sni)));
+            socket.setSSLParameters(params);
+            socket.setSoTimeout(15_000);
+            socket.startHandshake();
+            Certificate[] chain = socket.getSession().getPeerCertificates();
+            assertTrue(chain.length > 0, "the handshake must yield a peer certificate chain");
+            return (X509Certificate) chain[0];
+        }
     }
 
     /**

@@ -86,10 +86,18 @@ class DirectoryAssetServingIT extends BaseIntegrationTest {
                 .statusCode(405);
     }
 
+    /**
+     * The ordering "authentication before source resolution" cannot be observed directly from
+     * outside the gateway, so it is asserted by contrast: the existing file and a file that does not
+     * exist under {@code /secure-assets} must be rejected identically with {@code 401}. A gateway
+     * that resolved the directory source first would answer the missing file {@code 404} — as the
+     * public {@code /assets/static} route does in {@link #getMissingFileIsNotFound()} — and leak
+     * which files exist to an unauthenticated caller.
+     */
     @Test
     @DisplayName("an unauthenticated request to a bearer-gated asset is rejected 401 before any file is read")
     void authenticatedAssetRejectsWithoutToken() {
-        var response = given()
+        var existing = given()
                 .when()
                 .get("/secure-assets/app.css")
                 .then()
@@ -97,8 +105,15 @@ class DirectoryAssetServingIT extends BaseIntegrationTest {
                 .header("WWW-Authenticate", "Bearer")
                 .extract();
 
-        assertEquals("application/problem+json", problemType(response.contentType()),
+        assertEquals("application/problem+json", problemType(existing.contentType()),
                 "the rejection is rendered as an RFC 9457 problem document");
+
+        given()
+                .when()
+                .get("/secure-assets/does-not-exist.css")
+                .then()
+                .statusCode(401)
+                .header("WWW-Authenticate", "Bearer");
     }
 
     private static String problemType(String contentType) {
