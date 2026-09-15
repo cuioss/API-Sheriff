@@ -84,7 +84,8 @@ class RouteRuntimeAssemblerTest {
         clientFactory = _ -> vertx.createHttpClient();
         guardFactory = _ -> new StoredOnlyGuard();
         assetSourceFactory = asset -> new DirectoryAssetSource(
-                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access(), Map.of());
+                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access(), asset.index(),
+                asset.fallback(), Map.of());
     }
 
     @AfterEach
@@ -339,12 +340,17 @@ class RouteRuntimeAssemblerTest {
                 .match(MatchConfig.builder().pathPrefix("/assets").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC))
+                .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html"))
                 .build();
         RouteTable table = new RouteTable(List.of(assetRoute));
+        List<ResolvedAsset> requestedSources = new ArrayList<>();
+        RouteRuntimeAssembler.AssetSourceFactory capturingAssetSourceFactory = asset -> {
+            requestedSources.add(asset);
+            return assetSourceFactory.create(asset);
+        };
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
-                assetSourceFactory);
+                capturingAssetSourceFactory);
 
         RouteRuntime runtime = runtimes.getFirst();
         assertNotNull(runtime.getAssetSource(), "an asset route carries a live asset source");
@@ -352,6 +358,11 @@ class RouteRuntimeAssemblerTest {
         assertNull(runtime.getHttpClient(), "an asset route holds no Vert.x client");
         assertNull(runtime.getResilienceGuard(), "an asset route holds no resilience guard");
         assertNull(runtime.getLocationRewriter(), "an asset route holds no Location rewriter");
+        assertEquals(1, requestedSources.size(), "the asset source is built once for the route");
+        assertEquals("index.html", requestedSources.getFirst().index(),
+                "the resolved index reaches the asset-source factory");
+        assertEquals("index.html", requestedSources.getFirst().fallback(),
+                "the resolved fallback reaches the asset-source factory");
     }
 
     @Test

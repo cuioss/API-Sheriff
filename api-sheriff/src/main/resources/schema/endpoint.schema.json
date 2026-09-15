@@ -214,6 +214,14 @@
                   "upstream": {
                     "type": "string",
                     "description": "The topology alias of the secondary origin for source: upstream."
+                  },
+                  "index": {
+                    "type": "string",
+                    "description": "Directory index file name for source: directory (e.g. index.html). A request addressing a directory - the empty sub-path, a sub-path ending with /, or an existing directory - is answered with this file from that directory, served through the same path confinement as any other asset; a directory without the file is a 404. A single file-name segment: no /, no backslash, no .., no control characters, not empty. Refused on source: upstream (enforced in code)."
+                  },
+                  "fallback": {
+                    "type": "string",
+                    "description": "Single-page-application fallback file name for source: directory. A request whose target does not exist and whose last path segment carries no dot extension is answered with this root-level file, served through the same path confinement as any other asset; an unknown path with an extension (e.g. /app.js) stays a 404. A single file-name segment: no /, no backslash, no .., no control characters, not empty. Refused on source: upstream (enforced in code)."
                   }
                 }
               },

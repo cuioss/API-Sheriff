@@ -1344,7 +1344,8 @@ public class GatewayEdgeRoute {
 
     /**
      * Builds the live {@link AssetSource} for an asset route's resolved terminal action: a
-     * {@link DirectoryAssetSource} rooted at the configured directory for a {@code directory}
+     * {@link DirectoryAssetSource} rooted at the configured directory — carrying its optional
+     * {@code index} and {@code fallback} file names — for a {@code directory}
      * source, or an {@link UpstreamAssetSource} over the boot-resolved secondary origin for an
      * {@code upstream} source. Both apply the gateway's confinement and response envelope; the
      * upstream source rides its own SSRF-guarded fetch seam (ADR-0014), not the proxy data plane.
@@ -1356,7 +1357,8 @@ public class GatewayEdgeRoute {
                 if (directory == null) {
                     throw new IllegalStateException("directory asset source requires a directory root");
                 }
-                yield new DirectoryAssetSource(Path.of(directory), asset.access(), assetContentTypes);
+                yield new DirectoryAssetSource(Path.of(directory), asset.access(), asset.index(), asset.fallback(),
+                        assetContentTypes);
             }
             case UPSTREAM -> {
                 ResolvedUpstream upstream = asset.upstream();

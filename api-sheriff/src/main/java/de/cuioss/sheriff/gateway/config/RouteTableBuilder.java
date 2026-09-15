@@ -432,7 +432,9 @@ public final class RouteTableBuilder {
 
     /**
      * Materializes a route's asset terminal action (ADR-0014). A {@code directory}
-     * source carries its configured root; an {@code upstream} source resolves its
+     * source carries its configured root together with its optional {@code index} and
+     * {@code fallback} file names (AS-12; an {@code upstream} source carries neither — the
+     * configuration validator refuses them there); an {@code upstream} source resolves its
      * topology alias through the same {@link ResolvedTopology} the proxy action uses —
      * no parallel resolution. The effective access level the gateway-owned response
      * envelope (asset package) keys its caching on is
@@ -453,7 +455,7 @@ public final class RouteTableBuilder {
                     throw new RouteTableException(
                             "asset route '%s' declares source: directory but no directory root".formatted(route.id()));
                 }
-                yield ResolvedAsset.directory(directory, access);
+                yield ResolvedAsset.directory(directory, access, asset.index(), asset.fallback());
             }
             case UPSTREAM -> {
                 String alias = asset.upstream();

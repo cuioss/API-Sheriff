@@ -292,7 +292,7 @@ class DispatchStageTest {
         @DisplayName("serves a directory asset over GET behind the gateway response envelope")
         void servesDirectoryAssetOverGet(@TempDir Path root) throws Exception {
             Files.writeString(root.resolve("app.css"), "body{color:red}");
-            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC, Map.of());
+            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null, Map.of());
 
             AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.GET, "/app.css");
 
@@ -307,7 +307,7 @@ class DispatchStageTest {
         @DisplayName("serves a directory asset over HEAD with an empty body")
         void servesDirectoryAssetOverHead(@TempDir Path root) throws Exception {
             Files.writeString(root.resolve("app.css"), "body{color:red}");
-            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC, Map.of());
+            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null, Map.of());
 
             AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.HEAD, "/app.css");
 
@@ -319,7 +319,7 @@ class DispatchStageTest {
         @DisplayName("rejects a non-read verb with 405 on the dispatch path (GET/HEAD-only)")
         void rejectsNonReadVerb(@TempDir Path root) throws Exception {
             Files.writeString(root.resolve("app.css"), "body{}");
-            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC, Map.of());
+            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null, Map.of());
 
             AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.POST, "/app.css");
 
