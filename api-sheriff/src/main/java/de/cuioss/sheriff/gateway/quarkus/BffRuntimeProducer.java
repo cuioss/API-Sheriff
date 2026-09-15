@@ -234,7 +234,6 @@ public class BffRuntimeProducer {
         String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
         OidcConfig.Session session = Objects.requireNonNull(oidc.session(), "oidc.session");
         String gatewayOrigin = originOf(redirectUri);
-        // The configured oidc.issuer, or the gateway's own origin when the key is omitted.
         String issuer = Objects.requireNonNullElse(oidc.issuer(), gatewayOrigin);
         String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
         String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
