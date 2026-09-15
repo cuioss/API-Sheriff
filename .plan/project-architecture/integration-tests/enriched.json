@@ -1,5 +1,9 @@
 {
   "best_practices": [],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "eca66018be2f63fbdd37ec57f45b315e65764d4cfd37da3dc1d9c58496833ca6"
+  },
   "insights": [
     "The JaCoCo coverage bundle for integration-tests measures almost nothing real: every main class it sees is a generated quarkus-grpc stub, so the bundle reports a near-zero branch ratio (0.13 observed) that no hand-written test can raise. The check is kept meaningful by a class-name-prefix-scoped coverage exclusion for the generated stubs; do not chase this ratio with new tests."
   ],
@@ -10,16 +14,33 @@
     "io.rest-assured:rest-assured",
     "org.awaitility:awaitility"
   ],
-  "key_dependencies_reasoning": "ITs run against the api-sheriff native container; REST Assured + Awaitility drive/await the dockerized stack",
+  "key_dependencies_reasoning": "ITs run against the native api-sheriff container started from the Compose stack; REST Assured drives the requests and Awaitility awaits stack readiness and asynchronous effects",
   "key_packages": {
     "de.cuioss.sheriff.api.integration": {
       "description": "IT suite: BaseIntegrationTest (stack lifecycle/awaiting), ApiSheriffIntegrationIT (health), ProxyIntegrationIT (pass-through proxy against go-httpbin)."
+    },
+    "integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration": {
+      "components": [
+        "BaseIntegrationTest",
+        "ApiSheriffIntegrationIT",
+        "ConfigLoadedIntegrationIT",
+        "BearerValidationIT",
+        "BffSessionLoginIT",
+        "BffCookieSessionIT",
+        "MtlsHandshakeIT",
+        "TlsPassthroughIT",
+        "GrpcProxyIT",
+        "WebSocketProxyIT",
+        "ImageMetadataIT",
+        "ImageMetadataJfrIT"
+      ],
+      "description": "Failsafe IT suites and their shared stack support: BaseIntegrationTest owns stack lifecycle and awaiting, the *IT classes assert gateway behaviour against the running Compose stack, and the *WiringTest classes pin the descriptor wiring the ITs depend on."
     }
   },
   "purpose": "integration-tests",
-  "purpose_reasoning": "only failsafe IT sources, integration-tests profile, docker infrastructure",
-  "responsibility": "Integration test coordinator: builds the native gateway container and orchestrates the docker-compose stack (gateway, Keycloak, go-httpbin, nginx-static, Prometheus) via the integration-tests profile, running IT suites (proxy pass-through, health) with REST Assured and Awaitility.",
-  "responsibility_reasoning": "module pom description, docker-compose.yml services, ProxyIntegrationIT/BaseIntegrationTest sources",
+  "purpose_reasoning": "Failsafe IT sources plus Docker infrastructure behind the integration-tests and jfr profiles; skipPublishing=true; src/main holds only the GrpcEchoService test upstream (quarkus-grpc), no product code",
+  "responsibility": "Integration test coordinator: builds the native api-sheriff container image and, via the integration-tests profile, orchestrates the Docker Compose stack its Failsafe IT suites run against with REST Assured and Awaitility. The IT families cover container health, metrics and image metadata; config load and fail-closed refusal; bearer validation and the inbound pipeline guards (host smuggling, GET-with-body, body limits, error contract, security-profile modes, graceful shutdown); the server-session and sealed-cookie BFF flows (login, refresh, logout, CSRF, userinfo); the TLS edge (mTLS, SNI passthrough, management plain-HTTP opt-out, upstream hostname verification); gRPC, WebSocket and asset relays. Surefire *WiringTest classes pin the compose and descriptor wiring those ITs rely on; the separate jfr profile builds api-sheriff:jfr and runs ImageMetadataJfrIT.",
+  "responsibility_reasoning": "integration-tests/pom.xml description + src/test/java/de/cuioss/sheriff/gateway/integration inventory (*IT and *WiringTest classes) read at HEAD",
   "skills_by_profile": {
     "implementation": {
       "defaults": [

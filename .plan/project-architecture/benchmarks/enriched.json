@@ -1,23 +1,37 @@
 {
   "best_practices": [],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "dab97d54c2f87b0ad42507ca1e45cd45502ebe98ca7cb880cc24b10d470ff06a"
+  },
   "insights": [
     "The benchmark coverage 'expected=' list in .github/workflows/benchmark.yml is an independent oracle, not a mirror of the run-k6-* executions in benchmarks/pom.xml. Review-bot suggestions to derive it from the pom are declined: deriving it would make a goal deleted from the pom vanish from both sides and the coverage step go green, losing the silent-deletion detection that is the step's main reason to exist. Skip state is also property-driven and CLI-overridable, so a naive derivation would demand a summary for a deliberately skipped goal. Maintain the list by hand when a goal is added or un-skipped."
   ],
   "internal_dependencies": [],
   "key_dependencies": [
-    "de.cuioss:benchmarking-common",
+    "de.cuioss.sheriff.token:benchmarking-common",
     "de.cuioss:cui-java-tools"
   ],
-  "key_dependencies_reasoning": "benchmarking-common provides the WRK result publication pipeline",
+  "key_dependencies_reasoning": "benchmarking-common (de.cuioss.sheriff.token) supplies the BenchmarkData model, report and GitHub Pages generators and Prometheus metric collection that K6ResultPostProcessor drives; cui-java-tools supplies CuiLogger/LogRecord. Coordinates read from benchmarks/pom.xml",
   "key_packages": {
+    "benchmarks/src/main/java/de/cuioss/sheriff/gateway/k6/benchmark": {
+      "components": [
+        "K6ResultPostProcessor",
+        "K6BenchmarkConverter",
+        "PassthroughBaselineComparator",
+        "ComparisonSummaryWriter",
+        "K6BenchmarkLogMessages"
+      ],
+      "description": "k6 benchmark post-processing: adapts each k6 script's handleSummary() JSON onto the benchmarking-common report model and drives report, badge, trend and GitHub Pages generation from the benchmark profile."
+    },
     "de.cuioss.sheriff.api.wrk.benchmark": {
       "description": "WrkResultPostProcessor converts raw wrk output into the benchmarking-common publication format; GatewayEndpointBenchmarkTest drives the wrk scripts."
     }
   },
   "purpose": "benchmark",
-  "purpose_reasoning": "WRK benchmark harness, benchmark Maven profile, no production code",
-  "responsibility": "WRK-based HTTP load benchmarks for the gateway. Wraps wrk scripts (health, proxied-static route) run against the docker-compose stack via the benchmark profile, and post-processes results with WrkResultPostProcessor (benchmarking-common) for publication to GitHub Pages.",
-  "responsibility_reasoning": "benchmarks/README.adoc + wrk-scripts inventory + benchmark profile",
+  "purpose_reasoning": "k6 benchmark harness (K6ResultPostProcessor, k6-scripts/) behind the opt-in benchmark Maven profile; skipPublishing=true, no production code",
+  "responsibility": "k6-based HTTP load benchmarks for the gateway. The benchmark profile runs the k6-scripts/ aspects (health, proxied static, passthrough relay, bearer-proxied, HTTP/2, GraphQL, gRPC unary, WebSocket echo, small and large upload) against the integration-tests Docker Compose stack, then K6ResultPostProcessor converts the k6 handleSummary exports through K6BenchmarkConverter into the benchmarking-common report, badge, trend and GitHub Pages pipeline, and PassthroughBaselineComparator asserts the empty-passthrough_sni run against the proxied-static baseline.",
+  "responsibility_reasoning": "benchmarks/pom.xml benchmark profile executions + src/main/resources/k6-scripts inventory + de.cuioss.sheriff.gateway.k6.benchmark package-info and K6ResultPostProcessor Javadoc",
   "skills_by_profile": {
     "implementation": {
       "defaults": [

@@ -7,21 +7,27 @@
   ],
   "generation": {
     "by": "architecture",
-    "tree_sha": "517b17dfb40606c055f70164b7e42f14c9ec9cd2b00ada7943fe2fa2c7cf2813"
+    "tree_sha": "5aaada3706cf5f90b2363eb30e0bd80e2ae87566bbfe53522d5114d358c9ac88"
   },
   "insights": [
     "NeutralTlsConfigSource runs at ordinal 350, above the environment-variable source's 300, so what it projects reliably outranks application.properties defaults. It projects exactly one key \u2014 quarkus.management.tls-configuration-name, and only when management.tls.enabled is false \u2014 not general quarkus.* TLS policy; it never emits quarkus.tls.key-store.* \u2014 key material stays deployment-bound. TlsServerCustomizer then binds min_version/cipher_suites/alpn onto the terminated HTTPS listener and fails closed at boot on an unsupported value; ManagementPlainHttpAudit (StartupEvent, WARN ApiSheriff-115) is the runtime tripwire for the one legitimate plain-HTTP management path, naming both downgrade routes."
   ],
   "internal_dependencies": [],
   "key_dependencies": [
-    "io.quarkus:quarkus-resteasy-jackson",
     "io.quarkus:quarkus-arc",
-    "io.quarkus:quarkus-micrometer-registry-prometheus",
+    "io.quarkus:quarkus-resteasy-jackson",
     "io.quarkus:quarkus-smallrye-health",
+    "io.quarkus:quarkus-micrometer-registry-prometheus",
+    "io.quarkus:quarkus-smallrye-fault-tolerance",
+    "de.cuioss:cui-http",
+    "de.cuioss.sheriff.token:token-sheriff-validation-quarkus",
+    "de.cuioss.sheriff.token:token-sheriff-client",
+    "de.cuioss.sheriff.token:token-sheriff-client-quarkus",
+    "com.networknt:json-schema-validator",
     "de.cuioss:cui-java-tools",
     "org.projectlombok:lombok"
   ],
-  "key_dependencies_reasoning": "Quarkus runtime stack (REST, CDI, metrics, health) plus CUI logging (CuiLogger/LogRecord) and Lombok per CUI standards; cui-http and token-sheriff-validation join in Plans 02/03",
+  "key_dependencies_reasoning": "Read from api-sheriff/pom.xml at HEAD: the Quarkus runtime stack (CDI, JAX-RS for the RFC 9457 exception mappers, health, Prometheus metrics, fault tolerance for the per-route resilience guard), cui-http for inbound security filtering and forwarded-header resolution, token-sheriff-validation-quarkus for offline bearer validation, token-sheriff-client(-quarkus) as the BFF confidential-client engine, json-schema-validator for boot-time config validation, plus CUI logging and Lombok",
   "key_packages": {
     "de.cuioss.sheriff.api": {
       "description": "Application root: ApiSheriff marker/config holder and ApiSheriffApplication Quarkus entry point."
@@ -46,9 +52,9 @@
     }
   },
   "purpose": "runtime",
-  "purpose_reasoning": "Quarkus application with ApiSheriffApplication entry point, packaging=jar, deployable container image",
-  "responsibility": "The deployable Quarkus gateway application. Currently hosts the Plan-01 minimal pass-through proxy (ProxyRoute with hop-by-hop header stripping, forwarding hardening, 404 deny-by-default), CDI producers, and REST scaffolding; grows into the full security pipeline (cui-http filtering, route table, token validation) per doc/plan/02+03. Ships JVM and native (Mandrel) images.",
-  "responsibility_reasoning": "source analysis of de.cuioss.sheriff.api.gateway.proxy + package-info.java files + doc/plan/01-base-implementation.adoc",
+  "purpose_reasoning": "Quarkus application with ApiSheriffApplication entry point, packaging=jar, published as the ghcr.io/cuioss/api-sheriff container image",
+  "responsibility": "The deployable Quarkus gateway application. A Vert.x GatewayEdgeRoute runs every request through the security pipeline (cui-http basic and thorough checks, canonical-path and framing guards, verb gate, route selection, offline bearer authentication via token-sheriff-validation, forward policy, security headers) and dispatches to HTTP, gRPC, WebSocket or asset-serving targets. It also hosts the server-session and sealed-cookie BFF runtimes on token-sheriff-client, the TLS edge (SNI front listener with L4 passthrough, mTLS, egress trust profiles), boot-time YAML plus JSON Schema config loading and validation, CDI producers, health and metrics. Published as a GraalVM/Mandrel native executable on a distroless container image (ADR-0042).",
+  "responsibility_reasoning": "api-sheriff/src/main/java/de/cuioss/sheriff/gateway package inventory (edge, pipeline, auth, forward, routing, asset, bff.*, tls, config.*, quarkus), api-sheriff/pom.xml dependencies and ADR-0042 (native-on-distroless artifact) read at HEAD",
   "skills_by_profile": {
     "implementation": {
       "defaults": [

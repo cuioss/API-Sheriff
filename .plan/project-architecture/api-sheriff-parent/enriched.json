@@ -2,6 +2,10 @@
   "best_practices": [
     "Treat a non-zero exit from any .plan/execute-script.py manage-* call as a hard stop, never as a warning to log and continue. An argparse rejection (exit 2) bypasses the script body entirely, so the intended write never lands: in plan benchmark-health-target a 'manage-findings qgate add' rejection silently dropped a phase-5 escalation, which surfaced only as an extra orchestrator round-trip. Verify the subcommand and flag names against the script's --help before invoking, and escalate rather than proceed when a call is rejected."
   ],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "b71b288bd8a3347aaa282f84cf7c06ea906d3b45d4b2349dc7fc44ce0a4141ae"
+  },
   "insights": [
     "CI aggregation gates (build/conclusion, integration-tests/conclusion) fail only as derivatives of their upstream jobs, and a red build/sonar-build with successful scanner auth means a genuine server-side SonarCloud new-code quality-gate verdict (fetchable without credentials via the public sonarcloud.io API) \u2014 triage the upstream cause, never the aggregation gate.",
     "CI rollup 'conclusion' gate jobs (build / conclusion, integration-tests / conclusion) fail solely as mirrors of their failing child job; the project treats them as carrying no independent root cause and dispositions them taken_into_account, triaging only the child job's failure.",
@@ -13,12 +17,12 @@
     "benchmarks"
   ],
   "key_dependencies": [],
-  "key_dependencies_reasoning": "aggregator over the three child modules",
+  "key_dependencies_reasoning": "Aggregator only: no key external dependency of its own; the reactor modules and the shared BOM imports are declared in the root pom.xml",
   "key_packages": {},
   "purpose": "parent",
-  "purpose_reasoning": "packaging=pom at repository root, aggregates 3 child modules",
-  "responsibility": "Maven aggregator and parent POM for the API Sheriff multi-module build. Inherits de.cuioss:cui-java-parent, pins the Quarkus BOM and shared plugin/dependency management, and defines the coverage profile plus module ordering (api-sheriff, integration-tests, benchmarks).",
-  "responsibility_reasoning": "root pom.xml packaging=pom, parent cui-java-parent, module list and pom description",
+  "purpose_reasoning": "packaging=pom at repository root, aggregates the six reactor modules declared in <modules>",
+  "responsibility": "Maven aggregator and parent POM for the API Sheriff multi-module build. Inherits de.cuioss:cui-quarkus-parent, sets the Java 25 release level, imports the Quarkus, CUI and token-sheriff BOMs in their load-bearing order, and carries the reactor-wide compiler (failOnWarning), Surefire and Failsafe configuration, the coverage profile and the pre-commit OpenRewrite recipe override. Reactor module order: api-sheriff, integration-tests, benchmarks, demo-client, deployment, build-parent.",
+  "responsibility_reasoning": "root pom.xml read at HEAD: parent coordinate, maven.compiler-plugin.release, dependencyManagement BOM imports, pluginManagement, coverage and pre-commit profiles, and the <modules> list in declaration order",
   "skills_by_profile": {
     "implementation": {
       "defaults": [
