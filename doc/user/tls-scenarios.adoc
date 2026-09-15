@@ -501,8 +501,7 @@ command:
 * *No profile, and a JVM default trust store that does not hold the provider's CA.* The JWKS loader
   `TokenValidatorProducer` configured verifies against the default store, the fetch fails PKIX path
   building, the key set never loads, and every bearer request is rejected `401` -- a trust problem that
-  looks like a token problem. `TokenValidatorProducer` assembles the validator at startup, so a profile
-  that cannot be resolved surfaces at boot rather than on the first request.
+  looks like a token problem.
 * *The BFF back-channel store is missing, or supplied through `JAVA_TOOL_OPTIONS`.* A native executable
   ignores that variable, so discovery and the code exchange fail PKIX and login answers `500`.
 * *Which store is actually in force.* `DefaultTrustSourceAudit` logs `INFO ApiSheriff-17` on every boot,
