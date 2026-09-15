@@ -597,7 +597,7 @@ class ConfigModelContractTest {
         @Test
         void resolvedRouteNormalizesAbsentComponents() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, resolvedUpstream(), null, null, null, null);
+                    true, resolvedUpstream(), null, null, null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.effectiveSecurityFilter());
             assertNull(cfg.effectiveSecurityHeaders());
@@ -883,26 +883,70 @@ class ConfigModelContractTest {
             ResolvedUpstream noUpstream = null;
             ResolvedAsset noAsset = null;
             ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC);
+            RedirectConfig noRedirect = null;
+            RedirectConfig redirect = redirectConfig();
 
-            assertThrows(NullPointerException.class, () -> resolvedRouteWith(null, match, auth, upstream, noAsset));
-            assertThrows(NullPointerException.class, () -> resolvedRouteWith("id", null, auth, upstream, noAsset));
-            assertThrows(NullPointerException.class, () -> resolvedRouteWith("id", match, null, upstream, noAsset));
+            assertThrows(NullPointerException.class,
+                    () -> resolvedRouteWith(null, match, auth, upstream, noAsset, noRedirect));
+            assertThrows(NullPointerException.class,
+                    () -> resolvedRouteWith("id", null, auth, upstream, noAsset, noRedirect));
+            assertThrows(NullPointerException.class,
+                    () -> resolvedRouteWith("id", match, null, upstream, noAsset, noRedirect));
+            IllegalArgumentException none = assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, noUpstream, noAsset, noRedirect),
+                    "a route with no terminal action is rejected");
+            assertEquals("route 'id' must resolve exactly one terminal action (one of upstream, asset, redirect)",
+                    none.getMessage());
             assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, noUpstream, noAsset),
-                    "a route with neither an upstream nor an asset terminal action is rejected (XOR)");
+                    () -> resolvedRouteWith("id", match, auth, upstream, asset, noRedirect),
+                    "a route with both an upstream and an asset terminal action is rejected");
             assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, upstream, asset),
-                    "a route with both an upstream and an asset terminal action is rejected (XOR)");
+                    () -> resolvedRouteWith("id", match, auth, upstream, noAsset, redirect),
+                    "a route with both an upstream and a redirect terminal action is rejected");
+            assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, noUpstream, asset, redirect),
+                    "a route with both an asset and a redirect terminal action is rejected");
+            assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, upstream, asset, redirect),
+                    "a route with all three terminal actions is rejected");
+        }
+
+        @Test
+        void resolvedRouteAcceptsEachSingleTerminalAction() {
+            MatchConfig match = matchConfig();
+            AuthConfig auth = auth();
+
+            assertAll("exactly one terminal action is accepted, whichever it is",
+                    () -> assertNotNull(resolvedRouteWith("proxy", match, auth, resolvedUpstream(), null, null)
+                            .upstream()),
+                    () -> assertNotNull(resolvedRouteWith("asset", match, auth, null,
+                            ResolvedAsset.directory("/srv", AccessLevel.PUBLIC), null).asset()),
+                    () -> assertEquals(redirectConfig(),
+                            resolvedRouteWith("redirect", match, auth, null, null, redirectConfig()).redirect()));
+        }
+
+        @Test
+        void resolvedRouteExposesTheMatchKeyForBothMatcherForms() {
+            AuthConfig auth = auth();
+            ResolvedRoute prefixRoute = resolvedRouteWith("prefix", matchConfig(), auth, resolvedUpstream(), null,
+                    null);
+            ResolvedRoute exactRoute = resolvedRouteWith("exact", MatchConfig.builder().path("/orders/1").build(),
+                    auth, resolvedUpstream(), null, null);
+
+            assertAll("the match key delegates to the matcher",
+                    () -> assertEquals("/orders", prefixRoute.matchKey()),
+                    () -> assertEquals("/orders/1", exactRoute.matchKey()));
         }
 
         /**
-         * Builds an otherwise-valid {@link ResolvedRoute} so a mandatory-field or XOR test can vary
-         * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
+         * Builds an otherwise-valid {@link ResolvedRoute} so a mandatory-field or terminal-action test
+         * can vary exactly one component, keeping each {@code assertThrows} lambda to a single
+         * invocation.
          */
         private ResolvedRoute resolvedRouteWith(String id, MatchConfig match, AuthConfig auth,
-                ResolvedUpstream upstream, ResolvedAsset asset) {
+                ResolvedUpstream upstream, ResolvedAsset asset, RedirectConfig redirect) {
             return new ResolvedRoute(id, Protocol.HTTP, null, match, auth, List.of(), null,
-                    null, true, true, upstream, asset, null, null, null);
+                    null, true, true, upstream, asset, redirect, null, null, null);
         }
     }
 

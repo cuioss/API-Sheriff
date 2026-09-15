@@ -928,9 +928,7 @@ public class GatewayEdgeRoute {
 
     private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
-        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
-        String canonical = requireCanonicalPath(request);
-        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         // An asset route serves its terminal action directly — the buffered, gateway-governed
         // asset response — instead of streaming to an upstream. Auth (stage 4) has already run,
         // so an unauthorized request never reaches the source (auth-before-source, ADR-0014).
@@ -992,9 +990,7 @@ public class GatewayEdgeRoute {
     private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
         originValidationStage.validate(request, route.getId(), route.getEffectiveAllowedOrigins());
-        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
-        String canonical = requireCanonicalPath(request);
-        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         String query = renderQuery(forward.query());
         ResolvedUpstream upstreamTarget = route.getUpstream();
         if (upstreamTarget == null) {
@@ -1030,9 +1026,7 @@ public class GatewayEdgeRoute {
      */
     private void dispatchGrpc(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
-        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
-        String canonical = requireCanonicalPath(request);
-        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         String query = renderQuery(forward.query());
         ResolvedUpstream upstreamTarget = route.getUpstream();
         if (upstreamTarget == null) {
@@ -1289,6 +1283,19 @@ public class GatewayEdgeRoute {
             throw new IllegalStateException("Route dispatch requires the canonical path resolved at stage 1");
         }
         return canonical;
+    }
+
+    /**
+     * The part of the canonical path below the selected route's match key — the remainder every
+     * dispatch path appends to the upstream base path. An exact route matched the whole address, so
+     * its remainder is empty; a prefix route strips its (trailing-slash-free) prefix.
+     */
+    private static String remainderAfterMatchKey(RouteRuntime route, String canonical) {
+        if (route.getMatcher().isExact()) {
+            return "";
+        }
+        String prefix = stripTrailingSlash(route.getMatcher().matchKey());
+        return canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
     }
 
     private static String stripTrailingSlash(String value) {
