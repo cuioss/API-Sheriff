@@ -25,8 +25,23 @@ import org.jspecify.annotations.Nullable;
 /**
  * The per-route {@code match} block. Matchers compose with AND semantics: a
  * route matches only if every declared matcher holds.
+ * <p>
+ * The path matcher is declared in exactly one of two forms:
+ * <ul>
+ *   <li>{@code pathPrefix} — a literal prefix matched on a segment boundary; among
+ *       prefix routes the longest prefix wins.</li>
+ *   <li>{@code path} — an exact path compared as an un-normalized string against the
+ *       canonical request path, so {@code /a} and {@code /a/} are distinct
+ *       addresses.</li>
+ * </ul>
+ * Precedence: for the same address an exact route is always selected before any
+ * prefix route; prefix routes then follow the longest-prefix rule. Both forms share
+ * one precedence key, exposed as {@link #matchKey()}.
  *
- * @param pathPrefix the literal path prefix and precedence key (mandatory)
+ * @param pathPrefix the literal path prefix, {@code null} when the route declares an
+ *                   exact {@code path}
+ * @param path       the exact path, {@code null} when the route declares a
+ *                   {@code pathPrefix}
  * @param methods    the matched HTTP methods, empty meaning all methods
  * @param host       the exact host match, {@code null} when omitted
  * @param headers    the header matchers, empty when none
@@ -36,19 +51,46 @@ import org.jspecify.annotations.Nullable;
 // cui-rewrite:disable AnnotationNewlineFormat
 @Builder
 public record MatchConfig(
-String pathPrefix,
+@Nullable String pathPrefix,
+@Nullable String path,
 List<HttpMethod> methods,
 @Nullable String host,
 List<HeaderMatcher> headers) {
 
     /**
-     * Canonical constructor requiring {@code pathPrefix} and defensively copying the
-     * collections.
+     * Canonical constructor requiring exactly one of {@code pathPrefix} and
+     * {@code path}, and defensively copying the collections.
+     *
+     * @throws IllegalArgumentException if both or neither of {@code pathPrefix} and
+     *                                  {@code path} are declared
      */
     public MatchConfig {
-        Objects.requireNonNull(pathPrefix, "pathPrefix");
+        if ((pathPrefix == null) == (path == null)) {
+            throw new IllegalArgumentException("exactly one of pathPrefix or path must be declared");
+        }
         methods = methods == null ? List.of() : List.copyOf(methods);
         headers = headers == null ? List.of() : List.copyOf(headers);
+    }
+
+    /**
+     * Returns the declared path matcher value — the exact {@code path} for an exact
+     * route, the {@code pathPrefix} otherwise. This is the single precedence and
+     * namespace key every consumer uses, independent of the matcher form.
+     *
+     * @return the declared exact path or path prefix, never {@code null}
+     */
+    public String matchKey() {
+        return path != null ? path : Objects.requireNonNull(pathPrefix, "pathPrefix");
+    }
+
+    /**
+     * Returns whether this matcher is an exact-path matcher.
+     *
+     * @return {@code true} when {@code path} is declared, {@code false} for a
+     * {@code pathPrefix} matcher
+     */
+    public boolean isExact() {
+        return path != null;
     }
 
     /**

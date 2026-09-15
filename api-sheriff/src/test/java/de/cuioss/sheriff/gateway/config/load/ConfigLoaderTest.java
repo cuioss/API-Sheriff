@@ -43,7 +43,9 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
@@ -869,6 +871,231 @@ class ConfigLoaderTest {
         assertNull(endpoint.auth(),
                 "an anchored endpoint may omit its auth block and still bind at the schema level");
         assertEquals("api", endpoint.anchor());
+    }
+
+    // --- Exact routes, redirect action and optional base_url (AS-3/AS-4) ---------------------------
+    // The schema owns the shape: exactly one path form per matcher, the redirect block's required
+    // keys and its status value range. base_url is no longer schema-required — its conditional
+    // mandatoriness (proxy routes only) is a code rule, so a document without it must bind here.
+
+    @Test
+    void bindsAnEndpointWithoutBaseUrlCarryingOnlyAssetAndRedirectRoutes() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/site.yaml", """
+                endpoint:
+                  id: site
+                  auth:
+                    require: none
+                  routes:
+                    - id: site-assets
+                      match:
+                        path_prefix: /static
+                      asset:
+                        source: directory
+                        directory: /srv/static
+                    - id: site-moved
+                      match:
+                        path: /old-home
+                      redirect:
+                        location: /new-home
+                        status: 308
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        EndpointConfig endpoint = loaded.endpoints().getFirst();
+        RouteConfig assets = endpoint.routes().getFirst();
+        RouteConfig moved = endpoint.routes().get(1);
+        assertAll("an endpoint without proxy routes binds without base_url",
+                () -> assertNull(endpoint.baseUrl(), "an omitted base_url binds to null"),
+                () -> assertEquals(2, endpoint.routes().size()),
+                () -> assertFalse(assets.isProxyRoute(), "the asset route is not a proxy route"),
+                () -> assertFalse(moved.isProxyRoute(), "the redirect route is not a proxy route"));
+    }
+
+    @Test
+    void bindsAnExactMatchPathUnNormalized() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-root
+                      match:
+                        path: /orders/
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        MatchConfig match = loaded.endpoints().getFirst().routes().getFirst().match();
+        assertAll("match.path binds as an exact matcher",
+                () -> assertEquals("/orders/", match.path(), "the exact path keeps its trailing slash"),
+                () -> assertNull(match.pathPrefix()),
+                () -> assertTrue(match.isExact()),
+                () -> assertEquals("/orders/", match.matchKey()));
+    }
+
+    @Test
+    void bindsARedirectBlockWithEveryKey() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-docs
+                      match:
+                        path_prefix: /docs
+                      redirect:
+                        location: https://docs.example.com/
+                        status: 302
+                        keep_query: true
+                        allow_external: true
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(new RedirectConfig("https://docs.example.com/", 302, true, true),
+                loaded.endpoints().getFirst().routes().getFirst().redirect(),
+                "every snake_cased redirect key binds to its record component");
+    }
+
+    @Test
+    void bindsARedirectBlockOmittingTheFlagsToTheSecureDefaults() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: 307
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(new RedirectConfig("/home", 307, false, false),
+                loaded.endpoints().getFirst().routes().getFirst().redirect(),
+                "omitted keep_query and allow_external bind to false: no query is carried and no external"
+                        + " target is admitted unless the operator opts in");
+    }
+
+    @Test
+    void rejectsAMatchDeclaringBothPathAndPathPrefix() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                        path: /orders
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.pointer().contains("/routes/0/match")),
+                () -> "a matcher declaring both path forms must be refused at load at the match pointer, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void rejectsAMatchDeclaringNeitherPathNorPathPrefix() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        methods: ["GET"]
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.pointer().contains("/routes/0/match")),
+                () -> "a matcher declaring no path form must be refused at load at the match pointer, got: "
+                        + exception.errors());
+    }
+
+    /**
+     * The redirect {@code status} value range is owned by the bundled schema ({@code enum [301, 302,
+     * 303, 307, 308]}), so a status outside it is a boot error at load, before any code rule runs.
+     */
+    @ParameterizedTest(name = "redirect.status {0} fails the boot")
+    @ValueSource(ints = {300, 304, 200, 399})
+    void rejectsARedirectStatusOutsideTheEnum(int status) throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: %d
+                """.formatted(status));
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
+                                && error.pointer().contains("/redirect/status")),
+                () -> "a redirect status outside the enum must be refused at its own pointer, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void rejectsARedirectOmittingTheMandatoryStatus() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
+                                && error.pointer().contains("/redirect")),
+                () -> "an omitted status must be refused rather than defaulted — permanence is an explicit"
+                        + " operator choice, got: " + exception.errors());
     }
 
     @Test
