@@ -294,6 +294,69 @@ class RouteTableBuilderTest {
     }
 
     @Nested
+    @DisplayName("Route-level upstream.rewrite_location materialization")
+    class RewriteLocationMaterialization {
+
+        private RouteConfig routeWithRewriteLocation(String id, Boolean rewriteLocation) {
+            UpstreamConfig upstream = UpstreamConfig.builder().rewriteLocation(rewriteLocation).build();
+            return RouteConfig.builder().id(id).match(match("/" + id)).upstream(upstream).build();
+        }
+
+        @Test
+        @DisplayName("Should materialize a declared rewrite_location: true onto the resolved route")
+        void shouldMaterializeDeclaredTrue() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("r", true))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(find(table, "r").rewriteLocation(), "a declared true must reach the resolved route");
+        }
+
+        @Test
+        @DisplayName("Should materialize a declared rewrite_location: false as off")
+        void shouldMaterializeDeclaredFalse() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("r", false))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertFalse(find(table, "r").rewriteLocation(), "a declared false must stay off");
+        }
+
+        @Test
+        @DisplayName("Should resolve an absent rewrite_location key, or an absent upstream block, to off")
+        void shouldResolveAbsentToOff() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("declared-upstream", null),
+                            route("no-upstream", HttpMethod.GET)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("rewrite_location defaults to off with no inheritance",
+                    () -> assertFalse(find(table, "declared-upstream").rewriteLocation(),
+                            "an upstream block without the key resolves to off"),
+                    () -> assertFalse(find(table, "no-upstream").rewriteLocation(),
+                            "a route without an upstream block resolves to off"));
+        }
+
+        @Test
+        @DisplayName("Should keep the toggle per route rather than leaking it to a sibling route")
+        void shouldKeepTogglePerRoute() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("on", true), routeWithRewriteLocation("off", null)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("the flag is a route-local materialization",
+                    () -> assertTrue(find(table, "on").rewriteLocation()),
+                    () -> assertFalse(find(table, "off").rewriteLocation()));
+        }
+    }
+
+    @Nested
     @DisplayName("Merge, ordering, and disjointness")
     class MergeOrderDisjointness {
 

@@ -300,6 +300,38 @@ class RouteRuntimeAssemblerTest {
     }
 
     @Test
+    @DisplayName("Should build a Location rewriter from the effective upstream and match key only for an opted-in route")
+    void shouldBuildLocationRewriterOnlyForOptedInRoute() {
+        ResolvedUpstream effectiveUpstream = new ResolvedUpstream("https", "a.example", 443, "/svc/v1");
+        RouteTable table = new RouteTable(List.of(
+                ResolvedRoute.builder()
+                        .id("rewritten").protocol(Protocol.HTTP)
+                        .match(MatchConfig.builder().pathPrefix("/api").build())
+                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                        .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                        .rewriteLocation(true)
+                        .upstream(effectiveUpstream).build(),
+                ResolvedRoute.builder()
+                        .id("verbatim").protocol(Protocol.HTTP)
+                        .match(MatchConfig.builder().pathPrefix("/other").build())
+                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                        .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                        .upstream(effectiveUpstream).build()));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
+                assetSourceFactory);
+
+        RouteRuntime rewritten = runtimes.getFirst();
+        assertAll("rewrite_location wiring",
+                () -> assertNotNull(rewritten.getLocationRewriter(), "an opted-in proxy route carries a rewriter"),
+                () -> assertEquals("/api/items?id=7",
+                        rewritten.getLocationRewriter().rewrite("https://a.example/svc/v1/items?id=7"),
+                        "the rewriter maps the effective upstream base path onto the route's match key"),
+                () -> assertNull(runtimes.get(1).getLocationRewriter(),
+                        "a route that does not opt in carries no rewriter, so Location relays unchanged"));
+    }
+
+    @Test
     @DisplayName("Should assemble an asset route with a live source and no client or guard")
     void shouldAssembleAssetRouteWithoutClientOrGuard() {
         ResolvedRoute assetRoute = ResolvedRoute.builder()
@@ -319,6 +351,7 @@ class RouteRuntimeAssemblerTest {
         assertNull(runtime.getUpstream(), "an asset route holds no proxy upstream");
         assertNull(runtime.getHttpClient(), "an asset route holds no Vert.x client");
         assertNull(runtime.getResilienceGuard(), "an asset route holds no resilience guard");
+        assertNull(runtime.getLocationRewriter(), "an asset route holds no Location rewriter");
     }
 
     @Test
