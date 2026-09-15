@@ -43,9 +43,11 @@ import org.jspecify.annotations.Nullable;
  *                       {@code forward} block — which is the forward-all posture on
  *                       both dimensions, not a nothing-crosses one
  * @param upstream       the upstream target settings, {@code null} when omitted
- * @param asset          the asset terminal-action settings, {@code null} when omitted; a
- *                       route carries at most one terminal action, so {@code asset}
- *                       and {@code upstream} are mutually exclusive (ADR-0014)
+ * @param asset          the asset terminal-action settings, {@code null} when omitted
+ * @param redirect       the redirect terminal-action settings, {@code null} when omitted;
+ *                       a route carries at most one terminal action, so
+ *                       {@code upstream}, {@code asset} and {@code redirect} are
+ *                       mutually exclusive (ADR-0014 and its Amendment A1)
  * @param rateLimit      the reserved rate-limit block, {@code null} when omitted
  * @param websocket      the per-route WebSocket settings ({@code allowed_origins},
  *                       {@code idle_timeout_seconds}), {@code null} for non-WebSocket routes
@@ -64,6 +66,7 @@ MatchConfig match,
 @Nullable ForwardConfig forward,
 @Nullable UpstreamConfig upstream,
 @Nullable AssetConfig asset,
+@Nullable RedirectConfig redirect,
 @Nullable RateLimitConfig rateLimit,
 @Nullable WebSocketConfig websocket) {
 
@@ -73,5 +76,21 @@ MatchConfig match,
     public RouteConfig {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(match, "match");
+    }
+
+    /**
+     * Returns whether this route is a proxy route, i.e. it declares neither an
+     * {@code asset} nor a {@code redirect} terminal action and therefore forwards to
+     * the endpoint's upstream.
+     * <p>
+     * This is the single shared predicate behind the conditional {@code base_url}
+     * rule: an endpoint must declare {@code base_url} exactly when at least one of its
+     * routes is a proxy route. Both the route-table assembly and the configuration
+     * validator consume it, so the rule cannot drift between the two.
+     *
+     * @return {@code true} when the route proxies to an upstream
+     */
+    public boolean isProxyRoute() {
+        return asset == null && redirect == null;
     }
 }

@@ -235,6 +235,14 @@ class ConfigModelContractTest {
                 .build();
     }
 
+    private static RedirectConfig redirectConfig() {
+        return RedirectConfig.builder()
+                .location("/new-home")
+                .status(308)
+                .keepQuery(true)
+                .build();
+    }
+
     private static SecurityFilterConfig securityFilterConfig() {
         return SecurityFilterConfig.builder()
                 .profile("strict")
@@ -372,6 +380,20 @@ class ConfigModelContractTest {
                                     .upstream(resolvedUpstream()).build()),
                     voCase("MatchConfig", matchConfig(), matchConfig(),
                             MatchConfig.builder().pathPrefix("/other").build()),
+                    // The matcher form participates in identity: an exact path and a prefix
+                    // spelling the same string are different addresses, so they must not be equal.
+                    voCase("MatchConfig (exact path vs prefix of the same string)",
+                            MatchConfig.builder().path("/orders").build(),
+                            MatchConfig.builder().path("/orders").build(),
+                            MatchConfig.builder().pathPrefix("/orders").build()),
+                    voCase("RedirectConfig (location)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/other", 308, true, false)),
+                    voCase("RedirectConfig (status)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/new-home", 301, true, false)),
+                    voCase("RedirectConfig (keep_query)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/new-home", 308, false, false)),
+                    voCase("RedirectConfig (allow_external)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/new-home", 308, true, true)),
                     voCase("MatchConfig.HeaderMatcher",
                             new MatchConfig.HeaderMatcher("X-Key", true, "v"),
                             new MatchConfig.HeaderMatcher("X-Key", true, "v"),
@@ -464,6 +486,20 @@ class ConfigModelContractTest {
                     .build();
             assertEquals(viaCtor, viaBuilder);
         }
+
+        @Test
+        void redirectConfigBuilderMatchesConstructor() {
+            RedirectConfig viaCtor = new RedirectConfig("/new-home", 308, true, false);
+            RedirectConfig viaBuilder = redirectConfig();
+            assertEquals(viaCtor, viaBuilder);
+        }
+
+        @Test
+        void matchConfigBuilderMatchesConstructorForAnExactPath() {
+            MatchConfig viaCtor = new MatchConfig(null, "/orders", List.of(HttpMethod.GET), null, List.of());
+            MatchConfig viaBuilder = MatchConfig.builder().path("/orders").methods(List.of(HttpMethod.GET)).build();
+            assertEquals(viaCtor, viaBuilder);
+        }
     }
 
     // --- Null-normalization ------------------------------------------------
@@ -539,10 +575,13 @@ class ConfigModelContractTest {
 
         @Test
         void routeConfigNormalizesAbsentAnchor() {
-            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null, null);
+            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null,
+                    null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
             assertNull(cfg.securityFilter());
+            assertNull(cfg.asset());
+            assertNull(cfg.redirect());
             assertNull(cfg.websocket());
         }
 
@@ -587,7 +626,8 @@ class ConfigModelContractTest {
             assertTrue(new TlsConfig(null, null, null, null, null).cipherSuites().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).alpn().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).passthroughSni().isEmpty());
-            assertTrue(new MatchConfig("/p", null, null, null).methods().isEmpty());
+            assertTrue(new MatchConfig("/p", null, null, null, null).methods().isEmpty());
+            assertTrue(new MatchConfig("/p", null, null, null, null).headers().isEmpty());
             assertTrue(new SecurityFilterConfig(null, null, null, null, null, null, null, null, null, null)
                     .allowedPaths().isEmpty());
             assertTrue(new OidcConfig.Csrf(null).trustedOrigins().isEmpty());
@@ -714,9 +754,17 @@ class ConfigModelContractTest {
     class MandatoryFields {
 
         @Test
-        void endpointConfigRequiresIdAndBaseUrl() {
-            assertThrows(NullPointerException.class, () -> endpointConfigWith(null, "url"));
-            assertThrows(NullPointerException.class, () -> endpointConfigWith("id", null));
+        void endpointConfigRequiresId() {
+            NullPointerException ex = assertThrows(NullPointerException.class, () -> endpointConfigWith(null, "url"));
+            assertEquals("id", ex.getMessage());
+        }
+
+        @Test
+        void endpointConfigAcceptsAnAbsentBaseUrl() {
+            EndpointConfig cfg = endpointConfigWith("id", null);
+            assertNull(cfg.baseUrl(),
+                    "base_url is conditionally mandatory; the record admits its absence and the validator"
+                            + " enforces it for endpoints carrying a proxy route");
         }
 
         /**
@@ -775,8 +823,35 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void matchConfigRequiresPathPrefix() {
-            assertThrows(NullPointerException.class, () -> new MatchConfig(null, List.of(), null, List.of()));
+        void matchConfigRequiresExactlyOneOfPathPrefixAndPath() {
+            IllegalArgumentException neither = assertThrows(IllegalArgumentException.class,
+                    () -> matchConfigWith(null, null));
+            IllegalArgumentException both = assertThrows(IllegalArgumentException.class,
+                    () -> matchConfigWith("/orders", "/orders"));
+
+            assertAll("a matcher declares exactly one path form",
+                    () -> assertEquals("exactly one of pathPrefix or path must be declared", neither.getMessage(),
+                            "a matcher with no path form is rejected"),
+                    () -> assertEquals("exactly one of pathPrefix or path must be declared", both.getMessage(),
+                            "a matcher declaring both path forms is rejected"),
+                    () -> assertEquals("/orders", matchConfigWith("/orders", null).pathPrefix()),
+                    () -> assertEquals("/orders", matchConfigWith(null, "/orders").path()));
+        }
+
+        /**
+         * Builds an otherwise-valid {@link MatchConfig} so a mandatory-field test can vary
+         * exactly the two path components, keeping each {@code assertThrows} lambda to a single
+         * invocation.
+         */
+        private MatchConfig matchConfigWith(String pathPrefix, String path) {
+            return new MatchConfig(pathPrefix, path, List.of(), null, List.of());
+        }
+
+        @Test
+        void redirectConfigRequiresLocation() {
+            NullPointerException ex = assertThrows(NullPointerException.class,
+                    () -> new RedirectConfig(null, 302, false, false));
+            assertEquals("location", ex.getMessage());
         }
 
         @Test
@@ -797,7 +872,7 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private RouteConfig routeConfigWith(String id, MatchConfig match) {
-            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null);
+            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null);
         }
 
         @Test
@@ -927,6 +1002,97 @@ class ConfigModelContractTest {
         void gatewayConfigExposesAnchors() {
             GatewayConfig cfg = GatewayConfig.builder().version(1).anchors(Map.of("api", anchorConfig())).build();
             assertEquals(Map.of("api", anchorConfig()), cfg.anchors());
+        }
+    }
+
+    // --- Exact routes, redirect action and optional base_url (AS-3/AS-4) ----
+
+    @Nested
+    @DisplayName("Exact routes, redirect terminal action and the proxy-route predicate (AS-3/AS-4)")
+    class ExactRoutesAndRedirect {
+
+        @Test
+        void prefixMatcherExposesItsPrefixAsMatchKey() {
+            MatchConfig prefix = MatchConfig.builder().pathPrefix("/orders").build();
+
+            assertAll("a prefix matcher",
+                    () -> assertEquals("/orders", prefix.matchKey()),
+                    () -> assertFalse(prefix.isExact()),
+                    () -> assertNull(prefix.path()));
+        }
+
+        @Test
+        void exactMatcherExposesItsPathAsMatchKey() {
+            MatchConfig exact = MatchConfig.builder().path("/orders/").build();
+
+            assertAll("an exact matcher",
+                    () -> assertEquals("/orders/", exact.matchKey(),
+                            "the exact path is carried un-normalized, trailing slash included"),
+                    () -> assertTrue(exact.isExact()),
+                    () -> assertNull(exact.pathPrefix()));
+        }
+
+        @Test
+        void routeWithoutAssetOrRedirectIsAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("proxy").match(matchConfig()).upstream(upstreamConfig())
+                    .build();
+
+            assertTrue(route.isProxyRoute(), "a route declaring neither asset nor redirect forwards upstream");
+        }
+
+        @Test
+        void routeWithoutAnyTerminalBlockIsAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("proxy").match(matchConfig()).build();
+
+            assertTrue(route.isProxyRoute(), "an absent upstream block still proxies to the endpoint base_url");
+        }
+
+        @Test
+        void assetRouteIsNotAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("assets").match(matchConfig())
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null)).build();
+
+            assertFalse(route.isProxyRoute(), "an asset route needs no base_url");
+        }
+
+        @Test
+        void redirectRouteIsNotAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("moved").match(matchConfig()).redirect(redirectConfig())
+                    .build();
+
+            assertAll("a redirect route",
+                    () -> assertFalse(route.isProxyRoute(), "a redirect route needs no base_url"),
+                    () -> assertEquals(redirectConfig(), route.redirect()));
+        }
+
+        @Test
+        void routeDeclaringAssetAndRedirectIsNotAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("both").match(matchConfig())
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null))
+                    .redirect(redirectConfig()).build();
+
+            assertFalse(route.isProxyRoute(),
+                    "the predicate stays false; the conflicting terminal actions are refused by the validator");
+        }
+
+        @Test
+        void redirectConfigExposesEveryComponent() {
+            RedirectConfig redirect = new RedirectConfig("https://other.example.com/", 302, false, true);
+
+            assertAll("redirect components",
+                    () -> assertEquals("https://other.example.com/", redirect.location()),
+                    () -> assertEquals(302, redirect.status()),
+                    () -> assertFalse(redirect.keepQuery()),
+                    () -> assertTrue(redirect.allowExternal()));
+        }
+
+        @Test
+        void redirectConfigFlagsDefaultToFalseOnTheBuilder() {
+            RedirectConfig redirect = RedirectConfig.builder().location("/home").status(307).build();
+
+            assertAll("unset flags are the secure default",
+                    () -> assertFalse(redirect.keepQuery(), "the query is not carried unless opted in"),
+                    () -> assertFalse(redirect.allowExternal(), "an external target is not allowed unless opted in"));
         }
     }
 
