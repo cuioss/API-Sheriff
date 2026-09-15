@@ -29,6 +29,7 @@ import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -106,7 +107,7 @@ import org.junit.jupiter.api.Test;
  * <strong>Carve-out 2 — four named sites in {@code de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest}.</strong>
  * The exemption is per site, not per class: {@link #WILDCARD_SITE_EXEMPTIONS} names exactly four
  * code units, and each is permitted exactly one thing — constructing the bare
- * {@link ServerSocket#ServerSocket(int)}. A bare {@code listen(int)} is never exempt, and every other
+ * {@link ServerSocket#ServerSocket(int)}, once. A bare {@code listen(int)} is never exempt, and every other
  * code unit of {@code TlsEdgeProducerTest} and its {@code @Nested} classes is guarded like any other
  * fixture, so a new bare bind added anywhere else in that class fails the rule. The four are:
  * <ul>
@@ -129,9 +130,10 @@ import org.junit.jupiter.api.Test;
  * every other ephemeral listener here. The per-site justification is also recorded in place, at each
  * site and in the {@code freePort()} Javadoc.
  * <p>
- * {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} pins the list: a stale
- * entry and a new unexempted wildcard site in that class both fail it, so the exemption cannot rot
- * silently in either direction.
+ * {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} pins the list and the count:
+ * a stale entry, a new unexempted wildcard site in that class, and a second bare bind inside one of
+ * the four exempt code units all fail it, so the exemption cannot rot or widen silently in any
+ * direction.
  * <p>
  * This is a plain JUnit 5 test (no ArchUnit {@code @AnalyzeClasses} runner) so it runs in both
  * {@code test} and {@code verify -Ppre-commit}, wiring the guard into the quality gate — the same
@@ -349,7 +351,7 @@ class LoopbackEphemeralBindArchTest {
      * <p>
      * Each violation event corresponds to the offending call itself rather than to its owner class,
      * so {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} can read back which
-     * code units violated.
+     * code units violated and how many offending calls each made.
      *
      * @param exemptSites the {@code owner#method} code units whose bare {@code ServerSocket(int)}
      *                    construction is skipped; a bare {@code listen(int)} is reported regardless
@@ -1107,13 +1109,18 @@ class LoopbackEphemeralBindArchTest {
          * which the main rule also reports, but this control additionally names it as a failure of
          * the exemption list rather than of an ordinary fixture.
          * <p>
-         * <strong>Limit, stated rather than implied.</strong> The comparison is at code-unit
-         * granularity, so a second {@code ServerSocket(int)} added inside one of the four exempt code
-         * units is indistinguishable from the first. Keeping those four methods to one socket each is
-         * enforced by review of the in-place justification, not by this control.
+         * <strong>One bare bind per exempt code unit, pinned by count.</strong> The set comparison
+         * alone works at code-unit granularity, so a second {@code ServerSocket(int)} added inside
+         * one of the four exempt code units would collapse into the existing set entry — and the
+         * main rule exempts it too, so the four-site exemption would widen silently while every
+         * check stayed green. The condition emits one violation event per offending call rather than
+         * per class, so this control also asserts that the number of violating events equals
+         * {@link #WILDCARD_SITE_EXEMPTIONS}{@code .size()}. Together the two assertions hold each
+         * exempt code unit to exactly one bare bind: the set proves which code units bind, the count
+         * proves none of them binds twice.
          */
         @Test
-        @DisplayName("The wildcard exemptions are exactly the bare bind sites in TlsEdgeProducerTest (exact-set control)")
+        @DisplayName("The wildcard exemptions are exactly the bare bind sites in TlsEdgeProducerTest, one bind each (exact-set control)")
         void wildcardExemptionsAreExactlyTheBareBindSites() {
             List<JavaClass> fixture = TEST_CLASSES.stream()
                     .filter(javaClass -> TLS_EDGE_PRODUCER_TEST.equals(javaClass.getName())
@@ -1126,16 +1133,25 @@ class LoopbackEphemeralBindArchTest {
             ArchCondition<JavaClass> unexempted = notBindABareEphemeralWildcard(Set.of());
             ConditionEvents events = ConditionEvents.Factory.create();
             fixture.forEach(javaClass -> unexempted.check(javaClass, events));
+            Collection<ConditionEvent> violating = events.getViolating();
             Set<String> violatingCodeUnits = new HashSet<>();
-            events.getViolating().forEach(event -> event.handleWith((correspondingObjects, _) ->
+            violating.forEach(event -> event.handleWith((correspondingObjects, _) ->
                     correspondingObjects.forEach(corresponding ->
                             violatingCodeUnits.add(codeUnitOf((JavaAccess<?>) corresponding)))));
 
-            assertEquals(WILDCARD_SITE_EXEMPTIONS, violatingCodeUnits,
-                    "Without the exemption, the bare wildcard binds in TlsEdgeProducerTest must be "
-                            + "exactly the exempted code units. An exempted entry missing from the "
-                            + "violations is stale and exempts nothing; a violation missing from the "
-                            + "exemptions is a new wildcard bind that nobody justified.");
+            assertAll("each exempt code unit in TlsEdgeProducerTest must contain exactly one bare bind",
+                    () -> assertEquals(WILDCARD_SITE_EXEMPTIONS, violatingCodeUnits,
+                            "Without the exemption, the bare wildcard binds in TlsEdgeProducerTest must be "
+                                    + "exactly the exempted code units. An exempted entry missing from the "
+                                    + "violations is stale and exempts nothing; a violation missing from the "
+                                    + "exemptions is a new wildcard bind that nobody justified."),
+                    () -> assertEquals(WILDCARD_SITE_EXEMPTIONS.size(), violating.size(),
+                            "Without the exemption, TlsEdgeProducerTest must make exactly one bare "
+                                    + "wildcard bind per exempted code unit. A count above the number of "
+                                    + "exempted code units means a second bare bind was added inside an "
+                                    + "exempt code unit, where the set comparison cannot see it and the "
+                                    + "main rule exempts it — the exemption has widened without anyone "
+                                    + "justifying the extra socket."));
         }
 
         /**
