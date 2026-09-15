@@ -291,7 +291,7 @@ class SecurityHeadersStageTest {
             assertAll("exactly one policy, the anchor's, is on the response",
                     () -> assertEquals(anchorPolicy, request.responseHeaders().get(CSP)),
                     () -> assertEquals(1, request.responseHeaders().keySet().stream()
-                            .filter(CSP::equalsIgnoreCase).count(),
+                                    .filter(CSP::equalsIgnoreCase).count(),
                             "the global policy is removed, never merged alongside the anchor's"));
         }
 

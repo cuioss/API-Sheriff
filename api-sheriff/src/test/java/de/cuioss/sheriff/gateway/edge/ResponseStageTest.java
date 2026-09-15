@@ -32,6 +32,7 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
 import org.junit.jupiter.api.AfterEach;
@@ -213,7 +214,7 @@ class ResponseStageTest {
             // set mode and Content-Security-Policy in default mode.
             ResponseStage responseStage = new ResponseStage();
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
-                    .request(io.vertx.core.http.HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, clientReq.path())
+                    .request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, clientReq.path())
                     .compose(HttpClientRequest::send)
                     .onSuccess(upResp -> responseStage
                             .relay(upResp, clientReq.response(), false, null, Map.of(FRAME_OPTIONS, "DENY"),
@@ -233,7 +234,7 @@ class ResponseStageTest {
 
         private MultiMap relayedHeaders(String path) throws Exception {
             return Awaits.connect(client
-                    .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, path)
+                    .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, path)
                     .compose(HttpClientRequest::send)
                     .compose(resp -> resp.body().map(body -> resp.headers())), "the relayed response to " + path);
         }
