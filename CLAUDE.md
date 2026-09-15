@@ -233,7 +233,7 @@ All cuioss repositories have branch protection on `main`. Direct pushes to `main
 
 ## Temporary Files
 
-Use `.plan/temp/` for ALL temporary and generated files (covered by `Write(.plan/**)` permission — avoids permission prompts).
+Use `.plan/temp/` for ALL temporary and generated files (covered by the `Edit(.plan/**)` permission, which applies to every file-editing tool including Write — avoids permission prompts).
 
 ## Tool Usage
 
