@@ -26,7 +26,8 @@ Semantics -- deliberately few rules:
   declares `anchor: <name>` as the default for its routes; a route may override it. Membership is
   mandatory exactly where a namespace claims the route, never universally. When any `anchors`
   block is configured, membership and namespace must agree *both ways*: a route whose declared
-  anchor does not contain its `match.path_prefix` fails the boot, and a route whose path falls
+  anchor does not contain its match key (`match.path_prefix`, or the exact `match.path`) fails the
+  boot, and a route whose path falls
   inside an anchor namespace without declaring that anchor fails the boot. A route whose path
   lies outside every anchor namespace declares no anchor at all and is unaffected. No `anchors`
   block => this section does not apply. `protocol: grpc` routes are exempt from both containment
@@ -42,11 +43,8 @@ Semantics -- deliberately few rules:
   effective list); `security_filter` -> anchor, route; `security_headers` -> anchor *only*
   (below).
 * *`security_headers` resolves at gateway -> anchor level only* -- endpoints and routes cannot
-  override it. Rationale: response headers (and the CORS preflight answer) are emitted
-  *before* route selection, but an anchor is identifiable from the raw path prefix alone -- so
-  stage-0 header preparation and preflight handling use the anchor's block when the request
-  path lies inside an anchor namespace, and the gateway block otherwise (including every
-  pre-routing rejection).
+  override it. How the block takes effect, and what it does *not* merge, is set out in
+  <<_anchor_security_headers>> below.
 * *The auth floor cannot be weakened.* Where the anchor declares `require: bearer` or
   `require: session`, a member whose *effective* auth resolves to `require: none` fails the
   boot. Replacing one non-`none` posture with another (anchor `bearer`, route `session`) is
@@ -63,6 +61,104 @@ The one modelling consequence: a service exposed on two surfaces -- the same ups
 under `/api` with bearer *and* under `/bff` with a session -- is *two routes* (in the same
 endpoint file, sharing the `base_url` alias), one per anchor. Multi-anchor membership does not
 exist; it would reintroduce merge-order ambiguity.
+
+[[_anchor_security_headers]]
+=== Anchor `security_headers`
+
+An anchor's `security_headers` block sets the gateway-owned *response* security headers for every
+route under the anchor (decision:
+link:../adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]). It carries the same
+response-header keys as the global block -- `hsts`, `content_type_nosniff`, `frame_deny`,
+`content_security_policy` and `header_modes` -- and nothing else:
+
+[source,yaml]
+----
+# gateway.yaml
+security_headers:                  # GLOBAL block: seeded onto every response
+  hsts: { max_age: 31536000, include_subdomains: true }
+  content_type_nosniff: true
+  cors:                            # CORS lives here, and only here
+    enabled: true
+    allowed_origins: [https://app.example.com]
+
+anchors:
+  portal:
+    path_prefix: /portal
+    type: proxy
+    access: public
+    security_headers:              # ANCHOR block: replaces the global block for /portal routes
+      hsts: { max_age: 31536000, include_subdomains: true }   # restated -- not inherited
+      content_type_nosniff: true                              # restated -- not inherited
+      frame_deny: true
+      content_security_policy: "default-src 'self'"
+      header_modes:
+        content_security_policy: default   # the frontend's own CSP wins when it sends one
+----
+
+*When it applies: right after route selection.* The request pipeline seeds the *global* block at its
+first stage, before anything else runs. Once a route is selected, the route's resolved block -- the
+anchor's block when its anchor declares one, the global block otherwise -- *replaces* the
+gateway-owned security headers on the response. Every response produced after that point carries the
+route's block: a proxied response, an asset, a redirect, the verb gate's `405`, an authentication
+`401`, a gRPC trailers-only rejection and a failed WebSocket handshake alike. Every response produced
+*before* a route is selected carries the global block, because no anchor is known yet: a stage-1
+rejection, the `404` for a path no route matches, and a CORS preflight answer.
+
+[IMPORTANT]
+.The anchor block replaces the global block wholesale -- there is no merge
+====
+An anchor block is not layered on top of the global block key by key. It *replaces* it: any key the
+anchor block does not declare is simply *absent* for that anchor's routes, even when the global block
+declares it. An anchor declaring only `frame_deny: true` therefore drops the global
+`Strict-Transport-Security` and `X-Content-Type-Options` for every route under it, and an anchor block
+without `content_security_policy` drops the global policy. The same holds for `header_modes`: the
+anchor's modes replace the global ones, and a header the anchor block enables without a mode entry is
+in `set` mode whatever the global block says.
+
+*To keep a global header under an anchor, restate it in the anchor block* -- as `hsts` and
+`content_type_nosniff` are restated in the example above. This is the wholesale-replacement rule every
+policy block in the anchor chain follows, not a special case for headers.
+====
+
+*`content_security_policy`.* The value is served *verbatim* as the `Content-Security-Policy` header;
+the gateway does not parse or compose it. Omitting the key emits no policy. A value that is blank or
+carries a CR, LF or any other control character fails the boot, on the global block and on every
+anchor block, because it would inject a response header.
+
+*`header_modes` -- precedence against the origin's own header.* By default the gateway *overwrites*
+a gateway-owned header the upstream also sent. `header_modes` changes that per header, with one
+optional key per gateway-owned header of the same block -- `hsts`, `content_type_nosniff`,
+`frame_deny`, `content_security_policy`:
+
+[cols="1,3"]
+|===
+| Mode | Behaviour on a proxied response
+
+| `set` _(the default)_
+| The gateway value *replaces* the origin's value.
+
+| `default`
+| The origin's value is *kept* when the upstream sent that header; the gateway value is emitted only
+  when it did not.
+|===
+
+An absent key means `set`, and an omitted `header_modes` block is exactly the overwrite behaviour. A
+response the gateway authors itself -- a rejection, a redirect, an asset, a preflight -- has no origin
+header to defer to, so both modes emit the configured value there. A mode naming a header its own
+block does not enable (for example `frame_deny: default` while `frame_deny` is absent or `false`) fails
+the boot: it would configure a header the gateway never emits.
+
+`default` is the tool for a frontend that manages its own policy: the gateway sets a *floor* for pages
+that send no `Content-Security-Policy`, and a frontend that sends one keeps it. It is also a
+deliberate weakening of the gateway's guarantee -- under `default`, an upstream decides the header's
+final value, including a more permissive one. Use it only for upstreams trusted to set that header;
+see link:../security-threat-model.adoc#gw-14[GW-14] for the threat this trade-off accepts.
+
+*CORS stays global.* CORS is evaluated before route selection and authentication -- a browser
+preflight must be answered without credentials -- so no anchor can scope it. A `cors` key inside an
+anchor's `security_headers` block *fails the boot* at schema load rather than being accepted and
+ignored; declare CORS in the global `security_headers` block. The global CORS policy is applied to
+every route, the anchor's included.
 
 [[_type_and_access_axes]]
 === Type and access axes
