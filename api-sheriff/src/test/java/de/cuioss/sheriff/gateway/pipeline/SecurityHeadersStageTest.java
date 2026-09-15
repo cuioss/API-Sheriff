@@ -27,6 +27,8 @@ import java.util.Map;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Cors;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.HeaderMode;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.HeaderModes;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Hsts;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -71,6 +73,100 @@ class SecurityHeadersStageTest {
             assertAll("an omitted policy emits no header while the enabled headers still apply",
                     () -> assertNull(request.responseHeaders().get(CSP)),
                     () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS)));
+        }
+    }
+
+    @Nested
+    @DisplayName("header_modes — each gateway-owned header is seeded into the set-map or the default-map")
+    class HeaderModeRouting {
+
+        private final SecurityHeadersConfig allDefault = SecurityHeadersConfig.builder()
+                .hsts(new Hsts(600, false))
+                .contentTypeNosniff(true)
+                .frameDeny(true)
+                .contentSecurityPolicy(GLOBAL_POLICY)
+                .headerModes(new HeaderModes(HeaderMode.DEFAULT, HeaderMode.DEFAULT, HeaderMode.DEFAULT,
+                        HeaderMode.DEFAULT))
+                .build();
+
+        @Test
+        @DisplayName("an omitted header_modes block seeds every header into the set-map")
+        void omittedModesSeedSetMap() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+
+            new SecurityHeadersStage(SecurityHeadersConfig.builder().frameDeny(true)
+                    .contentSecurityPolicy(GLOBAL_POLICY).build()).process(request);
+
+            assertAll("absent modes are exactly the overwrite behaviour",
+                    () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS)),
+                    () -> assertEquals(GLOBAL_POLICY, request.responseHeaders().get(CSP)),
+                    () -> assertTrue(request.responseDefaultHeaders().isEmpty(),
+                            "no header lands in the default-map without a default mode"));
+        }
+
+        @Test
+        @DisplayName("routes each header by its own mode, and an absent key within a declared block means set")
+        void routesEachHeaderByItsOwnMode() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersConfig mixed = SecurityHeadersConfig.builder()
+                    .frameDeny(true)
+                    .contentSecurityPolicy(GLOBAL_POLICY)
+                    .headerModes(HeaderModes.builder().contentSecurityPolicy(HeaderMode.DEFAULT).build())
+                    .build();
+
+            new SecurityHeadersStage(mixed).process(request);
+
+            assertAll("content_security_policy: default, frame_deny: (absent) set",
+                    () -> assertEquals(GLOBAL_POLICY, request.responseDefaultHeaders().get(CSP)),
+                    () -> assertNull(request.responseHeaders().get(CSP),
+                            "a default-mode header never also lives in the set-map"),
+                    () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS)),
+                    () -> assertNull(request.responseDefaultHeaders().get(FRAME_OPTIONS)));
+        }
+
+        @Test
+        @DisplayName("seeds every enabled header into the default-map when all four modes are default")
+        void seedsAllDefaultHeadersIntoDefaultMap() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+
+            new SecurityHeadersStage(allDefault).process(request);
+
+            assertAll("every gateway-owned header follows its mode",
+                    () -> assertEquals(Map.of(HSTS, "max-age=600", NOSNIFF, "nosniff", FRAME_OPTIONS, "DENY",
+                            CSP, GLOBAL_POLICY), request.responseDefaultHeaders()),
+                    () -> assertTrue(request.responseHeaders().isEmpty(),
+                            "no gateway-owned security header remains in the set-map"));
+        }
+
+        @Test
+        @DisplayName("stage 2a clears a default-mode global header from both maps before seeding the route block")
+        void routeHeadersClearBothMapsBeforeSeeding() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersStage stage = new SecurityHeadersStage(allDefault);
+            stage.process(request);
+
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build());
+
+            assertAll("the route block replaces the global block wholesale across both maps",
+                    () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS),
+                            "the route block's frame_deny has no mode, so it is set-mode now"),
+                    () -> assertTrue(request.responseDefaultHeaders().isEmpty(),
+                            "every default-mode global header is gone — none survives into the route's response"),
+                    () -> assertNull(request.responseHeaders().get(CSP)));
+        }
+
+        @Test
+        @DisplayName("merges both maps for a gateway-authored response")
+        void mergesBothMapsForGatewayAuthoredResponse() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            new SecurityHeadersStage(SecurityHeadersConfig.builder()
+                    .frameDeny(true)
+                    .contentSecurityPolicy(GLOBAL_POLICY)
+                    .headerModes(HeaderModes.builder().contentSecurityPolicy(HeaderMode.DEFAULT).build())
+                    .build()).process(request);
+
+            assertEquals(Map.of(FRAME_OPTIONS, "DENY", CSP, GLOBAL_POLICY), request.gatewayAuthoredResponseHeaders(),
+                    "a response without an origin header carries both the set and the default header");
         }
     }
 

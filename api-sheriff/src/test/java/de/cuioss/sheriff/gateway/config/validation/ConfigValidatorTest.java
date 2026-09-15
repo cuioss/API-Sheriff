@@ -328,6 +328,90 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("header_modes — a mode may only name a header its own block enables")
+    class HeaderModesOrphanRefusal {
+
+        private static final String GLOBAL_MODES = "/security_headers/header_modes/";
+        private static final String ANCHOR_MODES = "/anchors/frontend/security_headers/header_modes/";
+
+        private static List<ConfigError> modeErrors(List<ConfigError> errors) {
+            return errors.stream().filter(error -> error.pointer().contains("/header_modes/")).toList();
+        }
+
+        private static GatewayConfig gatewayWithBlocks(SecurityHeadersConfig global,
+                @Nullable SecurityHeadersConfig anchorBlock) {
+            AnchorConfig frontend = AnchorConfig.builder()
+                    .name("frontend")
+                    .pathPrefix("/frontend")
+                    .type(AnchorType.PROXY)
+                    .access(AccessLevel.PUBLIC)
+                    .securityHeaders(anchorBlock)
+                    .build();
+            return validGateway().securityHeaders(global).anchors(Map.of(frontend.name(), frontend)).build();
+        }
+
+        private static SecurityHeadersConfig.HeaderModes allDefault() {
+            SecurityHeadersConfig.HeaderMode mode = SecurityHeadersConfig.HeaderMode.DEFAULT;
+            return new SecurityHeadersConfig.HeaderModes(mode, mode, mode, mode);
+        }
+
+        @Test
+        @DisplayName("Should refuse every mode naming a header the global block does not enable, one error per key")
+        void shouldRefuseEveryOrphanModeOnTheGlobalBlock() {
+            SecurityHeadersConfig global = SecurityHeadersConfig.builder()
+                    .contentTypeNosniff(false)
+                    .headerModes(allDefault())
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gatewayWithBlocks(global, null), List.of(), topologyWith());
+
+            assertAll("an absent hsts / csp and a false nosniff / absent frame_deny are all orphans",
+                    () -> assertEquals(4, modeErrors(errors).size(), () -> "got: " + errors),
+                    () -> assertHasError(errors, GLOBAL_MODES + "hsts", "does not enable hsts"),
+                    () -> assertHasError(errors, GLOBAL_MODES + "content_type_nosniff",
+                            "does not enable content_type_nosniff"),
+                    () -> assertHasError(errors, GLOBAL_MODES + "frame_deny", "does not enable frame_deny"),
+                    () -> assertHasError(errors, GLOBAL_MODES + "content_security_policy",
+                            "does not enable content_security_policy"));
+        }
+
+        @Test
+        @DisplayName("Should judge an anchor block's modes against that anchor block, not against the global block")
+        void shouldJudgeAnchorModesAgainstTheAnchorBlock() {
+            SecurityHeadersConfig global = SecurityHeadersConfig.builder().frameDeny(true).build();
+            SecurityHeadersConfig anchorBlock = SecurityHeadersConfig.builder()
+                    .contentTypeNosniff(true)
+                    .headerModes(SecurityHeadersConfig.HeaderModes.builder()
+                            .frameDeny(SecurityHeadersConfig.HeaderMode.DEFAULT).build())
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gatewayWithBlocks(global, anchorBlock), List.of(),
+                    topologyWith());
+
+            assertAll("the global frame_deny does not legitimise the anchor's frame_deny mode (wholesale replacement)",
+                    () -> assertEquals(1, modeErrors(errors).size(), () -> "got: " + errors),
+                    () -> assertHasError(errors, ANCHOR_MODES + "frame_deny", "does not enable frame_deny"));
+        }
+
+        @Test
+        @DisplayName("Should accept a mode for every header its block enables, on the global and an anchor block")
+        void shouldAcceptModesForEnabledHeaders() {
+            SecurityHeadersConfig enabledAll = SecurityHeadersConfig.builder()
+                    .hsts(new SecurityHeadersConfig.Hsts(31536000, true))
+                    .contentTypeNosniff(true)
+                    .frameDeny(true)
+                    .contentSecurityPolicy("default-src 'self'")
+                    .headerModes(allDefault())
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gatewayWithBlocks(enabledAll, enabledAll), List.of(),
+                    topologyWith());
+
+            assertTrue(modeErrors(errors).isEmpty(), () -> "no mode is an orphan, got: " + errors);
+        }
+    }
+
+    @Nested
     @DisplayName("Conditional base_url — mandatory exactly with a proxy route (AS-4)")
     class ConditionalBaseUrl {
 

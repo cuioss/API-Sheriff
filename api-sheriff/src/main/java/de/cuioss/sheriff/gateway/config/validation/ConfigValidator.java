@@ -217,6 +217,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateContentSecurityPolicy(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateHeaderModes(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
@@ -1419,6 +1420,50 @@ public final class ConfigValidator {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "content_security_policy %s must be a non-blank value without CR, LF or other control characters; it is served verbatim as a response header"
                             .formatted(renderForMessage(policy))));
+        }
+    }
+
+    /**
+     * Rule: a {@code header_modes} entry may only name a header the same block enables — on the global
+     * block and on every anchor block alike.
+     * <p>
+     * A mode for a header that is absent (or {@code false}) in its block would configure the precedence
+     * of a header the gateway never emits for that block: the key would parse and do nothing. It is
+     * refused rather than silently ignored, naming the offending entry. Every violation collects into the
+     * shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateHeaderModes(GatewayConfig gateway, List<ConfigError> errors) {
+        checkHeaderModes(gateway.securityHeaders(), "/security_headers/header_modes", errors);
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            checkHeaderModes(anchor.securityHeaders(),
+                    "/anchors/%s/security_headers/header_modes".formatted(anchor.name()), errors);
+        }
+    }
+
+    private static void checkHeaderModes(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
+            List<ConfigError> errors) {
+        if (securityHeaders == null) {
+            return;
+        }
+        SecurityHeadersConfig.HeaderModes modes = securityHeaders.headerModes();
+        if (modes == null) {
+            return;
+        }
+        checkHeaderMode(modes.hsts(), securityHeaders.hsts() != null, "hsts", pointer, errors);
+        checkHeaderMode(modes.contentTypeNosniff(), Boolean.TRUE.equals(securityHeaders.contentTypeNosniff()),
+                "content_type_nosniff", pointer, errors);
+        checkHeaderMode(modes.frameDeny(), Boolean.TRUE.equals(securityHeaders.frameDeny()), "frame_deny", pointer,
+                errors);
+        checkHeaderMode(modes.contentSecurityPolicy(), securityHeaders.contentSecurityPolicy() != null,
+                "content_security_policy", pointer, errors);
+    }
+
+    private static void checkHeaderMode(SecurityHeadersConfig.@Nullable HeaderMode mode, boolean headerEnabled,
+            String key, String pointer, List<ConfigError> errors) {
+        if (mode != null && !headerEnabled) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer + "/" + key,
+                    "header_modes.%s is declared but the same security_headers block does not enable %s; a mode for a header the gateway never emits is refused"
+                            .formatted(key, key)));
         }
     }
 
