@@ -66,6 +66,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import de.cuioss.tools.logging.CuiLogger;
@@ -222,6 +223,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateRewriteLocationProtocol(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
@@ -1715,6 +1717,28 @@ public final class ConfigValidator {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' idle_timeout_seconds must be a positive integer, but was %d"
                             .formatted(route.id(), timeout)));
+        }
+    }
+
+    /**
+     * Rule: {@code upstream.rewrite_location: true} is refused on a {@code grpc} or {@code websocket}
+     * route. The mapping is applied by the HTTP response relay only — a gRPC response is relayed with
+     * its trailers and carries no redirect, and a WebSocket route hands the connection to the opaque
+     * relay — so on those protocols the key would be silently ignored. Every violation collects into
+     * the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateRewriteLocationProtocol(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                UpstreamConfig upstream = route.upstream();
+                Protocol protocol = effectiveProtocol(route);
+                if (upstream != null && Boolean.TRUE.equals(upstream.rewriteLocation())
+                        && (protocol == Protocol.GRPC || protocol == Protocol.WEBSOCKET)) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' declares upstream.rewrite_location but its protocol is '%s'; the Location rewrite applies to http and graphql routes only and would be silently ignored"
+                                    .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
+                }
+            }
         }
     }
 

@@ -55,7 +55,12 @@ import org.jspecify.annotations.Nullable;
  *                               only for a proxy route)
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle
  *                               (meaningful only for a proxy route)
- * @param upstream               the resolved upstream target for a proxy route,
+ * @param rewriteLocation        the materialized {@code upstream.rewrite_location} toggle — an
+ *                               absent key resolves to {@code false}; when set, an upstream
+ *                               {@code Location} inside the effective upstream base path is
+ *                               mapped back onto the route's match key (meaningful only for
+ *                               an http / graphql proxy route)
+ * @param upstream              the resolved upstream target for a proxy route,
  *                               present when the route's terminal action is proxy and
  *                               {@code null} for an asset or redirect route
  * @param asset                  the resolved asset terminal action, present when the
@@ -94,6 +99,7 @@ List<HttpMethod> effectiveAllowedMethods,
 @Nullable SecurityHeadersConfig effectiveSecurityHeaders,
 boolean retryEnabled,
 boolean notModifiedEnabled,
+boolean rewriteLocation,
 @Nullable ResolvedUpstream upstream,
 @Nullable ResolvedAsset asset,
 @Nullable RedirectConfig redirect,
