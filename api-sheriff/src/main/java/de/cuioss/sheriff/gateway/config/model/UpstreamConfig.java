@@ -30,6 +30,10 @@ import org.jspecify.annotations.Nullable;
  *                         exactly one {@code /} (ADR-0004 Amendment A2); the request
  *                         remainder after the match key follows it. {@code null} (or blank)
  *                         keeps the alias base path unchanged
+ * @param rewriteLocation  whether an upstream {@code Location} pointing inside this route's
+ *                         upstream base path is mapped back onto the route's match key;
+ *                         {@code null} (absent) means off — the {@code Location} is relayed
+ *                         unchanged. Meaningful on http / graphql proxy routes only
  * @param connectTimeoutMs the connect timeout in milliseconds, {@code null} when omitted
  * @param readTimeoutMs    the read timeout in milliseconds, {@code null} when omitted
  * @param retry            the retry settings, {@code null} when omitted
@@ -42,6 +46,7 @@ import org.jspecify.annotations.Nullable;
 @Builder
 public record UpstreamConfig(
 @Nullable String path,
+@Nullable Boolean rewriteLocation,
 @Nullable Integer connectTimeoutMs,
 @Nullable Integer readTimeoutMs,
 @Nullable Retry retry,

@@ -144,6 +144,13 @@ public final class RouteRuntime {
     private final @Nullable ResolvedUpstream upstream;
 
     /**
+     * The boot-built {@code upstream.rewrite_location} mapping applied to an upstream
+     * {@code Location} response header; {@code null} for a proxy route that does not opt in, and
+     * for every asset or redirect route (the {@code Location} is then relayed unchanged).
+     */
+    private final @Nullable LocationRewriter locationRewriter;
+
+    /**
      * The shared Vert.x client for a proxy route's upstream tuple (one instance per
      * tuple); {@code null} for an asset or redirect route.
      */

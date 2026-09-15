@@ -975,7 +975,8 @@ public class GatewayEdgeRoute {
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             applyStageSetCookies(ctx.response(), stageSetCookies);
-            responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
+            responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), route.getLocationRewriter(),
+                    request.responseHeaders())
                     .onFailure(failure -> failRelay(ctx, failure));
         });
     }
