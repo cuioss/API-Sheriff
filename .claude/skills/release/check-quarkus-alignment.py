@@ -23,9 +23,11 @@ Two shapes are supported:
   from a real ``<parent>`` such as ``cui-quarkus-parent``. Maven still does not propagate
   properties from *imported* BOMs, and ``quarkus-maven-plugin`` needs the value as a build
   extension, so an imported BOM alone can never supply it -- but a parent can.
-* **resolved** (``--check-resolved``) -- additionally run ``dependency:list`` and assert
-  every ``io.smallrye.config`` artifact actually resolves to the expected version. This
-  catches a split family as well as a wrong one, and is what a consumer repo wants.
+* **resolved** (``--check-resolved``) -- additionally run ``install -DskipTests`` plus
+  ``dependency:list`` in one invocation and assert every ``io.smallrye.config`` artifact
+  actually resolves to the expected version. This catches a split family as well as a wrong
+  one, and is what a consumer repo wants. The install is what lets a module resolve a sibling
+  at the current ``-SNAPSHOT`` without that version having been deployed anywhere.
 
 Exit codes
 ----------
@@ -136,7 +138,8 @@ def evaluate_property(repo: Path, name: str) -> str | None:
     except Exception as exc:
         raise Undetermined(f"help:evaluate {name} failed to run: {exc}") from exc
     if out.returncode != 0:
-        raise Undetermined(f"help:evaluate {name} exited {out.returncode}:\n{out.stderr[-2000:]}")
+        raise Undetermined(
+            f"help:evaluate {name} exited {out.returncode}:\n{_maven_diagnostics(out)}")
     lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
     if not lines:
         return None
@@ -190,18 +193,59 @@ def quarkus_smallrye_version(quarkus_version: str) -> str:
     raise Undetermined(f"quarkus-bom {quarkus_version} does not manage {SMALLRYE_GROUP}:smallrye-config")
 
 
+def _maven_diagnostics(out: subprocess.CompletedProcess) -> str:
+    """The failing Maven output, from wherever it landed.
+
+    ``-B -q`` keeps INFO off the console but sends [ERROR] lines to STDOUT, so reporting
+    stderr alone yields a bare "exited 1:" with nothing after it -- observed while porting
+    the install fix, where a deliberately split smallrye-config broke augmentation and the
+    check reported the failure with no reason attached. Prefer stderr when it has content,
+    fall back to stdout, and say so when both are empty.
+    """
+    for stream in (out.stderr, out.stdout):
+        if stream and stream.strip():
+            return stream.strip()[-2000:]
+    return "(no output on stderr or stdout)"
+
+
 def resolved_versions(repo: Path) -> tuple[dict[str, set[str]], set[str]]:
     """What this project actually resolves: every io.smallrye.config artifact, and the
     io.quarkus:quarkus-core version(s)."""
     mvnw = repo / "mvnw"
-    cmd = [str(mvnw) if mvnw.exists() else "mvn", "-B", "-q", "dependency:list",
+    # ``install`` runs in the SAME invocation as dependency:list, and it is what makes this
+    # check self-sufficient. A bare dependency:list builds nothing, so a module depending on
+    # a sibling at ${project.version} can only resolve it from a repository -- and for the
+    # current -SNAPSHOT that means the snapshot repository. Straight after a release nobody
+    # has deployed that version yet, so the check returned exit 2 ("CANNOT DETERMINE") rather
+    # than a verdict; observed on the cui-quarkus-parent 1.7.4 bump (#300), where the reactor
+    # had to be installed by hand first. An unrunnable gate is the one that gets waved
+    # through, which is the outage this check exists to prevent.
+    #
+    # One invocation, not two: Maven walks the reactor in dependency order and runs both goals
+    # per module, so a module's dependency:list sees its sibling's freshly installed artifact.
+    # Excluding reactor modules instead would defeat the purpose -- their transitive Quarkus
+    # and smallrye-config dependencies are precisely what is being measured.
+    #
+    # -DskipTests, not -Dmaven.test.skip=true: the latter skips test COMPILATION, so a module
+    # publishing a test-jar would not produce one and a sibling depending on that classified
+    # artifact would fail to resolve. -DskipITs is required alongside it because Failsafe
+    # 3.6.0+ ignores -DskipTests.
+    #
+    # Ported from cuioss-organization's workflow-scripts/check-quarkus-alignment.py (v0.27.0,
+    # cuioss/cuioss-organization#275), which fixed the same resolution gap upstream after it
+    # deadlocked that workflow's own alignment job (cuioss/cuioss-organization#274). Keep the
+    # two copies in step.
+    cmd = [str(mvnw) if mvnw.exists() else "mvn", "-B", "-q",
+           "install", "-DskipTests", "-DskipITs",
+           "dependency:list",
            "-DincludeScope=test", "-DoutputFile=/dev/stdout", "-DappendOutput=true"]
     try:
         out = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=1800)
     except Exception as exc:
-        raise Undetermined(f"dependency:list failed to run: {exc}") from exc
+        raise Undetermined(f"install + dependency:list failed to run: {exc}") from exc
     if out.returncode != 0:
-        raise Undetermined(f"dependency:list exited {out.returncode}:\n{out.stderr[-2000:]}")
+        raise Undetermined(
+            f"install + dependency:list exited {out.returncode}:\n{_maven_diagnostics(out)}")
     found: dict[str, set[str]] = {}
     core: set[str] = set()
     for line in out.stdout.splitlines():
