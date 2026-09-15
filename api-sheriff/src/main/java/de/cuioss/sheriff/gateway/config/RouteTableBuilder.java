@@ -75,7 +75,7 @@ import org.jspecify.annotations.Nullable;
  * / not-modified toggles, the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
  * wholesale, deny lists included), and the effective upstream base path (the route-level
- * {@code upstream.path} replacing the alias-derived base path when declared)
+ * {@code upstream.path} appended to the alias-derived base path when declared)
  * into a {@link ResolvedRoute}. The inheritance chains
  * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
  * step — ADR-0007) are resolved here, once, so the request pipeline never
@@ -378,20 +378,27 @@ public final class RouteTableBuilder {
 
     /**
      * Materializes the route-level {@code upstream.path} into the route's effective upstream base
-     * path. A route that declares a non-blank {@code upstream.path} <em>replaces</em> the
-     * alias-derived base path with it (the bare-service-path routing model): the forward URI is
-     * then reconstructed as {@code stripTrailingSlash(upstream.path) + remainder-after-prefix} by
-     * {@link de.cuioss.sheriff.gateway.edge.DispatchStage#upstreamRequestUri}, so a gRPC route's
-     * {@code /{package}.{Service}} segment (and a benchmark route's {@code /anything/<aspect>}
-     * rewrite) reaches the upstream instead of being stripped. The alias host / port / scheme are
-     * carried through unchanged, so the client- and guard-sharing tuple
+     * path. A route that declares a non-blank {@code upstream.path} <em>appends</em> it to the
+     * alias-derived base path (ADR-0004 Amendment A2): the two are joined on exactly one
+     * {@code /}, so the effective base path is
+     * {@code stripTrailingSlash(alias base path) + "/" + stripLeadingSlash(upstream.path)} — no
+     * doubled and no missing slash, whichever side the operator wrote one on. The forward URI is
+     * then reconstructed as {@code stripTrailingSlash(effective base path) + remainder-after-match-key}
+     * by {@link de.cuioss.sheriff.gateway.edge.DispatchStage#upstreamRequestUri}.
+     * <p>
+     * Aliases therefore carry environments and routes carry paths: an alias
+     * {@code http://go-httpbin:8080/anything} with {@code upstream.path: /graphql} forwards to
+     * {@code /anything/graphql}. A gRPC route rides an alias with an empty base path, so its
+     * {@code upstream.path: /{package}.{Service}} is the whole effective base path and the full
+     * method path reaches the upstream unchanged. The alias host / port / scheme are carried
+     * through unchanged, so the client- and guard-sharing tuple
      * ({@link de.cuioss.sheriff.gateway.edge.RouteRuntimeAssembler.UpstreamTarget}, keyed on
-     * scheme/host/port) is unaffected. A route without {@code upstream.path} keeps the
+     * scheme/host/port) is unaffected. A route without a non-blank {@code upstream.path} keeps the
      * alias-derived base path unchanged — the default proxy behavior.
      *
      * @param aliasUpstream the endpoint's alias-resolved upstream (shared across the endpoint's
      *                      routes)
-     * @param route         the route whose optional {@code upstream.path} overrides the base path
+     * @param route         the route whose optional {@code upstream.path} is appended to the base path
      * @return the per-route upstream carrying the effective base path
      */
     private static ResolvedUpstream applyRouteUpstreamPath(ResolvedUpstream aliasUpstream, RouteConfig route) {
@@ -400,7 +407,25 @@ public final class RouteTableBuilder {
         if (path == null || path.isBlank()) {
             return aliasUpstream;
         }
-        return new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(), aliasUpstream.port(), path);
+        String effectiveBasePath = stripTrailingSlashes(aliasUpstream.basePath()) + "/" + stripLeadingSlashes(path);
+        return new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(), aliasUpstream.port(),
+                effectiveBasePath);
+    }
+
+    private static String stripTrailingSlashes(String value) {
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
+    }
+
+    private static String stripLeadingSlashes(String value) {
+        int start = 0;
+        while (start < value.length() && value.charAt(start) == '/') {
+            start++;
+        }
+        return value.substring(start);
     }
 
     /**
