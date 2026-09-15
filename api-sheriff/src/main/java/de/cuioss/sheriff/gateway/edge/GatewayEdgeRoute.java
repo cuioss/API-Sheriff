@@ -59,6 +59,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -146,7 +147,13 @@ import org.jspecify.annotations.Nullable;
  *   <li>stage 4 — offline bearer-token validation;</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
  *       {@link RouteRuntime#getEffectiveForward() effectiveForward} and the global forwarded block;</li>
- *   <li>stage 6 / 7 — streamed upstream dispatch (byte-capped) and the streamed response relay.</li>
+ *   <li>stage 6 / 7 — the route's terminal action: streamed upstream dispatch (byte-capped) and the
+ *       streamed response relay for a proxy route, the buffered governed asset response for an
+ *       asset route, or — for a redirect route — the {@link RedirectStage} answer (configured
+ *       status, {@code Location}, the accumulated stage headers, empty body) written without
+ *       consuming the forward policy or contacting any upstream. A redirect is answered only after
+ *       stage 4, so an unauthenticated request under an authenticated anchor is challenged before
+ *       the location is disclosed.</li>
  * </ol>
  * A {@link GatewayException} at any stage is rendered as an RFC 9457 {@code application/problem+json}
  * response carrying the failing event's status and problem type, never leaking internal detail. On
@@ -233,6 +240,7 @@ public class GatewayEdgeRoute {
     private final AuthenticationStage authenticationStage;
     private final ForwardPolicyStage forwardPolicyStage;
     private final ResponseStage responseStage;
+    private final RedirectStage redirectStage;
     private final OriginValidationStage originValidationStage;
     private final WebSocketRelayStage webSocketRelayStage;
     private final GrpcStatusMapper grpcStatusMapper;
@@ -396,6 +404,7 @@ public class GatewayEdgeRoute {
                 : new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
+        this.redirectStage = new RedirectStage();
         this.originValidationStage = new OriginValidationStage();
         // One WebSocketClient for the whole edge: HttpClient.webSocket(...) is deprecated in favour of
         // the dedicated client, and the dialer carries no per-route state — the upstream host, port,
@@ -782,6 +791,15 @@ public class GatewayEdgeRoute {
                 writeShortCircuit(ctx, request);
                 return;
             }
+            // A redirect route is answered here, after authentication and the short-circuit gate
+            // above: an unauthenticated request under an authenticated anchor is challenged before
+            // any configured location is disclosed. No forward policy is consumed and no upstream is
+            // contacted, so REQUEST_FORWARDED is deliberately not incremented.
+            RedirectConfig redirect = route.getRedirect();
+            if (redirect != null) {
+                writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query()));
+                return;
+            }
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
                     route.getEffectiveForward(), route.isNotModifiedEnabled());
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
@@ -1100,6 +1118,27 @@ public class GatewayEdgeRoute {
             if (!response.headWritten()) {
                 response.setStatusCode(BAD_GATEWAY);
             }
+            response.end();
+        });
+    }
+
+    /**
+     * Writes a redirect route's terminal answer on the event loop: the configured status, the
+     * accumulated stage headers and {@code Set-Cookie} lines, then the {@code Location} — written
+     * last so no stage header can displace it — and an empty body.
+     */
+    private void writeRedirect(RoutingContext ctx, PipelineRequest request, RedirectStage.Answer answer) {
+        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            HttpServerResponse response = ctx.response();
+            if (response.ended()) {
+                return;
+            }
+            response.setStatusCode(answer.status());
+            stageHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, stageSetCookies);
+            response.putHeader(LOCATION_HEADER, answer.location());
             response.end();
         });
     }
