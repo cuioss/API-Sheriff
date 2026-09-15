@@ -45,8 +45,9 @@ large parts of the catalogue, and the residual gateway work is exactly the part 
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
 of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
 `cui-http` 3.0 -- overridden in the root `pom.xml` above the parent-managed 2.2 -- and
-`TokenSheriff` 0.9.5-SNAPSHOT, resolved from the snapshot repository the root `pom.xml` declares for
-as long as the JWKS hostname-verification passthrough is unreleased.
+`TokenSheriff` 0.9.5, the release whose JWKS-loader and client-configuration builders both carry the
+hostname-verification passthrough the gateway binds its two identity-provider back-channels through
+(see <<gw-06>>).
 
 *`cui-http` (inbound filtering + forwarded resolution) provides:* per-component path
 canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes
@@ -260,7 +261,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
   redirect -> <<gw-05>>. *Tampering* via response injection on the return leg -> <<gw-03>>.
 
 | B4 gateway<->IdP
-| *Spoofing* tokens (alg confusion, `alg:none`, key confusion) -> <<bff-06>>. *Elevation*
+| *Spoofing* tokens (alg confusion, `alg:none`, key confusion) -> <<bff-06>>. *Spoofing* the IdP
+  itself on the JWKS or BFF back-channel (hostname or trust posture) -> <<gw-06>>. *Elevation*
   via JWKS `jku`/`x5u` SSRF -> <<bff-07>>. *Tampering* IdP mix-up -> <<bff-05>>. *Info
   disclosure* of secrets in error paths -> <<gw-12>>.
 
@@ -469,6 +471,29 @@ configuration validator (CIDR parsing, split-range trust-all rejection). The cli
 `X-Forwarded-*` / `Forwarded` copies are skipped under every forward mode, forward-all included,
 so the *emitted* chain is always the gateway's own.
 
+*Trusted-proxy breadth below trust-all is warned, not refused, and the residual is chosen rather than
+safe*
+(link:adr/0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]).
+The TCP-peer gate is only as narrow as the list it reads, and every host inside a trusted range that
+can reach the gateway directly can spoof the client identity downstream decisions rely on. Three
+outcomes cover the whole range of breadth. A range set whose members together cover an address
+family is *refused at boot*, complementary halves included. A single entry spanning more than one
+operator-provisioned network -- broader than an IPv4 `/16` or an IPv6 `/48` -- boots with
+`WARN ApiSheriff-102`, which is what catches the realistic mistake: a whole private block such as
+`10.0.0.0/8` or `172.16.0.0/12` pasted in. An IPv4 `/16` (65,536 addresses) or an IPv6 `/48` boots
+with *no* signal. That is a recorded, accepted exposure -- a legible range an operator chose, left
+un-warned so the warning keeps its meaning on the configurations that need it -- and it is not a
+statement that such a range is safe.
+
+*A range supplied through an environment variable meets exactly these rules.* The validator reads
+the value after `${VAR}` substitution and cannot tell it from a literal, so a provenance-keyed
+refusal is not expressible, and a source-blind stricter threshold would refuse legitimate pod-network
+trust while stopping nothing the warning and the trust-all refusal do not already surface. The
+residual therefore applies to the environment path unchanged, with one aggravation stated rather than
+implied: a substituted range passed through no reviewed change to `gateway.yaml`, so the boot warning
+is the only signal it ever gets. The thresholds are held by a parameterised test carrying a warning
+row past each boundary and a silent row exactly at it, asserted by identifier and range.
+
 *The equivalence class beyond the canonical names is covered too, and it is closed by a rule
 rather than by a list.* Two sets hold the names, split by *which question each name answers*: the
 regeneration skip holds the canonical spellings (`x-forwarded-for`, `-host`, `-proto`, `-port`,
@@ -499,7 +524,8 @@ withheld from the upstream under *both* forward-all and a negative-list that doe
 each leg carrying a matched positive control; every *mixed* `-`/`_` spelling of a forwarding name
 or a vendor alias is withheld under forward-all, a negative-list *and* a positive-list naming it,
 so the equivalence class is asserted closed rather than sampled; an operator's `set_headers` still
-places such a name deliberately; a `0.0.0.0/1`+`128.0.0.0/1` config is rejected at boot.
+places such a name deliberately; a `0.0.0.0/1`+`128.0.0.0/1` config is rejected at boot; an entry broader
+than `/16` or `/48` emits `ApiSheriff-102` while an entry exactly at either boundary does not.
 
 [#gw-05]
 === GW-05 -- SSRF via proxy features / upstream control
@@ -571,9 +597,8 @@ verification is on by default, the `egress_tls.upstream_verify_hostname` relaxat
 three *Vert.x* egress client-construction sites, and `egress_tls.upstream_tls_profile` binds trust
 anchors through a fail-closed resolver that refuses an unbound, trust-all or anchor-free profile at
 boot; both postures are reported at boot by `WARN ApiSheriff-118` / `ApiSheriff-119` rather than
-taking effect silently. *Two further* terminated-egress legs are outside that block -- the
-asset-origin fetch and the BFF OIDC back-channel -- and are recorded below rather than folded into
-the claim. The
+taking effect silently. One further terminated-egress leg -- the asset-origin fetch -- is outside
+every key and is recorded below as a scope limit rather than folded into the claim. The
 *assert-behaviour-not-flag* discipline this entry demands is discharged *for that key specifically*
 -- an integration-stack matched pair of gateway instances differing in exactly that one boolean makes
 a real handshake fail on one leg and succeed on the other. The *JWKS* half is now *delivered and
@@ -587,10 +612,58 @@ together with an *`http`-sourced* issuer's per-issuer `jwks.tls_profile`, which 
 context the relaxation cannot act on -- is *refused at boot* with a configuration error naming both
 keys and the issuer, rather than silently ignoring one of them. The refusal is scoped to `http`
 sources because that is where the collision exists: a `file`-sourced issuer opens no TLS connection,
-so there is nothing for either key to reach on that leg. The
+so there is nothing for either key to reach on that leg. The *BFF OIDC back-channel* is now
+*pinned and behaviour-proven* too
+(link:adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]):
+`egress_tls.oidc_verify_hostname` is passed through to the identity-provider client's own
+hostname-verification setting on every build, the true path included, `egress_tls.oidc_tls_profile`
+supplies that client's trust through the same fail-closed resolution core as the JWKS profiles, the
+relaxed posture and a named profile are reported at boot by `WARN ApiSheriff-125` /
+`ApiSheriff-126`, and the relaxation together with a profile is *refused at boot* naming both keys.
+An explicit-posture fitness function now stands guard over every leg: it fails the build when
+production code constructs an outbound TLS client without, in the same class, calling that client's
+posture method, so a seventh leg cannot land unbound the way the sixth once sat unenumerated. The
 *fail-closed-on-empty-SNI* rule and *full-ClientHello reassembly before routing* remain unpinned (see
 Gaps), which is why this entry stays PARTIAL -- the verdict is unchanged and only its reason has
 narrowed, from three outstanding items to two.
+
+*The six TLS-terminating egress legs, re-derived from source.* Every claim in this entry is scoped
+by this enumeration, which is taken from the client-construction sites rather than copied from an
+earlier list. It is hand-written and can drift like the list it replaces; the fitness function above
+is the guard that does not depend on it being complete.
+
+[cols="1,2,2", options="header"]
+|===
+| Leg | Posture governed by | Proof
+
+| 1. Vert.x default HTTP client
+| `upstream_verify_hostname`, `upstream_tls_profile`
+| Integration matched pair + untrusted-upstream dial
+
+| 2. Vert.x forced-HTTP/2 (gRPC) client
+| `upstream_verify_hostname`, `upstream_tls_profile`
+| Posture set through the same options binding as leg 1; guarded by the fitness function
+
+| 3. Edge-wide Vert.x WebSocket client
+| `upstream_verify_hostname`, `upstream_tls_profile`
+| Posture set through the same options binding as leg 1; guarded by the fitness function
+
+| 4. JWKS back-channel
+| `jwks_verify_hostname`; per-issuer `jwks.tls_profile`
+| Unit-level real dial: matched control, untrusted-chain leg, falsification check
+
+| 5. Asset-origin fetch (JDK client)
+| No key -- JDK hostname verification and the JVM default trust store, pinned explicitly
+| Scope limit below; covered by the fitness function
+
+| 6. BFF OIDC back-channel
+| `oidc_verify_hostname`, `oidc_tls_profile`
+| Unit-level real dial: matched control, omitted-block leg, untrusted-chain leg, collision refusal,
+  falsification check
+|===
+
+Plain-TCP dials negotiate no TLS and are not legs here: the ADR-0017 passthrough relay and the
+loopback health probe.
 
 *Assertion.* A fragmented/empty-SNI ClientHello does not reach a passthrough or a
 no-client-cert default -- it is terminated under the strict policy or rejected; enabling mTLS
@@ -606,7 +679,17 @@ does not name the dialled host *fails by default* and succeeds only with the key
 both directions by real handshake against one server, one certificate, one issuer and one key set,
 with the flag as the single difference -- and a third dial pins the scope, refusing an IdP whose
 chain reaches no trusted anchor while the flag is off. A falsification check backs the pair: removing
-the production passthrough turns the relaxed leg red.
+the production passthrough turns the relaxed leg red. The BFF OIDC back-channel carries the same
+shape for `oidc_verify_hostname`: discovery against a server whose certificate does not name the
+dialled host *fails by default* and completes only with the key set to `false`, a document declaring
+no `egress_tls` at all resolves to the refusing posture, a correctly named certificate under an
+untrusted root is still refused with the flag off, and the flag set to `false` together with a named
+`oidc_tls_profile` fails with a configuration error naming both keys while the same flag without a
+profile assembles cleanly. Removing the production passthrough turns the relaxed leg red, and
+removing the pre-builder refusal turns the collision test red. Removing a posture call from a
+construction site -- the asset-origin fetch's explicit context, the BFF
+back-channel's hostname setting, the Vert.x options' host verification -- turns the fitness function
+red naming that class.
 
 *Residual risk (accepted).* `egress_tls.upstream_verify_hostname: false` is an operator-selectable
 relaxation of a control this entry exists to defend, so the residual risk is recorded rather than
@@ -649,23 +732,50 @@ operator cannot reach for both at once and end up with neither. A `file`-sourced
 connection, so it reaches no such collision and none is refused there -- and its `jwks.tls_profile`
 has no TLS leg to act on either.
 
-*Countable remainder -- no deployment-activation guard on this key.* Both hostname keys are proven at
-the level they are asserted at, and those levels differ. `upstream_verify_hostname` is proven by an
-integration-stack matched pair, so a *deployed descriptor* actually turns the relaxation on and the
-`*ActivationWiringTest` family pins that it does. `jwks_verify_hostname` is proven at *unit* level
-against a local server: that settles `config -> behaviour` and does not settle that any shipped
-descriptor exercises either posture. Per
-link:development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage], a unit
-test structurally cannot reach that second question, so the absence is written down here as a
-countable item rather than left to be inferred from a green suite. Closing it means an integration
-descriptor pair for the JWKS leg, which needs an IdP fixture whose certificate does not name the
-dialled host; it is recorded, not scheduled.
+*Residual risk (accepted) -- the BFF OIDC back-channel.* `egress_tls.oidc_verify_hostname: false` is
+the same class of operator-selectable relaxation on the sixth leg, and what it concedes is recorded
+on its own terms. It gives up *hostname matching on the back-channel the gateway uses for discovery,
+the authorization-code exchange and refresh*; chain trust is unaffected and an identity provider whose
+certificate reaches no trusted anchor is still refused. What remains is serious in a different way
+from the JWKS leg: this connection *carries the client secret* and the authorization codes, and its
+responses are the discovery document and the token responses sessions are built from. An attacker who
+can both redirect the gateway's back-channel *and* present a certificate chaining to an anchor the
+gateway trusts receives the client credential and can answer the token exchange -- and a discovery
+document it serves can name the endpoints the gateway dials next. The exposure is bounded by the same
+properties as its siblings: the default is `true` and an omitted key or an omitted block resolves to
+`true`; the relaxed posture is reported at boot by `WARN ApiSheriff-125`; the key is a peer of
+`jwks_verify_hostname` rather than shared with it, so relaxing this leg relaxes neither the JWKS fetch
+nor any proxied upstream; and the scope claim is proven by the untrusted-chain dial rather than
+asserted. The mitigation for an identity provider behind an internal CA is `oidc_tls_profile`, which
+answers the chain-trust question instead -- and the two are *mutually exclusive*, refused together at
+boot, so an operator cannot reach for both and end up with neither. A named profile *replaces* the JVM
+default trust store on this leg, so a profile holding only a private CA stops trusting public
+authorities for the identity provider; that replacement is reported by `WARN ApiSheriff-126` rather
+than left to be discovered.
+
+*No deployment-activation instance is owed for the relaxation keys -- recorded, not a gap.* The hostname
+keys are proven at the level they are asserted at, and those levels differ.
+`upstream_verify_hostname` is proven by an integration-stack matched pair, so a *deployed descriptor*
+turns the relaxation on and the `*ActivationWiringTest` family pins that it does.
+`jwks_verify_hostname` and `oidc_verify_hostname` are proven at *unit* level against a local server,
+through the producers' own configuration paths. The deployment-activation question a unit test cannot
+reach -- does a shipped deployment actually turn this on? -- has nothing to assert for either: both
+are secure-by-default *relaxations* that no shipped descriptor activates, so there is no deployed
+document whose activation a wiring test could check. The two halves that are owed are present: the
+behaviour half is the real TLS dial with its matched control, untrusted-chain leg and falsification
+check, and the native binding half -- that the shared `egress_tls` record and its deserializer survive
+the native build -- is exercised by the integration stack's `sheriff-config-egress-verify-{on,off}`
+pair, which binds the same record through the same deserializer. The reasoning is recorded in
+link:development/declared-limit-assertion-coverage.adoc#_the_egress_relaxation_keys_owe_no_activation_instance[Declared-limit
+assertion coverage]; the condition that would reopen it is a shipped descriptor that starts declaring
+either key.
 
 *Scope limit (recorded, not a residual risk).* `egress_tls`'s *upstream* settings govern the three
-Vert.x egress clients, and `jwks_verify_hostname` governs the JWKS back-channel; neither reaches the
-*asset-origin* fetch, which is a further terminated-egress TLS leg: an asset
-route with an `https` origin is fetched through a JDK `java.net.http.HttpClient` that carries neither
-setting. This is recorded separately from the residual risk above because it does not cut in the
+Vert.x egress clients, `jwks_verify_hostname` the JWKS back-channel and the two `oidc_*` keys the BFF
+back-channel; no key reaches the *asset-origin* fetch, leg 5 of the enumeration above: an asset
+route with an `https` origin is fetched through a JDK `java.net.http.HttpClient` that carries no
+`egress_tls` setting. Its construction site pins the JDK's own default context explicitly -- no
+behavioural change, and the reason the fitness function can see the leg's posture at all. This is recorded separately from the residual risk above because it does not cut in the
 dangerous direction. Hostname verification there is *fail-safe*: the JDK client checks the name
 whatever the key says, so `upstream_verify_hostname: false` cannot weaken the asset leg, and no
 unverified dial exists to defend. The *trust* half is the real limit -- `upstream_tls_profile`
@@ -675,26 +785,33 @@ the deployment binds those anchors into the JVM trust store instead. Governing t
 need an `SSLParameters` / `SSLContext` seam that ADR-0040 deliberately did not scope; the limit is
 stated in the operator documentation and in the model rather than left to be discovered.
 
-*Scope limit -- the BFF OIDC back-channel.* `egress_tls` does not reach the BFF's own dial to the
-identity provider either, and that leg is worth naming because of what it carries. The
-`ClientConfiguration` built in `BffRuntimeProducer` is what `DiscoveryResolver`, `TokenEndpointClient`
-and `RefreshFlow` dial with -- discovery, the authorization-code exchange and refresh -- and it
-presents the client secret under `CLIENT_SECRET_BASIC`. It is a further terminated-egress `https`
-leg, distinct from the three Vert.x clients, the JWKS back-channel and the asset-origin fetch, and
-neither `egress_tls` key is bound at its construction. This is recorded as a scope limit rather than
-a residual risk because it does not cut in the dangerous direction: the upstream
-`ClientConfiguration` default verifies the hostname, so the leg behaves exactly as the secure default
-of the keys that do not reach it, and no unverified dial exists to defend. What is absent is a
-*local* pin on that default, recorded immediately below.
+*The BFF OIDC back-channel -- pinned, with a relaxation and a trust profile.* This leg was previously
+recorded here as a scope limit with a countable remainder: it verified hostnames only because the
+identity-provider client library defaulted to doing so, and nothing in this repository would have gone
+red had that default moved. Both entries are closed rather than carried. The `ClientConfiguration`
+built in `BffRuntimeProducer` -- what `DiscoveryResolver`, `TokenEndpointClient` and `RefreshFlow` dial
+with, presenting the client secret under `CLIENT_SECRET_BASIC` -- now receives
+`egress_tls.oidc_verify_hostname` on every build, so the posture is the gateway's and an upstream
+default change cannot move it
+(link:adr/0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+A named `egress_tls.oidc_tls_profile` supplies the leg's trust through the four fail-closed
+refusals the JWKS profiles use -- an unbound name, a `trust-all` profile, an anchor-free profile and
+unloadable material each fail boot naming `egress_tls.oidc_tls_profile`. The observables are the two
+boot records, `ApiSheriff-125` and `ApiSheriff-126`, the collision refusal naming both keys, and the
+fitness function, which goes red naming `BffRuntimeProducer` if the hostname call is removed. The
+residual the relaxation concedes is recorded above.
 
-*Countable remainder -- the BFF OIDC leg's hostname posture is pinned by no local assertion.* The leg
-above verifies because an upstream default does, not because anything in this repository asserts it.
-Following the same convention as the deployment-activation remainder recorded under GW-06, the
-absence is written down rather than inferred from a green suite: no test here would go red if that
-upstream default moved, and link:adr/0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
-is explicit that an upstream security posture is adopted and documented rather than silently relied
-on. Closing it means binding the posture at the `BffRuntimeProducer` construction site and asserting
-it -- a behavioural change on the authentication back-channel, so it is recorded, not scheduled.
+*Residual (named, not guarded) -- the JVM-level hostname-verification switch.* The JDK system
+property `jdk.internal.httpclient.disableHostnameVerification` turns off hostname checks on *every*
+leg built on the JDK HTTP client -- the JWKS back-channel, the BFF OIDC back-channel and the
+asset-origin fetch -- beneath every `egress_tls` key and beneath every construction site. A gateway
+key set to `true` does not override it, no boot record reports it, and the explicit-posture fitness
+function cannot see it, because it is a start-up flag rather than bytecode. The Vert.x legs 1-3 do
+not use that client and are unaffected. It is carried as a named remainder rather than refused at
+boot: a JVM start-up flag sits below the gateway's configuration surface and is the deployment's
+responsibility, in the same way the default trust store triple is. It is recorded here and in the
+fitness function's own documentation so that its absence from the gateway's guards is a stated fact
+an audit can check the start command against, rather than a discovery.
 
 *Threat -- trust-root REPLACEMENT of the default store.* Every entry above asks whether a dial
 verifies. This one asks a prior question: *which anchors is it verifying against, and what stopped
@@ -1179,11 +1296,25 @@ seals them in an `HttpOnly` AES-GCM cookie decrypted per request. Session cookie
 `__Host-` + `HttpOnly` + `Secure` + `SameSite=Lax`, opaque id only (see the variant
 docs). Regenerate the session id on login and privilege change; destroy on logout.
 
+*The `__Host-` guarantee cannot be configured away.* The prefix is what makes a browser *enforce*
+`Secure`, `Path=/` and no `Domain` rather than merely receive them, and the session cookie's name is
+operator-configurable through `oidc.session.cookie_name`. A declared name is therefore *refused at
+boot*, in both session modes, unless it starts with the case-sensitive `+__Host-+` prefix followed by
+a name, is a non-empty RFC 9110 token -- the name is written verbatim into `Set-Cookie`, so a `;`,
+`=`, whitespace or control character would be response-header injection -- and differs from the
+gateway-owned binding and logout-state cookies, which a colliding session cookie would silently
+overwrite. The offending value is escaped before it is echoed (CWE-117). The refusal is the only guard:
+the runtime consumes the name verbatim and the schema declares the key an unrestricted string. An
+omitted key resolves to the gateway's own `+__Host-sheriff-session+`.
+
 *Status:* COVERED.
 
 *Assertion.* No response ever carries a token to the browser; the session cookie has
 `__Host-`+`HttpOnly`+`Secure`+`SameSite`; the session id is regenerated at login (fixation
-test).
+test); a configured `session.cookie_name` that lacks the prefix (or carries it in the wrong case, or
+as `+__Secure-+`), is the bare prefix, is blank, carries a `;` or a space, or names either
+gateway-owned cookie fails boot at `/oidc/session/cookie_name` with the value escaped, while the
+default name and a well-formed custom `+__Host-+` name boot cleanly.
 
 [#bff-11]
 === BFF-11 -- CSRF on the cookie-authenticated BFF API (the classic BFF gap)
@@ -1287,9 +1418,9 @@ outstanding hardening work (next section).
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash) | cui-http (canonical path) + gateway pipeline invariant | PARTIAL
 | <<gw-02>> | Reject ambiguous HTTP framing | Gateway/web-server (cui-http out of scope) | GAP
 | <<gw-03>> | Header CR/LF reject; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`ConnectionHeaders`, ADR-0037) | PARTIAL
-| <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + gateway (peer gate, trust-all rejection, `ConnectionHeaders`) | COVERED
+| <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / token-sheriff `EgressPolicy` | COVERED
-| <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) | PARTIAL
+| <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade | ADR-0015 (bearer routes) | GAP (session routes)
@@ -1305,7 +1436,7 @@ outstanding hardening work (next section).
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch | Validation lib (`EgressPolicy`) | COVERED
 | <<bff-08>> | RT rotation + family revoke; single-flight | Engine `RefreshTokenFamily` | COVERED (server) / PARTIAL-accepted (cookie: per-instance)
 | <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway) | Engine (RP-initiated) + gateway (back-channel receiver) | COVERED
-| <<bff-10>> | Tokens never in browser; `__Host-` cookie; fixation | Engine `TokenStore` SPI + gateway session cookie | COVERED
+| <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED
 | <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- gateway usage rule | COVERED
@@ -1346,6 +1477,10 @@ down. Closing them is the whole point of this exercise. Each is a small, additiv
   proven by the same three-legged shape at unit level, with its collision against an
   `http`-sourced issuer's per-issuer `jwks.tls_profile` refused at boot
   (link:adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]).
+  `egress_tls.oidc_verify_hostname` is *done* on the same terms for the BFF back-channel, with its
+  `oidc_tls_profile` collision refused at boot
+  (link:adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]),
+  and every outbound TLS client is held to an explicit posture by a standing fitness function.
   What remains under this heading is the mTLS-require boolean and the two SNI rules above.
 . *BFF-13 -- pin the callback parsing *usage rule* with a test.* The engine already rejects
   HPP and the gateway already calls `CallbackParameters.parse(rawQuery)` on the raw query

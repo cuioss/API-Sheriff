@@ -127,18 +127,46 @@ site. See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
 
 == Private-CA / self-signed IdP
 
-If your IdP presents a certificate from a *private CA* (or a self-signed cert), you must add that CA
-to the *JVM default truststore*. The confidential-client engine uses the JVM default truststore for
-its outbound OIDC calls (discovery, the authorization-code exchange and refresh); the per-issuer
-`tls_profile` that validates JWKS does *not* cover these calls (token-sheriff-client#597).
-RP-initiated logout is not among them: it hands the browser an `end_session_endpoint` redirect and
-opens no gateway connection to the IdP -- see
+If your IdP presents a certificate from a *private CA* (or a self-signed cert), the gateway's own
+back-channel to it -- discovery, the authorization-code exchange and refresh -- has to trust that CA,
+or logins fail with a PKIX/TLS trust error even though JWKS validation succeeds. The per-issuer
+`jwks.tls_profile` does *not* cover this leg; it governs the JWKS fetch only. RP-initiated logout is
+not part of the back-channel: it hands the browser an `end_session_endpoint` redirect and opens no
+gateway connection to the IdP -- see
 link:tls-edge.adoc#_operator_consideration_outbound_trust_material_replaces_the_platform_bundle[TLS
-Edge]. Without it, logins fail with
-a PKIX/TLS trust error even though JWKS validation succeeds.
+Edge]. There are two routes.
 
-Point the JVM default truststore at your CA store with system properties on the runner command line
-(a native runner does not honour `JAVA_TOOL_OPTIONS` — pass `-D` on the command line):
+*Name a trust profile for the back-channel (recommended).* Set `egress_tls.oidc_tls_profile` to a
+logical profile name and bind the anchors in the deployment:
+
+[source,yaml]
+----
+# gateway.yaml
+egress_tls:
+  oidc_tls_profile: corporate-idp
+----
+
+[source,properties]
+----
+quarkus.tls.corporate-idp.trust-store.p12.path=/etc/sheriff/corporate-ca.p12
+quarkus.tls.corporate-idp.trust-store.p12.password=${TRUSTSTORE_PASSWORD}
+----
+
+The profile *replaces* the JVM default trust store on this leg rather than adding to it, so a
+profile holding only your private CA stops trusting public authorities for the IdP. An unbound,
+`trust-all` or empty profile is refused at boot, and the boot log confirms a profile in effect with
+`ApiSheriff-126`. The same IdP's JWKS fetch still needs its own `jwks.tls_profile`. Do not combine the
+profile with `egress_tls.oidc_verify_hostname: false` -- the pair is refused at boot. See
+link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel] for the full
+contract.
+
+*Or add the CA to the JVM default truststore* and name no profile. That store covers every leg that
+names no profile of its own, and it replaces the platform bundle wholesale, so build it from the
+platform bundle plus your CA (see
+link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+platform bundle]). Point the JVM default truststore at your CA store with system properties on the
+runner command line (a native runner does not honour `JAVA_TOOL_OPTIONS` — pass `-D` on the command
+line):
 
 [source]
 ----

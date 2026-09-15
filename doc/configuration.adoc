@@ -186,13 +186,13 @@ tls:                               # TLS POLICY for the terminated listener. Neu
     enabled: false
     client_ca: /etc/sheriff/ca.pem
 
-egress_tls:                        # OUTBOUND-TLS policy for upstreams the gateway DIALS (ADR-0040).
-                                   #   Disjoint from the `tls` block above, which governs the
-                                   #   certificate the gateway PRESENTS to clients. Global rather
+egress_tls:                        # OUTBOUND-TLS policy for the legs the gateway DIALS (ADR-0040,
+                                   #   ADR-0045). Disjoint from the `tls` block above, which governs
+                                   #   the certificate the gateway PRESENTS to clients. Global rather
                                    #   than per route because these bind at egress client
-                                   #   construction. Omit the block, or any key in it, to take the
-                                   #   secure defaults shown -- an omitted key never resolves to
-                                   #   false.
+                                   #   construction. Each key reaches only the leg it is named for.
+                                   #   Omit the block, or any key in it, to take the secure defaults
+                                   #   shown -- an omitted key never resolves to false.
   upstream_verify_hostname: true   # default true. false relaxes HOSTNAME MATCHING ONLY: an upstream
                                    #   whose certificate does not chain to a trusted anchor is still
                                    #   refused, and passthrough is untouched (never decrypted)
@@ -205,8 +205,15 @@ egress_tls:                        # OUTBOUND-TLS policy for upstreams the gatew
                                    #   the anchors via quarkus.tls.<name>.trust-store.* (ADR-0011).
                                    #   REPLACES the client's anchors rather than adding to them.
                                    #   Omit to keep the JVM default trust store
+  oidc_verify_hostname: true       # default true. false relaxes HOSTNAME MATCHING ONLY on the BFF
+                                   #   OIDC back-channel (discovery, code exchange, refresh): an IdP
+                                   #   whose certificate does not chain to a trusted anchor is still
+                                   #   refused. Refused at boot together with oidc_tls_profile (ADR-0045)
+  oidc_tls_profile: corporate-idp  # OPTIONAL logical trust profile for the BFF OIDC back-channel.
+                                   #   Names a profile, never material (ADR-0011). REPLACES the JVM
+                                   #   default trust store on that leg. Omit to keep the JVM default
 
-management:                        # TLS policy for the management interface (health/metrics on
+management:                       # TLS policy for the management interface (health/metrics on
                                    #   their own port). POLICY ONLY -- this block declares NO
                                    #   port; the port is deployment-bound (see "management")
   tls:
@@ -281,7 +288,11 @@ asset_defaults:                    # OPTIONAL. ADD-ONLY extension of the gateway
 forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
   trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
                                    #   keep as narrow as possible; empty => forwarding
-                                   #   headers are never trusted; TCP peer is the client
+                                   #   headers are never trusted; TCP peer is the client.
+                                   #   An entry broader than /16 (IPv4) or /48 (IPv6) boots with
+                                   #   a WARN (ApiSheriff-102); a /16 or /48 boots silently as a
+                                   #   chosen exposure, not a safe one; trust-all is refused
+                                   #   (ADR-0044)
                                    #
                                    # OR, supplied whole from the environment:
                                    #   trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
@@ -298,6 +309,9 @@ forwarded:                         # resolved by cui-http (de.cuioss.http.forwar
                                    #   explicit [] here still means "trust no proxy" and
                                    #   stays valid -- the refusal is of an emptied
                                    #   SUBSTITUTION, never of a list you wrote empty.
+                                   #   A substituted range meets the SAME breadth rules as a
+                                   #   literal one -- no stricter refusal -- and no review of
+                                   #   this file ever sees it, so the WARN is its only signal.
                                    #   The PRESENCE of the forwarded block still requires a
                                    #   file edit; only the value is environment-supplied.
   trust_scheme_host: false         # honor sanitized scheme/host/port/prefix from proxies
@@ -364,7 +378,9 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   sessions -- a DoS guard on the in-memory store. Reaching
                                    #   the bound sweeps the expired sessions and admits the login
                                    #   if that freed a slot; no scheduler or periodic sweep exists
-    cookie_name: __Host-sheriff
+    cookie_name: __Host-sheriff    # OPTIONAL, both modes; default __Host-sheriff-session. REFUSED AT
+                                   #   BOOT unless a __Host--prefixed RFC 9110 token distinct from
+                                   #   the gateway-owned __Host-sheriff-binding / -logout cookies
     encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
                                    #   generate a key on startup (sessions die on restart)
     max_cookie_size: 4019          # cookie mode only: sealed cookie-VALUE size budget in bytes.
@@ -915,16 +931,22 @@ whenever an operator-supplied store is in effect on either tier, stating the rep
 naming which half of the surface was left behind when the two disagree. Read those two lines after
 any trust change; they are the check that the store you built is the store the gateway is using.
 
-Two further legs are governed by their own keys and are *not* what these records describe: see
-link:#_egress_tls_hostname_scope[`upstream_verify_hostname`] and its `ApiSheriff-119`, and
-link:#_jwks_verify_hostname_reads_nothing_today[`jwks_verify_hostname`] and its `ApiSheriff-120`.
+The postures the `egress_tls` block sets per leg are governed by their own keys and are *not* what
+these records describe: see link:#_egress_tls_hostname_scope[`upstream_verify_hostname`] and its
+`ApiSheriff-118` / `ApiSheriff-119`, link:#_jwks_verify_hostname_reads_nothing_today[`jwks_verify_hostname`]
+and its `ApiSheriff-120`, and link:#_oidc_back_channel_posture[`oidc_verify_hostname` and
+`oidc_tls_profile`] and their `ApiSheriff-125` / `ApiSheriff-126`. A leg whose trust profile is named
+has left the default store behind: the BFF OIDC back-channel sits on the raw-`TrustManager` tier
+only while `egress_tls.oidc_tls_profile` is omitted.
 
 [[_egress_tls]]
 === `egress_tls`
 
 Everything above this heading governs the certificate the gateway *presents*. This block governs the
-certificates it *accepts* -- outbound TLS policy for the upstreams it dials
-(link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]).
+certificates it *accepts* -- outbound TLS policy for the upstreams and identity-provider
+back-channels it dials
+(link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040],
+link:adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]).
 The two surfaces are named separately and classified separately precisely so neither has to describe
 traffic in the other direction, and the block is optional: omit it, or any key inside it, and the
 defaults below apply.
@@ -953,7 +975,79 @@ defaults below apply.
   certificates. Omitted, the egress clients keep the JVM default trust store. Named, it *replaces*
   those anchors rather than adding to them -- see
   link:#_upstream_trust_profiles[Trust profiles (`upstream_tls_profile`)] below.
+
+| `oidc_verify_hostname`
+| Whether the *BFF OIDC back-channel* -- discovery, the authorization-code exchange and refresh --
+  verifies that the identity provider's certificate names the host the gateway dialled. *Defaults to
+  `true`* -- an omitted key resolves to the secure value, never to the type default. Setting it to
+  `false` relaxes *hostname matching only*, on that leg alone. It cannot be combined with
+  `oidc_tls_profile`: the pair is *refused at boot*. See
+  link:#_oidc_back_channel_posture[The BFF OIDC back-channel] below.
+
+| `oidc_tls_profile`
+| *Optional.* The logical name of the trust profile whose anchors verify the identity provider's
+  certificate on the BFF OIDC back-channel. Omitted, that leg keeps the JVM default trust store.
+  Named, it *replaces* the JVM default trust store on that leg rather than adding to it, and it
+  resolves through the same four fail-closed refusals as the other trust profiles -- see
+  link:#_oidc_back_channel_posture[The BFF OIDC back-channel] below.
 |===
+
+[[_egress_tls_legs]]
+==== The six TLS legs, and which key reaches each
+
+The block is not one switch over every `https` connection the gateway opens. The gateway dials six
+TLS-terminating outbound legs, and each key reaches a named subset of them. *This enumeration is
+re-derived from source* -- from the client-construction sites themselves, not copied from an earlier
+list -- and it is hand-written, so it is not the guard against a seventh leg: that guard is the
+explicit-posture fitness function described after the table.
+
+[cols="1,2,2", options="header"]
+|===
+| Leg | What dials it | Governing key
+
+| 1. Default HTTP client
+| The Vert.x HTTP client per upstream tuple
+| `upstream_verify_hostname`, `upstream_tls_profile`
+
+| 2. Forced-HTTP/2 client
+| The Vert.x HTTP client gRPC routes require
+| `upstream_verify_hostname`, `upstream_tls_profile`
+
+| 3. Edge-wide WebSocket client
+| The one Vert.x WebSocket client serving every `wss://` relay
+| `upstream_verify_hostname`, `upstream_tls_profile`
+
+| 4. JWKS back-channel
+| The token-validation library, per issuer
+| `jwks_verify_hostname`; trust per issuer through `jwks.tls_profile`
+
+| 5. Asset-origin fetch
+| A JDK `java.net.http.HttpClient` with an explicit default context
+| None -- deliberately outside the block (see
+  link:#_egress_tls_asset_origin_limit[below])
+
+| 6. BFF OIDC back-channel
+| The identity-provider client library, one client configuration per gateway
+| `oidc_verify_hostname`, `oidc_tls_profile`
+|===
+
+Plain-TCP dials negotiate no TLS and are not legs in this sense: the L4 passthrough relay of
+link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+and the loopback health probe. The hostname keys are separate per leg rather than one shared flag,
+because each leg is dialled by a different client and an operator relaxing one has no reason to relax
+another.
+
+*A seventh leg cannot land unbound.* A fitness function (`EgressTlsPostureArchTest`, in the
+link:adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+four-leg shape) fails the build whenever production code
+calls an outbound TLS-client construction target without, in the same class, calling that target's
+posture method -- `setVerifyHost` on the Vert.x options, `sslContext` or `sslParameters` on a JDK
+client builder, `verifyHostname` on the identity-provider and JWKS builders. It reads calls, not
+values, so a relaxation still satisfies it; whether a relaxation is legitimate stays with the keys on
+this page. Two limits are stated with it: co-occurrence is read per class, so a class pinning one
+client of a family and building a second without its posture is not caught; and a JVM start-up flag
+that disables hostname verification beneath every JDK-client leg is invisible to it (see
+link:security-threat-model.adoc#gw-06[GW-06]).
 
 [[_egress_tls_hostname_scope]]
 ==== What disabling hostname verification does and does not do
@@ -1000,18 +1094,21 @@ nothing for a verification setting to govern on that path. The scope of `egress_
 egress, and -- exactly as with the link:#_tls_scope_limit[server-side scope limit] above -- that is a
 statement of what the setting *can* mean, not a limitation more configuration could lift.
 
-Terminated egress is the *outer* bound of the scope, not the whole of it: within terminated egress the
-block reaches the three Vert.x clients below and not the asset-origin fetch, which is a separate
-limit with a separate reason -- see link:#_egress_tls_asset_origin_limit[The block does not reach the
-asset-origin leg].
+Terminated egress is the *outer* bound of the scope, not the whole of it: within terminated egress
+each key reaches only the legs link:#_egress_tls_legs[the enumeration above] names for it, and no key
+reaches the asset-origin fetch, which is a separate limit with a separate reason -- see
+link:#_egress_tls_asset_origin_limit[The block does not reach the asset-origin leg].
 
 [[_egress_tls_is_global]]
 ==== Why the block is global and carries no per-route override
 
-Both settings are fixed when the egress clients are *constructed*, not when a request is dispatched.
-The gateway builds three such clients -- the default HTTP client, the forced-HTTP/2 client gRPC
-routes require, and the edge-wide WebSocket client that serves every `wss://` relay -- and the last
-of those is edge-wide by construction, so a per-route value could not be honoured on it at all.
+Every key in the block is fixed when its leg's client is *constructed*, not when a request is
+dispatched. For the two upstream keys that means three clients -- the default HTTP client, the
+forced-HTTP/2 client gRPC routes require, and the edge-wide WebSocket client that serves every
+`wss://` relay -- and the last of those is edge-wide by construction, so a per-route value could not
+be honoured on it at all. The two back-channel legs are no finer-grained: the JWKS key is resolved
+once for every issuer's loader, and the OIDC keys once for the single client configuration the BFF
+runtime builds.
 
 There is consequently no per-route or per-upstream override to reach for, and its absence is a
 type-declaration fact rather than a scoping preference: the two per-request seams (the request
@@ -1022,11 +1119,13 @@ among many must relax hostname matching for *all* terminated egress or not at al
 [[_egress_tls_asset_origin_limit]]
 ==== The block does not reach the asset-origin leg
 
-*"Global" means those three clients, not every https connection the gateway opens.* An
-asset route with an `https` upstream origin is a fourth terminated-egress TLS leg, and
-`egress_tls` does not govern it (see link:#_asset_defaults[`asset_defaults`] for the asset surface):
-the asset fetch runs on a JDK `java.net.http.HttpClient`, whose
-builder carries neither a hostname-verification flag nor the gateway's trust profile. Governing it
+*"Global" means the legs each key is named for, not every https connection the gateway opens.* An
+asset route with an `https` upstream origin is a terminated-egress TLS leg of its own -- leg 5 in
+link:#_egress_tls_legs[the enumeration above] -- and no `egress_tls` key governs it (see
+link:#_asset_defaults[`asset_defaults`] for the asset surface): the asset fetch runs on a JDK
+`java.net.http.HttpClient`, whose builder carries neither a hostname-verification flag nor the
+gateway's trust profile. Its construction site pins the JDK's own default context explicitly, which
+changes no behaviour and exists so the fitness function above can see the leg's posture. Governing it
 would need a separate `SSLParameters`/`SSLContext` seam, which
 link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
 deliberately left out of scope.
@@ -1206,6 +1305,108 @@ That a key parses and binds settles nothing about whether the control it names i
 link:development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage]). The two
 halves are deliberately kept apart for this key: the configuration-loader test asserts *binding*, and
 the behaviour assertions above are what settle that the control acts.
+
+[[_oidc_back_channel_posture]]
+==== The BFF OIDC back-channel: `oidc_verify_hostname` and `oidc_tls_profile`
+
+A gateway running a BFF variant talks to its identity provider directly: it resolves the discovery
+document, exchanges the authorization code for tokens, and refreshes them. That is leg 6 in
+link:#_egress_tls_legs[the enumeration above], and it is the leg that carries the client secret and
+the authorization codes the gateway establishes sessions from. Two keys bind it
+(link:adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]),
+and they reach nothing else: a bearer-only gateway builds no such client, so on it both keys are
+inert.
+
+[source,yaml]
+----
+egress_tls:
+  oidc_verify_hostname: true        # passed to the back-channel builder on every build
+  oidc_tls_profile: corporate-idp   # logical name only; anchors supplied by the deployment
+----
+
+*The posture is the gateway's, not the library's.* The flag is passed to the identity-provider
+client's own hostname-verification setting on every build -- the `true` path included -- so an
+upstream default change cannot move this leg's posture
+(link:adr/0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+An omitted block and an omitted key are the same posture: verification on.
+
+[[_oidc_verify_hostname_scope]]
+===== What disabling OIDC hostname verification does and does not do
+
+`oidc_verify_hostname: false` turns off exactly one comparison on this leg: dialled name against the
+names the identity provider's certificate carries. It does *not* turn off certificate-chain
+validation, does not admit a self-signed certificate, and does not admit a certificate issued by an
+authority the gateway does not trust. An identity provider that fails to chain to a trusted anchor is
+still refused with the knob off.
+
+*The key governs this leg and only this leg.* It is the peer of
+link:#_jwks_verify_hostname_reads_nothing_today[`jwks_verify_hostname`] and
+link:#_egress_tls_hostname_scope[`upstream_verify_hostname`], not a sub-case of either. The JWKS
+back-channel and this one are different clients built from different library entry points, and they
+often reach the same identity provider -- so a provider whose discovery and token endpoints are
+reached through a name its certificate does not carry, *and* whose JWKS is reached the same way,
+needs both hostname keys set. That is the price of the two legs being independently relaxable.
+
+The scope claim is proven rather than asserted: the test suite dials a local HTTPS server that serves a
+discovery document under a certificate that does not name the dialled address, through the
+producer's own configuration path. The default posture refuses discovery, the relaxed posture
+completes it, with the same server, certificate and trust anchor on both legs; a third leg dials a
+correctly named certificate under an *untrusted* root with the flag off and must still fail.
+
+*The relaxation is never silent.* A BFF gateway that boots with `oidc_verify_hostname: false` logs
+`WARN ApiSheriff-125` once at startup, naming the scope and the remedy -- a warning and never a boot
+refusal, following the same rule as `ApiSheriff-118` and `ApiSheriff-120`.
+
+[[_oidc_tls_profile]]
+===== Trust profiles (`oidc_tls_profile`) replace the leg's anchors
+
+An identity provider behind a *private CA* has a different problem from a name mismatch, and a
+different answer: name a trust profile. `oidc_tls_profile` sits on the same
+link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+boundary as link:#_upstream_trust_profiles[`upstream_tls_profile`] and
+link:#_jwks_trust_profiles[`jwks.tls_profile`]: the key names a profile and carries no material, and
+the deployment binds the name through `quarkus.tls.<name>.trust-store.*`. It resolves through the
+same resolution core as the JWKS trust profiles, so the four fail-closed outcomes apply to it byte
+for byte -- an unbound name fails boot, a `trust-all` profile is refused ahead of the anchor-free
+check, an anchor-free profile is refused, and unloadable material is refused -- and each refusal
+names `egress_tls.oidc_tls_profile`.
+
+*A named profile replaces the JVM default trust store on this leg rather than adding to it.* A
+profile holding only a private CA stops trusting public certificate authorities for the identity
+provider. Omitting the key is the supported way to ask for default trust; naming a profile that also
+carries the public roots is the supported way to ask for both. A gateway that boots with a named
+profile logs `WARN ApiSheriff-126` once at startup, carrying the *logical* profile name only -- never
+a store path, a password, or any anchor.
+
+The profile is *global*, not per issuer. A deployment binding one private CA for both identity-provider
+legs names it twice: once here and once in the issuer's `jwks.tls_profile`.
+
+[[_oidc_profile_collision]]
+===== The relaxation and a profile are refused together
+
+`oidc_verify_hostname: false` together with a named `oidc_tls_profile` *fails boot* with a
+configuration error naming both keys, checked before the identity-provider client is built. The
+reason is the one the JWKS leg carries: the library relaxes hostname matching only on the
+default-trust-store context it derives itself, and a named profile supplies a context the gateway
+built instead, so there is nothing for the relaxation to act on. Left to the library, the operator
+would receive an exception phrased in builder methods that appear nowhere in `gateway.yaml`; the
+gateway refuses first, in the vocabulary the operator wrote. Unlike the JWKS collision, both keys
+sit at the same scope, in the same block.
+
+An operator whose identity provider needs *both* private-CA anchors and a relaxed hostname check has
+no supported combination: fix the certificate's names, or bind those anchors into the JVM default
+trust store and omit the profile -- following
+link:#_default_trust_store_replaces[Supplying a default trust store REPLACES the platform bundle],
+because that store replaces the public roots too.
+
+*RP-initiated logout is not on this leg.* Logout builds an `end_session_endpoint` redirect and hands
+it to the browser; the gateway opens no connection to the identity provider for it, so neither key
+is in play there.
+
+No shipped deployment descriptor declares either key -- the default posture is the shipped one -- so
+this leg owes no deployment-activation instance; the reasoning is recorded in
+link:development/declared-limit-assertion-coverage.adoc#_the_egress_relaxation_keys_owe_no_activation_instance[Declared-limit
+assertion coverage].
 
 [[_protocols]]
 === `protocol`
@@ -1701,7 +1902,10 @@ CA needs both; a public-internet IdP behind a public CA needs neither.
 
 The confidential-client block used by the BFF variants
 (link:variants/02-bff-session.adoc[Variant 2] and link:variants/03-bff-cookie.adoc[Variant 3]);
-ignored when no route's effective auth is `require: session`.
+ignored when no route's effective auth is `require: session`. The TLS posture of the gateway's own
+dial to the identity provider is deliberately *not* in this block: it lives with every other
+outbound posture key, as `egress_tls.oidc_verify_hostname` and `egress_tls.oidc_tls_profile` -- see
+link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
 
 [cols="1,3"]
 |===
@@ -1807,8 +2011,23 @@ ignored when no route's effective auth is `require: session`.
   without consulting it.
 
 | `session.cookie_name`
-| Cookie name; the `+__Host-+` prefix (implying `Secure`, `Path=/`, no `Domain`) is the default
-  and recommended.
+| Name of the session cookie, in *both* session modes. Optional; omitted, it resolves to
+  `+__Host-sheriff-session+`. A declared name is written verbatim into `Set-Cookie`, so it is
+  *refused at boot* unless it:
+
+  * starts with the case-sensitive `+__Host-+` prefix followed by a name -- the prefix is what makes
+    the browser *enforce* `Secure`, `Path=/` and no `Domain` rather than merely receive them, so a
+    name without it (`sheriff-session`, `+__host-x+`, `+__Secure-x+`) drops a guarantee the
+    gateway-owned cookies keep;
+  * is a non-empty RFC 9110 token -- no whitespace, control characters or separators such as `;` or
+    `=`, any of which would be response-header injection; and
+  * differs from the two gateway-owned cookies `+__Host-sheriff-binding+` and
+    `+__Host-sheriff-logout+`, since a collision would let one cookie silently overwrite another.
+
+  Every requirement a name fails is reported in one violation at `/oidc/session/cookie_name`, with
+  the offending value escaped before it is echoed. This refusal is the only guard: the BFF runtime
+  consumes the name verbatim, and the schema declares the key an unrestricted string. A longer name
+  also widens the header overhead `session.max_cookie_size` is measured against (see below).
 
 | `session.encryption_key`
 | `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. Both key-material modes are
@@ -2519,6 +2738,19 @@ the sane emission default) is link:adr/0003-forwarded-headers.adoc[ADR-0003].
   an operator chose, not because they are safe. Warning on a routine, correct configuration is
   how a guard gets trained into background noise. Narrow the list regardless of whether it warns.
 
+  *A range supplied through an environment variable gets exactly the same treatment.* The
+  validator sees the value after `${VAR}` substitution, where a substituted range and a literal one
+  are the same string, so there is no stricter rule for it: the same `ApiSheriff-102` warning
+  beyond `/16` / `/48`, the same trust-all refusal, and the same un-warned `/16` / `/48` residual. A
+  wider refusal threshold applied to every range would refuse legitimate pod-network trust -- a
+  `10.0.0.0/8` pod network is a correct configuration where it is the network the proxy tier runs
+  on -- while stopping nothing the warning and the trust-all refusal do not already surface. What
+  differs is review: a range that arrives through the environment passed through no change to
+  `gateway.yaml` anyone approved, so the boot warning is the only signal it ever gets. Read the boot
+  log of an environment-supplied deployment for that reason. The principle behind both thresholds,
+  the residual and this posture are recorded in
+  link:adr/0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044].
+
   *The whole list can be supplied by one `${VAR}`.* Because this field declares an `array`, a
   placeholder written as its value is typed from that destination and split on `,`, with each
   element stripped -- so `trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"` with
@@ -2663,8 +2895,10 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * A `forwarded.trusted_proxies` entry shorter than `/16` (IPv4) or `/48` (IPv6) emits the
   `ApiSheriff-102` boot WARN -- it does *not* fail the boot. The thresholds mark the point at
   which one entry spans more than a single operator-provisioned network; an IPv4 `/16` and an
-  IPv6 `/48` are deliberately left un-warned (see the
-  link:#_forwarded_headers[`trusted_proxies`] field reference).
+  IPv6 `/48` are deliberately left un-warned as a chosen exposure, not a safe one. A range supplied
+  through a `${VAR}` placeholder meets exactly these rules and no stricter one (see the
+  link:#_forwarded_headers[`trusted_proxies`] field reference and
+  link:adr/0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]).
 * A `${VAR}` written at a *list-valued* key supplies the whole list: the placeholder is typed from
   the destination's declared `array` and split on `,`, each element stripped. An *empty resolution*
   at such a key -- a value resolving to empty, the defaulted `${VAR:-}` shape, or any empty
@@ -2739,6 +2973,17 @@ control, which is the rule above doing exactly the work it was added for.
   generate-on-startup key mode (sessions are dropped on restart and the key is not shareable
   across replicas). `session.mode: server` requires an explicit `session.store` (only `memory` is
   valid) and uses no encryption key.
+* A declared `oidc.session.cookie_name` -- in either session mode -- must start with the
+  case-sensitive `+__Host-+` prefix followed by a name, be a non-empty RFC 9110 token, and differ
+  from the gateway-owned `+__Host-sheriff-binding+` and `+__Host-sheriff-logout+` cookies; otherwise
+  the boot fails, naming every requirement the name misses and echoing the value escaped. An
+  omitted key resolves to `+__Host-sheriff-session+` and is never refused (see the
+  link:#_oidc[`session.cookie_name`] field reference).
+* `egress_tls.oidc_verify_hostname: false` together with a named `egress_tls.oidc_tls_profile`
+  fails the boot with a configuration error naming both keys, and a named `oidc_tls_profile` that is
+  unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime
+  builds its identity-provider client, before any dial (see
+  link:#_oidc_back_channel_posture[The BFF OIDC back-channel]).
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
 * A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
   *non-empty* link:#_allowed_origins[`websocket.allowed_origins`] list; an absent or empty

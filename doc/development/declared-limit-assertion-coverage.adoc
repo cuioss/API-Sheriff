@@ -706,3 +706,50 @@ The shape that closes the other half is the `*ActivationWiringTest` family this 
 indexes, with `TlsEdgeActivationWiringTest` as the reference: it asserts the *deployed descriptor
 actually turns the feature on*. That is the assertion a unit test structurally cannot reach, and it
 is why a feature landing without one is recorded here as a gap rather than as coverage.
+
+[[_the_egress_relaxation_keys_owe_no_activation_instance]]
+==== Recorded rationale: the egress hostname relaxations owe no activation instance
+
+The rule above has a precondition that is easy to read past: an activation test asserts that a
+*shipped deployment turns the feature on*. Where no shipped deployment is meant to, there is nothing
+for it to assert, and the absence is a recorded decision rather than a gap. Two keys sit in exactly
+that position, and the reasoning is written down here so it is not re-litigated as a missing test:
+`egress_tls.jwks_verify_hostname` and its peer on the BFF OIDC back-channel,
+`egress_tls.oidc_verify_hostname`.
+
+*Both are secure-by-default relaxations that no shipped deployment activates.* Each defaults to
+`true`, an omitted key or an omitted block resolves to `true`, and the shipped posture *is* that
+default. No committed descriptor -- neither the integration stack's nor the compose sample's -- declares
+either key, so there is no deployed document whose activation a wiring test could check. An
+activation test here could only assert that the relaxation is *off* everywhere, which is the property
+the default already states and the schema already carries.
+
+*The two halves that are owed are both present.*
+
+* *The behaviour half* -- `config -> behaviour` -- is a real TLS dial at unit level, through each
+  producer's own configuration path rather than a test-built library configuration:
+  `TokenValidatorProducerTest` for the JWKS leg and `BffRuntimeProducerTest` for the BFF leg. Each runs
+  a matched control (the same server, certificate and trust anchor, differing only in the flag: the
+  default refuses, the relaxation completes), an untrusted-chain leg that must still fail with the
+  flag off, and a falsification check -- deleting the production passthrough turns the relaxed leg
+  red. The BFF leg adds an omitted-block leg and the collision refusal against `oidc_tls_profile` with
+  its own matched control.
+* *The native binding half* -- that the shared `egress_tls` record and its dedicated deserializer
+  survive the native build and bind a declared block -- is already exercised by the integration
+  stack's `sheriff-config-egress-verify-{on,off}` instance pair, which binds the same record through
+  the same deserializer for `upstream_verify_hostname`, and whose single-variable shape
+  `EgressVerifyActivationWiringTest` pins. A further instance differing only in a key no deployment
+  sets would add a multi-minute stack start to every integration run and prove nothing that pair and
+  the unit dial do not.
+
+`upstream_verify_hostname` is the contrast case, and it is not an inconsistency: that key's matched
+pair exists because its scope claim needed a real upstream dial through the native edge, not because
+the rule required one per relaxation key.
+
+*What would reopen it.* The rationale holds only while no shipped descriptor declares either key. A
+descriptor that starts declaring `jwks_verify_hostname`, `oidc_verify_hostname` or `oidc_tls_profile`
+is a deployment activating a posture, and from that change on the rule above applies in full: add the
+wiring guard in the same change. The decision for the BFF leg is recorded in
+link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045];
+the security residual each relaxation concedes is recorded under
+link:../security-threat-model.adoc#gw-06[GW-06].

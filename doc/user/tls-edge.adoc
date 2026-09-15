@@ -273,15 +273,14 @@ actually in force -- is in
 link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
 platform bundle]. Read `ApiSheriff-17` and `ApiSheriff-122` in the boot log after any trust change.
 
-One leg is reachable *only* through that default store, which is worth knowing before you decide
-whether you need one. The BFF's own back-channel to the identity provider -- discovery, the
-authorization-code exchange and refresh -- is dialled by `token-sheriff-client`, which
-exposes no per-client TLS-trust seam
-(https://github.com/cuioss/token-sheriff/issues/597[token-sheriff-client#597]). A per-issuer
-`jwks.tls_profile` does not cover it. Against an identity provider behind a private CA, that leg is
-served by the JVM default trust store or not at all, so the store is not optional there -- and the
-replacement rule above applies to it in full. See link:bff-session.adoc[BFF session management] for
-the rest of that back-channel's operator surface.
+Before you build a default store for the identity provider, know that you may not need one. The
+BFF's own back-channel to the identity provider -- discovery, the authorization-code exchange and
+refresh -- has a trust key of its own, `egress_tls.oidc_tls_profile`, and a per-issuer
+`jwks.tls_profile` does not cover it. Naming that profile keeps the private CA off every other leg;
+the default store is the alternative, and it reaches every leg that names no profile. Both *replace*
+anchors rather than adding to them. See
+link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel] for the key and
+link:bff-session.adoc#_private_ca_self_signed_idp[BFF session management] for the operator steps.
 
 *Logout is deliberately absent from that list: it is not a back-channel leg and does not depend on
 this store.* RP-initiated logout builds an `end_session_endpoint` redirect URL and hands it to the
