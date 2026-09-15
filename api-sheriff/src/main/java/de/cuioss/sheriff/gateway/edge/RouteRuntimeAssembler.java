@@ -28,6 +28,7 @@ import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -92,7 +93,7 @@ public final class RouteRuntimeAssembler {
      * @param guardFactory          builds one {@link Guard} per resilience shape
      * @param assetSourceFactory    builds the live {@link AssetSource} for an asset route's
      *                              terminal action
-     * @return the assembled runtimes, in the table's longest-prefix-first order
+     * @return the assembled runtimes, in the table's exact-first then longest-prefix-first order
      * @throws GatewayException when a route declares an unsupported protocol
      */
     public List<RouteRuntime> assemble(RouteTable table, SecurityConfigurationFactory securityConfigFactory,
@@ -140,17 +141,21 @@ public final class RouteRuntimeAssembler {
                     .effectiveAllowedOrigins(route.effectiveAllowedOrigins())
                     .effectiveWebSocketIdleTimeoutSeconds(route.effectiveWebSocketIdleTimeoutSeconds());
 
-            // A route resolves exactly one terminal action (ADR-0014). An asset route builds its
-            // live source and skips the Vert.x client / resilience-guard dedup entirely — its
-            // egress rides the source's own SSRF-controlled fetch seam, not the proxy data plane.
+            // A route resolves exactly one terminal action (ADR-0014 and its Amendment A1). An asset
+            // route builds its live source and a redirect route carries its redirect block; both skip
+            // the Vert.x client / resilience-guard dedup entirely — an asset route's egress rides the
+            // source's own SSRF-controlled fetch seam, and a redirect route never contacts an upstream.
             ResolvedAsset asset = route.asset();
+            RedirectConfig redirect = route.redirect();
             if (asset != null) {
                 runtime.assetSource(assetSourceFactory.create(asset));
+            } else if (redirect != null) {
+                runtime.redirect(redirect);
             } else {
                 ResolvedUpstream resolvedUpstream = route.upstream();
                 if (resolvedUpstream == null) {
-                    throw new GatewayException(EventType.CONFIG_INVALID,
-                            "Route '" + route.id() + "' resolves no terminal action (neither upstream nor asset)");
+                    throw new GatewayException(EventType.CONFIG_INVALID, "Route '" + route.id()
+                            + "' resolves no terminal action (none of upstream, asset, redirect)");
                 }
                 // gRPC requires HTTP/2 end-to-end, so the forced-h2 flag joins the client-sharing tuple:
                 // a gRPC route to host:port holds a distinct forced-h2 client from an HTTP/1.1 route to

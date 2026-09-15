@@ -25,6 +25,7 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
@@ -58,7 +59,7 @@ public final class RouteRuntime {
     /** The effective protocol. */
     private final Protocol protocol;
 
-    /** The compiled matcher set (prefix, methods, host, headers). */
+    /** The compiled matcher set (exact path or prefix, methods, host, headers). */
     private final RouteMatcher matcher;
 
     /** The protocol processor serving this route (shared across same-protocol routes). */
@@ -136,29 +137,35 @@ public final class RouteRuntime {
     private final boolean notModifiedEnabled;
 
     /**
-     * The resolved upstream target for a proxy route; {@code null} for an asset route. A route
-     * carries exactly one terminal action — a proxy {@link #upstream} or an
-     * {@link #assetSource} — never both (ADR-0014).
+     * The resolved upstream target for a proxy route; {@code null} for an asset or redirect
+     * route. A route carries exactly one of three terminal actions — a proxy {@link #upstream},
+     * an {@link #assetSource} or a {@link #redirect} (ADR-0014 and its Amendment A1).
      */
     private final @Nullable ResolvedUpstream upstream;
 
     /**
      * The shared Vert.x client for a proxy route's upstream tuple (one instance per
-     * tuple); {@code null} for an asset route.
+     * tuple); {@code null} for an asset or redirect route.
      */
     private final @Nullable HttpClient httpClient;
 
     /**
      * The shared SmallRye Fault-Tolerance guard for a proxy route's resilience shape;
-     * {@code null} for an asset route.
+     * {@code null} for an asset or redirect route.
      */
     private final @Nullable Guard resilienceGuard;
 
     /**
      * The live asset source serving an asset route's terminal action (a directory
-     * reader or an SSRF-guarded upstream fetcher); {@code null} for a proxy route.
+     * reader or an SSRF-guarded upstream fetcher); {@code null} for a proxy or redirect route.
      */
     private final @Nullable AssetSource assetSource;
+
+    /**
+     * The redirect terminal action answered at the gateway (status and {@code Location}, no
+     * upstream contact); {@code null} for a proxy or asset route.
+     */
+    private final @Nullable RedirectConfig redirect;
 
     /**
      * The materialized, lower-cased exact-match {@code Origin} allowlist enforced on a WebSocket

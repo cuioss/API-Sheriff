@@ -32,7 +32,7 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-@DisplayName("RouteSelectionStage — stage 2 deny-by-default longest-prefix selection")
+@DisplayName("RouteSelectionStage — stage 2 deny-by-default exact-first, longest-prefix selection")
 class RouteSelectionStageTest {
 
     private final RouteSelectionStage stage = new RouteSelectionStage(List.of(
@@ -80,6 +80,45 @@ class RouteSelectionStageTest {
     }
 
     @Test
+    @DisplayName("selects the exact route over a prefix route for the same address")
+    void selectsExactRouteOverPrefixForSameAddress() {
+        // The list is exact-first, as the route-table builder orders it.
+        RouteSelectionStage exactFirst = new RouteSelectionStage(List.of(
+                exactRoute("orders-root", "/orders"),
+                route("orders", "/orders")));
+        PipelineRequest request = requestFor("/orders");
+
+        exactFirst.process(request);
+
+        assertEquals("orders-root", request.selectedRoute().getId());
+    }
+
+    @Test
+    @DisplayName("falls through to the prefix route below an exact route's address")
+    void fallsThroughToPrefixBelowExactAddress() {
+        RouteSelectionStage exactFirst = new RouteSelectionStage(List.of(
+                exactRoute("orders-root", "/orders"),
+                route("orders", "/orders")));
+        PipelineRequest request = requestFor("/orders/123");
+
+        exactFirst.process(request);
+
+        assertEquals("orders", request.selectedRoute().getId());
+    }
+
+    @Test
+    @DisplayName("does not match an exact route against its trailing-slash variant")
+    void exactRouteDoesNotMatchTrailingSlashVariant() {
+        RouteSelectionStage exactOnly = new RouteSelectionStage(List.of(exactRoute("a", "/a")));
+        PipelineRequest request = requestFor("/a/");
+
+        GatewayException thrown = assertThrows(GatewayException.class, () -> exactOnly.process(request));
+
+        assertEquals(EventType.NO_ROUTE_MATCHED, thrown.getEventType(),
+                "/a and /a/ are distinct addresses for an exact route");
+    }
+
+    @Test
     @DisplayName("fails loud when the canonical path was not resolved at stage 1")
     void requiresCanonicalPath() {
         // Arrange — no canonical path recorded
@@ -94,6 +133,14 @@ class RouteSelectionStageTest {
 
     private static RouteRuntime route(String id, String pathPrefix) {
         MatchConfig match = MatchConfig.builder().pathPrefix(pathPrefix).build();
+        return RouteRuntime.builder()
+                .id(id)
+                .matcher(RouteMatcher.from(match))
+                .build();
+    }
+
+    private static RouteRuntime exactRoute(String id, String path) {
+        MatchConfig match = MatchConfig.builder().path(path).build();
         return RouteRuntime.builder()
                 .id(id)
                 .matcher(RouteMatcher.from(match))

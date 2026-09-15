@@ -43,6 +43,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
@@ -69,8 +70,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * Tests for {@link RouteTableBuilder}: enabled-only merge, longest-prefix
- * ordering over normalized prefixes (same-prefix disjointness now lives in
+ * Tests for {@link RouteTableBuilder}: enabled-only merge, exact-first then longest-prefix
+ * ordering over normalized prefixes, the three-way terminal action (upstream / asset /
+ * redirect), the conditional {@code base_url} resolution (same-prefix disjointness now lives in
  * {@code ConfigValidator}, ADR-0009), the materialization of effective
  * auth, effective {@code allowed_methods}, and the three-level retry / not-modified
  * override chain, and the D1/D2 anchor resolution (gateway → anchor → endpoint →
@@ -1010,6 +1012,141 @@ class RouteTableBuilderTest {
                             "the guarded absent-asset branch resolves the upstream terminal action"),
                     () -> assertEquals("orders.internal", resolved.upstream().host(),
                             "the resolved upstream host is driven from the guarded absent-asset branch"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Exact routes, redirect terminal action and conditional base_url (AS-3/AS-4)")
+    class ExactRoutesRedirectAndConditionalBaseUrl {
+
+        private RouteConfig exactRoute(String id, String path) {
+            return RouteConfig.builder().id(id)
+                    .match(MatchConfig.builder().path(path).methods(List.of(HttpMethod.GET)).build())
+                    .build();
+        }
+
+        private RouteConfig redirectRoute(String id, String path, RedirectConfig redirect) {
+            return RouteConfig.builder().id(id)
+                    .match(MatchConfig.builder().path(path).build())
+                    .redirect(redirect)
+                    .build();
+        }
+
+        private RouteConfig directoryAssetRoute(String id, String prefix) {
+            return RouteConfig.builder().id(id)
+                    .match(match(prefix, HttpMethod.GET))
+                    .asset(AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv/site").build())
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should materialize a redirect route as the third terminal action with no upstream or asset")
+        void shouldMaterializeRedirectAction() {
+            RedirectConfig redirect = new RedirectConfig("/new-home", 308, true, false);
+            EndpointConfig endpoint = endpoint("site", null)
+                    .routes(List.of(redirectRoute("moved", "/old-home", redirect))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith());
+
+            ResolvedRoute resolved = find(table, "moved");
+            assertAll("the redirect arm of the three-way terminal action",
+                    () -> assertEquals(redirect, resolved.redirect(), "the redirect block is carried verbatim"),
+                    () -> assertNull(resolved.upstream(), "a redirect route resolves no proxy upstream"),
+                    () -> assertNull(resolved.asset(), "a redirect route resolves no asset action"));
+        }
+
+        @Test
+        @DisplayName("Should order every exact route before every prefix route, each group longest-first")
+        void shouldOrderExactRoutesBeforePrefixRoutes() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("prefix-short", "/a", HttpMethod.GET),
+                            exactRoute("exact-short", "/a"),
+                            routeWithPrefix("prefix-long", "/a/b/c", HttpMethod.GET),
+                            exactRoute("exact-long", "/a/b/longer")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(List.of("exact-long", "exact-short", "prefix-long", "prefix-short"),
+                    table.routes().stream().map(ResolvedRoute::id).toList(),
+                    "exact routes precede prefix routes regardless of length; each group orders longest-first");
+        }
+
+        @Test
+        @DisplayName("Should order exact routes of equal length lexically for a deterministic table")
+        void shouldOrderEqualLengthExactRoutesLexically() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(exactRoute("second", "/bb"), exactRoute("first", "/aa")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(List.of("first", "second"), table.routes().stream().map(ResolvedRoute::id).toList());
+        }
+
+        @Test
+        @DisplayName("Should look up the exact route for its own address and the prefix route for every other")
+        void shouldLookUpExactBeforePrefixForTheSameAddress() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("prefix", "/a", HttpMethod.GET), exactRoute("exact", "/a")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("exact-first lookup",
+                    () -> assertEquals("exact", table.lookup("/a").orElseThrow().id(),
+                            "the exact route wins for its own address"),
+                    () -> assertEquals("prefix", table.lookup("/a/").orElseThrow().id(),
+                            "an exact path is un-normalized: /a does not match /a/"),
+                    () -> assertEquals("prefix", table.lookup("/a/child").orElseThrow().id(),
+                            "the prefix route keeps serving the paths below the exact address"));
+        }
+
+        @Test
+        @DisplayName("Should build an endpoint without base_url that carries only asset and redirect routes")
+        void shouldBuildEndpointWithoutBaseUrlAndWithoutProxyRoutes() {
+            EndpointConfig endpoint = endpoint("site", null)
+                    .routes(List.of(directoryAssetRoute("site-assets", "/static"),
+                            redirectRoute("site-root", "/", new RedirectConfig("/static/", 302, false, false))))
+                    .build();
+
+            RouteTable table = assertDoesNotThrow(
+                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith()),
+                    "an endpoint without a proxy route needs no base_url");
+
+            assertEquals(2, table.routes().size());
+        }
+
+        @Test
+        @DisplayName("Should not resolve a declared alias of an endpoint that carries no proxy route")
+        void shouldNotResolveDeclaredAliasWithoutProxyRoutes() {
+            EndpointConfig endpoint = endpoint("site", "UNRESOLVED")
+                    .routes(List.of(redirectRoute("site-root", "/", new RedirectConfig("/home", 307, false, false))))
+                    .build();
+
+            RouteTable table = assertDoesNotThrow(
+                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith()),
+                    "the builder resolves base_url only for an endpoint with a proxy route; the validator owns the"
+                            + " declared-alias resolvability rule");
+
+            assertNull(find(table, "site-root").upstream());
+        }
+
+        @Test
+        @DisplayName("Should refuse an endpoint that carries a proxy route but declares no base_url")
+        void shouldRefuseProxyRouteEndpointWithoutBaseUrl() {
+            EndpointConfig endpoint = endpoint("orders", null)
+                    .routes(List.of(route("orders-read", HttpMethod.GET),
+                            redirectRoute("orders-moved", "/old", new RedirectConfig("/orders-read", 301, false, false))))
+                    .build();
+            GatewayConfig config = gateway().build();
+            List<EndpointConfig> endpoints = List.of(endpoint);
+            ResolvedTopology topology = topologyWith("ORDERS");
+
+            RouteTableBuilder.RouteTableException exception = assertThrows(
+                    RouteTableBuilder.RouteTableException.class, () -> builder.build(config, endpoints, topology));
+
+            assertEquals("enabled endpoint 'orders' declares proxy route(s) but no base_url", exception.getMessage());
         }
     }
 

@@ -454,6 +454,71 @@ class ConfigProducerTest {
     }
 
     /**
+     * AS-4 end to end: an endpoint that carries only an asset route declares no {@code base_url} and
+     * no {@code topology.properties} exists at all. The whole boot chain — schema, topology
+     * resolution, validation and route-table assembly — must accept it, because {@code base_url} is
+     * mandatory only for an endpoint carrying a proxy route.
+     */
+    @Test
+    void shouldBootAnAssetOnlyEndpointWithoutBaseUrl() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: bundle
+                      match:
+                        path_prefix: /assets
+                        methods: ["GET"]
+                      asset:
+                        source: directory
+                        directory: /srv/assets
+                """);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "an asset-only endpoint without base_url must boot");
+        RouteTable table = producer.routeTable();
+        assertEquals(1, table.routes().size(), "the asset route is merged into the table");
+        assertNotNull(table.routes().getFirst().asset(), "the route resolves its asset terminal action");
+        assertTrue(producer.resolvedTopology().aliases().isEmpty(),
+                "no alias is resolved for an endpoint that declares no base_url");
+    }
+
+    /**
+     * The negative leg of the same rule on the startup path: an endpoint carrying a proxy route
+     * without {@code base_url} is schema-valid (the key is no longer schema-required) and must be
+     * refused by the validator, naming the endpoint.
+     */
+    @Test
+    void shouldFailBootWhenAProxyRouteEndpointDeclaresNoBaseUrl() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  auth:
+                    require: none
+                  routes:
+                    - id: proxied
+                      match:
+                        path_prefix: /web
+                """);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "a proxy-route endpoint without base_url must abort boot");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
+                "endpoint 'web' declares proxy route(s) but no base_url");
+    }
+
+    /**
      * A {@code source: upstream} asset route (the {@code /assets/cdn} shape from the integration
      * config) whose upstream alias is declared in {@code topology.properties} must assemble cleanly
      * through the startup path. An asset route's upstream is a per-route topology reference that the

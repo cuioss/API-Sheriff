@@ -241,6 +241,63 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("Conditional base_url — mandatory exactly with a proxy route (AS-4)")
+    class ConditionalBaseUrl {
+
+        private static final String BASE_URL_POINTER = "/endpoint/base_url";
+
+        @Test
+        @DisplayName("Should refuse an endpoint carrying a proxy route but no base_url")
+        void shouldRefuseProxyRouteEndpointWithoutBaseUrl() {
+            EndpointConfig endpoint = endpoint("orders", null, List.of(), route("orders-read", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint), topologyWith());
+
+            assertHasError(errors, BASE_URL_POINTER, "endpoint 'orders' declares proxy route(s) but no base_url");
+        }
+
+        @Test
+        @DisplayName("Should accept an asset-only endpoint that declares no base_url")
+        void shouldAcceptAssetOnlyEndpointWithoutBaseUrl() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", null, "assets",
+                    new AuthConfig(Require.NONE, List.of()),
+                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith());
+
+            assertTrue(errors.isEmpty(), () -> "an endpoint without a proxy route needs no base_url, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should still refuse a declared base_url alias that does not resolve, proxy route or not")
+        void shouldRefuseUnresolvedDeclaredAliasWithoutProxyRoutes() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "MISSING", "assets",
+                    new AuthConfig(Require.NONE, List.of()),
+                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith());
+
+            assertHasError(errors, BASE_URL_POINTER, "unresolved topology alias: MISSING");
+        }
+
+        @Test
+        @DisplayName("Should report no base_url violation for a proxy route whose declared alias resolves")
+        void shouldAcceptProxyRouteWithResolvableBaseUrl() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-read", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(error -> BASE_URL_POINTER.equals(error.pointer())),
+                    () -> "a resolvable base_url on a proxy-route endpoint is valid, got: " + errors);
+        }
+    }
+
+    @Nested
     @DisplayName("Terminal-action / anchor-type consistency (ADR-0014)")
     class TerminalActionConsistency {
 

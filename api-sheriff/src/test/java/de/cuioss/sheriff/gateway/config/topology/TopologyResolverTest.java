@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 
@@ -220,6 +221,26 @@ class TopologyResolverTest {
         assertThrows(TopologyResolutionException.class,
                 () -> resolver.resolve(file, endpoints, additionalAliases),
                 "an unresolvable enabled-endpoint base_url alias must still fail the boot");
+    }
+
+    @Test
+    @DisplayName("An enabled endpoint declaring no base_url contributes no alias and never fails the resolution")
+    void skipsEnabledEndpointWithoutBaseUrl() throws Exception {
+        Path file = topologyFile("ORDERS=https://orders.internal\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        EndpointConfig assetOnly = EndpointConfig.builder()
+                .id("site")
+                .enabled(true)
+                .auth(new AuthConfig(Require.NONE, List.of()))
+                .build();
+        List<EndpointConfig> endpoints = List.of(assetOnly, endpointFor("ORDERS"));
+
+        ResolvedTopology topology = assertDoesNotThrow(
+                () -> resolver.resolve(file, endpoints, List.of()),
+                "an endpoint without base_url has no alias to resolve; the conditional rule is the validator's");
+
+        assertEquals(Set.of("ORDERS"), topology.aliases().keySet(),
+                "only the declared alias is resolved — the base_url-less endpoint adds no entry");
     }
 
     @Test
