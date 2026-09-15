@@ -432,10 +432,16 @@ public class BffRuntimeProducer {
         if (!verifyHostname) {
             LOGGER.warn(ConfigLogMessages.WARN.OIDC_HOSTNAME_VERIFICATION_DISABLED);
         }
-        // The configured oidc.issuer, or the gateway's own origin when the key is omitted.
-        String issuer = Objects.requireNonNullElse(oidc.issuer(), originOf(redirectUri));
-        String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
-        String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
+        // The configured oidc.issuer, or the gateway's own origin when the key is omitted. The explicit null
+        // tests on captured locals are deliberate (java:S2637): Sonar does not prove an Objects.requireNonNullElse
+        // result non-null at the @NonNull issuer/clientId builder setters, so do not collapse them back.
+        String gatewayOrigin = originOf(redirectUri);
+        String declaredIssuer = oidc.issuer();
+        String issuer = declaredIssuer == null ? gatewayOrigin : declaredIssuer;
+        String declaredClientId = oidc.clientId();
+        String clientId = declaredClientId == null ? "" : declaredClientId;
+        String declaredClientSecret = oidc.clientSecret();
+        String clientSecret = declaredClientSecret == null ? "" : declaredClientSecret;
         ClientConfiguration.ClientConfigurationBuilder builder = ClientConfiguration.builder()
                 .issuer(issuer).clientId(clientId).clientSecret(clientSecret)
                 .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
