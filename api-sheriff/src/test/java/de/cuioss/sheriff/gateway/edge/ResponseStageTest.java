@@ -15,13 +15,27 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
+import java.util.Map;
+
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import io.vertx.core.MultiMap;
+import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerResponse;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -159,6 +173,97 @@ class ResponseStageTest {
 
             assertEquals(value, ResponseStage.relayedHeaderValue(header, value, rewriter),
                     header + " is not Location and must keep its upstream value");
+        }
+    }
+
+    @Nested
+    @DisplayName("gateway header precedence over a live relay: set overwrites, default defers to the origin")
+    class HeaderPrecedence {
+
+        private static final String FRAME_OPTIONS = "X-Frame-Options";
+        private static final String CSP = "Content-Security-Policy";
+        private static final String ORIGIN_POLICY = "default-src https://origin.example";
+        private static final String GATEWAY_POLICY = "default-src 'self'";
+        private static final String ORIGIN_SETS_HEADERS = "/origin-sets-headers";
+        private static final String ORIGIN_SETS_NOTHING = "/origin-sets-nothing";
+
+        private Vertx vertx;
+        private HttpClient client;
+        private HttpServer upstream;
+        private HttpServer front;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            client = vertx.createHttpClient();
+
+            // Stub origin: on one path it sends its own X-Frame-Options and — lower-cased, since header
+            // names are case-insensitive — its own Content-Security-Policy; on the other it sends neither.
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(req -> {
+                HttpServerResponse response = req.response();
+                if (ORIGIN_SETS_HEADERS.equals(req.path())) {
+                    response.putHeader(FRAME_OPTIONS, "SAMEORIGIN");
+                    response.putHeader("content-security-policy", ORIGIN_POLICY);
+                }
+                response.end("origin-body");
+            }).listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
+            int upstreamPort = upstream.actualPort();
+
+            // Front server: relays exactly as the proxy dispatch path does, with X-Frame-Options in
+            // set mode and Content-Security-Policy in default mode.
+            ResponseStage responseStage = new ResponseStage();
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
+                    .request(io.vertx.core.http.HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, clientReq.path())
+                    .compose(HttpClientRequest::send)
+                    .onSuccess(upResp -> responseStage
+                            .relay(upResp, clientReq.response(), false, null, Map.of(FRAME_OPTIONS, "DENY"),
+                                    Map.of(CSP, GATEWAY_POLICY))
+                            .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
+                    .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
+                    .listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(front.close(), "the relaying front server to close");
+            Awaits.teardown(upstream.close(), "the stub origin to close");
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        private MultiMap relayedHeaders(String path) throws Exception {
+            return Awaits.connect(client
+                    .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, path)
+                    .compose(HttpClientRequest::send)
+                    .compose(resp -> resp.body().map(body -> resp.headers())), "the relayed response to " + path);
+        }
+
+        @Test
+        @DisplayName("a set-mode header overwrites the value the origin sent")
+        void setModeOverwritesOriginValue() throws Exception {
+            MultiMap headers = relayedHeaders(ORIGIN_SETS_HEADERS);
+
+            assertEquals(List.of("DENY"), headers.getAll(FRAME_OPTIONS),
+                    "exactly the gateway value reaches the client — the origin SAMEORIGIN is replaced, not appended");
+        }
+
+        @Test
+        @DisplayName("a default-mode header keeps the value the origin sent, whatever case it used")
+        void defaultModeKeepsOriginValue() throws Exception {
+            MultiMap headers = relayedHeaders(ORIGIN_SETS_HEADERS);
+
+            assertEquals(List.of(ORIGIN_POLICY), headers.getAll(CSP),
+                    "the origin policy is relayed untouched and the gateway policy is not added alongside it");
+        }
+
+        @Test
+        @DisplayName("a default-mode header is emitted when the origin sent none, and a set-mode header still applies")
+        void defaultModeFillsAbsentOriginValue() throws Exception {
+            MultiMap headers = relayedHeaders(ORIGIN_SETS_NOTHING);
+
+            assertAll("with no origin value both modes emit the gateway value",
+                    () -> assertEquals(List.of(GATEWAY_POLICY), headers.getAll(CSP)),
+                    () -> assertEquals(List.of("DENY"), headers.getAll(FRAME_OPTIONS)));
         }
     }
 

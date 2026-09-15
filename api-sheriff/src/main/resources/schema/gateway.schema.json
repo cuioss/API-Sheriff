@@ -55,15 +55,32 @@
       "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
       "description": "The Content-Security-Policy response header value, served VERBATIM (e.g. \"default-src 'self'\"). Omitted emits no Content-Security-Policy header. The value becomes a response header, so a CR, LF or any other control character would be a response-header-injection vector: this schema enforces the cheap half of that bound (a length cap and a control-character-free, non-empty value, terminated with a negative lookahead rather than '$' because '$' also matches before a final line terminator), and the configuration validator refuses the same characters at boot, naming the offending block."
     },
+    "headerMode": {
+      "type": "string",
+      "enum": ["set", "default"],
+      "description": "How a gateway-owned header relates to the same header sent by the origin: 'set' overwrites the origin value (the secure default), 'default' keeps an origin-set value and emits the configured one only when the origin sent none. A response the gateway authors itself (a rejection, a redirect, an asset, a CORS preflight) has no origin header, so both modes emit the configured value there."
+    },
+    "headerModes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-header precedence relative to origin headers, one optional key per gateway-owned header of the same block. An absent key means 'set'; an omitted header_modes block is exactly the overwrite behaviour. A mode for a header the same block does not enable is refused at boot. CORS has no mode.",
+      "properties": {
+        "hsts": { "$ref": "#/$defs/headerMode" },
+        "content_type_nosniff": { "$ref": "#/$defs/headerMode" },
+        "frame_deny": { "$ref": "#/$defs/headerMode" },
+        "content_security_policy": { "$ref": "#/$defs/headerMode" }
+      }
+    },
     "responseHeaders": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The gateway-owned response security headers of an anchor block. An anchor block replaces the global security_headers block WHOLESALE for the anchor's routes (no key-by-key merge — an anchor block without content_security_policy drops the global one) and is applied right after route selection; responses produced before a route is selected keep the global block. CORS is global only and is not accepted here.",
+      "description": "The gateway-owned response security headers of an anchor block. An anchor block replaces the global security_headers block WHOLESALE for the anchor's routes (no key-by-key merge — an anchor block without content_security_policy drops the global one, and its header_modes replace the global ones too) and is applied right after route selection; responses produced before a route is selected keep the global block. CORS is global only and is not accepted here.",
       "properties": {
         "hsts": { "$ref": "#/$defs/hsts" },
         "content_type_nosniff": { "type": "boolean" },
         "frame_deny": { "type": "boolean" },
-        "content_security_policy": { "$ref": "#/$defs/contentSecurityPolicy" }
+        "content_security_policy": { "$ref": "#/$defs/contentSecurityPolicy" },
+        "header_modes": { "$ref": "#/$defs/headerModes" }
       }
     },
     "securityHeaders": {
@@ -75,6 +92,7 @@
         "content_type_nosniff": { "type": "boolean" },
         "frame_deny": { "type": "boolean" },
         "content_security_policy": { "$ref": "#/$defs/contentSecurityPolicy" },
+        "header_modes": { "$ref": "#/$defs/headerModes" },
         "cors": {
           "type": "object",
           "additionalProperties": false,
