@@ -1421,11 +1421,16 @@ public final class ConfigValidator {
     private record CidrRange(String cidr, int bits, int prefixLength, BigInteger start, BigInteger end) {
     }
 
+    /**
+     * Rule: the global CORS block must not combine a wildcard origin with {@code allow_credentials}.
+     * <p>
+     * CORS is global only (ADR-0007 Amendment A1): it is evaluated at stage 0, before route selection
+     * and authentication, so no anchor can scope it. The bundled schema refuses a {@code cors} block
+     * under {@code anchors.*.security_headers} at load, which is why only the gateway block is checked
+     * here.
+     */
     private static void validateCors(GatewayConfig gateway, List<ConfigError> errors) {
         checkCors(gateway.securityHeaders(), "/security_headers/cors", errors);
-        for (AnchorConfig anchor : gateway.anchors().values()) {
-            checkCors(anchor.securityHeaders(), "/anchors/%s/security_headers/cors".formatted(anchor.name()), errors);
-        }
     }
 
     private static void checkCors(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
