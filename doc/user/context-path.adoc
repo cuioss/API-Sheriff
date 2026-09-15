@@ -291,7 +291,9 @@ Three details in that document are load-bearing, and each one costs a failed boo
 * *Use a `source: file` JWKS* if you want to smoke-test without an identity provider -- a file loader
   resolves synchronously.
 * *The main listener needs TLS material or an explicit opt-out.* The shipped
-  `quarkus.http.insecure-requests=redirect` refuses to boot without a certificate.
+  `quarkus.http.insecure-requests=redirect` is not a plain-HTTP opt-out, so a listener given no
+  certificate is refused at boot by `ServerTlsDeclarationGate` -- see
+  link:tls-edge.adoc#_serving_plain_http[TLS Edge -- Serving plain HTTP].
 ====
 
 ==== 5. Run it

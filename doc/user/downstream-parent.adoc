@@ -19,8 +19,11 @@ values are fixed at *augmentation*: when the artifact is built, not when it star
 
 The consequences are absolute rather than a matter of degree:
 
-* `QUARKUS_HTTP_ROOT_PATH` and its siblings are *inert* against a published image. They produce no
-  error and no warning; they simply do nothing.
+* `QUARKUS_HTTP_ROOT_PATH` and its siblings are *routing-inert* against a published image: they
+  move nothing and produce no error. A divergent value may still draw a startup
+  build-time-mismatch warning naming the key -- see
+  link:context-path.adoc#_build_time_not_runtime[The Context Path -- Build-time, not runtime] --
+  which is noise, not evidence the override took effect.
 * The keys are not in `gateway.yaml` either, and cannot be. That document is a *runtime* source read
   at startup, so a key already fixed at augmentation could never take effect from it -- a structural
   impossibility, not an omission (ADR-0025).

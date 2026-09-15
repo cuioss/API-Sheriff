@@ -13,6 +13,9 @@ link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_boun
 the field-level contract for every `gateway.yaml` key is in the
 link:../configuration.adoc[Configuration Reference].
 
+For TLS, link:tls-scenarios.adoc[TLS Scenarios] puts the variables on this page together by deployment
+goal, with a shipped configuration for each; this page stays the reference for what each one means.
+
 == The three classes
 
 Every configuration knob belongs to exactly one of three classes, and its class decides where it
@@ -517,8 +520,8 @@ stays.
   must be at least as large. This is one place where a deployment value and a document value must be
   kept consistent -- the boot check refuses the mismatch rather than clipping silently.
 
-| Header block, request line, chunk size, idle reap, drain window
-| 16 KiB / 8 KiB / 16 KiB / 60 s / 25 s
+| Header block, request line, chunk size, reserved-path body, idle reap, drain window
+| 16 KiB / 8 KiB / 16 KiB / 16 KiB / 60 s / 25 s
 | Fixed secure defaults that fail fast on abusive framing before a request is admitted.
 | *None -- deliberately not operator-configurable.* These are protocol-safety bounds rather than
   capacity choices, so there is no route to change them and no environment variable to look for. If

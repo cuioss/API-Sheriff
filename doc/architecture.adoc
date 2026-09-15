@@ -676,7 +676,7 @@ on `token-sheriff`'s `de.cuioss.sheriff.token.commons.events.SecurityEventCounte
 thread-safe, lock-free counter -- *not* a CDI observer bus -- designed to feed metrics and
 error-mapping without pulling in a broker or an Elasticsearch dependency.
 
-Design (to be built as a low, framework-agnostic base package):
+Design (the low, framework-agnostic `de.cuioss.sheriff.gateway.events` package):
 
 * An `EventCategory` enum groups *failure* events by impact -- e.g. `INPUT_VALIDATION`,
   `AUTHENTICATION`, `AUTHORIZATION`, `UPSTREAM`, `CONFIGURATION`. The HTTP status is mapped
@@ -1019,7 +1019,8 @@ immutability that makes the objects shareable is the same property that makes th
 
 API Sheriff depends on the token-sheriff stack directly today: the pom declares
 `token-sheriff-client`, `token-sheriff-client-quarkus`, and `token-sheriff-validation-quarkus`
-as direct dependencies, with versions supplied by the `token-sheriff-bom` at `0.9.2`. The
+as direct dependencies, with versions supplied by the `token-sheriff-bom` at the root `pom.xml`'s
+`version.token-sheriff` property. The
 `token-sheriff-client` *core* jar is a direct dependency; only `token-sheriff-validation` core
 arrives transitively, through `token-sheriff-validation-quarkus`.
 
@@ -1038,13 +1039,6 @@ split.
 
 Points where the current implementation differs from, or has not yet fully realized, the model
 described above. Each is a deliberate, recorded gap rather than a silent divergence.
-
-* *Data-plane structured logging is not yet emitted.* The data-plane `LogRecord` catalogue
-  (`ApiSheriffLogMessages`: security-filter, auth-weakened, circuit-breaker, and route-load records)
-  is defined but no edge stage emits it yet. The only catalogue currently emitted is the
-  configuration subsystem's `ConfigLogMessages` (boot-time load / route-posture / validation
-  records) — those, and only those, are catalogued in `LogMessages.adoc`, which is kept matched to
-  the *emitted* records.
 
 * *Integration bearer validation covers rejection, not live issuance.* The default integration suite
   exercises routing, health, the RFC 9457 error contract, and bearer *rejection* (missing / malformed

@@ -8,12 +8,17 @@ A security-focused API Gateway taking a lightweight approach, in pre-1.0 develop
 Java 25 (compile and runtime; CI matrix 25 and 26), Quarkus, following CUI (CUIoss)
 standards.
 
-Modules:
+Modules, as declared in the root `pom.xml`:
 
 - `api-sheriff/` — deployable Quarkus application: core library, CDI producers, REST endpoints,
   native executable
 - `integration-tests/` — integration test coordinator: Docker infrastructure, IT suites, scripts
-- `benchmarks/` — WRK HTTP load-testing benchmarks
+- `benchmarks/` — k6 HTTP load-testing benchmarks
+- `demo-client/` — demo SPA and Playwright end-to-end suite; no Java, npm work only inside its
+  `e2e-demo` profile
+- `deployment/` — production-shaped Docker Compose sample; no Java, brought up only by
+  `-Pcompose-sample`
+- `build-parent/` — published build parent for downstream deployers; no Java, builds no artifact
 
 Because the product is a security gateway, every change is a security change until shown
 otherwise. Treat security implications as part of the diff, not as a separate review pass.
@@ -41,8 +46,12 @@ Common invocations, examples rather than a closed set:
 --command-args "test -pl api-sheriff -am"                             # module tests
 --command-args "verify -Pintegration-tests -pl integration-tests -am" # integration tests
 --command-args "verify -Pbenchmark -pl benchmarks -am"                # benchmarks
---command-args "test -pl api-sheriff -Dtest=ConfigLoaderTest"         # one test
+--command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest"     # one test
 ```
+
+Add `-Dsurefire.failIfNoSpecifiedTests=false` to a one-test run only when the `-pl` target depends
+on modules with their own tests (for example `integration-tests`, which depends on `api-sheriff`);
+otherwise leave it off, so a misspelled test name fails instead of passing with zero tests.
 
 Use a 10-minute Bash timeout (600000ms) for build invocations, and read the TOON result —
 `status`, `errors[N]{file,line,message,category}`, `log_file` — rather than the exit code.
@@ -136,7 +145,7 @@ Sonar UI. See `doc/development/sonar-quality-gate.adoc`.
 
 ## Dependencies
 
-Parent POM is `de.cuioss:cui-java-parent`. Never add a dependency without explicit user approval.
+Parent POM is `de.cuioss:cui-quarkus-parent`, version pinned in the root `pom.xml`. Never add a dependency without explicit user approval.
 
 ## Git Workflow
 
@@ -151,8 +160,10 @@ files.
 1. Branch: `git checkout -b <branch-name>`
 2. Commit, then push with `git push -u origin <branch-name>`
 3. Open the pull request against `main`
-4. Wait for CI and the three automated reviewers — CodeRabbit, Sourcery and PR-Agent
-5. Treat the union of all three reviewers' comments as the work list. Every comment gets a reply
+4. Wait for CI and the automated reviewers — CodeRabbit and PR-Agent gate the merge; Sourcery is
+   optional, so its absence or rate-limit never blocks
+5. Treat the union of every reviewer's comments as the work list, Sourcery's included when it
+   comments. Every comment gets a reply
    and is resolved: fix and explain, or explain why not. When not fully confident, ask the user
    rather than deciding
 6. Re-review after a fix push is not uniform — CodeRabbit and Sourcery re-review automatically,

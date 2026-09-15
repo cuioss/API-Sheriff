@@ -324,6 +324,13 @@ deployment that never writes it keeps the behaviour shown here.
 | 16 KiB
 | An over-large single chunk is rejected at the transport.
 
+| Reserved-path request body
+| 16 KiB
+| The cumulative body the edge buffers for a gateway-terminated reserved `POST` path -- in practice
+  the back-channel logout receiver, which is reached before authentication and never meets a
+  per-route body cap. A larger body is rejected `413`. Defined as the header-block bound rather than
+  as a second constant.
+
 | Idle-connection reap
 | 60 s
 | An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin

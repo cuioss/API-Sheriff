@@ -217,7 +217,11 @@ precisely how one probe stays correct under both the HTTPS default and the plain
 
 Each release produces an SPDX SBOM for the exact published image -- retained as an artifact of the
 release workflow run, not attached to the registry or to a GitHub release -- and the release fails
-before anything is pushed if Trivy reports a finding at *HIGH or CRITICAL* on that same image.
+before the image is pushed to GHCR if Trivy reports a finding at *HIGH or CRITICAL* on that same
+image. The gate is the `Scan the tested image (gating, HIGH and CRITICAL)` step of
+link:../../.github/workflows/release.yml[`.github/workflows/release.yml`], which runs ahead of the
+registry login. It cannot hold back the Maven artifacts, which the release has already published by
+then -- see link:../development/release-process.adoc#release-not-atomic[The release is NOT atomic].
 
 *Read the scope honestly.* The image is the pinned distroless base plus exactly one layer: a native
 executable that carries no package metadata. There are no jars in the image, so an image scan is in
@@ -229,11 +233,15 @@ Do not read either one as if it were. Java dependency findings come from the pro
 per-pull-request supply-chain scan -- a Trivy filesystem scan of the repository -- and from its
 Sonar and Dependabot lanes.
 
+// The explicit ID pins the auto-generated one, so existing deep links to this section keep working
+// and the internal cross-reference above resolves without relying on Asciidoctor's ID derivation.
+[#_verify_the_signature_before_deploying]
 == Verify the signature before deploying
 
 Every published digest is signed keylessly with Cosign, using the release workflow's GitHub OIDC
 identity. The signature is stored in the registry alongside the image; there is no key to
-distribute.
+distribute. Signing is the `Sign the published digest (keyless)` step of
+link:../../.github/workflows/release.yml[`.github/workflows/release.yml`].
 
 *Verify the digest, and deploy that same digest.* The signature is made over the digest, never over
 a tag. Verifying `:<version>` makes `cosign` resolve the tag itself, so what was verified and what
@@ -293,10 +301,10 @@ as a tooling problem to work around.
 
 === Why the identity is a pattern, and why it is still exact
 
-The signing identity is the release workflow's ref, and every release this project has cut signed
-under the same one -- `@refs/heads/main`. That is not inferred from the trigger configuration; it is
-read off the certificates themselves. Both published digests carry an identical `job_workflow_ref`
-SAN even though they were produced by *different* triggers:
+The signing identity is the release workflow's ref, and the two releases whose certificates were
+inspected, 0.1.0 and 0.1.1, signed under the same one -- `@refs/heads/main`. That is not inferred
+from the trigger configuration; it is read off the certificates themselves. Those two digests carry
+an identical `job_workflow_ref` SAN even though they were produced by *different* triggers:
 
 * *0.1.0*, cut by `workflow_dispatch` -- `job_workflow_ref` =
   `.../workflows/release.yml@refs/heads/main`.
@@ -321,8 +329,10 @@ Do not relax it to a wildcard. An identity pattern that accepts anything accepts
 workflow in any repository, which turns the verification into a formality that always passes.
 
 *The release lane runs this exact command against every digest it signs, and fails the release if it
-does not verify.* The values above are not a transcription of what the workflow is believed to do --
-they are what it proves before calling a release complete.
+does not verify* -- that is the `Verify the signature under the published identity` step of
+link:../../.github/workflows/release.yml[`release.yml`]. The values above are not a transcription
+of what the workflow is believed to do -- they are what it proves before calling a release
+complete.
 
 == See also
 

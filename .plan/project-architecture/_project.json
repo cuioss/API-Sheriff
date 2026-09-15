@@ -1,16 +1,16 @@
 {
-  "description": "API Sheriff is a security-focused, lightweight API Gateway built on Quarkus and Java virtual threads \u2014 a purpose-built reverse proxy providing cui-http inbound security filtering, offline bearer-token validation, and (in later variants) OIDC confidential-client BFF token mediation. Pre-1.0: the current code delivers a minimal pass-through proxy plus the build/IT/benchmark harness; configuration management and the full request pipeline follow the plans under doc/plan/.",
-  "description_reasoning": "source: doc/README.adoc introduction + root pom description + doc/plan/README.adoc plan sequence",
+  "description": "API Sheriff is a security-focused, lightweight API Gateway built on Quarkus and Java virtual threads, in pre-1.0 alpha. One boot-validated, fail-closed binary runs in one of three configuration-selected modes: a stateless base security gateway (cui-http inbound filtering plus offline bearer-token validation), a server-session BFF and a sealed-cookie BFF (both OIDC confidential clients via token-sheriff-client), published as a native container image.",
+  "description_reasoning": "Derived from README.adoc (What is it? + ALPHA callout) and doc/README.adoc (introduction and Deployment Variants) at the 0.2.1 cut",
   "extensions_used": [
     "plan-marshall",
     "pm-documents"
   ],
   "modules": {
     "api-sheriff": {
-      "description": "The deployable Quarkus gateway application. Currently hosts the Plan-01 minimal pass-through proxy (ProxyRoute with hop-by-hop header stripping, forwarding hardening, 404 deny-by-default), CDI producers, and REST scaffolding; grows into the full security pipeline (cui-http filtering, route table, token validation) per doc/plan/02+03. Ships JVM and native (Mandrel) images.",
+      "description": "The deployable Quarkus gateway application. A Vert.x GatewayEdgeRoute runs every request through the security pipeline (cui-http basic and thorough checks, canonical-path and framing guards, verb gate, route selection, offline bearer authentication via token-sheriff-validation, forward policy, security headers) and dispatches to HTTP, gRPC, WebSocket or asset-serving targets. It also hosts the server-session and sealed-cookie BFF runtimes on token-sheriff-client, the TLS edge (SNI front listener with L4 passthrough, mTLS, egress trust profiles), boot-time YAML plus JSON Schema config loading and validation, CDI producers, health and metrics. Published as a GraalVM/Mandrel native executable on a distroless container image (ADR-0042).",
       "generation": {
         "by": "architecture",
-        "tree_sha": "517b17dfb40606c055f70164b7e42f14c9ec9cd2b00ada7943fe2fa2c7cf2813"
+        "tree_sha": "5aaada3706cf5f90b2363eb30e0bd80e2ae87566bbfe53522d5114d358c9ac88"
       }
     },
     "api-sheriff-build-parent": {
@@ -21,20 +21,32 @@
       }
     },
     "api-sheriff-parent": {
-      "description": "Maven aggregator and parent POM for the API Sheriff multi-module build. Inherits de.cuioss:cui-java-parent, pins the Quarkus BOM and shared plugin/dependency management, and defines the coverage profile plus module ordering (api-sheriff, integration-tests, benchmarks).",
-      "generation": {}
+      "description": "Maven aggregator and parent POM for the API Sheriff multi-module build. Inherits de.cuioss:cui-quarkus-parent, sets the Java 25 release level, imports the Quarkus, CUI and token-sheriff BOMs in their load-bearing order, and carries the reactor-wide compiler (failOnWarning), Surefire and Failsafe configuration, the coverage profile and the pre-commit OpenRewrite recipe override. Reactor module order: api-sheriff, integration-tests, benchmarks, demo-client, deployment, build-parent.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "b71b288bd8a3347aaa282f84cf7c06ea906d3b45d4b2349dc7fc44ce0a4141ae"
+      }
     },
     "benchmarks": {
-      "description": "WRK-based HTTP load benchmarks for the gateway. Wraps wrk scripts (health, proxied-static route) run against the docker-compose stack via the benchmark profile, and post-processes results with WrkResultPostProcessor (benchmarking-common) for publication to GitHub Pages.",
-      "generation": {}
+      "description": "k6-based HTTP load benchmarks for the gateway. The benchmark profile runs the k6-scripts/ aspects (health, proxied static, passthrough relay, bearer-proxied, HTTP/2, GraphQL, gRPC unary, WebSocket echo, small and large upload) against the integration-tests Docker Compose stack, then K6ResultPostProcessor converts the k6 handleSummary exports through K6BenchmarkConverter into the benchmarking-common report, badge, trend and GitHub Pages pipeline, and PassthroughBaselineComparator asserts the empty-passthrough_sni run against the proxied-static baseline.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "dab97d54c2f87b0ad42507ca1e45cd45502ebe98ca7cb880cc24b10d470ff06a"
+      }
     },
     "demo-client-maven": {
       "description": "Reactor-visible shell for the demo client: a Java-free pom-packaging module that owns the dependency-free demo SPA sources and the Playwright end-to-end suite, and wires the pinned Node/npm toolchain plus the stack bring-up and teardown scripts behind the opt-in e2e-demo profile. A default reactor build of this module is a deliberate no-op - no Node download, no npm install, no container, no artifact - and nothing here ever reaches the production image or the native build.",
-      "generation": {}
+      "generation": {
+        "by": "architecture",
+        "tree_sha": null
+      }
     },
     "demo-client-npm": {
       "description": "npm-side view of the same demo-client directory: owns package.json, the pinned Playwright and ESLint toolchain, the lint:strict script and the browser end-to-end specs that drive the demo SPA against the integration-tests stack in both session modes (server-side and cookie). Installed and executed only from the demo-client-maven e2e-demo profile, never from a default reactor build.",
-      "generation": {}
+      "generation": {
+        "by": "architecture",
+        "tree_sha": null
+      }
     },
     "deployment": {
       "description": "Ships the operator-facing Docker Compose deployment sample: a runnable gateway stack (compose-sample/docker-compose.yml) with its bring-up and teardown scripts, self-signed certificate generation, an nginx demo upstream, a Keycloak sample realm, and the mounted sheriff-config gateway.yaml the sample gateway reads. It is reference material an operator copies and adapts, not a library the product depends on.",
@@ -44,12 +56,18 @@
       }
     },
     "documentation": {
-      "description": "Design documentation: architecture, configuration model, deployment variants, ADRs 0001-0004, competitive feature analysis, and the sequenced implementation plans under doc/plan/ that drive development.",
-      "generation": {}
+      "description": "Project documentation under doc/, in three layers: design references (architecture, configuration model, security threat model, deployment variants, FAPI 2.0 status and next steps, competitive feature analysis, technical aspects, log message catalogue) plus the Architecture Decision Records under doc/adr/; operator guides under doc/user/ (anchors, endpoint and protocol routes, TLS edge and TLS scenarios, BFF session and cookie setup, container image, compose sample, context path, downstream build parent); and contributor topics under doc/development/, alongside the quality report and the remaining implementation plans under doc/plan/.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "55fc881ff8ac3cf4d24a437be58b77651af2de93e5ebfba65f0b7cc3f043edce"
+      }
     },
     "integration-tests": {
-      "description": "Integration test coordinator: builds the native gateway container and orchestrates the docker-compose stack (gateway, Keycloak, go-httpbin, nginx-static, Prometheus) via the integration-tests profile, running IT suites (proxy pass-through, health) with REST Assured and Awaitility.",
-      "generation": {}
+      "description": "Integration test coordinator: builds the native api-sheriff container image and, via the integration-tests profile, orchestrates the Docker Compose stack its Failsafe IT suites run against with REST Assured and Awaitility. The IT families cover container health, metrics and image metadata; config load and fail-closed refusal; bearer validation and the inbound pipeline guards (host smuggling, GET-with-body, body limits, error contract, security-profile modes, graceful shutdown); the server-session and sealed-cookie BFF flows (login, refresh, logout, CSRF, userinfo); the TLS edge (mTLS, SNI passthrough, management plain-HTTP opt-out, upstream hostname verification); gRPC, WebSocket and asset relays. Surefire *WiringTest classes pin the compose and descriptor wiring those ITs rely on; the separate jfr profile builds api-sheriff:jfr and runs ImageMetadataJfrIT.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "eca66018be2f63fbdd37ec57f45b315e65764d4cfd37da3dc1d9c58496833ca6"
+      }
     },
     "my-gateway": {
       "description": "The worked consumer example for api-sheriff-build-parent: a minimal third-party POM that inherits the build parent, overrides sheriff.context-path, and produces a relocated-context-path gateway image. It is reference material a deployer copies, deliberately NOT a reactor module, and its build is exercised by hand as part of doc/user/downstream-parent.adoc's procedure rather than by CI.",

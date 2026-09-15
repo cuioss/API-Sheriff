@@ -10,6 +10,10 @@ their own port). This topic describes how to *configure and operate* these keys;
 field contract lives in the link:../configuration.adoc#_tls[Configuration Reference `tls` section],
 and the design rationale in the link:../development/tls-edge.adoc[developer TLS-edge topic].
 
+To start from a deployment goal instead of from a key -- "require client certificates", "run behind
+an ingress that already terminated TLS" -- see link:tls-scenarios.adoc[TLS Scenarios], which links
+back here for the mechanism.
+
 Everything on this page follows one rule, recorded in
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]:
 *`gateway.yaml` names TLS policy; the deployment supplies ports and material.* Which side of that
@@ -138,8 +142,8 @@ that makes IP-based decisions -- a rate limit, an allow-list, an audit trail -- 
 attribution and falls back to the address of its own connection, which is *the gateway's*: every
 client looks alike to it, including the ones an allow-list was meant to exclude. That silent
 uniformity is the failure mode this declaration prevents, and it is why the declaration is
-load-bearing rather than optional. Set the list to the hop's *exact* address as a `/32`. Never a bridge range, and never
-a range wide enough to contain the clients themselves: a client inside the trusted set has its own
+load-bearing rather than optional. Set the list to the hop's *exact* address as a `/32`. Never a
+bridge range, and never a range wide enough to contain the clients themselves: a client inside the trusted set has its own
 `X-Forwarded-For` believed and prepended, which is precisely the spoof the gate exists to stop.
 
 *4. The BFF `Secure` / `__Host-` cookie surface -- unconditional, across all three emitting codecs.*

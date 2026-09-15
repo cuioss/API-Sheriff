@@ -83,7 +83,9 @@ changes with it.
 === W3 -- Sender constraint and key lifecycle
 
 Wire a `SenderConstraint` into both `AuthorizationCodeFlow` (the code-exchange constructor takes it)
-and `RefreshFlow` (its four-argument constructor takes it). *It must be the same instance* -- a
+and `RefreshFlow` (the gateway builds it today from the configuration, token-endpoint client,
+validation bridge and client authentication alone, so a sender-constraint-carrying construction
+replaces that one). *It must be the same instance* -- a
 refresh presented against a token bound to a different key fails.
 
 Key lifecycle is the substantive work, and the constraint it imposes is the one to design for

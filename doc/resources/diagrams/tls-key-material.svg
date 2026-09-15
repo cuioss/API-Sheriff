@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TLS key and trust material — doc/user/tls-scenarios.adoc.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-graph.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 40 1000 608"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">API Sheriff TLS key and trust material — what the gateway presents, what it checks clients against, and which anchors it trusts when dialling out</title>
+  <desc id="desc">An asymmetric hub graph. The hub is the api-sheriff gateway, listing the legs key and trust material reaches: the management interface and the terminated listener on the inbound side; the proxy, gRPC and WebSocket egress clients, the JWKS loader, the BFF back-channel and the asset-origin fetch on the outbound side; and the cookie codec. On the left, three inbound nodes: the key-less quarkus.tls.plain-management bucket, whose selection takes the management interface to plain HTTP; the quarkus.http.ssl.certificate server certificate and key presented on the terminated listener; and tls.mtls.client_ca, the CA path client certificates must chain to. On the right, the outbound nodes: egress_tls.upstream_tls_profile, which replaces the anchors of the proxy, gRPC and WebSocket clients and is reported as ApiSheriff-119; jwks.tls_profile, the per-issuer anchors for the JWKS fetch, joined by a crossed connector to egress_tls.jwks_verify_hostname false because the combination is refused at boot; and the operator default trust store supplied as -Djavax.net.ssl.trustStore, which replaces the platform bundle and is reported as ApiSheriff-122, serving the BFF back-channel and the asset-origin fetch, with token-sheriff-client below it because that back-channel has no trust seam of its own. The two replacing nodes carry a heavier border. Below the hub, drawn with a dashed border as a different kind of key, CookieKeyMaterial: the sealing key for cookie-mode sessions, which is not TLS material.</desc>
+
+  <defs>
+    <style>
+      .stroke      { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .hub         { stroke: #6e7681; stroke-width: 1.6; fill: none; }
+      .replaces    { stroke: #6e7681; stroke-width: 2.4; fill: none; }
+      .other-kind  { stroke: #6e7681; stroke-width: 1.2; stroke-dasharray: 6 4; fill: none; }
+      .conn        { stroke: #6e7681; stroke-width: 1; fill: none; }
+      .divider     { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+      .refused     { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .col         { font-size: 15px; font-weight: 600; fill: #6e7681; }
+      .encl        { font-size: 15px; font-weight: 600; fill: #6e7681; }
+      .encl-sub    { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .item        { font-size: 12px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .item-strong { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .pill        { font-size: 11px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .emph        { font-size: 11px; font-weight: 700; fill: #6e7681; letter-spacing: 0.3px; }
+      .edge-lbl    { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .caption     { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+    </style>
+  </defs>
+
+  <!-- ============================================================
+       column headers
+       ============================================================ -->
+  <text x="24"  y="80" class="col">Presented and checked inbound</text>
+  <text x="696" y="80" class="col">Trusted when dialling out</text>
+
+  <!-- ============================================================
+       the hub — the gateway and the legs material reaches
+       ============================================================ -->
+  <rect class="hub" x="384" y="112" width="232" height="280" rx="6"/>
+  <text x="400" y="140" class="encl">api-sheriff</text>
+  <text x="400" y="158" class="encl-sub">the legs each piece of material reaches</text>
+
+  <text x="400" y="184" class="item">management interface</text>
+  <text x="400" y="208" class="item">terminated listener</text>
+  <line class="divider" x1="392" y1="228" x2="608" y2="228"/>
+  <text x="400" y="252" class="item">proxy · gRPC · WebSocket</text>
+  <text x="400" y="276" class="item">JWKS loader</text>
+  <text x="400" y="300" class="item">BFF back-channel</text>
+  <text x="400" y="324" class="item">asset-origin fetch</text>
+  <line class="divider" x1="392" y1="344" x2="608" y2="344"/>
+  <text x="400" y="368" class="item">cookie codec</text>
+
+  <!-- ============================================================
+       inbound nodes (left)
+       ============================================================ -->
+  <rect class="stroke" x="24" y="104" width="280" height="80" rx="4"/>
+  <text x="40" y="132" class="item-strong">quarkus.tls.plain-management</text>
+  <text x="40" y="152" class="encl-sub">key-less TLS bucket</text>
+  <text x="40" y="170" class="encl-sub">selecting it takes management to plain HTTP</text>
+
+  <rect class="stroke" x="24" y="208" width="280" height="80" rx="4"/>
+  <text x="40" y="236" class="item-strong">quarkus.http.ssl.certificate.*</text>
+  <text x="40" y="256" class="encl-sub">server certificate and private key</text>
+  <text x="40" y="274" class="encl-sub">presented on the terminated listener</text>
+
+  <rect class="stroke" x="24" y="312" width="280" height="80" rx="4"/>
+  <text x="40" y="340" class="item-strong">tls.mtls.client_ca</text>
+  <text x="40" y="360" class="encl-sub">CA that client certificates must chain to</text>
+  <text x="40" y="378" class="encl-sub">a path reference, not the material</text>
+
+  <!-- inbound connectors: node edge to the hub leg they reach -->
+  <line class="conn" x1="304" y1="144" x2="384" y2="180"/>
+  <line class="conn" x1="304" y1="248" x2="384" y2="204"/>
+  <line class="conn" x1="304" y1="352" x2="384" y2="204"/>
+
+  <!-- ============================================================
+       outbound nodes (right)
+       ============================================================ -->
+  <!-- replaces the anchors of three egress clients: heavier border -->
+  <rect class="replaces" x="696" y="104" width="280" height="80" rx="4"/>
+  <text x="712" y="132" class="item-strong">egress_tls.upstream_tls_profile</text>
+  <text x="712" y="152" class="emph">REPLACES the clients' anchors</text>
+  <text x="712" y="170" class="encl-sub">not the asset-origin fetch · ApiSheriff-119</text>
+
+  <rect class="stroke" x="696" y="208" width="280" height="80" rx="4"/>
+  <text x="712" y="236" class="item-strong">jwks.tls_profile</text>
+  <text x="712" y="256" class="encl-sub">per issuer: anchors for the JWKS fetch</text>
+  <text x="712" y="274" class="encl-sub">http-sourced issuers</text>
+
+  <!-- the boot-refused collision: crossed connector, no arrowhead -->
+  <line class="conn" x1="836" y1="288" x2="836" y2="320"/>
+  <line class="refused" x1="830" y1="298" x2="842" y2="310"/>
+  <line class="refused" x1="842" y1="298" x2="830" y2="310"/>
+  <text x="852" y="308" class="edge-lbl">refused at boot</text>
+  <rect class="stroke" x="696" y="320" width="280" height="28" rx="4"/>
+  <text x="708" y="338" class="pill">egress_tls.jwks_verify_hostname: false</text>
+
+  <!-- replaces the platform bundle: heavier border -->
+  <rect class="replaces" x="696" y="376" width="280" height="80" rx="4"/>
+  <text x="712" y="404" class="item-strong">-Djavax.net.ssl.trustStore</text>
+  <text x="712" y="424" class="emph">REPLACES the platform bundle</text>
+  <text x="712" y="442" class="encl-sub">operator default trust store · ApiSheriff-122</text>
+
+  <line class="conn" x1="836" y1="456" x2="836" y2="496"/>
+  <text x="852" y="480" class="edge-lbl">its only route</text>
+  <rect class="stroke" x="696" y="496" width="280" height="64" rx="4"/>
+  <text x="712" y="524" class="item-strong">token-sheriff-client</text>
+  <text x="712" y="544" class="encl-sub">BFF back-channel: no trust seam of its own</text>
+
+  <!-- outbound connectors: hub leg to the node that governs it -->
+  <line class="conn" x1="616" y1="248" x2="696" y2="144"/>
+  <line class="conn" x1="616" y1="272" x2="696" y2="248"/>
+  <line class="conn" x1="616" y1="296" x2="696" y2="416"/>
+  <line class="conn" x1="616" y1="320" x2="696" y2="416"/>
+
+  <!-- ============================================================
+       a different kind of key — dashed border
+       ============================================================ -->
+  <line class="conn" x1="500" y1="392" x2="500" y2="448"/>
+  <rect class="other-kind" x="384" y="448" width="232" height="96" rx="6"/>
+  <text x="400" y="476" class="item-strong">CookieKeyMaterial</text>
+  <text x="400" y="496" class="encl-sub">sealing key for cookie-mode sessions</text>
+  <text x="400" y="514" class="encl-sub">not TLS material</text>
+  <text x="400" y="532" class="pill">oidc.session.encryption_key</text>
+
+  <!-- ============================================================
+       footer caption
+       ============================================================ -->
+  <text x="500" y="616" class="caption">Two pieces of trust material replace rather than add: a named egress profile, and the default trust store.</text>
+</svg>

@@ -8,10 +8,13 @@ API Sheriff is a security-focused API Gateway with a lightweight approach, curre
 
 ## Project Structure
 
-Multi-module Maven project:
+Multi-module Maven project (the reactor declared in the root `pom.xml`):
 - `api-sheriff/` — Deployable Quarkus application (core library, CDI producers, REST endpoints, native executable)
 - `integration-tests/` — Integration test coordinator (Docker infrastructure, IT suites, scripts)
-- `benchmarks/` — WRK HTTP load testing benchmarks
+- `benchmarks/` — k6 HTTP load testing benchmarks
+- `demo-client/` — Demo SPA and Playwright end-to-end suite (no Java; npm work only inside its `e2e-demo` profile)
+- `deployment/` — Production-shaped Docker Compose sample (no Java; brought up only by `-Pcompose-sample`)
+- `build-parent/` — Published build parent for downstream deployers (no Java; builds no artifact)
 
 ## Development Notes
 
@@ -35,8 +38,8 @@ The entries below are common **examples, not a closed set** — any Maven invoca
 - Module tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl integration-tests -am"` — only on integration-tests
 - Integration tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pintegration-tests -pl integration-tests -am"` — only on integration-tests
 - Benchmark (benchmarks): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pbenchmark -pl benchmarks -am"` — only on benchmarks
-- Targeted test (single test / pattern): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -Dtest=ConfigLoaderTest"`
-- Targeted test in an ad-hoc worktree: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -Dtest=ConfigLoaderTest" --project-dir /path/to/worktree`
+- Targeted test (single test / pattern): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest"` — add `-Dsurefire.failIfNoSpecifiedTests=false` only when the `-pl` target depends on modules with their own tests (for example `integration-tests`, which depends on `api-sheriff`); otherwise leave it off, so a misspelled test name fails instead of passing with zero tests
+- Targeted test in an ad-hoc worktree: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest" --project-dir /path/to/worktree`
 - Native executable: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests"`
 - Use a 10-minute Bash timeout (600000ms) for build invocations
 - Analyze each build's TOON result: `status`, `errors[N]{file,line,message,category}`, `log_file`
@@ -203,7 +206,7 @@ See `doc/development/sonar-quality-gate.adoc` for the complete compliance policy
 
 ## Dependency Management
 
-- **Parent POM**: `de.cuioss:cui-java-parent` — version pinned in the root `pom.xml`
+- **Parent POM**: `de.cuioss:cui-quarkus-parent` — version pinned in the root `pom.xml`
 - **CRITICAL**: Never add dependencies without explicit user approval
 
 ## Git Workflow

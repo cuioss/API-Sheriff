@@ -23,7 +23,7 @@ the next release -- deliberately and loudly, rather than silently changing behav
 Alpha is a statement about *surface stability*, not about code quality or security posture. The
 intended use is evaluation, integration and feedback; do not deploy where an unannounced breaking
 change between releases would be costly. The verified limitations at this cut -- including the
-single-node in-memory session store and the cookie-mode schema gap -- are listed in
+single-node in-memory session store and the unimplemented rate limiting -- are listed in
 link:../../README.adoc#_known_limitations[Known Limitations].
 ====
 
@@ -64,6 +64,15 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   relying on mTLS; and the management interface -- HTTPS by default, the single-port constraint, the
   two doors onto the plain-HTTP opt-out, and why `quarkus.management.enabled=false` is not one of
   them. Links to the Configuration Reference for the field contract.
+
+| link:tls-scenarios.adoc[TLS Scenarios -- Choosing and Configuring a TLS Posture]
+| The goal-organised entry point to TLS: nine scenarios -- terminating at the gateway, requiring
+  client certificates, passing hostnames through, management over HTTPS or plain HTTP, an identity
+  provider behind a private CA, TLS terminated in front of the gateway, upstreams behind a corporate
+  CA, and relaxing outbound hostname verification -- each with its preconditions, a configuration
+  copied from a shipped descriptor, and the boot record or refusal that names a failure. Composes and
+  links TLS Edge, Environment-Variable Overrides and the Configuration Reference rather than restating
+  them.
 
 | link:bff-session.adoc[Server-Session BFF -- Operator Setup]
 | A task-oriented guide for standing up the server-session BFF (Variant 2): registering the OIDC
