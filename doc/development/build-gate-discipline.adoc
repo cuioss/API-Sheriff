@@ -588,13 +588,13 @@ was one call. The affected fixtures bound their ephemeral server with the single
 `listen(0)` overload -- the dual-stack wildcard -- while the client in that same fixture dialled
 `127.0.0.1`. Within the *guarded* set, *22* such sites across *9* files now bind through
 `LoopbackHost.ADDRESS` in `de.cuioss.sheriff.gateway.testsupport`. That count is the guarded scope,
-not a tree-wide total: `TlsEdgeProducerTest` is an explicit class-level carve-out and still binds the
-wildcard on purpose, because the TLS edge it exercises is the production listener and pinning it to
-loopback would stop testing what ships. Every `Awaits` ceiling now folds a `SocketSnapshot`
-capture of the kernel's own view -- `lsof` for this pid, plus `netstat` in whichever spelling the
-platform takes (`-anv -p tcp` on macOS, `-ant` on Linux) -- into its timeout message. A future
-occurrence therefore arrives with its evidence attached, instead of requiring another investigation
-to go and obtain it.
+not a tree-wide total: four named sites in `TlsEdgeProducerTest` are exempt from the guard and still
+bind the wildcard on purpose, because the TLS edge that class exercises is the production listener,
+which binds the wildcard, and pinning those sites to loopback would stop testing what ships. Every
+`Awaits` ceiling now folds a `SocketSnapshot` capture of the kernel's own view -- `lsof` for this
+pid, plus `netstat` in whichever spelling the platform takes (`-anv -p tcp` on macOS, `-ant` on
+Linux) -- into its timeout message. A future occurrence therefore arrives with its evidence attached,
+instead of requiring another investigation to go and obtain it.
 
 [NOTE]
 ====
@@ -647,17 +647,21 @@ unstated `N`, never as an all-clear.
   whether the socket is later dialled, so "it is never dialled" is not a defence at review time; it
   is the reason a carve-out was granted, not a test the guard performs.
 +
-The carve-out is `TlsEdgeProducerTest` *as a class*, its nested classes included -- not a list of
-individual sites. The guard therefore protects none of that class, and a new bare bind added
-anywhere in it will pass. Its existing wildcard binds serve two different purposes: the collision
-holders occupy a port so a *wildcard* production bind is refused, and `freePort()` wildcard-binds to
-allocate a candidate and again to re-probe it against the bind scope production will use. Both are
-recorded in place. A new fixture belongs outside this class unless it genuinely needs a wildcard
-bind, because moving it inside silently removes it from the guard.
+The carve-out is *four named sites* in `TlsEdgeProducerTest`, not the class. The guard enforces the
+rest of that class and its nested classes like any other fixture, so a new bare bind added anywhere
+else in it fails the build. The four sites serve two different purposes: three collision holders
+occupy a port so a *wildcard* production bind is refused, and the re-probe behind `freePort()` tests
+a candidate against the bind scope production will use. Both are recorded in place. The allocation
+socket in `freePort()` is not among them -- it binds `LoopbackHost.ADDRESS` like every other
+ephemeral listener. An exact-set control pins the list: run without the exemption, the rule must
+report exactly those four code units, so a stale entry and an unjustified new wildcard bind both
+fail.
 +
 A companion source sweep in the same class catches the wildcard *host literal* -- `listen(0,
 "0.0.0.0")` -- which the bytecode rule structurally cannot see, since that call and
-`listen(0, LoopbackHost.ADDRESS)` are the same call target.
+`listen(0, LoopbackHost.ADDRESS)` are the same call target. It scans `TlsEdgeProducerTest.java` like
+every other guarded fixture: all four exempt sites are `ServerSocket(int)` constructions, which the
+sweep never targets.
 
 It is an *allow-list*: the host argument must be exactly `LoopbackHost.ADDRESS`, and anything else
 fails. That is the second design. The first refused a list of known-bad spellings -- IPv4 `0.0.0.0`,
