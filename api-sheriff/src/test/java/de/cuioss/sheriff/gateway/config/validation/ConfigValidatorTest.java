@@ -2810,4 +2810,66 @@ class ConfigValidatorTest {
                             + errors.getFirst().message());
         }
     }
+
+    @Nested
+    @DisplayName("upstream.rewrite_location protocol restriction (AS-11)")
+    class RewriteLocationProtocol {
+
+        private static final String REWRITE_LOCATION = "upstream.rewrite_location";
+
+        private List<ConfigError> validateRoute(@Nullable Protocol protocol, @Nullable Boolean rewriteLocation) {
+            RouteConfig route = RouteConfig.builder()
+                    .id("rewritten")
+                    .protocol(protocol)
+                    .match(match("/rewritten", HttpMethod.GET))
+                    .upstream(UpstreamConfig.builder().rewriteLocation(rewriteLocation).build())
+                    .build();
+            return validator.validate(validGateway().build(),
+                    List.of(endpoint("orders", "ORDERS", List.of(HttpMethod.GET), route)), topologyWith("ORDERS"));
+        }
+
+        private static boolean hasRewriteLocationError(List<ConfigError> errors) {
+            return errors.stream().anyMatch(error -> error.message().contains(REWRITE_LOCATION));
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = Protocol.class, names = {"GRPC", "WEBSOCKET"})
+        @DisplayName("Should refuse rewrite_location: true on a grpc or websocket route")
+        void shouldRefuseOnGrpcAndWebSocket(Protocol protocol) {
+            List<ConfigError> errors = validateRoute(protocol, true);
+
+            assertHasError(errors, "/endpoint/routes", "route 'rewritten' declares " + REWRITE_LOCATION);
+            assertHasError(errors, "/endpoint/routes",
+                    "its protocol is '" + protocol.name().toLowerCase(Locale.ROOT) + "'");
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = Protocol.class, names = {"HTTP", "GRAPHQL"})
+        @DisplayName("Should accept rewrite_location: true on an http or graphql route")
+        void shouldAcceptOnHttpAndGraphql(Protocol protocol) {
+            List<ConfigError> errors = validateRoute(protocol, true);
+
+            assertFalse(hasRewriteLocationError(errors),
+                    () -> protocol + " routes support the Location rewrite, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept rewrite_location: true on a route that omits protocol (http)")
+        void shouldAcceptWhenProtocolOmitted() {
+            List<ConfigError> errors = validateRoute(null, true);
+
+            assertTrue(errors.isEmpty(), () -> "an omitted protocol means http, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = Protocol.class, names = {"GRPC", "WEBSOCKET"})
+        @DisplayName("Should not refuse a grpc or websocket route whose rewrite_location is false or absent")
+        void shouldNotRefuseWhenToggleOff(Protocol protocol) {
+            assertAll("only an enabled toggle is refused",
+                    () -> assertFalse(hasRewriteLocationError(validateRoute(protocol, false)),
+                            "a declared false is not refused"),
+                    () -> assertFalse(hasRewriteLocationError(validateRoute(protocol, null)),
+                            "an absent key is not refused"));
+        }
+    }
 }

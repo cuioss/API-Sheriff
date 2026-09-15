@@ -15,10 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -103,6 +106,59 @@ class ResponseStageTest {
         void relaysOrdinaryHeaders(String header) {
             assertTrue(ResponseStage.isForwardableResponseHeader(header, true));
             assertTrue(ResponseStage.isForwardableResponseHeader(header, false));
+        }
+    }
+
+    @Nested
+    @DisplayName("Location rewrite gated by upstream.rewrite_location")
+    class LocationRewrite {
+
+        private final LocationRewriter rewriter =
+                new LocationRewriter(new ResolvedUpstream("https", "backend", 8443, "/svc/v1"), "/api");
+
+        @ParameterizedTest
+        @ValueSource(strings = {"Location", "location", "LOCATION"})
+        @DisplayName("maps an upstream Location through the route rewriter when the route opts in")
+        void rewritesLocationWhenEnabled(String header) {
+            assertEquals("/api/items?id=7",
+                    ResponseStage.relayedHeaderValue(header, "https://backend:8443/svc/v1/items?id=7", rewriter),
+                    header + " must be mapped onto the route's match key on an opted-in route");
+        }
+
+        @Test
+        @DisplayName("relays an upstream Location unchanged when the route does not opt in")
+        void relaysLocationUnchangedWhenDisabled() {
+            String location = "https://backend:8443/svc/v1/items?id=7";
+
+            assertEquals(location, ResponseStage.relayedHeaderValue("Location", location, null),
+                    "a route without rewrite_location carries no rewriter and relays Location verbatim");
+        }
+
+        @Test
+        @DisplayName("the rewrite flips with the toggle for the same header value")
+        void rewriteFlipsWithTheToggle() {
+            String location = "/svc/v1/login";
+
+            assertEquals("/api/login", ResponseStage.relayedHeaderValue("Location", location, rewriter));
+            assertEquals(location, ResponseStage.relayedHeaderValue("Location", location, null));
+        }
+
+        @Test
+        @DisplayName("relays a foreign-origin Location unchanged even when the route opts in")
+        void relaysForeignLocationUnchangedWhenEnabled() {
+            String location = "https://idp.example/authorize?client_id=gw";
+
+            assertEquals(location, ResponseStage.relayedHeaderValue("Location", location, rewriter));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"Content-Location", "Refresh", "Link", "Set-Cookie"})
+        @DisplayName("never rewrites a header other than Location")
+        void neverRewritesOtherHeaders(String header) {
+            String value = "https://backend:8443/svc/v1/items";
+
+            assertEquals(value, ResponseStage.relayedHeaderValue(header, value, rewriter),
+                    header + " is not Location and must keep its upstream value");
         }
     }
 

@@ -216,9 +216,20 @@ class ConfigModelContractTest {
                 .effectiveSecurityHeaders(securityHeadersConfig())
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
+                .rewriteLocation(true)
                 .upstream(resolvedUpstream())
                 .effectiveForward(new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
                         Map.of("X-Gateway", "api-sheriff")))
+                .build();
+    }
+
+    private static ResolvedRoute resolvedRouteWithRewriteLocation(boolean rewriteLocation) {
+        return ResolvedRoute.builder()
+                .id("orders-read")
+                .match(matchConfig())
+                .effectiveAuth(auth())
+                .rewriteLocation(rewriteLocation)
+                .upstream(resolvedUpstream())
                 .build();
     }
 
@@ -261,6 +272,7 @@ class ConfigModelContractTest {
     private static UpstreamConfig upstreamConfig() {
         return UpstreamConfig.builder()
                 .path("/v1/orders")
+                .rewriteLocation(true)
                 .connectTimeoutMs(2000)
                 .readTimeoutMs(5000)
                 .retry(new UpstreamConfig.Retry(true, 3, true))
@@ -410,6 +422,14 @@ class ConfigModelContractTest {
                             new WebSocketConfig(List.of("https://app.example.com"), 300),
                             new WebSocketConfig(List.of("https://other.example.com"), 60)),
                     voCase("UpstreamConfig", upstreamConfig(), upstreamConfig(), UpstreamConfig.builder().build()),
+                    // rewrite_location participates in identity on both records: each case varies only
+                    // that component, so dropping it from equals() fails its own case alone.
+                    voCase("UpstreamConfig (rewrite_location)",
+                            UpstreamConfig.builder().path("/v1").rewriteLocation(true).build(),
+                            UpstreamConfig.builder().path("/v1").rewriteLocation(true).build(),
+                            UpstreamConfig.builder().path("/v1").build()),
+                    voCase("ResolvedRoute (rewrite_location)", resolvedRouteWithRewriteLocation(true),
+                            resolvedRouteWithRewriteLocation(true), resolvedRouteWithRewriteLocation(false)),
                     voCase("UpstreamConfig.Retry",
                             new UpstreamConfig.Retry(true, 3, true),
                             new UpstreamConfig.Retry(true, 3, true),
@@ -592,7 +612,7 @@ class ConfigModelContractTest {
         @Test
         void resolvedRouteNormalizesAbsentComponents() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, resolvedUpstream(), null, null, null, null, null);
+                    true, false, resolvedUpstream(), null, null, null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.effectiveSecurityFilter());
             assertNull(cfg.effectiveSecurityHeaders());
@@ -941,7 +961,7 @@ class ConfigModelContractTest {
         private ResolvedRoute resolvedRouteWith(String id, MatchConfig match, AuthConfig auth,
                 ResolvedUpstream upstream, ResolvedAsset asset, RedirectConfig redirect) {
             return new ResolvedRoute(id, Protocol.HTTP, null, match, auth, List.of(), null,
-                    null, true, true, upstream, asset, redirect, null, null, null);
+                    null, true, true, false, upstream, asset, redirect, null, null, null);
         }
     }
 
@@ -1035,6 +1055,22 @@ class ConfigModelContractTest {
             assertNotNull(cfg.effectiveSecurityHeaders());
             assertEquals(List.of("Accept"), cfg.effectiveForward().headersAllow(),
                     "the materialized forward allowlist is carried on the resolved route");
+            assertTrue(cfg.rewriteLocation(), "the materialized rewrite_location toggle is carried on the resolved route");
+        }
+
+        @Test
+        void upstreamConfigRewriteLocationRoundTripsAndDefaultsToAbsent() {
+            assertAll("rewrite_location is a nullable toggle whose absence means off",
+                    () -> assertEquals(Boolean.TRUE, upstreamConfig().rewriteLocation()),
+                    () -> assertNull(UpstreamConfig.builder().build().rewriteLocation(),
+                            "the record applies no default; absent stays null and resolves to off at assembly"));
+        }
+
+        @Test
+        void resolvedRouteRewriteLocationDefaultsToFalseOnTheBuilder() {
+            ResolvedRoute cfg = ResolvedRoute.builder().id("r").match(matchConfig()).effectiveAuth(auth())
+                    .upstream(resolvedUpstream()).build();
+            assertFalse(cfg.rewriteLocation(), "an unset toggle is the relay-unchanged default");
         }
 
         @Test

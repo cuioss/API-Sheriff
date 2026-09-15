@@ -37,6 +37,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessor;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteMatcher;
@@ -60,6 +61,8 @@ import org.jspecify.annotations.Nullable;
  *   <li>one SmallRye Fault-Tolerance {@link Guard} per distinct {@linkplain ResilienceShape
  *       resilience shape}.</li>
  * </ul>
+ * A proxy route that opts into {@code upstream.rewrite_location} additionally carries its own
+ * {@link LocationRewriter}, built here from the route's effective upstream and match key.
  * The heavy objects are produced by the injected factories (so tests supply fakes and the
  * production wiring supplies the real Vert.x / SmallRye instances). An unsupported protocol fails
  * boot through the {@link ProtocolProcessorRegistry}. {@code require: session} routes are compiled
@@ -167,6 +170,11 @@ public final class RouteRuntimeAssembler {
                 runtime.upstream(resolvedUpstream)
                         .httpClient(client)
                         .resilienceGuard(guard);
+                // Built once here, from the effective upstream (alias base + upstream.path) and the
+                // match key, so the relay applies a ready mapping and derives nothing per request.
+                if (route.rewriteLocation()) {
+                    runtime.locationRewriter(new LocationRewriter(resolvedUpstream, route.matchKey()));
+                }
             }
 
             runtimes.add(runtime.build());

@@ -72,7 +72,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The builder materializes each route's effective auth, effective {@code allowed_methods},
  * effective {@code security_filter} / {@code security_headers}, effective retry
- * / not-modified toggles, the effective {@code forward} filter (whose
+ * / not-modified toggles, the {@code upstream.rewrite_location} toggle (absent meaning off, no
+ * inheritance), the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
  * wholesale, deny lists included), and the effective upstream base path (the route-level
  * {@code upstream.path} appended to the alias-derived base path when declared)
@@ -265,6 +266,7 @@ public final class RouteTableBuilder {
                 .effectiveSecurityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
+                .rewriteLocation(routeUpstream != null && Boolean.TRUE.equals(routeUpstream.rewriteLocation()))
                 .effectiveForward(effectiveForward)
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeout);
