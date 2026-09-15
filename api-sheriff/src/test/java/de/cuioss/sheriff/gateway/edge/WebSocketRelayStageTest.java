@@ -253,21 +253,22 @@ class WebSocketRelayStageTest {
     }
 
     @Test
-    @DisplayName("preserves the stage-0 security headers on a WebSocket handshake failure")
+    @DisplayName("preserves the route's security headers on a WebSocket handshake failure")
     void preservesSecurityHeadersOnHandshakeFailure() {
         // Act — the /ws-dead route's upstream is unreachable, so the handshake fails 502 before the 101
         ExecutionException failure = assertThrows(ExecutionException.class,
                 () -> connect("/ws-dead/room", ALLOWED_ORIGIN));
 
-        // Assert — the failed-handshake response still carries the gateway (stage-0) security headers,
-        // mirroring the HTTP (ResponseStage.relay) and gRPC (GrpcStatusMapper.renderRejection) contract
+        // Assert — the failed-handshake response still carries the route's resolved security headers
+        // (applied at stage 2a), mirroring the HTTP (ResponseStage.relay) and gRPC
+        // (GrpcStatusMapper.renderRejection) contract
         UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
         assertEquals(502, rejected.getStatus(), () -> rejectionReport(failure));
         MultiMap headers = rejected.getHeaders();
         assertEquals("nosniff", headers.get("X-Content-Type-Options"),
-                "a failed WebSocket handshake carries the stage-0 X-Content-Type-Options header");
+                "a failed WebSocket handshake carries the route's X-Content-Type-Options header");
         assertEquals("DENY", headers.get("X-Frame-Options"),
-                "a failed WebSocket handshake carries the stage-0 X-Frame-Options header");
+                "a failed WebSocket handshake carries the route's X-Frame-Options header");
     }
 
     @Test
@@ -598,6 +599,10 @@ class WebSocketRelayStageTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                // Every route here is unanchored, so it resolves the gateway block — exactly what
+                // RouteTableBuilder materializes. Stage 2a applies the ROUTE's block after route
+                // selection (ADR-0007 Amendment A1), so a fixture route carrying none would strip them.
+                .effectiveSecurityHeaders(securityHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)
