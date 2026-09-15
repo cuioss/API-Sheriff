@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.config.validation;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -55,6 +57,7 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -113,6 +116,11 @@ import org.jspecify.annotations.Nullable;
  * keep the {@code __Host-} guarantee the gateway-owned cookies carry, be writable verbatim into a
  * {@code Set-Cookie} header, and not collide with a gateway-owned cookie. The schema declares the key
  * an unrestricted string; this rule is the single enforcing authority.
+ * <p>
+ * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
+ * upstream, asset or redirect, and reviews a redirect's {@code location} for open-redirect
+ * spellings at boot — a redirect is written verbatim at request time, so this review is the only
+ * place its target is ever judged.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -213,6 +221,9 @@ public final class ConfigValidator {
 
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
+
+    /** The only schemes an {@code allow_external} redirect location may carry. */
+    private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -997,13 +1008,26 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: the terminal-action / anchor-type consistency matrix (ADR-0014). A route whose
-     * resolving anchor is {@code type: asset} must declare an {@code asset} terminal action; a
-     * route under a {@code proxy} / {@code bff} anchor (or with no anchor) must not — its terminal
-     * action is the endpoint upstream. An {@code asset} block on a non-asset route is a boot
-     * failure. For a declared asset action, the source-specific field must be present and, for a
-     * {@code source: upstream} action, its topology alias must resolve. Every violation collects
-     * into the shared list; the rule never fails fast.
+     * Rule: the terminal-action / anchor-type consistency matrix (ADR-0014 and its Amendment A1).
+     * A route resolves exactly one terminal action — the endpoint upstream, an {@code asset}, or a
+     * {@code redirect}.
+     * <ul>
+     *   <li><strong>Exclusivity.</strong> A {@code redirect} declared together with an
+     *       {@code asset} or an {@code upstream} block is refused: either block would be silently
+     *       ignored.</li>
+     *   <li><strong>Anchor matrix.</strong> A route whose resolving anchor is {@code type: asset}
+     *       must declare an {@code asset} or a {@code redirect} action; an {@code asset} block on a
+     *       route under a {@code proxy} / {@code bff} anchor (or with no anchor) is refused. A
+     *       {@code redirect} is admitted under every anchor type, since it serves nothing the anchor
+     *       type governs.</li>
+     *   <li><strong>Asset source.</strong> For a declared asset action, the source-specific field
+     *       must be present and, for a {@code source: upstream} action, its topology alias must
+     *       resolve.</li>
+     *   <li><strong>Redirect.</strong> A declared redirect action must ride the {@code http}
+     *       protocol and pass the open-redirect review of its {@code location} (see
+     *       {@link #validateRedirectAction}).</li>
+     * </ul>
+     * Every violation collects into the shared list; the rule never fails fast.
      */
     private static void validateTerminalAction(GatewayConfig gateway, List<EndpointConfig> endpoints,
             ResolvedTopology topology, List<ConfigError> errors) {
@@ -1015,8 +1039,9 @@ public final class ConfigValidator {
     }
 
     /**
-     * The per-route half of the terminal-action rule (ADR-0014): the anchor-type / asset-action
-     * consistency check, plus the source-field check for a declared asset action. Every violation
+     * The per-route half of the terminal-action rule (ADR-0014 and its Amendment A1): redirect
+     * exclusivity, the anchor-type / terminal-action consistency check, the source-field check for a
+     * declared asset action, and the redirect review for a declared redirect action. Every violation
      * collects into the shared list; the check never fails fast.
      */
     private static void validateRouteTerminalAction(GatewayConfig gateway, EndpointConfig endpoint,
@@ -1024,9 +1049,13 @@ public final class ConfigValidator {
         AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
         boolean assetAnchor = anchor != null && anchor.type() == AnchorType.ASSET;
         AssetConfig asset = route.asset();
-        if (assetAnchor && asset == null) {
+        RedirectConfig redirect = route.redirect();
+        if (redirect != null) {
+            validateRedirectExclusivity(endpoint, route, errors);
+        }
+        if (assetAnchor && asset == null && redirect == null) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                    "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
+                    "route '%s' resolves to asset anchor '%s' but declares no asset terminal action and no redirect terminal action"
                             .formatted(route.id(), anchor.name())));
         } else if (!assetAnchor && asset != null) {
             String context = anchor == null
@@ -1040,6 +1069,166 @@ public final class ConfigValidator {
         if (asset != null) {
             validateAssetSource(endpoint, route, asset, topology, errors);
         }
+        if (redirect != null) {
+            validateRedirectAction(endpoint, route, redirect, errors);
+        }
+    }
+
+    /**
+     * Refuses a {@code redirect} action declared together with another terminal action. A route
+     * resolves exactly one; accepting the pair would silently drop one of the two blocks.
+     */
+    private static void validateRedirectExclusivity(EndpointConfig endpoint, RouteConfig route,
+            List<ConfigError> errors) {
+        if (route.asset() != null) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares both a redirect and an asset terminal action; a route resolves exactly one of upstream, asset or redirect"
+                            .formatted(route.id())));
+        }
+        if (route.upstream() != null) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares both a redirect terminal action and an upstream block; a redirect contacts no upstream, so the upstream settings would be silently ignored"
+                            .formatted(route.id())));
+        }
+    }
+
+    /**
+     * The redirect half of the terminal-action rule (ADR-0014 Amendment A1).
+     * <p>
+     * <strong>Protocol.</strong> A redirect is answered with a plain HTTP status and
+     * {@code Location}, which a gRPC, WebSocket or GraphQL client cannot follow — so a redirect on
+     * any protocol other than {@code http} is refused rather than silently ignored.
+     * <p>
+     * <strong>Open-redirect review.</strong> {@code location} is written verbatim into the
+     * {@code Location} header, so it is reviewed once, here, and never at request time. Every
+     * refused spelling is one a browser or an intermediary resolves to a <em>different origin</em>
+     * than a reader of the configuration would expect:
+     * <ul>
+     *   <li>whatever the form, the value must be non-empty printable ASCII — no whitespace, no
+     *       control character (a CR/LF would forge a response header) — and must not carry a
+     *       {@code #} when {@code keep_query} is set, since a query appended after a fragment never
+     *       reaches the server;</li>
+     *   <li>a <strong>gateway path</strong> must start with exactly one {@code /} — {@code //host}
+     *       is scheme-relative and names another origin — and must contain no {@code \} (browsers
+     *       read {@code /\host} as {@code //host}), no percent-encoded {@code /} or {@code \}
+     *       ({@code %2F}, {@code %5C}, in either case), and no dot-segment ({@code .} or {@code ..},
+     *       including their {@code %2E} spellings) in its path, which a client would normalize
+     *       away;</li>
+     *   <li>anything else is refused unless the route sets {@code allow_external: true}, which
+     *       additionally admits an absolute {@code http}/{@code https} URI with a non-empty host and
+     *       no user-info. Every other scheme ({@code javascript:}, {@code data:}, …) stays refused.
+     *       Opting in emits {@link ConfigLogMessages.WARN#REDIRECT_EXTERNAL_TARGET_ALLOWED}, naming
+     *       the route but never the location.</li>
+     * </ul>
+     * Refusal messages echo the value through {@link #renderForMessage}, so a hostile value cannot
+     * forge boot log lines (CWE-117).
+     */
+    private static void validateRedirectAction(EndpointConfig endpoint, RouteConfig route, RedirectConfig redirect,
+            List<ConfigError> errors) {
+        Protocol protocol = effectiveProtocol(route);
+        if (protocol != Protocol.HTTP) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares a redirect terminal action but its protocol is '%s'; a redirect is answered over http only"
+                            .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
+        }
+        redirectLocationRefusal(redirect).ifPresent(reason -> errors.add(
+                new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        "route '%s' redirect location '%s' is refused: %s"
+                                .formatted(route.id(), renderForMessage(redirect.location()), reason))));
+        if (redirect.allowExternal()) {
+            LOGGER.warn(ConfigLogMessages.WARN.REDIRECT_EXTERNAL_TARGET_ALLOWED, route.id());
+        }
+    }
+
+    /**
+     * The open-redirect review of a redirect {@code location}; see {@link #validateRedirectAction}
+     * for the rules and why each exists.
+     *
+     * @return the refusal reason, or empty when the location is admitted
+     */
+    private static Optional<String> redirectLocationRefusal(RedirectConfig redirect) {
+        String location = redirect.location();
+        if (location.isEmpty()) {
+            return Optional.of("the location must not be empty");
+        }
+        if (!isPrintableAscii(location)) {
+            return Optional.of("the location must be printable ASCII without whitespace or control characters");
+        }
+        if (redirect.keepQuery() && location.indexOf('#') >= 0) {
+            return Optional.of("keep_query appends the request query, which a '#' fragment would swallow");
+        }
+        if (location.startsWith("/")) {
+            return gatewayPathRefusal(location);
+        }
+        if (!redirect.allowExternal()) {
+            return Optional.of("without allow_external the location must be a gateway path starting with exactly one '/'");
+        }
+        return externalLocationRefusal(location);
+    }
+
+    private static boolean isPrintableAscii(String value) {
+        return value.chars().allMatch(character -> character > 0x20 && character < 0x7F);
+    }
+
+    /**
+     * The gateway-path half of the location review: exactly one leading {@code /}, no backslash,
+     * no percent-encoded slash or backslash, no dot-segment in the path.
+     */
+    private static Optional<String> gatewayPathRefusal(String location) {
+        if (location.startsWith("//")) {
+            return Optional.of("a leading '//' is scheme-relative and names another origin");
+        }
+        if (location.indexOf('\\') >= 0) {
+            return Optional.of("a backslash is read as '/' by browsers");
+        }
+        String lowerCase = location.toLowerCase(Locale.ROOT);
+        if (lowerCase.contains("%2f") || lowerCase.contains("%5c")) {
+            return Optional.of("a percent-encoded '/' or '\\' is decoded by intermediaries");
+        }
+        int pathEnd = firstIndexOf(location, '?', '#');
+        String path = lowerCase.substring(0, pathEnd).replace("%2e", ".");
+        for (String segment : path.split("/", -1)) {
+            if (".".equals(segment) || "..".equals(segment)) {
+                return Optional.of("a dot-segment is normalized away by clients");
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** The index of the first occurrence of either character, or the value's length when neither occurs. */
+    private static int firstIndexOf(String value, char first, char second) {
+        for (int index = 0; index < value.length(); index++) {
+            char current = value.charAt(index);
+            if (current == first || current == second) {
+                return index;
+            }
+        }
+        return value.length();
+    }
+
+    /**
+     * The external half of the location review, reached only under {@code allow_external}: an
+     * absolute {@code http}/{@code https} URI with a non-empty host and no user-info.
+     */
+    private static Optional<String> externalLocationRefusal(String location) {
+        URI uri;
+        try {
+            uri = new URI(location);
+        } catch (URISyntaxException _) {
+            return Optional.of("the location is neither a gateway path nor a well-formed absolute URI");
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || !EXTERNAL_REDIRECT_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT))) {
+            return Optional.of("an external location must use the http or https scheme");
+        }
+        String host = uri.getHost();
+        if (host == null || host.isEmpty()) {
+            return Optional.of("an external location must name a non-empty host");
+        }
+        if (uri.getRawUserInfo() != null) {
+            return Optional.of("an external location must not carry user-info, which disguises the real host");
+        }
+        return Optional.empty();
     }
 
     /**
