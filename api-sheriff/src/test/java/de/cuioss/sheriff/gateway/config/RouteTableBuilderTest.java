@@ -722,9 +722,9 @@ class RouteTableBuilderTest {
                     .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(gatewayPolicy).build())
                     .anchors(Map.of(
                             "api", anchor("api", "/api", new AuthConfig(Require.BEARER, List.of()), null, null,
-                                    SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build()),
+                            SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build()),
                             "bff", anchor("bff", "/bff", new AuthConfig(Require.BEARER, List.of()), null, null,
-                                    headers())))
+                            headers())))
                     .build();
             EndpointConfig withPolicy = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(routeWithPrefix("anchor-policy", "/api/orders", HttpMethod.GET))).build();
