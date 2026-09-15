@@ -36,7 +36,6 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -196,13 +195,8 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
     private static X509KeyManager sunX509KeyManager(KeyStore keyStore, String password)
             throws GeneralSecurityException {
         KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
-        kmf.init(keyStore, password == null ? new char[0] : password.toCharArray());
-        for (KeyManager candidate : kmf.getKeyManagers()) {
-            if (candidate instanceof X509KeyManager x509) {
-                return x509;
-            }
-        }
-        throw new KeyStoreException("SunX509 produced no X509KeyManager");
+        kmf.init(keyStore, password.toCharArray());
+        return (X509KeyManager) kmf.getKeyManagers()[0];
     }
 
     /**
@@ -252,7 +246,7 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
      * identity from a CA the server does not name is silently withheld and the client sends no
      * certificate. Forcing the alias is what lets {@link #wrongCaClientCertRejected()} put a foreign
      * certificate in front of the server at all. Everything except client-alias selection — the
-     * certificate chain, the private key and every server-side method — is delegated unchanged.
+     * certificate chain, the private key and the abstract server-side methods — is delegated unchanged.
      * <p>
      * Thread-safety: the recording fields are atomics, so the handshake thread's writes are visible to
      * the asserting test thread.
@@ -265,8 +259,8 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
         private final AtomicReference<String> offeredAlias = new AtomicReference<>();
 
         ForcedAliasKeyManager(X509KeyManager delegate, String forcedAlias) {
-            this.delegate = Objects.requireNonNull(delegate, "delegate");
-            this.forcedAlias = Objects.requireNonNull(forcedAlias, "forcedAlias");
+            this.delegate = delegate;
+            this.forcedAlias = forcedAlias;
         }
 
         boolean clientAliasRequested() {
@@ -285,14 +279,14 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
          */
         private String offer(String[] keyTypes) {
             clientAliasRequested.set(true);
-            if (keyTypeAdmits(keyTypes, forcedAlias)) {
+            if (keyTypeAdmits(keyTypes)) {
                 offeredAlias.set(forcedAlias);
             }
             return forcedAlias;
         }
 
-        private boolean keyTypeAdmits(String[] keyTypes, String alias) {
-            PrivateKey key = delegate.getPrivateKey(alias);
+        private boolean keyTypeAdmits(String[] keyTypes) {
+            PrivateKey key = delegate.getPrivateKey(forcedAlias);
             return key != null && keyTypes != null && Arrays.asList(keyTypes).contains(key.getAlgorithm());
         }
 
@@ -319,13 +313,6 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
         @Override
         public String chooseServerAlias(String keyType, Principal[] issuers, Socket socket) {
             return delegate.chooseServerAlias(keyType, issuers, socket);
-        }
-
-        @Override
-        public String chooseEngineServerAlias(String keyType, Principal[] issuers, SSLEngine engine) {
-            return delegate instanceof X509ExtendedKeyManager extended
-                    ? extended.chooseEngineServerAlias(keyType, issuers, engine)
-                    : null;
         }
 
         @Override
