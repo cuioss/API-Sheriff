@@ -534,8 +534,6 @@ check never evaluated and is therefore not a pass.
 **(v) Confirm smallrye-config still matches the Quarkus this project resolves.**
 
 ```bash
-# The check resolves sibling modules at the current -SNAPSHOT - install the reactor first (see below).
-python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "install -DskipTests"
 python3 .claude/skills/release/check-quarkus-alignment.py --repo . --check-resolved
 ```
 
@@ -575,13 +573,21 @@ Re-measured on the 1.7.4 bump (#300): Quarkus `3.39.3`, `token-sheriff`'s Quarku
 onto 3.39.3, every `io.smallrye.config` artifact `3.17.2`, unsplit. The `token-sheriff-bom` paragraph in
 `pom.xml` carries the same measurement.
 
-⚠ **Run `install -DskipTests` before `--check-resolved`.** The check lists the reactor's classpath with
-a bare `dependency:list`, which cannot take a sibling module's jar from the reactor. So
-`integration-tests` resolves `api-sheriff` at the current `-SNAPSHOT` from `~/.m2` or a remote
-repository, and without a fresh local install the check can return exit **2** (*"CANNOT DETERMINE:
-dependency:list exited 1"*). That happened on the 1.7.4 bump. An exit 2 is still a stop, never a pass:
-install, then re-run. This is the same resolution gap as the org workflow's `quarkus-alignment` job
-(cuioss/cuioss-organization#274). Keep the two copies in step when that is fixed.
+✅ **No separate install step — the check builds what it needs.** `--check-resolved` runs
+`install -DskipTests -DskipITs` in the **same** Maven invocation as `dependency:list`, so a module
+resolves its sibling at the current `-SNAPSHOT` from the reactor rather than from a repository that has
+never seen that version. Before that, the check returned exit **2** on a freshly released trunk
+(*"CANNOT DETERMINE"*) until someone installed the reactor by hand — which is how it behaved on the
+1.7.4 bump (#300). Ported from `cuioss-organization` v0.27.0
+(cuioss/cuioss-organization#275, closing #274, where the same gap deadlocked that workflow's own
+`quarkus-alignment` job). **Keep the two copies in step.**
+
+⚠ **A build break now reports as exit 2, not exit 1.** Because the install shares the invocation, a
+reactor that does not build yields *"CANNOT DETERMINE: install + dependency:list exited …"* with the
+Maven `[ERROR]` lines attached, instead of the check's own `MISALIGNED` verdict. Both are blocking, so
+the gate holds either way — but read the attached output before assuming the alignment itself is at
+fault. Verified against a deliberately split smallrye-config: the split was caught, reported through
+the enforcer's `requireSameVersions` failure.
 
 Why it matters: Quarkus' deployment classes are compiled against one specific smallrye-config
 release, so a newer version — even an internally coherent one — fails augmentation with
@@ -589,8 +595,11 @@ release, so a newer version — even an internally coherent one — fails augmen
 twice through `cuioss-parent-pom` and cost five weeks of red builds the first time. The
 `requireSameVersions` enforcer guard cannot catch it: nothing is split, so it stays correctly silent.
 
-⚠ **Keep the script in sync with the TokenSheriff copy** — the two are maintained in parallel and
-there is no shared parent to inherit it from. ⚠ **Re-measure the `token-sheriff-bom` paragraph in
+⚠ **Three copies of this check exist and none inherits from another** — this one, TokenSheriff's, and
+`cuioss-organization`'s `workflow-scripts/check-quarkus-alignment.py`, which its
+`reusable-maven-build.yml` runs as the `quarkus-alignment` job. The org copy is the one that receives
+fixes first (the install fix came from there); this copy and TokenSheriff's are maintained in parallel
+by hand. **A fix to any of them is a fix owed to the other two.** ⚠ **Re-measure the `token-sheriff-bom` paragraph in
 `pom.xml` on every `${version.token-sheriff}` bump**; that is a dependency-bump-time obligation this
 release gate does not discharge.
 
