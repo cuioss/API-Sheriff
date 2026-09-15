@@ -36,6 +36,7 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -264,8 +265,8 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
         private final AtomicReference<String> offeredAlias = new AtomicReference<>();
 
         ForcedAliasKeyManager(X509KeyManager delegate, String forcedAlias) {
-            this.delegate = delegate;
-            this.forcedAlias = forcedAlias;
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+            this.forcedAlias = Objects.requireNonNull(forcedAlias, "forcedAlias");
         }
 
         boolean clientAliasRequested() {
@@ -284,11 +285,10 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
          */
         private String offer(String[] keyTypes) {
             clientAliasRequested.set(true);
-            String chosen = forcedAlias;
-            if (chosen != null && keyTypeAdmits(keyTypes, chosen)) {
-                offeredAlias.set(chosen);
+            if (keyTypeAdmits(keyTypes, forcedAlias)) {
+                offeredAlias.set(forcedAlias);
             }
-            return chosen;
+            return forcedAlias;
         }
 
         private boolean keyTypeAdmits(String[] keyTypes, String alias) {
