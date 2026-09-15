@@ -190,6 +190,57 @@ class ConfigValidatorRouteDisjointnessTest {
     }
 
     @Nested
+    @DisplayName("Exact match.path routes (AS-3)")
+    class ExactPathRoutes {
+
+        private MatchConfig.MatchConfigBuilder exact(String path, HttpMethod... methods) {
+            return MatchConfig.builder().path(path).methods(List.of(methods));
+        }
+
+        @Test
+        @DisplayName("Should refuse two exact routes on the same path that nothing distinguishes")
+        void shouldRefuseDuplicateExactRoutes() {
+            List<ConfigError> errors = validateRoutes(
+                    exact(SHARED_PREFIX, HttpMethod.GET).build(),
+                    exact(SHARED_PREFIX, HttpMethod.GET).build());
+
+            assertCollides(errors);
+            assertTrue(errors.stream().anyMatch(error -> error.message().contains("share path '/api'")),
+                    () -> "the refusal names the exact path the routes share, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an exact route and a prefix route declaring the same string")
+        void shouldAcceptExactAndPrefixRouteOnTheSameString() {
+            List<ConfigError> errors = validateRoutes(
+                    exact(SHARED_PREFIX, HttpMethod.GET).build(),
+                    sharedPrefix(HttpMethod.GET).build());
+
+            assertDisjoint(errors);
+        }
+
+        @Test
+        @DisplayName("Should accept two exact routes on the same path distinguished by method")
+        void shouldAcceptExactRoutesDistinguishedByMethod() {
+            List<ConfigError> errors = validateRoutes(
+                    exact(SHARED_PREFIX, HttpMethod.GET).build(),
+                    exact(SHARED_PREFIX, HttpMethod.POST).build());
+
+            assertDisjoint(errors);
+        }
+
+        @Test
+        @DisplayName("Should accept exact routes whose paths differ only by a trailing slash")
+        void shouldAcceptExactRoutesDifferingByTrailingSlash() {
+            List<ConfigError> errors = validateRoutes(
+                    exact(SHARED_PREFIX, HttpMethod.GET).build(),
+                    exact(SHARED_PREFIX + "/", HttpMethod.GET).build());
+
+            assertDisjoint(errors);
+        }
+    }
+
+    @Nested
     @DisplayName("The header discriminator")
     class HeaderDiscriminator {
 
