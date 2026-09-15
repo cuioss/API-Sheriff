@@ -1065,8 +1065,9 @@ public final class ConfigValidator {
      * space — catching a single full-space CIDR <em>and</em> complementary
      * combinations such as {@code 0.0.0.0/1} + {@code 128.0.0.0/1}. Individually very
      * broad — but not total — prefixes (shorter than {@code /16} for IPv4 or
-     * {@code /48} for IPv6) are surfaced as a boot WARN. The parsed range set is
-     * retained for a later per-request trust decision (Plan 04) (D5).
+     * {@code /48} for IPv6) are surfaced as the boot WARN
+     * {@link ConfigLogMessages.WARN#BROAD_TRUSTED_PROXY}. The trust-all refusal is the only breadth
+     * refusal: every range narrower than the whole address space boots.
      * <p>
      * Both thresholds encode one principle: <em>warn when a single entry spans more than one
      * operator-provisioned network.</em> A range matching exactly one network an operator
@@ -1083,6 +1084,18 @@ public final class ConfigValidator {
      * spoof forwarded headers, so a {@code /16} is still a real exposure — un-warned because it
      * is a <em>legible</em> one an operator chose, not because it is safe. Warning on a routine,
      * correct configuration is how a guard gets trained into background noise.
+     * <p>
+     * <strong>The value may arrive from an environment variable no code review sees.</strong> A
+     * {@code ${VAR}} placeholder is substituted before this rule runs, so a range the deployment
+     * environment supplies reaches it indistinguishable from one written literally into
+     * {@code gateway.yaml} — except that it never passed through a reviewed change. Such a range keeps
+     * exactly the boot WARN a literal one gets and meets no second, stricter refusal threshold. An
+     * environment-only refusal is not expressible here, because the rule cannot tell the two sources
+     * apart; a source-blind refusal at a wider threshold would refuse legitimate pod-network trust
+     * such as {@code 10.0.0.0/8} while catching nothing the WARN and the trust-all refusal do not
+     * already surface. The un-warned residual applies unchanged: an environment-supplied IPv4
+     * {@code /16} or IPv6 {@code /48} boots with no signal at all, the same chosen exposure with no
+     * review behind it. The decision and its rejected alternatives are recorded in ADR-0044.
      */
     private static void validateForwardedTrust(GatewayConfig gateway, List<ConfigError> errors) {
         ForwardedConfig forwarded = gateway.forwarded();

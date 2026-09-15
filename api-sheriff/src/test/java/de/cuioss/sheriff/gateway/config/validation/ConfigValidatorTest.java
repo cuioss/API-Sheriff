@@ -693,49 +693,18 @@ class ConfigValidatorTest {
             assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: " + malformedCidr);
         }
 
-        @Test
-        @DisplayName("Should boot-WARN a very broad but not total CIDR without failing the boot")
-        void shouldWarnBroadButNotTotalCidr() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(ForwardedConfig.builder()
-                            .trustedProxies(List.of("10.0.0.0/4")).build())
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("trusted_proxies")),
-                    () -> "a broad-but-not-total CIDR must not fail the boot, got: " + errors);
-            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, "very broad address range");
-        }
-
-        @Test
-        @DisplayName("Should accept tightly scoped IPv4 and IPv6 trusted_proxies CIDRs without warning")
-        void shouldAcceptTightlyScopedCidrs() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(ForwardedConfig.builder()
-                            .trustedProxies(List.of("10.1.0.0/16", "2001:db8::/48")).build())
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("trusted_proxies")),
-                    () -> "well-scoped CIDRs must not fail the boot, got: " + errors);
-            assertTrue(TestLoggerFactory.getTestHandler()
-                            .resolveLogMessagesContaining(TestLogLevel.WARN, "very broad address range").isEmpty(),
-                    "tightly scoped CIDRs (10.1.0.0/16, 2001:db8::/48) must not emit a broad-range WARN");
-        }
-
         /**
          * Matched positive/negative controls straddling the broad-prefix threshold in both address
          * families. The warning fires when one entry spans more than a single operator-provisioned
          * network: broader than an IPv4 {@code /16}, or broader than an IPv6 {@code /48} site
          * allocation. Each family carries a range just past the boundary and one exactly at it, so
-         * reverting either constant alone turns at least one case red.
+         * reverting either constant alone turns at least one case red. The IPv4 {@code /4} row pins the
+         * far end of the band: a very broad range that still stops short of the whole address space
+         * warns and boots, and is never mistaken for the trust-all refusal.
          */
         static Stream<Arguments> broadPrefixThresholdControls() {
             return Stream.of(
+                    Arguments.of("IPv4 /4 is very broad yet short of the whole address space", "10.0.0.0/4", true),
                     Arguments.of("IPv4 /12 spans many provisioned networks", "172.16.0.0/12", true),
                     Arguments.of("IPv4 /8 spans many provisioned networks", "10.0.0.0/8", true),
                     Arguments.of("IPv4 /16 is one provisioned network", "172.16.0.0/16", false),
