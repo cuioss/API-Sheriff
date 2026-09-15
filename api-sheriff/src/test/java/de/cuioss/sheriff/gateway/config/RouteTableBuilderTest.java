@@ -714,6 +714,40 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should carry content_security_policy through resolution verbatim, and drop the gateway one under an anchor block without it")
+        void shouldCarryContentSecurityPolicyThroughResolution() {
+            String gatewayPolicy = "default-src 'self'; frame-ancestors 'none'";
+            String anchorPolicy = "default-src 'none'; script-src 'self'";
+            GatewayConfig config = gateway()
+                    .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(gatewayPolicy).build())
+                    .anchors(Map.of(
+                            "api", anchor("api", "/api", new AuthConfig(Require.BEARER, List.of()), null, null,
+                                    SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build()),
+                            "bff", anchor("bff", "/bff", new AuthConfig(Require.BEARER, List.of()), null, null,
+                                    headers())))
+                    .build();
+            EndpointConfig withPolicy = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("anchor-policy", "/api/orders", HttpMethod.GET))).build();
+            EndpointConfig withoutPolicy = anchoredEndpoint("frontend", "FRONTEND", "bff")
+                    .routes(List.of(routeWithPrefix("anchor-no-policy", "/bff/home", HttpMethod.GET))).build();
+            EndpointConfig plain = endpoint("public", "PUBLIC")
+                    .routes(List.of(routeWithPrefix("gateway-policy", "/public", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(withPolicy, withoutPolicy, plain),
+                    topologyWith("ORDERS", "FRONTEND", "PUBLIC"));
+
+            assertAll("content_security_policy follows the wholesale gateway → anchor resolution",
+                    () -> assertEquals(anchorPolicy,
+                            find(table, "anchor-policy").effectiveSecurityHeaders().contentSecurityPolicy(),
+                            "an anchor block's own policy reaches its routes verbatim"),
+                    () -> assertNull(find(table, "anchor-no-policy").effectiveSecurityHeaders().contentSecurityPolicy(),
+                            "an anchor block omitting the policy does not inherit the gateway one"),
+                    () -> assertEquals(gatewayPolicy,
+                            find(table, "gateway-policy").effectiveSecurityHeaders().contentSecurityPolicy(),
+                            "an unanchored route carries the gateway policy verbatim"));
+        }
+
+        @Test
         @DisplayName("Should let a per-route anchor override the endpoint default membership")
         void shouldLetRouteAnchorOverrideEndpointAnchor() {
             GatewayConfig config = gateway().anchors(Map.of(

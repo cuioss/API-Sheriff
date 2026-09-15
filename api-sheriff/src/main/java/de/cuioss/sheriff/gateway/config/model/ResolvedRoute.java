@@ -49,8 +49,10 @@ import org.jspecify.annotations.Nullable;
  *                               a resolved route
  * @param effectiveSecurityFilter the materialized security filter carried (not yet
  *                               consumed), {@code null} when none resolves
- * @param effectiveSecurityHeaders the materialized response-header posture carried
- *                               (not yet consumed), {@code null} when none resolves
+ * @param effectiveSecurityHeaders the materialized response-header posture (anchor block, else
+ *                               the gateway block, wholesale), applied by the stage-2a
+ *                               {@code SecurityHeadersStage.applyRouteHeaders} to every response
+ *                               produced after route selection; {@code null} when none resolves
  * @param retryEnabled           the materialized upstream-retry toggle (meaningful
  *                               only for a proxy route)
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle
@@ -60,7 +62,7 @@ import org.jspecify.annotations.Nullable;
  *                               {@code Location} inside the effective upstream base path is
  *                               mapped back onto the route's match key (meaningful only for
  *                               an http / graphql proxy route)
- * @param upstream              the resolved upstream target for a proxy route,
+ * @param upstream               the resolved upstream target for a proxy route,
  *                               present when the route's terminal action is proxy and
  *                               {@code null} for an asset or redirect route
  * @param asset                  the resolved asset terminal action, present when the

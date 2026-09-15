@@ -22,15 +22,25 @@ import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The global {@code security_headers} block of {@code gateway.yaml}: response
- * header middleware applied to every response.
+ * A {@code security_headers} block: the gateway-owned response security headers, declared on the
+ * global {@code gateway.yaml} document and optionally on an anchor.
+ * <p>
+ * The global block is seeded onto every response at stage 0; once a route is selected, the route's
+ * resolved block — its anchor's block when the anchor declares one, otherwise the global block — replaces
+ * it <em>wholesale</em> (ADR-0007 and its Amendment A1): an anchor block that omits a header drops the
+ * global value of that header for its routes, {@code content_security_policy} included. {@code cors} is
+ * meaningful on the global block only; the bundled schema refuses it on an anchor. Every header value is
+ * served verbatim.
  *
- * @param hsts               the HSTS settings, {@code null} when omitted
- * @param contentTypeNosniff whether {@code X-Content-Type-Options: nosniff} is
- *                           emitted, {@code null} when omitted
- * @param frameDeny          whether {@code X-Frame-Options: DENY} is emitted,
- *                           {@code null} when omitted
- * @param cors               the CORS settings, {@code null} when omitted
+ * @param hsts                  the HSTS settings, {@code null} when omitted
+ * @param contentTypeNosniff    whether {@code X-Content-Type-Options: nosniff} is
+ *                              emitted, {@code null} when omitted
+ * @param frameDeny             whether {@code X-Frame-Options: DENY} is emitted,
+ *                              {@code null} when omitted
+ * @param contentSecurityPolicy the {@code Content-Security-Policy} value served verbatim,
+ *                              {@code null} when omitted (no header emitted). A value carrying a
+ *                              control character is refused at boot, since it would inject a header
+ * @param cors                  the CORS settings, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -40,6 +50,7 @@ public record SecurityHeadersConfig(
 @Nullable Hsts hsts,
 @Nullable Boolean contentTypeNosniff,
 @Nullable Boolean frameDeny,
+@Nullable String contentSecurityPolicy,
 @Nullable Cors cors) {
 
     /**

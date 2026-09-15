@@ -102,7 +102,14 @@ public final class RouteRuntime {
     @Builder.Default
     private final SecurityProfile securityProfile = SecurityProfile.STRICT;
 
-    /** The effective response-header posture, {@code null} when none resolves. */
+    /**
+     * The effective response-header posture (the anchor block, else the gateway block, resolved
+     * wholesale at boot), {@code null} when none resolves. Consumed by the stage-2a
+     * {@code SecurityHeadersStage.applyRouteHeaders} immediately after route selection, which replaces
+     * the global block seeded at stage 0 with this one — so every response produced after route
+     * selection (proxy relay, asset, redirect, gRPC and WebSocket rejection, problem response) carries
+     * it. A {@code null} posture leaves no gateway-owned security header on those responses.
+     */
     private final @Nullable SecurityHeadersConfig securityHeaders;
 
     /**

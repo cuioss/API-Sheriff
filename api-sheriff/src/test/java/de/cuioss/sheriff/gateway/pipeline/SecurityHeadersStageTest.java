@@ -39,6 +39,40 @@ class SecurityHeadersStageTest {
     private static final String HSTS = "Strict-Transport-Security";
     private static final String NOSNIFF = "X-Content-Type-Options";
     private static final String FRAME_OPTIONS = "X-Frame-Options";
+    private static final String CSP = "Content-Security-Policy";
+    private static final String GLOBAL_POLICY = "default-src 'self'; frame-ancestors 'none'";
+
+    @Nested
+    @DisplayName("stage 0 — content_security_policy is served verbatim from the global block")
+    class ContentSecurityPolicy {
+
+        @Test
+        @DisplayName("emits the configured Content-Security-Policy value verbatim")
+        void emitsConfiguredPolicyVerbatim() {
+            SecurityHeadersStage stage = new SecurityHeadersStage(
+                    SecurityHeadersConfig.builder().contentSecurityPolicy(GLOBAL_POLICY).build());
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+
+            stage.process(request);
+
+            assertEquals(GLOBAL_POLICY, request.responseHeaders().get(CSP),
+                    "the policy is served byte-for-byte as configured");
+        }
+
+        @Test
+        @DisplayName("emits no Content-Security-Policy header when the block omits the key")
+        void emitsNoPolicyWhenOmitted() {
+            SecurityHeadersStage stage =
+                    new SecurityHeadersStage(SecurityHeadersConfig.builder().frameDeny(true).build());
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+
+            stage.process(request);
+
+            assertAll("an omitted policy emits no header while the enabled headers still apply",
+                    () -> assertNull(request.responseHeaders().get(CSP)),
+                    () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS)));
+        }
+    }
 
     @Test
     @DisplayName("reflects any presented origin when a wildcard origin is configured")
@@ -126,8 +160,44 @@ class SecurityHeadersStageTest {
                 .hsts(new Hsts(31536000, true))
                 .contentTypeNosniff(true)
                 .frameDeny(true)
+                .contentSecurityPolicy(GLOBAL_POLICY)
                 .cors(Cors.builder().enabled(Boolean.TRUE).allowedOrigins(List.of("https://ok.example")).build())
                 .build();
+
+        @Test
+        @DisplayName("drops the global Content-Security-Policy when the anchor block declares none")
+        void anchorBlockWithoutPolicyDropsGlobalPolicy() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersStage stage = new SecurityHeadersStage(global);
+            stage.process(request);
+            assertEquals(GLOBAL_POLICY, request.responseHeaders().get(CSP),
+                    "precondition: stage 0 seeded the global policy");
+
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build());
+
+            assertAll("the anchor block replaces the global block wholesale, policy included",
+                    () -> assertNull(request.responseHeaders().get(CSP),
+                            "the global policy does not survive an anchor block that omits it"),
+                    () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS)));
+        }
+
+        @Test
+        @DisplayName("replaces the global Content-Security-Policy with the anchor block's own policy")
+        void anchorPolicyReplacesGlobalPolicy() {
+            String anchorPolicy = "default-src 'none'; img-src 'self'";
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersStage stage = new SecurityHeadersStage(global);
+            stage.process(request);
+
+            stage.applyRouteHeaders(request,
+                    SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build());
+
+            assertAll("exactly one policy, the anchor's, is on the response",
+                    () -> assertEquals(anchorPolicy, request.responseHeaders().get(CSP)),
+                    () -> assertEquals(1, request.responseHeaders().keySet().stream()
+                            .filter(CSP::equalsIgnoreCase).count(),
+                            "the global policy is removed, never merged alongside the anchor's"));
+        }
 
         @Test
         @DisplayName("replaces the security names wholesale — an anchor block with only frame_deny drops HSTS and nosniff")
@@ -183,6 +253,7 @@ class SecurityHeadersStageTest {
                     () -> assertNull(request.responseHeaders().get(HSTS)),
                     () -> assertNull(request.responseHeaders().get(NOSNIFF)),
                     () -> assertNull(request.responseHeaders().get(FRAME_OPTIONS)),
+                    () -> assertNull(request.responseHeaders().get(CSP)),
                     () -> assertEquals("https://ok.example", request.responseHeaders().get(ACAO)));
         }
 
