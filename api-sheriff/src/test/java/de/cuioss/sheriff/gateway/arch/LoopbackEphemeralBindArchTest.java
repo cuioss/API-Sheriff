@@ -89,10 +89,12 @@ import org.junit.jupiter.api.Test;
  * recorded rather than left implicit so a green rule is not read as more than it proves.
  * <p>
  * <strong>Scope: the test tree only.</strong> Production binds configured ports rather than
- * ephemeral ones, and {@code SniFrontListener.start()} binds the wildcard deliberately via
- * {@code netServer.listen(publicPort)}. Selecting production would make this guard demand a change
- * that would break the gateway. {@link MatchedControls#productionWildcardBinderIsOutOfScope()} pins
- * that exclusion so it cannot erode silently.
+ * ephemeral ones, and {@code SniFrontListener.start()} binds through the host-bound
+ * {@code netServer.listen(publicPort, host)} overload, where the delegating five-argument constructor
+ * that {@code TlsEdgeProducer} uses supplies the Vert.x wildcard default host deliberately. Selecting
+ * production would make this guard demand a change that would break the gateway.
+ * {@link MatchedControls#productionWildcardBinderIsOutOfScope()} pins that exclusion so it cannot
+ * erode silently.
  * <p>
  * <strong>Carve-out 1 — the specimen package.</strong>
  * {@code de.cuioss.sheriff.gateway.arch.specimen} is excluded from the guarded selection because it
@@ -130,7 +132,11 @@ class LoopbackEphemeralBindArchTest {
     /** The single carved-out fixture; its nested classes are carved out with it. */
     private static final String CARVED_OUT_TEST = "de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest";
 
-    /** Production's deliberate wildcard binder, which this guard must never select. */
+    /**
+     * Production's deliberate wildcard binder, which this guard must never select. It binds through
+     * {@code listen(publicPort, host)}; the wildcard comes from the delegating constructor's
+     * {@code NetServerOptions.DEFAULT_HOST} default rather than from the call shape.
+     */
     private static final String PRODUCTION_WILDCARD_BINDER = "de.cuioss.sheriff.gateway.tls.SniFrontListener";
 
     private static final String LISTEN = "listen";
@@ -278,7 +284,7 @@ class LoopbackEphemeralBindArchTest {
 
     /**
      * Production is imported only so {@link MatchedControls#productionWildcardBinderIsOutOfScope()}
-     * can assert the near-miss property still holds before asserting the exclusion.
+     * can assert the binder's host-bound call shape still holds before asserting the exclusion.
      */
     private static final JavaClasses PRODUCTION_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
@@ -1035,16 +1041,22 @@ class LoopbackEphemeralBindArchTest {
 
         /**
          * Matched positive control for the scope boundary: production's deliberate wildcard binder
-         * must stay outside the guarded selection.
+         * must stay outside both halves of the guard.
          * <p>
-         * The order of the two assertions is load-bearing. "Not selected" is trivially true of a
-         * class that no longer calls the bare form at all, so the near-miss property is asserted
-         * first: {@code SniFrontListener} really does call {@code listen(int)}, and would really be
-         * reported if it were ever selected. Only then does the exclusion mean anything.
+         * The order of the assertions is load-bearing. "Not selected" is trivially true of a class
+         * that makes no bind call at all, so the call shape is asserted first: {@code SniFrontListener}
+         * binds through the host-bound {@code listen(int, String)} overload and no longer through the
+         * bare {@code listen(int)} one. Its host argument is a field that the delegating constructor
+         * defaults to the Vert.x wildcard, not {@code LoopbackHost.ADDRESS}, so the source sweep's
+         * allow-list is now the half that would reject production if the scope ever widened — which is
+         * why the sweep's source set is asserted to exclude it too. Only then does the exclusion mean
+         * anything.
+         *
+         * @throws IOException when the guarded source tree cannot be walked
          */
         @Test
         @DisplayName("Production's deliberate wildcard binder stays out of scope (positive control)")
-        void productionWildcardBinderIsOutOfScope() {
+        void productionWildcardBinderIsOutOfScope() throws IOException {
             Optional<JavaClass> binder = PRODUCTION_CLASSES.stream()
                     .filter(javaClass -> PRODUCTION_WILDCARD_BINDER.equals(javaClass.getName()))
                     .findFirst();
@@ -1052,17 +1064,30 @@ class LoopbackEphemeralBindArchTest {
                     PRODUCTION_WILDCARD_BINDER + " did not resolve in the production import, so this "
                             + "control cannot establish anything about the scope boundary");
 
-            assertTrue(callsBareListen(binder.get()),
-                    PRODUCTION_WILDCARD_BINDER + " no longer calls the bare listen(int) overload, so it "
-                            + "is no longer the near-miss this control needs. Either production changed "
-                            + "its bind, in which case retarget this control, or the overload matcher "
-                            + "stopped matching, in which case the whole guard is blind");
+            assertAll("production binds through the host-bound overload only",
+                    () -> assertTrue(callsHostBoundListen(binder.get()),
+                            PRODUCTION_WILDCARD_BINDER + " no longer calls the host-bound listen(int, String) "
+                                    + "overload, so it is no longer the near-miss this control needs. Either "
+                                    + "production changed its bind, in which case retarget this control, or "
+                                    + "the overload matcher stopped matching, in which case the whole guard is "
+                                    + "blind"),
+                    () -> assertFalse(callsBareListen(binder.get()),
+                            PRODUCTION_WILDCARD_BINDER + " calls the bare listen(int) overload again. The "
+                                    + "front listener is meant to bind the host its constructor was given; "
+                                    + "the bare overload ignores it and always binds the wildcard"));
 
             assertFalse(TEST_CLASSES.stream()
                             .anyMatch(javaClass -> PRODUCTION_WILDCARD_BINDER.equals(javaClass.getName())),
                     PRODUCTION_WILDCARD_BINDER + " appeared in the guarded test selection. The guard "
                             + "would demand a loopback bind from production, which binds its configured "
                             + "public port on purpose — fix the import scope rather than the production "
+                            + "bind");
+
+            assertTrue(guardedSources().stream().noneMatch(p -> p.toString()
+                            .replace('\\', '/').endsWith("/SniFrontListener.java")),
+                    "The wildcard sweep scans SniFrontListener.java. Its host-bound listen call passes a "
+                            + "host field rather than LoopbackHost.ADDRESS, so the sweep's allow-list would "
+                            + "report production — fix the sweep's source root rather than the production "
                             + "bind");
         }
     }

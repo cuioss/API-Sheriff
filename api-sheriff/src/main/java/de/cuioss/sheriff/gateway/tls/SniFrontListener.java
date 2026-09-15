@@ -19,7 +19,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
-
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
@@ -28,6 +27,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServer;
+import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
 import org.jspecify.annotations.Nullable;
 
@@ -64,10 +64,14 @@ public final class SniFrontListener {
     private final Map<String, RelayTarget> passthroughTargets;
     private final RelayTarget terminatedTarget;
     private final int publicPort;
+    private final String host;
 
     private @Nullable NetServer server;
 
     /**
+     * Creates a front listener bound on the Vert.x default host ({@link NetServerOptions#DEFAULT_HOST},
+     * the wildcard address), which is the production bind scope {@link TlsEdgeProducer} relies on.
+     *
      * @param vertx              the managed Vert.x instance the front server is created on
      * @param relay              the opaque L4 relay both routing branches hand connections to
      * @param passthroughTargets the immutable SNI (normalized, lower-cased) → backend map; a match
@@ -78,16 +82,35 @@ public final class SniFrontListener {
      */
     public SniFrontListener(Vertx vertx, PassthroughRelay relay, Map<String, RelayTarget> passthroughTargets,
             RelayTarget terminatedTarget, int publicPort) {
+        this(vertx, relay, passthroughTargets, terminatedTarget, publicPort, NetServerOptions.DEFAULT_HOST);
+    }
+
+    /**
+     * Creates a front listener bound on an explicit host.
+     *
+     * @param vertx              the managed Vert.x instance the front server is created on
+     * @param relay              the opaque L4 relay both routing branches hand connections to
+     * @param passthroughTargets the immutable SNI (normalized, lower-cased) → backend map; a match
+     *                           relays opaquely to the backend
+     * @param terminatedTarget   the internal terminated Quarkus HTTPS endpoint every non-passthrough
+     *                           connection is relayed to
+     * @param publicPort         the public TLS port the front server binds
+     * @param host               the host (address) the front server binds the public TLS port on
+     */
+    public SniFrontListener(Vertx vertx, PassthroughRelay relay, Map<String, RelayTarget> passthroughTargets,
+            RelayTarget terminatedTarget, int publicPort, String host) {
         this.vertx = Objects.requireNonNull(vertx, "vertx");
         this.relay = Objects.requireNonNull(relay, "relay");
         this.parser = new ClientHelloSniParser();
         this.passthroughTargets = Map.copyOf(Objects.requireNonNull(passthroughTargets, "passthroughTargets"));
         this.terminatedTarget = Objects.requireNonNull(terminatedTarget, "terminatedTarget");
         this.publicPort = publicPort;
+        this.host = Objects.requireNonNull(host, "host");
     }
 
     /**
-     * Creates the {@link NetServer}, wires the connect handler, and binds the public TLS port.
+     * Creates the {@link NetServer}, wires the connect handler, and binds the public TLS port on the
+     * configured host.
      *
      * @return a future completing when the front server is listening, or failing when the bind fails
      */
@@ -95,7 +118,7 @@ public final class SniFrontListener {
         NetServer netServer = vertx.createNetServer();
         netServer.connectHandler(this::onConnect);
         this.server = netServer;
-        return netServer.listen(publicPort)
+        return netServer.listen(publicPort, host)
                 .onSuccess(bound -> LOGGER.info(ApiSheriffLogMessages.INFO.SNI_FRONT_LISTENER_STARTED,
                         Integer.toString(publicPort), Integer.toString(passthroughTargets.size())))
                 .mapEmpty();
