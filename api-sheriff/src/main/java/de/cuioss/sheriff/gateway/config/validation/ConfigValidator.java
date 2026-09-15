@@ -33,6 +33,8 @@ import java.util.regex.Pattern;
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
+import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -107,6 +109,11 @@ import org.jspecify.annotations.Nullable;
  * {@code forward} key <em>set</em>; a mutual exclusion between two of its keys is cross-cutting and
  * lives here.
  * <p>
+ * The session-cookie name refusal adds one more: a declared {@code oidc.session.cookie_name} must
+ * keep the {@code __Host-} guarantee the gateway-owned cookies carry, be writable verbatim into a
+ * {@code Set-Cookie} header, and not collide with a gateway-owned cookie. The schema declares the key
+ * an unrestricted string; this rule is the single enforcing authority.
+ * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
  *
@@ -140,6 +147,19 @@ public final class ConfigValidator {
     private static final String OIDC_LOGIN_PATH_POINTER = "/oidc/login/path";
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
+    private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
+
+    /**
+     * The cookie-name prefix every gateway-owned cookie carries. A browser honours a
+     * {@code __Host-}-prefixed cookie only when it is {@code Secure}, scoped to {@code Path=/} and
+     * carries no {@code Domain}, so the prefix is what turns those attributes from a gateway habit
+     * into a browser-enforced guarantee.
+     */
+    private static final String HOST_COOKIE_PREFIX = "__Host-";
+
+    /** The gateway-owned cookie names a configured session cookie name must never collide with. */
+    private static final List<String> GATEWAY_OWNED_COOKIE_NAMES = List.of(
+            BindingCookieCodec.COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME);
     private static final String SECURITY_DEFAULTS_AUTHORIZATION_POINTER =
             "/security_defaults/max_authorization_header_value_length";
     private static final String ASSET_DEFAULTS_CONTENT_TYPES_POINTER = "/asset_defaults/content_types";
@@ -182,6 +202,15 @@ public final class ConfigValidator {
             MEDIA_TYPE_TOKEN + "/" + MEDIA_TYPE_TOKEN
                     + "(?:[ \\t]*+;[ \\t]*+" + MEDIA_TYPE_TOKEN + "=" + MEDIA_TYPE_TOKEN + ")*+");
 
+    /**
+     * A non-empty RFC 9110 {@code token} matched against the WHOLE configured session cookie name
+     * ({@link java.util.regex.Matcher#matches()}). RFC 6265 draws a cookie name from exactly this
+     * character set, and the name is written verbatim into {@code Set-Cookie}: a {@code ;}, {@code =},
+     * whitespace or control character in it would be response-header injection. It is the same
+     * {@link #MEDIA_TYPE_TOKEN} class, reused rather than restated so the two gates cannot drift.
+     */
+    private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(MEDIA_TYPE_TOKEN);
+
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
 
@@ -206,6 +235,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateSessionCookieName(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
@@ -1316,13 +1346,69 @@ public final class ConfigValidator {
     }
 
     /**
+     * Rule: a declared {@code oidc.session.cookie_name} must not drop the guarantees the gateway-owned
+     * cookies carry. The name is refused at boot unless it
+     * <ol>
+     * <li>starts with the case-sensitive {@code __Host-} prefix followed by at least one further
+     * character — the prefix shared by {@link SessionCookieCodec#DEFAULT_COOKIE_NAME},
+     * {@link BindingCookieCodec#COOKIE_NAME} and {@link RpInitiatedLogout#LOGOUT_STATE_COOKIE_NAME},
+     * and the one thing that makes the browser <em>enforce</em> {@code Secure} + {@code Path=/} + no
+     * {@code Domain} rather than merely receive them;</li>
+     * <li>is a non-empty RFC 9110 {@code token} ({@link #COOKIE_NAME_SHAPE}) — the runtime writes the
+     * name verbatim into {@code Set-Cookie}, so a {@code ;}, {@code =}, whitespace or control
+     * character would be header injection; and</li>
+     * <li>differs from the binding and logout-state cookie names, since a collision would let one
+     * cookie silently overwrite another in the browser.</li>
+     * </ol>
+     * <p>
+     * The refusal is the only guard: the BFF runtime producer consumes the declared name verbatim, and
+     * the schema declares the key an unrestricted string so this validator stays the single enforcing
+     * authority. It applies in both session modes, because both emit the configured name. An omitted
+     * key is never refused — it resolves to {@link SessionCookieCodec#DEFAULT_COOKIE_NAME}.
+     * <p>
+     * The offending value is echoed through {@link #renderForMessage}, so a name carrying CR/LF cannot
+     * forge boot ERROR log lines (CWE-117). All failed requirements of one name are reported in a
+     * single violation, collected into the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateSessionCookieName(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig.Session session = oidcSession(gateway);
+        String declared = session == null ? null : session.cookieName();
+        if (declared == null) {
+            return;
+        }
+        List<String> failures = new ArrayList<>();
+        if (!declared.startsWith(HOST_COOKIE_PREFIX)) {
+            failures.add("does not start with the case-sensitive '" + HOST_COOKIE_PREFIX + "' prefix");
+        } else if (declared.length() == HOST_COOKIE_PREFIX.length()) {
+            failures.add("is the bare '" + HOST_COOKIE_PREFIX + "' prefix with no name after it");
+        }
+        if (!COOKIE_NAME_SHAPE.matcher(declared).matches()) {
+            failures.add("is not a non-empty RFC 9110 token (no whitespace, control characters or "
+                    + "separators such as ';' or '=')");
+        }
+        if (GATEWAY_OWNED_COOKIE_NAMES.contains(declared)) {
+            failures.add("collides with the gateway-owned cookie of the same name");
+        }
+        if (!failures.isEmpty()) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_COOKIE_NAME_POINTER,
+                    ("oidc session cookie_name '%s' %s; the name is written verbatim into Set-Cookie, so it "
+                            + "must be a '%s'-prefixed RFC 9110 token distinct from the gateway-owned "
+                            + "cookies %s — declare such a name, or omit the key for the default '%s'")
+                            .formatted(renderForMessage(declared), String.join(" and ", failures),
+                                    HOST_COOKIE_PREFIX, String.join(", ", GATEWAY_OWNED_COOKIE_NAMES),
+                                    SessionCookieCodec.DEFAULT_COOKIE_NAME)));
+        }
+    }
+
+    /**
      * The session-cookie name the runtime will resolve, for deriving the emitted header size.
      * <p>
      * A blank declared name is folded onto the default rather than passed through: the schema
      * declares {@code cookie_name} an unrestricted string, so {@code cookie_name: ""} is
      * schema-valid, and handing it to the codec's overhead derivation would raise from inside a
-     * validator whose contract is to <em>collect</em> violations rather than throw. The blank value
-     * is refused later by the codec's own constructor guard, where the failure names the field.
+     * validator whose contract is to <em>collect</em> violations rather than throw. The fold stays
+     * necessary even though a blank name is now refused at boot by {@link #validateSessionCookieName}:
+     * rules do not fail fast, so this derivation still runs over the refused value in the same pass.
      */
     private static String resolvedCookieName(OidcConfig.Session session) {
         String declared = session.cookieName();

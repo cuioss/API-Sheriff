@@ -30,6 +30,9 @@ import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
+import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -1953,6 +1956,116 @@ class ConfigValidatorTest {
             assertTrue(TestLoggerFactory.getTestHandler()
                             .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
                     () -> because + ", so " + identifier + " must not be emitted");
+        }
+    }
+
+    /**
+     * The {@code oidc.session.cookie_name} refusal: a declared name must keep the {@code __Host-}
+     * guarantee, be a non-empty RFC 9110 token, and not collide with a gateway-owned cookie.
+     * <p>
+     * The accepted rows are the matched controls for the refused ones — a validator that refused
+     * every declared name would pass the refusal rows alone. Every row runs in both session modes,
+     * because both emit the configured name. The names are literals on purpose: each one IS the
+     * boundary it pins, so a generated value could not stand in for it.
+     */
+    @Nested
+    @DisplayName("The session cookie_name __Host- refusal")
+    class SessionCookieNameRefusal {
+
+        private static final String COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
+        private static final String PREFIX_FAILURE = "does not start with the case-sensitive '__Host-' prefix";
+        private static final String TOKEN_FAILURE = "is not a non-empty RFC 9110 token";
+        private static final String COLLISION_FAILURE = "collides with the gateway-owned cookie";
+
+        private static final List<String> SESSION_MODES =
+                List.of(OidcConfig.Session.MODE_COOKIE, OidcConfig.Session.MODE_SERVER);
+
+        private static GatewayConfig gatewayWithCookieName(String mode, @Nullable String cookieName) {
+            return validGateway().oidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder().mode(mode).cookieName(cookieName).build())
+                    .build()).build();
+        }
+
+        private static List<ConfigError> cookieNameErrors(List<ConfigError> errors) {
+            return errors.stream().filter(error -> COOKIE_NAME_POINTER.equals(error.pointer())).toList();
+        }
+
+        private static Stream<Arguments> inEveryMode(Stream<Arguments> rows) {
+            List<Arguments> materialized = rows.toList();
+            return SESSION_MODES.stream().flatMap(mode -> materialized.stream()
+                    .map(row -> {
+                        Object[] values = row.get();
+                        Object[] withMode = new Object[values.length + 1];
+                        withMode[0] = mode;
+                        System.arraycopy(values, 0, withMode, 1, values.length);
+                        return Arguments.of(withMode);
+                    }));
+        }
+
+        static Stream<Arguments> acceptedCookieNames() {
+            return inEveryMode(Stream.of(
+                    Arguments.of("the omitted key resolves to the default", null),
+                    Arguments.of("the default name", SessionCookieCodec.DEFAULT_COOKIE_NAME),
+                    Arguments.of("a custom well-formed __Host- name", "__Host-orders-session")));
+        }
+
+        /**
+         * Each refused name with the failure fragment the refusal must name and the rendering the
+         * message must echo. The rendering is spelled out independently of the production escaping:
+         * CR and LF become {@code \\u000D} / {@code \\u000A}, everything printable is echoed as typed.
+         */
+        static Stream<Arguments> refusedCookieNames() {
+            return inEveryMode(Stream.of(
+                    Arguments.of("missing prefix", "sheriff-session", PREFIX_FAILURE, "sheriff-session"),
+                    Arguments.of("wrong-case prefix", "__host-x", PREFIX_FAILURE, "__host-x"),
+                    Arguments.of("__Secure- prefix", "__Secure-sheriff-session", PREFIX_FAILURE,
+                            "__Secure-sheriff-session"),
+                    Arguments.of("prefix alone", "__Host-", "is the bare '__Host-' prefix", "__Host-"),
+                    Arguments.of("empty", "", TOKEN_FAILURE, ""),
+                    Arguments.of("blank", "   ", TOKEN_FAILURE, "   "),
+                    Arguments.of("carrying ';'", "__Host-a;b", TOKEN_FAILURE, "__Host-a;b"),
+                    Arguments.of("carrying a space", "__Host-a b", TOKEN_FAILURE, "__Host-a b"),
+                    Arguments.of("carrying CR/LF", "__Host-a\r\nSet-Cookie: x", TOKEN_FAILURE,
+                            "__Host-a\\u000D\\u000ASet-Cookie: x"),
+                    Arguments.of("the binding cookie name", BindingCookieCodec.COOKIE_NAME, COLLISION_FAILURE,
+                            BindingCookieCodec.COOKIE_NAME),
+                    Arguments.of("the logout-state cookie name", RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME,
+                            COLLISION_FAILURE, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME)));
+        }
+
+        @ParameterizedTest(name = "[{0}] {1} is accepted")
+        @MethodSource("acceptedCookieNames")
+        @DisplayName("Should accept an omitted, default or well-formed __Host- session cookie name")
+        void shouldAcceptSafeCookieName(String mode, String label, @Nullable String cookieName) {
+            GatewayConfig gateway = gatewayWithCookieName(mode, cookieName);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(cookieNameErrors(errors).isEmpty(),
+                    () -> label + " must not be refused in mode '" + mode + "', got: " + errors);
+        }
+
+        @ParameterizedTest(name = "[{0}] {1} is refused")
+        @MethodSource("refusedCookieNames")
+        @DisplayName("Should refuse a session cookie name that drops the __Host- guarantee, is no token, or collides")
+        void shouldRefuseUnsafeCookieName(String mode, String label, String cookieName, String failure,
+                String expectedRendering) {
+            GatewayConfig gateway = gatewayWithCookieName(mode, cookieName);
+
+            List<ConfigError> refusals = cookieNameErrors(validator.validate(gateway, List.of(), topologyWith()));
+
+            assertEquals(1, refusals.size(),
+                    () -> label + " must yield exactly one cookie_name violation in mode '" + mode + "', got: "
+                            + refusals);
+            String message = refusals.getFirst().message();
+            assertAll(label,
+                    () -> assertEquals("gateway.yaml", refusals.getFirst().file()),
+                    () -> assertTrue(message.contains(failure),
+                            () -> "expected the failure '" + failure + "' in: " + message),
+                    () -> assertTrue(message.contains("'" + expectedRendering + "'"),
+                            () -> "expected the escaped echo '" + expectedRendering + "' in: " + message),
+                    () -> assertTrue(message.chars().noneMatch(character -> character < 0x20),
+                            () -> "the echoed value must carry no control character: " + message));
         }
     }
 

@@ -329,7 +329,10 @@
           "properties": {
             "mode": { "type": "string", "enum": ["cookie", "server"] },
             "store": { "type": "string", "enum": ["memory"] },
-            "cookie_name": { "type": "string" },
+            "cookie_name": {
+              "type": "string",
+              "description": "Name of the session cookie, in both session modes; defaults to __Host-sheriff-session when omitted. The name is written verbatim into Set-Cookie, so a declared value is REFUSED AT BOOT unless it starts with the case-sensitive __Host- prefix followed by a name (the prefix is what makes the browser enforce Secure, Path=/ and no Domain), is a non-empty RFC 9110 token (no whitespace, control characters or separators such as ';' or '='), and differs from the gateway-owned cookies __Host-sheriff-binding and __Host-sheriff-logout. The rule is stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no pattern keyword is declared."
+            },
             "encryption_key": { "type": "string" },
             "ttl_seconds": { "type": "integer" },
             "csrf": {
