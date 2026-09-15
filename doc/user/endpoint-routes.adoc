@@ -4,17 +4,20 @@
 :sectnums:
 :source-highlighter: highlight.js
 
-How to author the `endpoints/*.yaml` files: the route schema, the asset terminal action, route
-ordering, what an omitted block resolves to, and the transport bounds at the edge. The
-field-level contract for every key mentioned here lives in the
+How to author the `endpoints/*.yaml` files: the route schema, the three terminal actions (proxy,
+asset, redirect), exact and prefix routes and their ordering, how `upstream.path` builds the upstream
+URI, what an omitted block resolves to, and the transport bounds at the edge. The field-level
+contract for every key mentioned here lives in the
 link:../configuration.adoc[Configuration Reference]; anchors are covered in
 link:anchors.adoc[Anchors].
 
 == Endpoint Configuration Files (`endpoints/*.yaml`)
 
-One file per endpoint (service / host / app) or logical group. The file binds to a single
-`base_url` alias and lists its routes. *No concrete upstream host appears here* -- the
-`base_url` alias is resolved from the topology at startup.
+One file per endpoint (service / host / app) or logical group. The file lists its routes and, when
+at least one of them proxies, binds to a single `base_url` alias. *No concrete upstream host appears
+here* -- the `base_url` alias is resolved from the topology at startup. An endpoint whose routes are
+all `asset` or `redirect` routes contacts no endpoint upstream and omits `base_url` (see
+<<_base_url_only_with_proxy_routes>>).
 
 [source,yaml]
 ----
@@ -27,7 +30,9 @@ endpoint:
                                    #   alias need not resolve. The ${VAR:-default} placeholder
                                    #   makes the env override visible in-file (ADR-0004 A1);
                                    #   a plain literal (enabled: true) is equally valid
-  base_url: APP1                   # alias; resolved from topology.properties / env
+  base_url: APP1                   # alias; resolved from topology.properties / env. Mandatory
+                                   #   because this file carries a proxy route; an endpoint of
+                                   #   asset and redirect routes only omits it
   anchor: api                      # anchor membership (see "Anchors" in anchors.adoc): default
                                    #   for every route in this file, overridable per route; the
                                    #   route paths must lie inside the anchor's path_prefix.
@@ -46,7 +51,8 @@ endpoint:
       protocol: http               # http | grpc | graphql | websocket (see "protocol" in
                                    #   ../configuration.adoc)
       match:
-        path_prefix: /api/orders
+        path_prefix: /api/orders   # prefix route; `path: /api/orders` would declare an EXACT
+                                   #   route instead -- exactly one of the two (see "Route ordering")
         methods: [GET, POST]
         host: ${GATEWAY_PUBLIC_HOST:-api.example.com}
                                    # matches the INBOUND request's Host header -- the gateway's
@@ -83,9 +89,11 @@ endpoint:
                                    #   set_headers WINS over a client header of the same name
                                    #   (case-insensitively) -- operator config beats client input
       upstream:
-        path: /orders              # replaces the matched path_prefix; the request-path
-                                   #   remainder is appended (see "upstream" in
-                                   #   ../configuration.adoc)
+        path: /orders              # APPENDED to the alias base path; the request-path
+                                   #   remainder after the match key follows it (see
+                                   #   "Upstream path" below)
+        rewrite_location: false    # default false. true maps an upstream Location pointing
+                                   #   inside this route's upstream back onto /api/orders
         connect_timeout_ms: 2000
         read_timeout_ms: 5000
         retry: { max_attempts: 3, idempotent_only: true }
@@ -120,14 +128,136 @@ endpoint:
       upstream: { path: /realms/main/protocol/openid-connect/token }
 ----
 
+[[_upstream_path]]
+=== Upstream path
+
+A proxy route's upstream URI is built from three parts: the resolved alias, the route's
+`upstream.path`, and the *remainder* -- the request path with the route's match key stripped. The
+alias contributes its scheme, host, port *and base path*; `upstream.path` is *appended* to that base
+path, joined on exactly one `/` (decision:
+link:../adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004 Amendment A2]):
+
+----
+upstream URI = alias base path + upstream.path + remainder
+----
+
+An omitted or blank `upstream.path` keeps the alias base path unchanged. Aliases carry the
+environment, routes carry paths: a route never restates the part of the location that belongs to
+the deployment.
+
+[cols="2,1,1,2"]
+|===
+| Alias (`topology.properties`) | `upstream.path` | Request | Upstream URI
+
+| `APP1=https://app1.internal:8443/app1`
+| `/orders`
+| `/api/orders/42` on `path_prefix: /api/orders`
+| `https://app1.internal:8443/app1/orders/42`
+
+| `APP1=https://app1.internal:8443/app1`
+| _(omitted)_
+| `/api/orders/42` on `path_prefix: /api/orders`
+| `https://app1.internal:8443/app1/42`
+
+| `KEYCLOAK=https://kc.internal:8443`
+| `/realms/main/protocol/openid-connect/token`
+| `/token` on `path_prefix: /token`
+| `https://kc.internal:8443/realms/main/protocol/openid-connect/token`
+|===
+
+*Migrating a route written for the former replace semantics.* Before Amendment A2 a declared
+`upstream.path` *replaced* the alias base path, so a route behind an alias with a base path had to
+repeat that base path. Drop the repeated part from the route:
+
+[source,yaml]
+----
+# topology.properties: UPSTREAM=http://go-httpbin:8080/anything
+
+# before (replace): the route restated the alias base path
+upstream: { path: /anything/graphql }     # reached /anything/graphql
+
+# after (append): the route names only its own segment
+upstream: { path: /graphql }              # still reaches /anything/graphql
+----
+
+A route behind an alias *without* a base path (`GRPC_ECHO=http://grpc-echo:9000`) resolves to the same
+URI under both semantics and needs no change.
+
+[[_rewrite_location]]
+==== Rewriting upstream `Location` headers (`upstream.rewrite_location`)
+
+An upstream that redirects to its own absolute path -- `Location: /login` from an application
+mounted behind `/api/orders` -- sends the browser off the gateway namespace, and an absolute
+`Location` naming the upstream's internal host sends it off the gateway altogether. Setting
+`upstream.rewrite_location: true` maps such a value back onto the route:
+
+* *Candidates* are a relative path-absolute value (`/orders/login`) and an absolute URI whose scheme,
+  host and effective port equal the route's upstream.
+* A candidate whose path equals the *effective upstream base path* (alias base path +
+  `upstream.path`) or continues it on a segment boundary is rewritten to the route's match key plus
+  the remainder, emitted as a *gateway-relative* path, so the browser stays on the gateway origin.
+  Query and fragment are kept verbatim.
+* Everything else is relayed *unchanged*: a foreign origin, a scheme-relative `//host` value, an
+  unparseable value, and a path outside the effective base path.
+
+With the alias `APP1=https://app1.internal:8443/app1` and `upstream.path: /orders` on
+`path_prefix: /api/orders`, the effective base path is `/app1/orders`: an upstream
+`Location: https://app1.internal:8443/app1/orders/login?next=42` becomes
+`/api/orders/login?next=42`, while `Location: https://idp.example.com/auth` passes through untouched.
+
+The key defaults to `false` -- `Location` is relayed exactly as the upstream sent it. It is valid on
+`http` and `graphql` routes only; declaring it on a `grpc` or `websocket` route fails the boot, since
+neither protocol carries a redirect the gateway could rewrite.
+
+[[_base_url_only_with_proxy_routes]]
+=== `base_url` is mandatory only with a proxy route
+
+A route that declares neither an `asset` nor a `redirect` block is a *proxy route*: it reaches the
+endpoint's upstream. An endpoint must declare `base_url` *exactly when* it carries at least one proxy
+route; an endpoint made only of asset and redirect routes omits it. The rule is enforced at boot, not
+by the schema:
+
+* an endpoint with a proxy route and no `base_url` fails the boot
+  (`endpoint '<id>' declares proxy route(s) but no base_url`);
+* a `base_url` that *is* declared must resolve in the topology even when no route uses it -- a
+  declared alias is never silently ignored.
+
+[[_terminal_actions]]
+=== Terminal actions
+
+A route carries *exactly one terminal action* -- what the gateway does with a request once it has
+passed route selection, the verb gate, the thorough checks and authentication:
+
+[cols="1,1,3"]
+|===
+| Action | Declared by | What answers the request
+
+| *proxy*
+| neither `asset` nor `redirect` (an optional `upstream` block tunes it)
+| The endpoint's upstream, reached through the streamed data plane (every example above).
+
+| *asset*
+| an `asset` block
+| The gateway itself, serving static content (see <<_asset_terminal_action>>).
+
+| *redirect*
+| a `redirect` block
+| The gateway itself, with a status and a `Location` and no upstream contact (see
+  <<_redirect_terminal_action>>).
+|===
+
+Declaring two of them on one route fails the boot: a `redirect` block beside an `asset` block, or
+beside an `upstream` block, is refused rather than resolved by a silent precedence (decisions:
+link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014] and its
+link:../adr/0014-asset-serving-terminal-action.adoc#amendment-a1[Amendment A1]).
+
 [[_asset_terminal_action]]
 === Asset terminal action
 
-A route carries *exactly one terminal action*: it either proxies to an `upstream` (every example
-above) *or* serves static content through an `asset` block -- `upstream` and `asset` are mutually
-exclusive (decision: link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014]). An asset route
-rides a `type: asset` anchor; declaring an `asset` block on a non-asset route, or omitting it on
-an asset-anchor route, fails the boot.
+An asset route serves static content through an `asset` block instead of proxying. It rides a
+`type: asset` anchor: declaring an `asset` block on a route under a `proxy` or `bff` anchor (or on an
+unanchored route) fails the boot, and a route under an asset anchor must declare either an `asset` or
+a `redirect` block.
 
 The `asset` block selects one of two sources:
 
@@ -176,19 +306,191 @@ An operator may *teach* the gateway an extension it does not already map -- but 
 it does. See link:../configuration.adoc#_asset_defaults[`asset_defaults`] for the add-only block
 and the security rationale behind that asymmetry.
 
+[[_asset_index_and_fallback]]
+==== Directory index and single-page-application fallback
+
+A `source: directory` asset block may name two files the source answers with when the request does
+not address an existing file directly:
+
+[source,yaml]
+----
+- id: spa
+  match: { path_prefix: /static/app }
+  asset:
+    source: directory
+    directory: /srv/app-bundle
+    index: index.html                # answers a DIRECTORY address
+    fallback: index.html             # answers an unknown EXTENSIONLESS path
+----
+
+* *`index`* -- a request addressing a directory (the bare route prefix, a sub-path ending in `/`, or
+  a sub-path naming an existing directory) is answered with that file *from the addressed directory*.
+  A directory without the file is a `404`. Without `index`, every directory address is a `404`.
+* *`fallback`* -- a request whose target does not exist *and whose last path segment carries no `.`
+  extension* is answered with that file from the *root* of the directory. This is the client-side
+  routing case: `/static/app/orders/42` serves the application shell. A missing file *with* an
+  extension -- `/static/app/app.js`, `/static/app/logo.png` -- stays a `404`, so a broken asset
+  reference is never masked by an HTML page.
+
+Both files are served through the same canonicalize-and-confine chain as any other asset: the
+traversal, symlink and special-file protections are reused, never bypassed, and the `Content-Type`
+follows the *served* file's name. Each value must be a single file-name segment -- no `/`, no `\`, no
+`..`, no control characters, not empty -- and both keys are refused on a `source: upstream` asset
+block; either violation fails the boot.
+
+[[_redirect_terminal_action]]
+=== Redirect terminal action
+
+A `redirect` block makes the gateway answer the request itself with a redirect status and a
+`Location` header -- no upstream is contacted, no body is sent. The typical use is steering an entry
+address without a trailing slash to its slash form, so relative URLs inside the application resolve
+under it:
+
+[source,yaml]
+----
+routes:
+  - id: k-beispiel-entry
+    match:
+      path: /KIDICAP.Gateway/app/K.Beispiel      # EXACT route: this one address only
+    redirect:
+      location: /KIDICAP.Gateway/app/K.Beispiel/ # written verbatim into Location
+      status: 308                                # mandatory: 301 | 302 | 303 | 307 | 308
+      keep_query: true                           # default false: append the raw query
+      # allow_external: false                    # default false: see "External targets"
+  - id: k-beispiel-app                            # the slash form and everything below it
+    match:
+      path_prefix: /KIDICAP.Gateway/app/K.Beispiel
+    # proxy route (or an asset route) serving the application itself
+----
+
+Because `/KIDICAP.Gateway/app/K.Beispiel` and `/KIDICAP.Gateway/app/K.Beispiel/` are different
+addresses to an exact route (see <<_route_ordering>>), the redirect claims the slash-less entry while
+the prefix route keeps serving the slash form and every path below it.
+
+*Choosing the status.* `status` has no default, because permanence must be an explicit choice:
+
+[cols="1,1,3"]
+|===
+| Status | Method on follow | Use it when
+
+| `301`
+| may change to `GET`
+| The address moved for good and the old one only ever received `GET`. *Browsers cache it*, often
+  indefinitely -- a wrong `301` outlives its configuration.
+
+| `308`
+| preserved
+| The address moved for good and may receive other methods. *Cached like `301`.* The usual choice for
+  a canonical trailing-slash redirect.
+
+| `302`
+| may change to `GET`
+| The move is temporary and only `GET` matters. Not cached by default.
+
+| `307`
+| preserved
+| The move is temporary and the method and body must be kept. Not cached by default.
+
+| `303`
+| always `GET`
+| The client should fetch the target with `GET` regardless of the method it sent (post/redirect/get).
+|===
+
+Start with `302` or `307` while an address change is being tried out and switch to `301` / `308` once
+it is settled; a permanent status is hard to take back from browser caches.
+
+*`keep_query`.* With `keep_query: true` the raw inbound query string is appended to `location` --
+joined with `?`, or with `&` when `location` already carries a query. Nothing else from the request is
+copied: there are no request placeholders, and without `keep_query` the query is dropped. A `location`
+containing `#` cannot be combined with `keep_query` (a query appended after a fragment never reaches
+the server) and fails the boot.
+
+*The context path.* `location` is written into `Location` *verbatim*. It is a raw gateway path written
+the same way `match.path_prefix` is written, and the gateway never prefixes it with the application
+context path (see link:context-path.adoc[The Context Path]).
+
+*Answered after authentication.* A redirect route runs the same pipeline as any other route up to its
+terminal action: route selection, the verb gate, the thorough checks and *authentication* all come
+first. Under an anchor or endpoint that requires authentication, an unauthenticated request is
+challenged (`401`, or the login redirect on a `require: session` navigation) *before* any `Location` is
+disclosed -- the configured target is itself information an anonymous caller does not get. A public
+entry redirect declares `auth: { require: none }` like any other public route. The redirect answer
+carries the route's resolved security headers (see link:anchors.adoc#_anchors[Anchors]) and any
+`Set-Cookie` an earlier stage produced; the route's `forward` block is not consulted, because nothing is
+forwarded.
+
+*Where a redirect is allowed.* A `redirect` block is admitted under every anchor type -- `proxy`,
+`bff` and `asset` -- and on unanchored routes, since it serves nothing an anchor type governs. It is
+refused on a `grpc`, `websocket` or `graphql` route: those clients do not follow an HTTP redirect, so
+the route would be dead configuration.
+
+[[_redirect_external_targets]]
+==== External targets and the open-redirect review
+
+`location` is checked *once, at boot* -- at request time it is written verbatim, so the boot review is
+the only place a target is judged. Without `allow_external`, the value must be a *gateway path*:
+
+[cols="2,3"]
+|===
+| Refused spelling | Why a client reads it as another origin, or as a different path
+
+| `//evil.example/x`
+| A leading `//` is scheme-relative: it names another host.
+
+| `/\evil.example`, `\\evil.example`
+| Browsers read a backslash as `/`.
+
+| `/%2F%2Fevil.example`, `/%5cevil.example`
+| A percent-encoded `/` or `\` (either case) is decoded by intermediaries.
+
+| `/a/../b`, `/a/./b`, `/a/%2e%2e/b`
+| A dot-segment is normalized away by clients.
+
+| a value with whitespace or a control character
+| A CR/LF would forge a response header; whitespace is never a valid `Location`.
+
+| `https://elsewhere.example/`, `javascript:...`
+| Not a gateway path -- only admitted under `allow_external` (below), and `javascript:` never.
+|===
+
+`allow_external: true` additionally admits an *absolute `http` or `https` URI with a non-empty host
+and no user-info* (`https://user@evil.example` disguises the real host and stays refused). Every other
+scheme stays refused. Opting in is legitimate -- a moved site, a hand-off to another application -- but
+it is never silent: the boot logs `WARN ApiSheriff-125` naming the route id (never the target), see
+link:../LogMessages.adoc[Log Messages]. A refused `location` fails the boot with a message that echoes
+the value in escaped form, so a hostile value cannot forge log lines.
+
 [[_route_ordering]]
 === Route ordering
 
-The routes of *all* endpoint files are merged into a single immutable route table at startup.
-Matching is a two-step rule:
+The routes of *all* endpoint files are merged into a single immutable route table at startup. A route
+declares exactly one path matcher:
 
-. *Candidates* are the routes whose *entire* matcher set holds for the request (path prefix
-  AND methods AND host AND headers). A route whose `path_prefix` matches but whose `host` or
-  `methods` do not is simply not a candidate -- shorter-prefix routes are still considered.
-. Among the candidates, the one with the *longest* `path_prefix` wins.
+* *`match.path_prefix`* -- a *prefix route*: it matches the prefix itself and every path continuing it
+  on a segment boundary (`/api` matches `/api/orders`, never `/apifoo`).
+* *`match.path`* -- an *exact route*: it matches exactly one address, by an un-normalized string
+  comparison against the canonical request path. The trailing slash is significant: `/a` and `/a/` are
+  two different addresses, and an exact `path: /a` matches neither `/a/` nor `/a/b`.
 
-So that the winner is never ambiguous, any two routes with an *identical* `path_prefix` --
-in the same file or across files -- must be *statically disjoint*, meaning one of:
+Declaring both, or neither, fails the boot. Matching is then a two-step rule:
+
+. *Candidates* are the routes whose *entire* matcher set holds for the request (path AND methods AND
+  host AND headers). A route whose path matches but whose `host` or `methods` do not is simply not a
+  candidate -- other routes are still considered.
+. Among the candidates, *every exact route precedes every prefix route*; exact routes are ordered by
+  path length, longest first, and prefix routes by the *longest* `path_prefix`. The first candidate in
+  that order wins.
+
+So for the *same address* an exact route always beats a prefix route, and an exact route can sit
+inside a prefix route's namespace to override that one address (the redirect example above does
+exactly that) while the prefix route keeps serving every other path.
+
+So that the winner is never ambiguous, any two routes with an *identical* `path_prefix`, or any two
+exact routes with an *identical* `path` -- in the same file or across files -- must be *statically
+disjoint*. Prefixes are compared normalized (`/api` and `/api/` are the same prefix); exact paths are
+compared verbatim (`/a` and `/a/` are different paths and never collide). An exact route and a prefix
+route never collide, even for the same string, because the exact route is selected first by design.
+Two same-key routes are disjoint when one of these holds:
 
 * *both* declare `host`, with different values (a route that omits `host` matches every host,
   so a declared-host route paired with a host-less route at the same prefix is *not* disjoint
@@ -202,7 +504,7 @@ in the same file or across files -- must be *statically disjoint*, meaning one o
   at once). A lone `present: true`, with no opposing `present: false` at the same prefix and
   header, establishes nothing.
 
-Any same-prefix pair that fails all three tests is rejected at boot; precedence never depends
+Any same-key pair that fails all three tests is rejected at boot; precedence never depends
 on file-system or declaration order. This keeps the canonical virtual-hosting case
 expressible: `/api` on `a.example.com` -> `APP_A` and `/api` on `b.example.com` -> `APP_B`
 live in two endpoint files and are disjoint by host.

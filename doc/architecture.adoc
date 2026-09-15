@@ -18,12 +18,15 @@ the active mode is a function of configuration.
 == Component Model
 
 An inbound request flows left to right through a fixed pipeline. The TLS edge terminates
-(or passes through) the connection; a *security-headers/CORS stage* prepares the response
-headers applied to *every* response -- including rejections -- and answers CORS preflight
+(or passes through) the connection; a *security-headers/CORS stage* seeds the *global* response
+security headers applied to *every* response -- including rejections -- and answers CORS preflight
 `OPTIONS` requests before authentication (preflights carry no credentials by spec; see
 link:configuration.adoc#_security_headers[Configuration -- `security_headers`]); then inbound
-validation, the route matcher, the authentication layer, and the forward policy each
-act in turn; a request that fails any stage is rejected before it reaches the upstream. *Route
+validation and the route matcher act, the selected route's resolved security headers replace the
+global ones (see <<_response_security_headers>>), and the verb gate, the thorough checks, the
+authentication layer and the route's terminal action -- the forward policy and upstream dispatch, an
+asset, or a redirect -- follow; a request that fails any stage is rejected before it reaches the
+upstream. *Route
 matching is the deny-by-default stage*: a request matching no route reaches no upstream at all,
 and the forward policy that follows filters headers and query parameters *within* a route the
 request is already authorised for. The event system and metrics observe every stage.
@@ -63,17 +66,75 @@ image::resources/diagrams/request-pipeline.svg[Inbound request pipeline: TLS edg
 ====
 The diagram above renders inbound validation as a *single* "security filter" box ahead of route
 matching. That is a simplification: it predates the pre-route/post-route split described above and
-does not show the post-route per-route stage or the profile gate on its validation half. Read the
-three-step list above as authoritative for the pipeline's shape; the diagram remains accurate for the
-*order* of the surrounding stages (TLS edge -> headers/CORS -> inbound validation -> route match ->
-authenticate -> forward policy -> upstream).
+does not show the post-route per-route stage or the profile gate on its validation half. It also
+predates the route-scoped header stage and the asset and redirect terminal actions. Read the
+three-step list above and the stage table in <<_request_pipeline_stages>> as authoritative for the
+pipeline's shape; the diagram remains accurate for the *order* of the surrounding stages (TLS edge ->
+headers/CORS -> inbound validation -> route match -> authenticate -> forward policy -> upstream).
 ====
+
+[[_request_pipeline_stages]]
+=== Request Pipeline Stages
+
+The fixed per-request order the edge (`GatewayEdgeRoute`) runs on a virtual thread. A rejection at
+any stage is rendered immediately (RFC 9457 `application/problem+json`, or trailers-only on a gRPC
+route) and nothing after it runs:
+
+[cols="1,2,4", options="header"]
+|===
+| Stage | Component | What it does
+
+| 0
+| `SecurityHeadersStage.process`
+| Seeds the *global* `security_headers` block onto the response and applies the global CORS policy;
+  an allow-listed CORS preflight is answered `204` here, before route selection and authentication.
+
+| 1
+| `BasicChecksStage`, `CanonicalPathGuard`, `FramingGate`
+| The non-skippable pre-route floor (produces the one canonical path), the canonical-path guard, and
+  the anti-smuggling framing gate.
+
+| 2
+| `RouteSelectionStage`
+| Deny-by-default route selection over the exact-first, then longest-prefix-first route table; no
+  match is a `404`.
+
+| 2a
+| `SecurityHeadersStage.applyRouteHeaders`
+| Replaces the gateway-owned security headers with the selected route's resolved block (anchor block,
+  else global) -- wholesale, never merged. See <<_response_security_headers>>.
+
+| 2b
+| `VerbGateStage`
+| The route's effective `allowed_methods`; a verb outside it is a `405` with `Allow`.
+
+| 3
+| `ThoroughChecksStage`
+| The post-route per-route stage: body cap, `allowed_paths`, and the profile-gated validation half.
+
+| 4
+| `AuthenticationStage`
+| Bearer validation or session resolution for the route's effective auth.
+
+| 5 -- 7
+| terminal action
+| *Proxy*: the forward policy (stage 5), the streamed upstream dispatch (6) and the streamed response
+  relay (7), which applies the optional `Location` rewrite and the set/default header precedence.
+  *Asset*: the buffered, governed asset response. *Redirect*: the `RedirectStage` answer -- no forward
+  policy, no upstream contact.
+|===
+
+Two checks sit ahead of route selection outside this numbering and are described where they are
+owned: the reserved OIDC paths are dispatched before the route table (<<_bff_session_runtime>>), and
+the Host-vs-SNI smuggle guard rejects before route selection (<<_tls_edge_accept_time_sni_split>>).
+Both answer before stage 2a, so they carry the global security-header block.
 
 The authentication stage is where the three variants differ: offline bearer validation
 (link:variants/01-base-gateway.adoc[Variant 1]), OIDC session mediation
 (link:variants/02-bff-session.adoc[Variant 2]), or OIDC encrypted-cookie mediation
 (link:variants/03-bff-cookie.adoc[Variant 3]). Everything else in the pipeline is shared.
 
+[[_tls_edge_accept_time_sni_split]]
 === TLS Edge (Accept-Time SNI Split)
 
 The leftmost component is a Vert.x `NetServer` *front listener* that owns the public TLS port. It
@@ -257,13 +318,22 @@ it to. Omitted, it resolves to `false` and every framing rejection is preserved 
 === Routing / Matching
 
 A static, immutable route table maps inbound requests to exactly one route, and each route to
-exactly one *terminal action* -- a proxied `upstream` or a served `asset` (see "Asset Terminal
-Action"), never both. Matchers are
-bounded and composable with AND semantics (path prefix, HTTP method, host, header
-presence/value). The most specific matching route wins; a request that matches no route is rejected
-with `404` (deny-by-default). Routes from all endpoint files form one table ordered
-most-specific-first; see link:user/endpoint-routes.adoc#_route_ordering[Endpoint Routes -- Route ordering]. Routing
-carries no dynamic rule language.
+exactly one *terminal action* -- a proxied `upstream`, a served `asset` (see
+<<_asset_terminal_action>>), or a gateway-answered `redirect` (see <<_redirect_terminal_action>>)
+(link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014] and its Amendment A1). Matchers are
+bounded and composable with AND semantics (exact path or path prefix, HTTP method, host, header
+presence/value). A route matches either one exact address (`match.path`, compared un-normalized
+against the canonical path, so the trailing slash is significant) or a path prefix on a segment
+boundary. The table is ordered *exact-first*: every exact route precedes every prefix route, prefix
+routes longest first, and the first matching candidate wins -- so for the same address an exact
+route always beats a prefix route. A request that matches no route is rejected with `404`
+(deny-by-default). See link:user/endpoint-routes.adoc#_route_ordering[Endpoint Routes -- Route
+ordering]. Routing carries no dynamic rule language.
+
+The endpoint `base_url` alias is resolved only for an endpoint carrying at least one proxy route;
+an endpoint of asset and redirect routes has no endpoint upstream at all. The route-table builder and
+the configuration validator decide "is this a proxy route" through one shared predicate, so assembly
+and validation cannot disagree about which endpoints owe a `base_url`.
 
 Only routes of *enabled* endpoints enter the table: an endpoint switched off by its resolved
 `enabled` value (file literal or `${ENDPOINT_<ID>_ENABLED:-...}` placeholder, ADR-0004 A1)
@@ -554,6 +624,42 @@ lower-cased `content-type` rather than riding alongside it as a second header. W
 case-insensitive keying the precedence rule merely *appears* to hold -- a lookup by either
 spelling finds a plausible value while both cross to the upstream.
 
+[[_response_security_headers]]
+=== Response Security Headers
+
+The gateway owns four response security headers -- `Strict-Transport-Security`,
+`X-Content-Type-Options`, `X-Frame-Options` and `Content-Security-Policy` -- and applies them at two
+fixed positions (link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]):
+
+* *Stage 0* seeds the *global* block, and also owns CORS: the `Access-Control-Allow-*` headers of an
+  actual request and the preflight short-circuit. CORS stays here and stays global, because a
+  preflight must be answered before authentication, and authentication runs after route selection.
+* *Stage 2a*, immediately after route selection, removes every gateway-owned security-header name from
+  the response and seeds the selected route's resolved block -- the anchor's block when the anchor
+  declares one, otherwise the global block. It never touches CORS headers or any non-security header
+  already on the response (`Allow`, `WWW-Authenticate`).
+
+Everything answered before a route is selected carries the global block; everything after stage 2a
+carries the route's block. The anchor block *replaces* the global block wholesale -- no key-by-key
+merge -- so an anchor that omits a header drops it for its routes, in line with the replacement rule
+every anchor policy block follows.
+
+*Precedence against origin headers.* Each gateway-owned header resolves a mode from its block's
+`header_modes`. A `set` header (the default) goes into the response header map that overwrites; a
+`default` header goes into a second map that the proxy relay applies only when the upstream response
+did not carry that name. A header name lives in exactly one of the two maps. A response the gateway
+authors itself -- a rejection, an asset, a redirect, a gRPC trailers-only rejection -- applies both
+maps, because there is no origin header to defer to; the WebSocket relay receives the merged map.
+
+*`Location` rewrite in the relay.* A proxy route with `upstream.rewrite_location: true` carries a
+boot-built `LocationRewriter`. Before copying the upstream response headers, the relay passes an
+upstream `Location` through it: a path-absolute value, or an absolute URI on the route upstream's own
+scheme, host and effective port, whose path lies inside the effective upstream base path (alias base
+path + `upstream.path`) on a segment boundary, is mapped onto the route's match key as a
+gateway-relative path with query and fragment kept. Every other value -- a foreign origin, a
+scheme-relative `//host`, an unparseable value, a path outside the base path -- is relayed unchanged.
+The trailer-carrying gRPC relay never rewrites, since gRPC carries no redirect.
+
 === Downstream Client
 
 The upstream client is split by plane
@@ -614,13 +720,15 @@ from the Vert.x client / fault-tolerance guard outcomes
 (link:adr/0008-data-plane-transport.adoc[ADR-0008]) -- `HttpResult` does not appear on the
 data plane.
 
+[[_asset_terminal_action]]
 === Asset Terminal Action
 
 Serving static content is the *second terminal action* a route can resolve to
 (link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]), alongside the proxy action above.
 An asset route runs the same fixed pipeline as a proxy route -- the stage-0 response-header and
-CORS-preflight preparation, the baseline security filter, route selection, the verb gate, the
-thorough checks, and *authentication* -- and only diverges at the terminal step: instead of the
+CORS-preflight preparation, the baseline security filter, route selection, the stage-2a route
+headers, the verb gate, the thorough checks, and *authentication* -- and only diverges at the
+terminal step: instead of the
 streamed upstream dispatch, the request is served by the route's boot-built *asset source* (a
 local-directory reader or a secondary-origin fetcher) and the buffered, governed response is
 written back.
@@ -667,6 +775,39 @@ Three properties define the action:
 Unlike a proxied body, an asset response is small and bounded, so it is buffered and re-served
 under the envelope rather than streamed; the streaming, never-materialize contract (ADR-0006)
 governs the *proxy* data plane specifically.
+
+*Directory index and fallback.* A `source: directory` action may carry an `index` file (answering a
+directory address from the addressed directory) and a `fallback` file (answering an unknown path
+whose last segment has no extension, from the root). Both resolve to a new sub-path that is sent
+back through the *same* confinement, real-path-in-root and secure-walk chain as the original request,
+so neither widens what the source can read; a missing path with an extension stays a `404`.
+
+[[_redirect_terminal_action]]
+=== Redirect Terminal Action
+
+The *third terminal action*
+(link:adr/0014-asset-serving-terminal-action.adoc#amendment-a1[ADR-0014 Amendment A1]) answers the
+request at the gateway with a configured redirect status (`301`, `302`, `303`, `307` or `308`) and a
+`Location` header, and never contacts an upstream. It exists so an address move or a canonical
+trailing-slash redirect needs neither an upstream nor a proxied round-trip.
+
+A redirect route runs the full pipeline up to its terminal step -- stage 0, the pre-route floor, route
+selection, the stage-2a route headers, the verb gate, the thorough checks and *authentication* -- and
+is answered only then. Placing the answer after authentication is the secure default: under an
+authenticated anchor an unauthenticated caller is challenged before the configured location is
+disclosed. The answer is written on the event loop with the status, the `Location`, the headers the
+earlier stages accumulated (the route's security headers, any `Set-Cookie`) and an empty body; the
+forward policy is not consumed and `REQUEST_FORWARDED` is not counted.
+
+`RedirectStage` itself performs no URI policy: it writes the configured `location` verbatim --
+never prefixed with the application context path, with no request placeholder -- and appends the raw
+query only when `keep_query` is set. The *open-redirect review* happens once, at boot, in the
+configuration validator, which is why the request path can be policy-free: a `location` without the
+`allow_external` opt-in must be a single-slash gateway path free of backslashes, encoded slashes,
+dot-segments, whitespace and control characters; with the opt-in it may be an absolute `http`/`https`
+URI with a host and no user-info, and the boot logs `WARN ApiSheriff-125` naming the route. A redirect
+is refused on every protocol but `http`, and together with an `asset` or `upstream` block. See
+link:security-threat-model.adoc#gw-13[GW-13] for the threat this review answers.
 
 [[_event_system]]
 == Event System
