@@ -17,6 +17,12 @@
 # deny-by-default lives at the URL layer, where a request matching no route reaches no
 # upstream at all. Each route below states which mode it resolves and why, because the
 # mode is selected by what the YAML does NOT say and is therefore invisible otherwise.
+#
+# UPSTREAM PATHS — upstream.path APPENDS to the alias base path (ADR-0004 Amendment A2):
+# forward URI = alias base path + upstream.path + remainder-after-match-key. The UPSTREAM alias
+# already carries go-httpbin's /anything echo base, so a route declaring upstream.path: /graphql
+# reaches /anything/graphql — each route names only its own path segment, never the /anything
+# base the alias owns.
 endpoint:
   id: httpbin
   enabled: true
@@ -57,7 +63,7 @@ endpoint:
       match:
         path_prefix: /proxy/minimal-mode
       upstream:
-        path: /anything/minimal-mode
+        path: /minimal-mode
       security_filter:
         profile: minimal
         # A deliberately small cap so a modest test body trips it: the cap is enforced under
@@ -96,7 +102,7 @@ endpoint:
         path_prefix: /graphql
         methods: ["POST"]
       upstream:
-        path: /anything/graphql
+        path: /graphql
       forward:
         headers_allow: []
 
@@ -108,7 +114,7 @@ endpoint:
         path_prefix: /upload/small
         methods: ["POST"]
       upstream:
-        path: /anything/upload-small
+        path: /upload-small
       forward:
         headers_allow: []
 
@@ -118,7 +124,7 @@ endpoint:
         path_prefix: /upload/large
         methods: ["POST"]
       upstream:
-        path: /anything/upload-large
+        path: /upload-large
       forward:
         headers_allow: []
 
@@ -141,7 +147,7 @@ endpoint:
       match:
         path_prefix: /proxy/deny-list
       upstream:
-        path: /anything/deny-list
+        path: /deny-list
       forward:
         headers_deny: ["Accept-Language", "X-Sheriff-Denied"]
 
@@ -156,4 +162,4 @@ endpoint:
       match:
         path_prefix: /proxy/forward-all
       upstream:
-        path: /anything/forward-all
+        path: /forward-all
