@@ -253,11 +253,14 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 | B2 edge->pipeline
 | *Elevation* via path-confusion auth bypass -> <<gw-01>>. *Tampering* via header injection
   / hop-by-hop abuse -> <<gw-03>>. *Repudiation* if the effective posture isn't logged
-  (boot posture log -> <<gw-01>>).
+  (boot posture log -> <<gw-01>>). *Spoofing* the gateway's own origin through a gateway-answered
+  redirect (open redirect) -> <<gw-13>>.
 
 | B3 pipeline->upstream
 | *Spoofing* the client to the upstream -> <<gw-04>>. *Elevation* via SSRF / upstream
-  redirect -> <<gw-05>>. *Tampering* via response injection on the return leg -> <<gw-03>>.
+  redirect -> <<gw-05>>. *Tampering* via response injection on the return leg -> <<gw-03>>;
+  an upstream weakening a gateway-owned response security header, or an anchor block dropping one
+  -> <<gw-14>>.
 
 | B4 gateway<->IdP
 | *Spoofing* tokens (alg confusion, `alg:none`, key confusion) -> <<bff-06>>. *Elevation*
@@ -313,6 +316,14 @@ reject-vs-accept and applies it before routing) and *matrix-param (`;`) handling
 touched by cui-http). This directly answers the code-review finding that the interim
 `ProxyRoute` looks the route up on the raw URI but relies on the router's normalized match
 (raw-vs-normalized divergence).
+
+*Exact routes consume the same canonical path.* A `match.path` route compares its declared path
+against that canonical output as an un-normalized string, and a prefix route matches it on a segment
+boundary -- neither re-reads the raw request-URI. The one deliberate asymmetry is the trailing slash,
+which an exact route treats as significant (`/a` and `/a/` are distinct addresses) and which the
+canonical path preserves; the integration suite asserts both spellings of one address through the
+real pre-route floor, the slash-less one answered by an exact redirect route and the slash form
+falling through to the enclosing prefix route.
 
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the
 normalized path, and anchor prefixes are normalized before the disjointness check -- but the
@@ -924,6 +935,123 @@ redaction is enforced by the configuration validator.
 trace/internal detail; a bind failure adjacent to a resolved secret never surfaces the
 secret; problem+json bodies carry category only.
 
+[#gw-13]
+=== GW-13 -- Open redirect through a gateway-answered redirect (CWE-601)
+
+A redirect answered *by the gateway* carries the gateway's own origin as its credential: a link to
+`https://gw.example.com/moved` looks trustworthy, and whatever `Location` it answers with is where the
+browser goes. If that target can name another origin -- an attacker-chosen one, or one reached
+through a spelling the configuration reader did not recognise as foreign -- the gateway becomes a
+phishing and token-leak relay (CWE-601).
+
+*Evidence.* The failure class is the URL-parser disagreement the WHATWG URL Standard codifies for
+the special schemes: a leading `//` is scheme-relative and names a host, a backslash is parsed as
+`/` so `/\evil.example` is `//evil.example`, and user-info disguises the real host
+(`https://trusted@evil.example`). The same redirect-target laxity is the class behind the
+`redirect_uri` advisories in <<bff-01>> (Keycloak CVE-2024-8883, CVE-2026-3872), there on the IdP
+side. No gateway-product CVE is cited for this entry: the surface is new in API Sheriff, and the
+entry is recorded from the parser behaviour before it ships rather than after.
+
+*Control.* The `redirect` terminal action
+(link:adr/0014-asset-serving-terminal-action.adoc#amendment-a1[ADR-0014 Amendment A1]) takes no
+target from the request: `location` is fixed configuration, written verbatim, with no placeholder --
+only the raw query is appended under `keep_query`. The configuration validator reviews every
+`location` *once, at boot*, and refuses the boot rather than serving a doubtful value:
+
+* without the explicit `allow_external: true` opt-in, `location` must be a gateway path -- exactly one
+  leading `/`, no backslash, no percent-encoded `/` or `\` (`%2F`, `%5C`, either case), no dot-segment
+  (`.`, `..` or their `%2E` spellings), printable ASCII without whitespace or control characters (a
+  CR/LF would forge a response header), and no `#` together with `keep_query`;
+* with the opt-in, it may additionally be an absolute `http`/`https` URI with a non-empty host and no
+  user-info; every other scheme (`javascript:`, `data:`, ...) stays refused, and the opt-in is
+  reported at boot by `WARN ApiSheriff-125`, naming the route and never the target;
+* refusal messages echo the value through the injection-safe renderer (CWE-117, see <<gw-12>>).
+
+Two further properties bound what a redirect route discloses: the redirect is answered only *after*
+authentication, so under an authenticated anchor an anonymous caller is challenged before any
+`Location` is revealed; and the action is refused on every protocol but `http`, and together with an
+`upstream` or `asset` block, so no configuration reaches it silently.
+
+*Status:* COVERED. The review is boot-time configuration validation with a table-driven refusal
+corpus (`ConfigValidatorRedirectTest`: `//host`, `/\host`, `\\host`, `/%2F%2Fhost`, `/%5chost`,
+`/a/../b`, an external URI without the opt-in, `javascript:` and user-info with it, `#` with
+`keep_query`, plus the accepted forms); the native boot refusal of an external location without the
+opt-in is exercised by `verify-invalid-config-fails.sh`; and `RoutingAndResponseHeadersIT` asserts the
+served redirect against the native image, including the query kept under `keep_query` and no upstream
+contact.
+
+*Residual risk (accepted).* `allow_external: true` hands the operator a legitimate external redirect,
+and with it the ability to point clients at another origin. The review proves the target is a
+well-formed `http`/`https` URI; it cannot prove the operator meant that host. The exposure is bounded
+by it being an explicit per-route opt-in, visible in the endpoint file and announced at every boot by
+`ApiSheriff-125`, and by the target still being fixed configuration an attacker cannot influence
+through the request.
+
+*Assertion.* Every refused spelling above fails the boot with the value escaped in the message; a
+gateway path and, under the opt-in, a well-formed `http`/`https` URI boot; a redirect answer carries
+exactly the configured status and `Location` (the raw query appended only under `keep_query`) and
+causes no upstream request; an unauthenticated request to a redirect route under an authenticated
+anchor is challenged and receives no `Location`.
+
+[#gw-14]
+=== GW-14 -- Response security-header floor weakened (origin precedence, anchor replacement)
+
+The gateway-owned response security headers -- `Strict-Transport-Security`,
+`X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy` -- are a *floor* only if the
+value on the wire is the gateway's. Two mechanisms let a configured header end up absent or weaker
+than the operator believes: an *upstream* sending the same header with a more permissive value, and
+a *narrower scope* replacing a wider one without carrying all of its headers along.
+
+*Evidence.* NGINX's `add_header` is the canonical instance of the second mechanism and the cautionary
+tale ADR-0007's research recorded: a `location` declaring any `add_header` inherits *none* of the
+`server`-level ones, so adding one header at a lower level silently drops HSTS and the rest. The
+first mechanism is the documented proxy behaviour of relaying origin headers verbatim. Neither is
+tied to a single CVE; both are configuration-shaped, which is why the control is stated rather than
+inherited.
+
+*Control.* Two decisions, each explicit rather than implied
+(link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]):
+
+* *Origin precedence is `set` by default.* A gateway-owned header overwrites the origin's value
+  unless the block's `header_modes` names that header `default`, and an omitted `header_modes` block
+  is the overwrite behaviour. `default` is a per-header, per-block opt-in; a mode for a header its
+  block does not enable is refused at boot, and a gateway-authored response (rejection, redirect,
+  asset, preflight) always carries the configured value.
+* *Anchor replacement is wholesale and stated, not merged silently.* An anchor block replaces the
+  global block for its routes -- the same no-merge rule as every anchor policy block -- and the
+  operator documentation states the consequence at every place the key is described: a header the
+  anchor block omits is absent under that anchor. Responses before route selection keep the global
+  block, so no pre-route rejection loses it.
+
+`content_security_policy` values are refused at boot when blank or carrying a CR, LF or other control
+character, on every block, so the header cannot become an injection vector (<<gw-03>>).
+
+*Status:* COVERED. `SecurityHeadersStageTest` and `ResponseStageTest` pin the map routing and the
+set/default relay; `ConfigValidatorTest` pins the orphan-mode and CSP refusals; and
+`RoutingAndResponseHeadersIT` asserts against the native image that the anchor block applies only
+under its anchor, that it drops the global HSTS (wholesale), that a pre-route `404` and a preflight
+keep the global block, that `default` keeps an origin `X-Frame-Options` and fills an absent one, and
+that `set` overwrites an origin `Content-Security-Policy`.
+
+*Residual risk (accepted) -- `default` mode.* Under `default` the upstream decides the header's final
+value, including a weaker one: a permissive `Content-Security-Policy` or a laxer framing policy
+passes through unchanged. That is the purpose of the mode -- a frontend keeping its own policy while
+the gateway supplies a floor for responses that send none -- so it is accepted, bounded by being a
+per-header opt-in the operator writes for a named block, never a default.
+
+*Residual risk (accepted) -- wholesale anchor replacement.* An anchor block that omits a global header
+drops it for that anchor's routes, and the boot does not warn about it: the dropped header is a
+consequence of the block the operator wrote, not an ambiguity. It is accepted because a merge would
+make an anchor unable to *remove* a global header and would reintroduce the merge-order ambiguity
+ADR-0007 forbids; it is bounded by the documented rule and by the integration assertion that the
+replacement is observable on the wire.
+
+*Assertion.* A routed response carries exactly its anchor block (a global header the anchor omits is
+absent); a pre-route rejection and a CORS preflight carry the global block; under `set` an origin
+value is overwritten, under `default` it is kept and the configured value fills an absent one; a
+gateway-authored response carries the configured value under either mode; an orphan mode and a
+control-character CSP fail the boot.
+
 == OAuth / OIDC / BFF failure catalogue
 
 These bite the BFF variants (Variants 2 and 3). The confidential-client *engine*
@@ -1296,6 +1424,8 @@ outstanding hardening work (next section).
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs | cui-http + token-sheriff mappers + gateway error contract | PARTIAL
+| <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
+| <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED

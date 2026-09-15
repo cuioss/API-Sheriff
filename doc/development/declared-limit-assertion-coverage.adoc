@@ -119,8 +119,7 @@ rewriting), so they declare a match prefix, an `upstream.path`, `rewrite_locatio
 -- none of which matches the sweep -- and deliberately no `forward` list, since the query parameters
 that drive the origin must cross unfiltered.
 
-`sheriff-config/endpoints/untrusted.yaml` is the newest of the four and is limit-free by
-construction rather than by accident: it is the egress hostname-verification pair's chain-trust
+`sheriff-config/endpoints/untrusted.yaml` is limit-free by construction rather than by accident: it is the egress hostname-verification pair's chain-trust
 control (ADR-0040), and its single route declares only a match prefix, because the assertion it
 backs is about whether the TLS dial completes at all. A `forward` allow/deny list or a body cap
 there would be inert configuration that nonetheless made the file limit-bearing and owed a Coverage
@@ -154,7 +153,12 @@ removed, so every key the base declares it also declares, at the base's own rela
 The two `sheriff-config-egress-verify-*/gateway.yaml` overlays are outside it on the same reasoning,
 and for the same reason the `×4` rows are not re-cited as `×6`. Each is the base document with
 `tls.passthrough_sni` removed and one `egress_tls` block added, so every key the base declares it
-also declares.
+also declares -- with one exception: the global `security_headers` block and the `api` anchor's
+`security_headers` block that the base gained for `RoutingAndResponseHeadersIT` were *not* copied
+into these two overlays (the passthrough-empty and refresh overlays did receive them). The base-only
+`security_headers` rows below therefore do not derive onto the egress pair. The omission moves
+neither file across the limit-bearing partition, because both stay limit-bearing on the keys listed
+next.
 
 Their `egress_tls` block adds *no* limit-shaped key: neither `upstream_verify_hostname` nor
 `upstream_tls_profile` matches any alternative in the sweep pattern above. Both files are
@@ -203,18 +207,19 @@ report on a budget no browser enforces -- which is the deliverability blindness
 link:cookie-deliverability-blindness.adoc[the companion note] describes, reintroduced through a
 descriptor rather than through a client.
 
-*Fourteen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
-`csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *seven* base-only
+*Sixteen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
+`csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *nine* base-only
 `sheriff-config/gateway.yaml:N` rows (`security_defaults.profile`,
 `allow_get_with_content_length_body`, `allowed_methods`, `tls.passthrough_sni`,
-`asset_defaults.content_types`, G1, G11). Citing this overlay per row would add a *fifth* line number
-to each of the seven `×4` rows and a *second* to six of the seven base-only rows -- *thirteen* rows,
-restating one fact thirteen times where it is better stated once: *derive it from the base citation.*
+`asset_defaults.content_types`, `security_headers.hsts.max_age`, `security_headers.cors`, G1, G11).
+Citing this overlay per row would add a *fifth* line number to each of the seven `×4` rows and a
+*second* to eight of the nine base-only rows -- *fifteen* rows, restating one fact fifteen times where
+it is better stated once: *derive it from the base citation.*
 The two remaining `gateway.yaml` rows in the matrix cite an overlay only
 (`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`) and declare keys
 the base does not, so they are outside this derivation entirely.
 
-The thirteenth-versus-fourteenth row is not an off-by-one: the base-only row that would gain *no*
+The fifteenth-versus-sixteenth row is not an off-by-one: the base-only row that would gain *no*
 citation is `tls.passthrough_sni` itself, the one key this overlay does **not** carry -- and that
 absence is precisely the property the instance exists to provide (see the descriptor's own header
 comment). It is the single consequence of the derivation.
@@ -258,19 +263,19 @@ declaration's *existence* is proven while its *boundary* is not.
 | Declared limit (file:line) | Enforcing component | Status | Asserting test
 
 | `anchors.upload.security_filter.max_body_bytes: 67108864`
-  `gateway.yaml` ×4 -- base:155, cookie:64, mtls:71, ws:69
+  `gateway.yaml` ×4 -- base:186, cookie:64, mtls:71, ws:69
 | `ThoroughChecksStage` (per-route body cap)
 | COVERED
 | `LargeBodyIT` (runtime 413) + `BodyLimitActivationWiringTest` (framework-floor coupling)
 
 | `httpbin-minimal-mode.max_body_bytes: 1024`
-  `sheriff-config/endpoints/httpbin.yaml:65`
+  `sheriff-config/endpoints/httpbin.yaml:87`
 | `ThoroughChecksStage` (enforced under `minimal` unchanged)
 | COVERED
 | `SecurityProfileModeIT` (`bodyCapStillRejectsOverCapBody` + `bodyWithinCapIsForwarded` control)
 
 | `httpbin-minimal-mode.allowed_paths`
-  `sheriff-config/endpoints/httpbin.yaml:68`
+  `sheriff-config/endpoints/httpbin.yaml:90`
 | `ThoroughChecksStage` (path allowlist)
 | COVERED
 | `SecurityProfileModeIT` (`allowedPathsStillRejectsPathOutsideAllowlist` -- the two-segment
@@ -280,7 +285,7 @@ declaration's *existence* is proven while its *boundary* is not.
   mismatch rather than the route refusing the shape outright)
 
 | `security_defaults.profile: strict`
-  `sheriff-config/gateway.yaml:49`
+  `sheriff-config/gateway.yaml:50`
 | Resolved `SecurityConfiguration` for every route omitting a profile
 | COVERED
 | `SecurityProfileModeIT` (strict-vs-minimal contrast on two routes)
@@ -292,20 +297,20 @@ declaration's *existence* is proven while its *boundary* is not.
 | `SecurityProfileModeIT` (`preRouteCollectionCapStillRejectsParameterCount`)
 
 | `security_defaults.allow_get_with_content_length_body: true`
-  `sheriff-config/gateway.yaml:51`
+  `sheriff-config/gateway.yaml:52`
 | The framing gate in `BasicChecksStage`
 | COVERED
 | `GetWithBodyIT` + `GetWithBodyActivationWiringTest`
 
 | `allowed_methods`
-  `sheriff-config/gateway.yaml:20` (global), `:144` (graphql), `:149` (upload), `:178`
-  (assets-public), `:188` (assets-secure)
+  `sheriff-config/gateway.yaml:20` (global), `:175` (graphql), `:180` (upload), `:209`
+  (assets-public), `:219` (assets-secure)
 | Route selection / method gate
 | COVERED
 | `PipelineVerbIT` (405 plus four positive controls)
 
 | `oidc.session.csrf.trusted_origins`
-  `gateway.yaml` ×4 -- base:295, cookie:177, mtls:156, ws:135
+  `gateway.yaml` ×4 -- base:326, cookie:177, mtls:156, ws:135
 | BFF CSRF origin gate
 | COVERED
 | `BffCsrfIT` (403 / 403 with a 401 control)
@@ -329,7 +334,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `WebSocketProxyIT` (`WsAdmissionExhaustion`) + `WsAdmissionActivationWiringTest`
 
 | `tls.passthrough_sni`
-  `sheriff-config/gateway.yaml:87-89`
+  `sheriff-config/gateway.yaml:88-90`
 | `SniFrontListener` via `TlsEdgeProducer` (accept-time L4/L7 split)
 | COVERED
 | `TlsPassthroughIT`, `HostSmuggleGuardIT`, `TlsEdgeActivationWiringTest`
@@ -348,14 +353,37 @@ declaration's *existence* is proven while its *boundary* is not.
   wins when a request violates both
 
 | `asset_defaults.content_types`
-  `sheriff-config/gateway.yaml:101-103`
+  `sheriff-config/gateway.yaml:102-104`
 | Asset response envelope (add-only map, boot-enforced)
 | WIRED
 | `AssetContentTypeActivationWiringTest` -- asserts the block is declared and collides with no
   built-in; no served-asset content type is asserted at runtime
 
+| `security_headers.hsts.max_age: 31536000`
+  `sheriff-config/gateway.yaml:117`
+| `SecurityHeadersStage` (global block at stage 0; replaced wholesale by an anchor block at stage 2a)
+| PARTIAL
+| `RoutingAndResponseHeadersIT` -- the exact emitted value `max-age=31536000; includeSubDomains` on a
+  `/assets` response, a pre-route `404` and a CORS preflight, with the matched control that a `/proxy`
+  response under the `api` anchor block carries *no* `Strict-Transport-Security`. The emission is
+  asserted at the byte level; the limit itself is *client-enforced* -- a browser, not the gateway,
+  honours `max-age` -- and the integration client enforces no HSTS policy, so the third question in
+  the preamble is unanswered, which is what keeps this row off `COVERED`.
+
+| `security_headers.cors.allowed_origins` / `allowed_methods` / `allowed_headers` /
+  `allow_credentials`
+  `sheriff-config/gateway.yaml:121-124`
+| `SecurityHeadersStage` (global CORS and the preflight short-circuit, stage 0)
+| PARTIAL
+| `RoutingAndResponseHeadersIT` (`corsPreflightStaysPreAuthentication`) -- an allow-listed origin's
+  preflight on the bearer-gated `/secure` namespace is answered `204` with
+  `Access-Control-Allow-Origin` and never reaches authentication. Only that positive leg is asserted:
+  no foreign-origin preflight proves the allowlist *withholds* the grant, and neither the method nor
+  the header list is exercised at its boundary. CORS is also *client-enforced*, so the third question
+  applies here too.
+
 | `oidc.session.refresh.leeway_seconds: 30`
-  `gateway.yaml` ×4 -- base:293, cookie:175, mtls:154, ws:133
+  `gateway.yaml` ×4 -- base:324, cookie:175, mtls:154, ws:133
 | Session refresh scheduling
 | COVERED
 | `BffTokenRefreshIT` on the dedicated `api-sheriff-refresh` instance -- the only place the boundary
@@ -380,7 +408,7 @@ declaration's *existence* is proven while its *boundary* is not.
   assertion on the existing suite.
 
 | *G1* `security_defaults.max_authorization_header_value_length: 8192`
-  `sheriff-config/gateway.yaml:50`
+  `sheriff-config/gateway.yaml:51`
 | `BasicChecksStage` -- the non-skippable pre-route floor, *before* route selection
 | COVERED
 | `DeclaredLimitBoundaryIT` -- 8192 admitted and reaching bearer validation (401), 8193 rejected 400
@@ -388,7 +416,7 @@ declaration's *existence* is proven while its *boundary* is not.
   `BearerValidationIT:120` independently proves the carve-out is in force on a real token.
 
 | *G2* `token_validation.issuers[*].jwks.allowed_egress_hosts`
-  `gateway.yaml` ×4 -- base:222,245; cookie:97,110; mtls:104,121; ws:102,109
+  `gateway.yaml` ×4 -- base:253,276; cookie:97,110; mtls:104,121; ws:102,109
 | token-sheriff SSRF egress guard (GW-05 / BFF-07)
 | WIRED
 | `EgressAllowlistActivationWiringTest` -- every http-sourced issuer's allowlist is *exactly* the
@@ -412,8 +440,8 @@ declaration's *existence* is proven while its *boundary* is not.
   envelope (not the framework's bare 413), one byte under is forwarded and echoed
 
 | *G5* `forward.headers_allow` / `headers_deny` / `query_allow` -- the three-mode projection
-  `sheriff-config/endpoints/httpbin.yaml:42-43,77,80,101,113,123,146` (6 routes declaring a list)
-  plus the absent-block route at `:155-159`;
+  `sheriff-config/endpoints/httpbin.yaml:48-49,99,102,123,135,145,168` (6 routes declaring a list)
+  plus the absent-block route at `:177-181`;
   `sheriff-config/endpoints/bff-session.yaml:34` (1 route);
   `sheriff-config/endpoints/grpc.yaml:62-64,81-83` (2 routes)
 | Forward stage 5 (per-dimension mode selection, bounded by the gateway-owned sets)
@@ -462,26 +490,26 @@ declaration's *existence* is proven while its *boundary* is not.
 | none
 
 | *G8* `tls.alpn: ["h2", "http/1.1"]`
-  `gateway.yaml` ×4 -- base:75, cookie:25, mtls:22, ws:26
+  `gateway.yaml` ×4 -- base:76, cookie:25, mtls:22, ws:26
 | `TlsServerCustomizer` (ALPN advertisement)
 | GAP
 | none -- the http2 benchmark aspect negotiates h2 but asserts no protocol
 
 | *G9* `oidc.session.ttl_seconds: 3600`
-  `gateway.yaml` ×4 -- base:290, cookie:158, mtls:151, ws:130
+  `gateway.yaml` ×4 -- base:321, cookie:158, mtls:151, ws:130
 | Session store expiry
 | GAP
 | none
 
 | *G10* `oidc.user_info.allowed_claims`
-  `gateway.yaml` ×4 -- base:298, cookie:180, mtls:159, ws:138
+  `gateway.yaml` ×4 -- base:329, cookie:180, mtls:159, ws:138
 | user_info claim projection
 | PARTIAL
 | `BffUserInfoIT` asserts the `default_view` projection; no negative leg proves a claim *outside*
   the allowlist is withheld
 
 | *G11* `tls.min_version: "1.2"` / `tls.cipher_suites`
-  `sheriff-config/gateway.yaml:62,67-71`
+  `sheriff-config/gateway.yaml:63,68-72`
 | `TlsServerCustomizer` (protocol floor + cipher allowlist)
 | PARTIAL
 | `CipherSuiteFixtureWiringTest` is descriptor-level only; no handshake asserts a below-floor
@@ -580,7 +608,7 @@ try (DirectoryStream<Path> directories = Files.newDirectoryStream(DOCKER, "sheri
         ...
 ----
 
-It therefore *never reaches `sheriff-config/endpoints/`* -- where `endpoints/httpbin.yaml:55`
+It therefore *never reaches `sheriff-config/endpoints/`* -- where `endpoints/httpbin.yaml:87`
 already declares a `max_body_bytes: 1024`. That cap sits far below the framework floor, so nothing
 is broken today. But a *future* endpoint-level cap declared above the floor would push its instance
 into a fail-closed boot abort with the guard still green, because the guard never parsed the file
@@ -605,13 +633,16 @@ so the assertion's granularity is the file and never the key.
 
 The consequence: adding a limit-shaped key to one of the *fourteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
-row is forced. Only a key that makes one of the remaining four --
+row is forced. Only a key that makes one of the remaining five --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
-`sheriff-config/endpoints/untrusted.yaml` or `sheriff-config/topology.properties` -- limit-bearing
-crosses the partition and fails the build. Fourteen of eighteen is the *majority* of the surface,
+`sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/untrusted.yaml` or
+`sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
+Fourteen of nineteen is the *majority* of the surface,
 so this is the ordinary case rather than an edge one: for those fourteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
-guard.
+guard. The routing plan that added the base document's `security_headers` block is a worked instance:
+`hsts.max_age` and the CORS allow lists are limit-shaped, the base file was already limit-bearing, and
+the guard stayed green -- their two Coverage Matrix rows above were added by hand.
 
 This is *reported, not fixed*, for the same reason as the finding above. Closing it means deriving
 the Coverage Matrix's own *qualified* keys and comparing them exactly against the descriptors --
@@ -635,14 +666,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (eighteen files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (nineteen files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
   -- the inventory table, the sweep pattern and the fourteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the fourteen/four partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the fourteen/five partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -651,7 +682,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the eighteen files, add its row here in the same change --
+When you add a limit-shaped key to any of the nineteen files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
