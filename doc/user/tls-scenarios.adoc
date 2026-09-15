@@ -349,17 +349,23 @@ only if your own tooling reads them.
 
 === Failure mode
 
-* *The management certificate pair is not supplied.* The management listener starts plain, and
-  `ManagementPlainHttpAudit` reports it with `WARN ApiSheriff-115`. HTTPS probes against the port fail.
+* *No key material reaches the management listener.* `ResolvedServerTlsMaterial` settles this in one
+  order, and the first leg that applies decides. A selected named bucket
+  (`quarkus.management.tls-configuration-name`) decides alone: a key-bearing bucket serves HTTPS, a
+  key-less one serves plain HTTP even with the certificate pair above set. With no bucket selected, a
+  default `+quarkus.tls.key-store.*+` bucket that carries key material serves HTTPS. Otherwise the
+  `+quarkus.management.ssl.certificate.*+` keys decide, in any spelling -- `files`, `key-files`,
+  `key-store-file` or `credentials-provider`. When none of the three supplies key material, the
+  listener starts plain, `ManagementPlainHttpAudit` reports it with `WARN ApiSheriff-115`, and HTTPS
+  probes against the port fail.
 * *`management.port` written in `gateway.yaml`.* The schema declares the key only to refuse it:
   `ApiSheriff-200` at `/management/port`, naming `QUARKUS_MANAGEMENT_PORT`, then `ApiSheriff-201`.
 * *`QUARKUS_MANAGEMENT_PORT` moved away from `9000`.* The baked `HEALTHCHECK` probes `9000` as a
   compiled-in constant, so the container never reports healthy; see
   link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
-* *A default `+quarkus.tls.key-store.*+` bucket declared anywhere.* The management interface falls
-  back to that bucket when no configuration name is selected, so it can be switched to HTTPS through a
-  path no management setting mentions. `ManagementPlainHttpAudit` reads that bucket as the runtime
-  does, so `ApiSheriff-115` stays truthful, but the posture is no longer the one your management
+* *A key-bearing default `+quarkus.tls.key-store.*+` bucket declared anywhere.* It is the second leg
+  above, so it switches the management interface to HTTPS through a path no management setting
+  mentions. `ApiSheriff-115` stays truthful, but the posture is no longer the one your management
   settings describe.
 
 [[_scenario_management_plain]]
