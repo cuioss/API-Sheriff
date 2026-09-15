@@ -4,7 +4,7 @@
 #
 # ConfigProducer validates the mounted gateway configuration at boot
 # (StartupEvent). On any violation it logs structured ERROR records and throws, so
-# Quarkus exits non-zero. This script exercises seven independent invalid
+# Quarkus exits non-zero. This script exercises eight independent invalid
 # configurations and asserts a fail-fast non-zero exit for each:
 #   1. a schema-invalid gateway.yaml (non-integer version + an unknown top-level key,
 #      both rejected by the D2 schema);
@@ -19,7 +19,9 @@
 #   6. profile 'minimal' on a type: bff route, refused by the same rule on the anchor-type
 #      dimension;
 #   7. an unresolvable JWKS source (token_validation issuer whose 'source: file' names a
-#      path that does not exist), which aborts boot from the ADR-0027 eager-assembly seam.
+#      path that does not exist), which aborts boot from the ADR-0027 eager-assembly seam;
+#   8. an open redirect (a redirect route whose location is an external absolute URI while
+#      allow_external is off), refused by the ADR-0014 Amendment A1 open-redirect review.
 #
 # Cases 4-6 split the two ADR-0024 gates deliberately: the schema owns the profile
 # value range (case 4) and ConfigValidator owns the posture refusal (cases 5-6), so a
@@ -508,5 +510,44 @@ chmod 644 "${JWKS_UNRESOLVABLE_DIR}/gateway.yaml" "${JWKS_UNRESOLVABLE_DIR}/topo
 # assertion independent of the path this fixture happens to choose.
 assert_fails_to_boot "${JWKS_UNRESOLVABLE_DIR}" "an unresolvable JWKS source" \
     "Cannot read JWKS file" "${MGMT_PROBE_PORT}"
+
+# Case 8: an open redirect (ADR-0014 Amendment A1). A redirect route whose location is an external
+# absolute URI is refused at boot unless the route opts in with allow_external: true — a location
+# that leaves the gateway origin is exactly the lever an open-redirect phish needs, so it is never
+# admitted by default. The endpoint carries only this redirect route and therefore needs no base_url
+# (AS-4), so the fixture needs no topology either and the open-redirect refusal is the ONLY violation.
+OPEN_REDIRECT_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${OPEN_REDIRECT_DIR}")
+mkdir -p "${OPEN_REDIRECT_DIR}/endpoints"
+cat > "${OPEN_REDIRECT_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "open-redirect"
+anchors:
+  moved:
+    path_prefix: /moved
+    type: proxy
+    access: public
+YAML
+cat > "${OPEN_REDIRECT_DIR}/endpoints/moved.yaml" <<'YAML'
+endpoint:
+  id: moved
+  anchor: moved
+  auth:
+    require: none
+  routes:
+    - id: external-redirect
+      match:
+        path: /moved/entry
+      redirect:
+        location: https://elsewhere.example/entry
+        status: 302
+YAML
+chmod 755 "${OPEN_REDIRECT_DIR}" "${OPEN_REDIRECT_DIR}/endpoints"
+chmod 644 "${OPEN_REDIRECT_DIR}/gateway.yaml" "${OPEN_REDIRECT_DIR}/endpoints/moved.yaml"
+# Marker: the fixed refusal fragment naming the route by its id — a config KEY — and never the
+# rejected location VALUE, per the same redaction discipline every other case follows.
+assert_fails_to_boot "${OPEN_REDIRECT_DIR}" "an external redirect location without allow_external" \
+    "route 'external-redirect' redirect location"
 
 echo "✅ All invalid configurations correctly caused fail-fast non-zero exits."

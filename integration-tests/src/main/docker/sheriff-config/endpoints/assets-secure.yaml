@@ -6,12 +6,11 @@
 # ordering against it: an unauthenticated request is rejected 401 at stage 4 and
 # never reaches the filesystem, proving no byte is read before authorization.
 #
-# base_url is mandatory but unused by an asset route; it points at the resolvable
-# UPSTREAM alias the proxy endpoints use.
+# The endpoint declares NO base_url: base_url is mandatory only on an endpoint carrying a
+# proxy route, and its single route is an asset route (AS-4).
 endpoint:
   id: assets-secure
   enabled: true
-  base_url: UPSTREAM
   anchor: assets-secure
   routes:
     - id: assets-secure-directory

@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# Response-path acceptance endpoint exercised by RoutingAndResponseHeadersIT. Its two proxy routes
+# reach go-httpbin through the HTTPBIN_ROOT alias, which — unlike UPSTREAM — carries NO base path, so
+# each route's upstream.path is the whole effective upstream base (ADR-0004 Amendment A2: alias base
+# path + upstream.path + remainder-after-match-key, with an empty alias base).
+#
+# Both routes ride the 'api' anchor (/proxy), so every response on them carries the anchor's
+# security_headers block rather than the global one (ADR-0007 Amendment A1). The endpoint declares the
+# require: none posture itself because the 'api' anchor is access: public and carries no auth block
+# (ADR-0013).
+#
+# FORWARD POSTURE — neither route declares a forward block, so both resolve forward-all on both
+# dimensions: the query parameters that drive go-httpbin must cross unfiltered.
+endpoint:
+  id: origin-headers
+  enabled: true
+  base_url: HTTPBIN_ROOT
+  anchor: api
+  auth:
+    require: none
+  routes:
+    # AS-8 precedence. go-httpbin's /response-headers echoes every query parameter back as a
+    # RESPONSE header, so the IT makes the origin send its own X-Frame-Options and
+    # Content-Security-Policy on demand and observes what survives the relay: the 'api' anchor
+    # declares frame_deny in header_modes default (the origin value is kept) and
+    # content_security_policy in the default set mode (the origin value is overwritten).
+    - id: origin-headers
+      match:
+        path_prefix: /proxy/origin-headers
+      upstream:
+        path: /response-headers
+
+    # AS-11 Location rewrite. go-httpbin's /redirect-to answers 302 with the Location named by its
+    # `url` query parameter, so the IT drives both legs of the rewrite rule from one route: a Location
+    # inside the effective upstream base (http://go-httpbin:8080/redirect-to/...) is mapped onto this
+    # route's match key, a foreign absolute Location is relayed untouched.
+    #
+    # `url` carries a URL, and the strict baseline's url-parameter pipeline refuses a '/' inside a
+    # parameter value, so this route opts into `profile: minimal` — the PARTIAL disable of exactly that
+    # pipeline (ADR-0024). Every other control still applies: the pre-route floor (encoded separators,
+    # the query-parameter count cap), the resolved body cap, and authentication. The route is public
+    # and effectively unauthenticated, which is the only posture `minimal` boots under.
+    - id: origin-location-rewrite
+      match:
+        path_prefix: /proxy/location-rewrite
+      upstream:
+        path: /redirect-to
+        rewrite_location: true
+      security_filter:
+        profile: minimal
