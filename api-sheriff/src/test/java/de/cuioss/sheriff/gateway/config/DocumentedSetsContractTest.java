@@ -610,8 +610,8 @@ class DocumentedSetsContractTest {
         JsonNode injected = shipped.deepCopy();
         ObjectNode parent = injected.at(INJECTED_ARRAY_PARENT_POINTER) instanceof ObjectNode node ? node
                 : fail(GATEWAY_SCHEMA_RESOURCE + ": nothing resolves at " + INJECTED_ARRAY_PARENT_POINTER
-                        + ", so the negative control has no definition to inject into. Update"
-                        + " INJECTED_ARRAY_PARENT_POINTER to a $ref'd definition the gateway schema still declares.");
+                + ", so the negative control has no definition to inject into. Update"
+                + " INJECTED_ARRAY_PARENT_POINTER to a $ref'd definition the gateway schema still declares.");
         ObjectNode injectedArray = parent.objectNode().put(SCHEMA_TYPE, TYPE_ARRAY);
         injectedArray.set(SCHEMA_ITEMS, parent.objectNode().put(SCHEMA_TYPE, TYPE_STRING));
         parent.set(INJECTED_ARRAY_KEY, injectedArray);
