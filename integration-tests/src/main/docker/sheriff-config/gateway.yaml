@@ -24,8 +24,9 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # Every route that declares no `security_filter.profile` resolves to this value — including the
 # /proxy, /bff, /graphql and asset routes — so the strict preset's caps (1 MiB body, 20 query
 # parameters, 1024-character header values and parameter values, 1024-character paths) are the
-# floor the suite proves. The single `minimal`-mode route below is the only opt-out, and it is a
-# PARTIAL one.
+# floor the suite proves. Two `minimal`-mode routes are the only opt-outs, and both are PARTIAL:
+# httpbin-minimal-mode (endpoints/httpbin.yaml), which proves the partial-disable matrix, and
+# origin-location-rewrite (endpoints/origin-headers.yaml), whose `url` query parameter must carry a URL.
 #
 # `max_authorization_header_value_length` bounds the `Authorization` header VALUE only, at the
 # non-skippable pre-route floor (BasicChecksStage) that runs BEFORE route selection. The strict
@@ -101,11 +102,41 @@ tls:
 asset_defaults:
   content_types:
     webmanifest: application/manifest+json
+# The global response security headers plus the global CORS policy (this primary instance only; the
+# overlays carry none). The global block is seeded onto every response, and once a route is selected
+# its anchor's block — when the anchor declares one — replaces it WHOLESALE (ADR-0007 Amendment A1).
+# RoutingAndResponseHeadersIT asserts both sides against this descriptor: /assets/* (the
+# 'assets-public' anchor declares no block) and a pre-route 404 carry this block, while /proxy/* carries
+# the 'api' anchor's block below and therefore NO Strict-Transport-Security.
+#
+# CORS is global and evaluated before route selection and authentication: an allow-listed preflight is
+# answered 204 at stage 0, so a preflight on the bearer-gated /secure namespace never reaches the
+# authentication stage. https://sheriff.test is a test-only origin no other suite sends.
+security_headers:
+  hsts:
+    max_age: 31536000
+    include_subdomains: true
+  cors:
+    enabled: true
+    allowed_origins: ["https://sheriff.test"]
+    allowed_methods: ["GET", "POST"]
+    allowed_headers: ["authorization", "content-type"]
+    allow_credentials: false
 anchors:
   api:
     path_prefix: /proxy
     type: proxy
     access: public
+    # The anchor block replaces the global block wholesale for every /proxy route, so the global HSTS is
+    # dropped here on purpose — that absence is the observable proof of the wholesale rule. frame_deny is
+    # in `default` mode: an origin that sends its own X-Frame-Options keeps it, and DENY is emitted only
+    # when the origin sends none. content_security_policy has no mode entry and is therefore `set`: the
+    # gateway policy overwrites any policy the origin sends (endpoints/origin-headers.yaml drives both).
+    security_headers:
+      frame_deny: true
+      content_security_policy: "default-src 'self'"
+      header_modes:
+        frame_deny: default
   bff:
     path_prefix: /bff
     type: proxy
@@ -275,9 +306,9 @@ oidc:
     #      ConfigValidator.prefixContains treats a container prefix normalizing to '/' as containing
     #      everything, so validateAnchorPrefixDisjointness fails the boot fail-closed against every
     #      one of the ten anchors this document already declares.
-    #   2. Even were it routable, DirectoryAssetSource performs no directory-index resolution: a bare
-    #      '/' yields an empty remainder that resolves to the directory root, fails isRegularFile and
-    #      returns 404.
+    #   2. Even were it routable, the /assets/demo route declares no asset.index: a bare '/' yields an
+    #      empty remainder that resolves to the directory root, and a directory source without an index
+    #      answers a directory address 404.
     # So final_redirect names a concrete file under an anchor that already exists. This is a
     # per-instance value of the same class as redirect_uri and post_logout_redirect_uri, which already
     # differ across the four overlays; the mtls and ws-admission overlays keep final_redirect: / and

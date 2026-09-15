@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *eighteen files* under `integration-tests/src/main/docker/`.
+The declared surface is *nineteen files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -63,11 +63,12 @@ disk without touching this table and the guard fails.
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 8
+| 9
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`, `sheriff-config/endpoints/grpc.yaml`,
-  `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/secure.yaml`,
-  `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/websocket.yaml`
+  `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
+  `sheriff-config/endpoints/secure.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
+  `sheriff-config/endpoints/websocket.yaml`
 
 | `sheriff-config/topology.properties`
 | 1
@@ -87,7 +88,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all eighteen files it returns hits in exactly fourteen of them:
+Over all nineteen files it returns hits in exactly fourteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -106,10 +107,17 @@ Over all eighteen files it returns hits in exactly fourteen of them:
 * `sheriff-config/endpoints/websocket.yaml`
 // end::limit-bearing[]
 
-The remaining four -- `sheriff-config/endpoints/assets.yaml`,
-`sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/untrusted.yaml` and
-`sheriff-config/topology.properties` -- declare none. That complement is the other half of the same
-claim, so asserting the fourteen exactly asserts both halves at once.
+The remaining five -- `sheriff-config/endpoints/assets.yaml`,
+`sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
+`sheriff-config/endpoints/untrusted.yaml` and `sheriff-config/topology.properties` -- declare none.
+That complement is the other half of the same claim, so asserting the fourteen exactly asserts both
+halves at once.
+
+`sheriff-config/endpoints/origin-headers.yaml` is limit-free for the same structural reason as
+`untrusted.yaml`: its two routes back response-path assertions (header precedence and `Location`
+rewriting), so they declare a match prefix, an `upstream.path`, `rewrite_location` and a `profile`
+-- none of which matches the sweep -- and deliberately no `forward` list, since the query parameters
+that drive the origin must cross unfiltered.
 
 `sheriff-config/endpoints/untrusted.yaml` is the newest of the four and is limit-free by
 construction rather than by accident: it is the egress hostname-verification pair's chain-trust
