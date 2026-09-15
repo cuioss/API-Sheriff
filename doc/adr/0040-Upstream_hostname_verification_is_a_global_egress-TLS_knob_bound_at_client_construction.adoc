@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Hostname verification on proxy-path terminated egress is a global egress_tls block rather than a server-TLS key or a per-route one, because the runtime fixes the setting at client construction and one of the three Vert.x binding sites is the edge-wide WebSocket client; the knob relaxes hostname matching only and never certificate-chain trust, so a deployment-bound upstream_tls_profile ships alongside it as the correct answer to a private-CA upstream; the asset-origin fetch is a fourth terminated-egress leg on a JDK HttpClient that the block deliberately does not govern (fail-safe on hostname, fail-closed on trust), and the declared jwks_verify_hostname key is bound separately by ADR-0041 through the token-validation library's own verifyHostname passthrough.
+// summary: Hostname verification on proxy-path terminated egress is a global egress_tls block rather than a server-TLS key or a per-route one, because the runtime fixes the setting at client construction and one of the three Vert.x binding sites is the edge-wide WebSocket client; the knob relaxes hostname matching only and never certificate-chain trust, so a deployment-bound upstream_tls_profile ships alongside it as the correct answer to a private-CA upstream; the asset-origin fetch is a fourth terminated-egress leg on a JDK HttpClient that the block deliberately does not govern (fail-safe on hostname, fail-closed on trust), and the declared jwks_verify_hostname key is bound separately by ADR-0041 through the token-validation library's own verifyHostname passthrough; the BFF OIDC back-channel is the sixth TLS-terminating leg, bound through its own peer keys by ADR-0045, and an explicit-posture fitness function now guards every outbound TLS-client construction site against a future leg built without its posture.
 // tags: tls, egress, configuration-surface, secure-by-default, partial-relaxation, tls-trust, deployment-binding, blast-radius
 // affects: api-sheriff, integration-tests
 // supersedes:
@@ -101,6 +101,8 @@ egress_tls:
   upstream_verify_hostname: true      # bound at all three Vert.x egress client-construction sites
   jwks_verify_hostname: true          # bound on the JWKS back-channel; see ADR-0041
   upstream_tls_profile: corporate-up  # logical name only; anchors supplied by the deployment
+  oidc_verify_hostname: true          # bound on the BFF OIDC back-channel; see ADR-0045
+  oidc_tls_profile: corporate-idp     # logical name only; the BFF back-channel's anchors, ADR-0045
 ----
 
 The block is global because that is the only scope the runtime can honour, and it is directional
@@ -181,6 +183,44 @@ The consequence is asymmetric, and stating which way it cuts is the point:
 A future decision may bring the asset leg under the block; until one does, the limit is stated in the
 operator documentation, in the model's javadoc, in the threat model's GW-06 entry and here, rather
 than being implied away by the word "global".
+
+==== The full terminated-egress leg set, re-derived from source
+
+The three governed clients and the asset-origin fetch are not the whole enumeration either. Re-derived
+from source, the gateway has six TLS-terminating outbound legs, and the `egress_tls` block reaches
+five of them:
+
+[cols="1,3", options="header"]
+|===
+| Leg | Governed by
+
+| 1. The default HTTP client
+| `upstream_verify_hostname`, `upstream_tls_profile` -- this decision
+
+| 2. The forced-HTTP/2 HTTP client
+| `upstream_verify_hostname`, `upstream_tls_profile` -- this decision
+
+| 3. The edge-wide WebSocket client
+| `upstream_verify_hostname`, `upstream_tls_profile` -- this decision
+
+| 4. The JWKS back-channel
+| `jwks_verify_hostname` --
+  link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041];
+  chain trust per issuer through `jwks.tls_profile`
+
+| 5. The asset-origin fetch
+| Nothing in the block -- out of scope, as stated above; its JDK client pins the JVM default context
+  explicitly
+
+| 6. The BFF OIDC back-channel
+| `oidc_verify_hostname`, `oidc_tls_profile` --
+  link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]
+|===
+
+The plain-TCP dials -- the L4 passthrough relay and the loopback health probe -- negotiate no TLS and
+are not legs in this sense. Any other copy of this enumeration is kept in step with this table and
+marked as re-derived from source, because a hand-written leg list can silently omit a leg, and the
+fitness function named under Risks below -- not any copy of the list -- is what holds the set closed.
 
 Enumerating all three sites in one decision is the point. A knob bound at two of three is the
 partial-binding defect
@@ -342,9 +382,18 @@ control, an untrusted-chain leg and a falsification check -- lives with the read
   might be mistaken for a control" is not a risk that has a true reading now that it *is* one.
 * *A future egress client is constructed without the setting.* The binding is enumerated per
   construction site rather than derived, so a further site added later would not inherit it. Mitigated
-  by enumerating all three sites here and by asserting the bound value on each constructed client.
-  The asset-origin JDK client is the standing instance of this, carried knowingly and scoped out
-  above rather than discovered later.
+  by an explicit-posture fitness function in the
+  link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  four-leg shape: it fails the build whenever production code calls an outbound TLS-client
+  construction target -- a Vert.x HTTP or WebSocket client, a JDK `HttpClient`, or an
+  identity-provider or JWKS client configuration -- without, in the same class, calling that target's
+  posture method. A construction site added later cannot land without its posture, whether or not
+  any enumeration names it. The per-client assertions on the three governed clients stay, because the
+  rule reads calls rather than values and cannot tell which value was bound. The rule's own limit is
+  class-level granularity: a class that pins one client of a family and builds a second of the same
+  family without its posture is not caught. The asset-origin JDK client stays outside the block,
+  carried knowingly and scoped out above, and now pins its default context explicitly so the guard
+  sees it.
 * *"Global" is read as covering every https connection the gateway opens.* The block's name invites
   that reading, and the asset-origin leg falsifies it. Mitigated by stating the limit and its
   fail-safe / fail-closed directions wherever the block is documented, and by the boot warning naming
@@ -438,6 +487,12 @@ without its alternative, fail in one of those two directions.
   -- the mechanism that binds `jwks_verify_hostname`, the second of the two keys this decision named.
   It amends nothing here and supersedes nothing: this decision owns the block and the vocabulary, that
   one owns the JWKS leg's binding
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]
+  -- the sixth terminated-egress leg, bound through the peer keys `oidc_verify_hostname` and
+  `oidc_tls_profile` inside this decision's block and under its surface-prefix rule
+* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  -- the fitness-function shape of the explicit-posture guard that mitigates a future egress client
+  built without its posture
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
   -- the neutral-name, deployment-bound-material boundary rule this decision applies to the upstream
   egress leg, and the trust-profile seam the egress resolver mirrors

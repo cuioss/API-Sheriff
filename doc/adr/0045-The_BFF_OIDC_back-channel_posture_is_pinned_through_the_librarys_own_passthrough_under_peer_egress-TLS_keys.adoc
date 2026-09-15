@@ -1,0 +1,376 @@
+= ADR-0045: The BFF OIDC back-channel posture is pinned through the library's own passthrough under peer egress-TLS keys
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The BFF OIDC back-channel — discovery, the authorization-code exchange and refresh — is the sixth TLS-terminating outbound leg and is bound to the global egress_tls block through two peer keys of its own, oidc_verify_hostname and oidc_tls_profile, rather than by reusing the JWKS key or inventing a third vocabulary; the hostname flag is passed straight through to the identity-provider client library's own verifyHostname builder method on every build, the true path included, a named profile supplies that builder's sslContext and replaces the JVM default trust store on the leg, and the one combination the library refuses — the relaxation together with a profile — is refused by the gateway first, at boot, with a CONFIG_INVALID naming both of its keys; the scope claim is proven by a real TLS dial at unit level, no deployment-activation instance is owed because no shipped deployment activates a relaxation, and an explicit-posture fitness function stands guard against a seventh unbound leg.
+// tags: tls, egress, bff, oidc, configuration-surface, partial-relaxation, upstream-passthrough, fail-closed, boot-validation, mutual-exclusion, fitness-function
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+A gateway running in BFF mode talks to its identity provider directly. It resolves the provider's
+discovery document, exchanges the authorization code for tokens, and refreshes them. Every one of
+those calls leaves the gateway over TLS, carries the client secret or an authorization code, and
+returns the material the gateway establishes sessions from. The connection is a terminated egress
+leg in exactly the sense
+link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
+uses the term, and it is the one leg that decision's enumeration did not name.
+
+Re-derived from source, the gateway has six TLS-terminating outbound legs:
+
+[cols="1,2,2", options="header"]
+|===
+| Leg | Construction site | Governing key
+
+| 1. Default HTTP client
+| Vert.x HTTP client per upstream tuple
+| `upstream_verify_hostname`, `upstream_tls_profile` (ADR-0040)
+
+| 2. Forced-HTTP/2 client
+| Vert.x HTTP client for gRPC routes
+| `upstream_verify_hostname`, `upstream_tls_profile` (ADR-0040)
+
+| 3. Edge-wide WebSocket client
+| One Vert.x WebSocket client for the whole edge
+| `upstream_verify_hostname`, `upstream_tls_profile` (ADR-0040)
+
+| 4. JWKS back-channel
+| Token-validation library, per issuer
+| `jwks_verify_hostname` (ADR-0041), per-issuer `jwks.tls_profile` (ADR-0011)
+
+| 5. Asset-origin fetch
+| JDK `HttpClient` with an explicit default context
+| None -- deliberately outside the block (ADR-0040)
+
+| 6. BFF OIDC back-channel
+| Identity-provider client library, one client configuration per gateway
+| `oidc_verify_hostname`, `oidc_tls_profile` (this decision)
+|===
+
+Plain-TCP dials that negotiate no TLS -- the L4 passthrough relay of
+link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+and the loopback health probe -- are not legs in this sense and are out of scope.
+
+The sixth leg verifies hostnames today, but only because the client library defaults to doing so.
+Nothing in the gateway sets its posture, so an upstream default change would move this gateway's
+posture on the leg that carries its client secret, silently -- the drift
+link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+requires be adopted deliberately. And an operator whose identity provider is reached through a
+name its certificate does not carry, or presents a private-CA certificate, has no configuration
+answer at all.
+
+Three facts about the leg settle the mechanism before any naming question arises.
+
+*First: the client library carries the passthrough.* The identity-provider client's configuration
+builder has a `verifyHostname(boolean)` method that forwards to the shared HTTP-handler builder,
+the same place the JWKS leg's relaxation is implemented. It also has an `sslContext(...)` method
+for caller-supplied trust.
+
+*Second: the library refuses the relaxation on a caller-supplied context.* As on the JWKS leg, the
+builder rejects `verifyHostname(false)` combined with `sslContext(...)`, raising an
+`IllegalArgumentException` in its own vocabulary. The reason is the one
+link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]
+records: the relaxation substitutes the trust manager on a context the handler derives itself, so
+there is nothing to relax in a context the caller built.
+
+*Third: the leg is a different client from the JWKS back-channel.* It is built by a different
+producer, from a different library entry point, at a different scope -- once per gateway rather
+than once per issuer -- and it dials a different endpoint set for a different purpose. That the two
+legs often reach the same identity provider is a property of a deployment, not of the gateway.
+
+== Decision
+
+*The BFF OIDC back-channel is bound to the global `egress_tls` block through two peer keys of its
+own, `oidc_verify_hostname` and `oidc_tls_profile`. The hostname flag is passed straight through to
+the client library's own `verifyHostname` on every build, the true path included; a named profile
+supplies that builder's `sslContext` and replaces the leg's anchors. The one combination the library
+refuses is refused by the gateway first, at boot, in the gateway's own vocabulary.*
+
+This is ADR-0041's pattern applied to the sixth leg, inside ADR-0040's block and vocabulary. Both
+remain in force and neither is superseded.
+
+[source,yaml]
+----
+egress_tls:
+  oidc_verify_hostname: true        # passed to the BFF back-channel builder on every build
+  oidc_tls_profile: corporate-idp   # logical name only; anchors supplied by the deployment
+----
+
+=== Peer keys, not a reused key and not a third vocabulary
+
+The new keys follow ADR-0040's surface-prefix rule exactly. They sit beside
+`upstream_verify_hostname` and `jwks_verify_hostname` as peers, and neither a bare
+`verify_hostname` nor a bare `tls_profile` is introduced.
+
+*Reusing `jwks_verify_hostname` was rejected.* The JWKS back-channel and the BFF back-channel are
+different clients built from different library entry points, and ADR-0040's argument for separate
+upstream and JWKS keys applies unchanged: an operator relaxing one has no reason to relax the other.
+An identity provider whose discovery and token endpoints sit behind a name-mismatched ingress while
+its JWKS is served from a correctly named host is an ordinary topology, and a shared key would force
+a relaxation onto a leg that does not need it. The key name would also lie: `jwks_verify_hostname`
+governing a token exchange is a surface that reads as narrower than it acts.
+
+*A third vocabulary was rejected.* A nested `bff.tls` block, or keys under the `oidc` block, would
+split egress-TLS policy across two places for one traffic direction -- exactly the merge of
+concerns ADR-0040 separated `egress_tls` from `tls` to avoid, in the opposite direction. Every
+outbound TLS posture key lives in one block, named for its leg.
+
+=== The relaxation and the trust key ship together
+
+`oidc_verify_hostname` without `oidc_tls_profile` would leave the relaxation as the only reachable
+answer to a private-CA identity provider. That is ADR-0040's manufactured-misuse argument, and it
+carries more weight on this leg than on any other: turning off hostname matching does not fix a
+chain-trust failure, and the operator who reaches for it has disabled a control on the connection
+that carries the client secret while still not reaching their provider. The two keys are one
+decision and land in the same release.
+
+=== The passthrough is the mechanism, and it is called unconditionally
+
+The producer resolves the global `egress_tls` block once, when the bean is constructed -- an absent
+block resolving to the block's defaults, so "block omitted" and "key omitted" are the same posture,
+verification on. It passes the resolved flag to `verifyHostname` on every build, on the true path as
+well as the false one. Calling nothing in the default case would leave the gateway following the
+library's default, which is the drift ADR-0022 forbids inheriting.
+
+An omitted `oidc_verify_hostname` inside a present block resolves to `true`, not to the boolean type
+default, through the same dedicated deserializer ADR-0040 introduced for the block's other flags.
+
+No TLS code is written. The relaxation is the library's own, on the context the library derives.
+
+=== A named profile replaces the leg's anchors
+
+`oidc_tls_profile` names a logical trust profile in the gateway's vocabulary and carries no
+material. It is resolved through the single mapping seam of
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011],
+through a leg-neutral entry point that shares one resolution core with the per-issuer JWKS
+resolution. The four fail-closed refusals therefore apply to this leg byte for byte and cannot drift
+apart between the two: an unbound name fails boot, a trust-all profile is refused ahead of the
+anchor-free check, an anchor-free profile is refused, and unloadable material is refused. Each
+refusal names `egress_tls.oidc_tls_profile`.
+
+The resolved context is handed to the builder's `sslContext`, and it *replaces* the JVM default
+trust store on this leg rather than adding to it. A profile holding only a private CA stops trusting
+public certificate authorities for the identity provider. That is the correct semantic for a named
+profile and it is stated wherever the key is documented, because it surprises people.
+
+=== The collision is refused before the builder is touched
+
+`oidc_verify_hostname: false` together with a named `oidc_tls_profile` fails boot with a
+`CONFIG_INVALID` naming both gateway keys, checked before the builder is constructed. Left to the
+library, the operator would receive an `IllegalArgumentException` phrased in terms of two builder
+methods that appear nowhere in `gateway.yaml` -- a diagnostic in a vocabulary the operator cannot act
+on. ADR-0041's reasoning carries over whole: this is not a legitimate deployment that must merely be
+visible but a configuration with no coherent meaning, which the library would reject one layer down
+whatever the gateway did. The only choice is which error the operator sees.
+
+On this leg the collision is simpler than on the JWKS leg. Both keys sit at the same scope, in the
+same block, so the refusal names two keys the operator wrote side by side rather than a global key
+and a per-issuer one.
+
+=== Neither posture is silent
+
+Each posture that departs from the default is reported once per boot, from the single build the
+runtime performs, and only on the active BFF path -- a bearer-only gateway builds no such client:
+
+* `ApiSheriff-125` when the hostname flag resolves `false`, stating hostname-matching-only scope,
+  that chain trust is unaffected, that the relaxation applies to this leg only, the collision
+  refusal and how to restore verification.
+* `ApiSheriff-126` when a trust profile is in effect, naming the logical profile, stating that its
+  anchors replace the JVM default trust store on this leg, and never carrying a store path, password
+  or anchor.
+
+Both are warnings rather than refusals, under ADR-0040's warn-never-refuse rule for postures that
+are legitimate but must be visible.
+
+=== The scope claim is proven by a dial at unit level
+
+A "hostname matching only" claim is worth exactly as much as the dial that would refute it. The
+proof runs against a local HTTPS server that serves a discovery document under a certificate that
+does not name the dialled address, driven through the producer's own configuration path rather than
+by constructing the library's configuration in the test:
+
+* A *matched control* runs the same server, the same trust anchor and the same configuration twice,
+  differing only in the flag. The default posture refuses discovery; the relaxed posture completes
+  it. Chain trust succeeds on both legs, so hostname matching is the single remaining discriminator.
+* An *omitted-block leg* proves that a document declaring no `egress_tls` resolves to verification
+  on.
+* An *untrusted-chain leg* dials a server whose certificate correctly names the dialled address
+  under a root that is not an anchor, with the flag *off*, and must still be refused -- the leg that
+  would go green if the relaxation reached chain trust.
+* The *collision refusal* carries its own matched control: the same false flag without a profile
+  assembles cleanly, so the failure is attributable to the combination.
+* A *profile leg* proves a named profile sets the context and is reported.
+* *Falsification checks* confirm the tests are not vacuous: deleting the `verifyHostname` call from
+  the producer turns the relaxed leg of the matched control red, and removing the pre-builder
+  refusal turns the collision test red with the library's exception in place of `CONFIG_INVALID`.
+
+=== No deployment-activation instance is owed
+
+The project's coverage standard asks an opt-in runtime feature for a test proving a shipped
+deployment actually activates it. That test has nothing to assert here. `oidc_verify_hostname` and
+`oidc_tls_profile` are secure-by-default *relaxations* and a deployment binding respectively, and no
+shipped deployment descriptor declares either: the default posture is the shipped one. There is no
+deployed document whose activation a wiring test could check.
+
+The two halves that are owed are both present. The behaviour half is the real TLS dial above,
+through the public producer path, with its matched control, untrusted-chain leg and falsification
+checks. The native binding half -- that the shared `egress_tls` record and its deserializer survive
+the native build -- is already exercised by the integration stack's matched egress-verification
+instance pair, which binds the same record through the same deserializer. A third integration
+instance differing only in a key no deployment sets would buy a multi-minute stack start and prove
+nothing the unit dial and that pair do not.
+
+=== A fitness function guards against a seventh unbound leg
+
+The sixth leg was missing from every enumeration because enumerations are written by hand, and a
+hand-written enumeration does not notice the construction site it omits. The standing guard is
+therefore not a longer list but a property: a fitness function in the
+link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+four-leg shape fails the build whenever production code calls an outbound TLS-client construction
+target without, in the same class, calling that target's posture method. The identity-provider
+client's configuration builder is one mapped target, with `verifyHostname` as its posture method;
+removing the call from the producer turns the rule red naming the producer. A correctly pinned
+seventh leg needs no test edit, and an unpinned one cannot land green.
+
+The rule reads calls, not values, so a `verifyHostname(false)` satisfies it; whether a relaxation
+is legitimate stays with the configuration surface that feeds it.
+
+== Consequences
+
+=== Positive
+
+* The leg that carries the client secret and the authorization codes has an explicit posture the
+  gateway owns, independent of the client library's default.
+* An operator whose identity provider is reached through a name-mismatched address has a narrow
+  answer, and an operator whose provider presents a private-CA certificate has a different, correct
+  one -- so the relaxation is not the only lever in reach.
+* Every outbound TLS posture key lives in one block, named for its leg, so the block documents the
+  gateway's whole governed egress surface in one place.
+* The trust-profile refusals are shared with the JWKS leg by construction, not by copy, so the two
+  identity-provider legs cannot diverge in how they fail closed.
+* The incoherent combination fails at boot naming keys the operator wrote.
+* An unbound future leg fails the build rather than a review.
+
+=== Negative
+
+* *The block grows to five keys, and two of them usually point at the same identity provider.* An
+  operator relaxing hostname matching for a provider reached by both the JWKS and the BFF
+  back-channel must set two keys. That is the price of the legs being independently relaxable, and
+  it is paid by exactly the deployments that need both.
+* *Two trust surfaces for one provider sit at different scopes.* The JWKS leg's profile is per
+  issuer; this leg's is global. A deployment binding one private CA for both names the same profile
+  in two places.
+* The gateway carries a check whose only reason to exist is a constraint one layer down. If the
+  library lifts the restriction, the refusal becomes a gateway-imposed limit and would have to be
+  removed deliberately.
+* The fitness function's co-occurrence is read per class, so a class that pins one client of a
+  family and builds a second without its posture is not caught. Every class builds at most one
+  client per family today.
+
+=== Risks
+
+* *The relaxation is read as a general TLS disable.* Mitigated by stating the hostname-matching-only
+  scope in the schema description, the model javadoc, the operator documentation and the boot
+  warning, and by the untrusted-chain leg, which would go green if the claim were false.
+* *The JVM disables hostname verification below every gateway key.* The JDK system property
+  `jdk.internal.httpclient.disableHostnameVerification` turns off hostname checks on every JDK-client
+  leg -- this one, the JWKS back-channel and the asset-origin fetch -- beneath all configuration and
+  invisible to the fitness function, which reads bytecode. It is a start-up flag and therefore the
+  deployment's responsibility. It is carried as a named residual in the security threat model and in
+  the fitness function's javadoc rather than refused at boot.
+* *A named profile silently drops public anchors.* An operator who names a profile for a private CA
+  may still need a public one on the same leg. Mitigated by the replacement semantic being stated
+  wherever the key appears, including in the boot warning that reports the profile in effect.
+* *The enumeration drifts again.* The six-leg table is hand-written, like the one it replaces.
+  Mitigated by marking every copy of it as re-derived from source and by the fitness function, which
+  does not depend on any copy being complete.
+
+== Alternatives Considered
+
+=== Leave the leg on the library default
+
+Bind nothing, record that the leg verifies hostnames by default, and rely on the library keeping
+that default.
+
+Rejected because it makes a security property of the gateway a property of a dependency's release
+notes. ADR-0022 requires an upstream default change to be adopted deliberately, and a posture the
+gateway never sets cannot be adopted -- it can only be inherited. It would also leave operators with
+a private-CA or name-mismatched identity provider no answer at all.
+
+=== Reuse `jwks_verify_hostname` for both identity-provider legs
+
+Treat "the identity provider" as one egress surface and govern both back-channels with the existing
+key.
+
+Rejected on the grounds set out in the decision: the legs are different clients from different
+library entry points, and ADR-0040's peer-key argument -- an operator relaxing one has no reason to
+relax the other -- applies unchanged. A shared key also has no coherent trust counterpart, because
+the JWKS leg's profile is per issuer and this leg's client is built once per gateway.
+
+=== Hand-roll the relaxation or a relaxed context in the gateway
+
+Build a delegating trust manager locally, or derive a relaxed context from the named profile, so
+the relaxation and a profile could combine on this leg.
+
+Rejected for the reasons ADR-0041 records against the same options on the JWKS leg. Passing a
+caller-built context to defeat the library's guard satisfies its letter while defeating its purpose,
+and moves security-critical trust-manager code into the gateway, where its failure mode -- a
+forwarded overload that silently validates nothing -- is invisible in review.
+
+=== An integration instance per relaxation key
+
+Add a gateway instance to the integration stack that sets `oidc_verify_hostname: false`, mirroring
+the upstream key's matched pair.
+
+Rejected because it proves nothing the unit dial does not. The unit test performs a real TLS
+handshake through the producer's own path with a matched control and an untrusted-chain leg; the
+native binding of the shared record and deserializer is already exercised by the existing pair. An
+instance whose configuration no deployment ships would add stack start-up cost to every integration
+run for a property already held twice.
+
+The unifying principle across these alternatives: an egress leg's posture belongs to the gateway,
+is expressed in one block under a key named for that leg, and is implemented by the library that
+owns the connection. Each rejected option either leaves the posture to a default, blurs which leg a
+key governs, or pulls TLS code into the gateway.
+
+== References
+
+* link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
+  -- the `egress_tls` block, the surface-prefix rule, the peer-key and manufactured-misuse arguments
+  and the warn-never-refuse rule this decision applies to the sixth leg
+* link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]
+  -- the passthrough mechanism, the pre-builder collision refusal and the unit-dial proof this
+  decision follows
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the neutral-name trust-profile seam and its four fail-closed refusals, shared with this leg
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+  -- the posture behind calling the passthrough on both paths
+* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  -- the four-leg fitness-function shape of the explicit-posture guard
+* link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+  -- the plain-TCP relay that negotiates no TLS and is therefore not a leg
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+  -- the BFF mode whose identity-provider client this leg is
+* link:../configuration.adoc[Configuration reference] -- the `egress_tls.oidc_verify_hostname` and
+  `egress_tls.oidc_tls_profile` field contracts
+* link:../security-threat-model.adoc[Security threat model] -- the back-channel entries this decision
+  governs and the JVM-level hostname-verification residual
+* link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] --
+  the deployment-activation standard and the recorded reason this leg owes no activation instance
+* link:../LogMessages.adoc[Log messages] -- the `ApiSheriff-125` and `ApiSheriff-126` warning records
