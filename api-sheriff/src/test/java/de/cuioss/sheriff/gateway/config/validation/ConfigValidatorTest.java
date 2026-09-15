@@ -852,6 +852,29 @@ class ConfigValidatorTest {
         }
 
         @Test
+        @DisplayName("Should check CORS on the global block only — an anchor cannot carry cors (ADR-0007 Amendment A1)")
+        void shouldCheckCorsOnGlobalBlockOnly() {
+            SecurityHeadersConfig wildcardWithCredentials = SecurityHeadersConfig.builder()
+                    .cors(SecurityHeadersConfig.Cors.builder()
+                            .allowedOrigins(List.of("*"))
+                            .allowCredentials(true)
+                            .build())
+                    .build();
+            AnchorConfig anchorWithCors = AnchorConfig.builder()
+                    .name("open").pathPrefix("/open").type(AnchorType.PROXY).access(AccessLevel.PUBLIC)
+                    .securityHeaders(wildcardWithCredentials)
+                    .build();
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("open", anchorWithCors));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains("cors")),
+                    () -> "CORS is evaluated before route selection, so an anchor block is never a CORS source and "
+                            + "the gateway schema refuses one at load; the validator checks the global block only, got: "
+                            + errors);
+        }
+
+        @Test
         @DisplayName("Should accept cookie session mode without an encryption_key (generate-on-startup)")
         void shouldAcceptCookieSessionWithoutEncryptionKey() {
             GatewayConfig gateway = validGateway()

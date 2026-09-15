@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.pipeline;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,13 +27,18 @@ import java.util.Map;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Cors;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Hsts;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-@DisplayName("SecurityHeadersStage — stage 0 response headers and CORS origin handling")
+@DisplayName("SecurityHeadersStage — stage 0 response headers, CORS origin handling and stage 2a route headers")
 class SecurityHeadersStageTest {
 
     private static final String ACAO = "Access-Control-Allow-Origin";
+    private static final String HSTS = "Strict-Transport-Security";
+    private static final String NOSNIFF = "X-Content-Type-Options";
+    private static final String FRAME_OPTIONS = "X-Frame-Options";
 
     @Test
     @DisplayName("reflects any presented origin when a wildcard origin is configured")
@@ -91,6 +97,118 @@ class SecurityHeadersStageTest {
         assertEquals("https://any.example", request.responseHeaders().get(ACAO));
         assertTrue(request.shortCircuitStatus().isPresent(), "a CORS preflight must short-circuit");
         assertEquals(204, request.shortCircuitStatus().orElseThrow().intValue());
+    }
+
+    @Test
+    @DisplayName("short-circuits a preflight at stage 0 carrying the global security headers")
+    void preflightShortCircuitsWithGlobalBlock() {
+        Cors cors = Cors.builder().enabled(Boolean.TRUE).allowedOrigins(List.of("https://ok.example"))
+                .allowedMethods(List.of("GET")).build();
+        SecurityHeadersStage stage = new SecurityHeadersStage(SecurityHeadersConfig.builder()
+                .hsts(new Hsts(31536000, true)).frameDeny(true).cors(cors).build());
+        PipelineRequest request = corsRequest(HttpMethod.OPTIONS, "https://ok.example", true);
+
+        stage.process(request);
+
+        assertAll("the preflight is answered before route selection, with the global block",
+                () -> assertEquals(204, request.shortCircuitStatus().orElseThrow().intValue()),
+                () -> assertEquals("max-age=31536000; includeSubDomains",
+                        request.responseHeaders().get(HSTS)),
+                () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS)),
+                () -> assertEquals("GET", request.responseHeaders().get("Access-Control-Allow-Methods")));
+    }
+
+    @Nested
+    @DisplayName("stage 2a — applyRouteHeaders replaces the global block with the route's block")
+    class RouteHeaders {
+
+        private final SecurityHeadersConfig global = SecurityHeadersConfig.builder()
+                .hsts(new Hsts(31536000, true))
+                .contentTypeNosniff(true)
+                .frameDeny(true)
+                .cors(Cors.builder().enabled(Boolean.TRUE).allowedOrigins(List.of("https://ok.example")).build())
+                .build();
+
+        @Test
+        @DisplayName("replaces the security names wholesale — an anchor block with only frame_deny drops HSTS and nosniff")
+        void replacesSecurityNamesWholesale() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersStage stage = new SecurityHeadersStage(global);
+            stage.process(request);
+            request.responseHeaders().put("Allow", "GET");
+
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build());
+
+            assertAll("only the gateway-owned security names are replaced",
+                    () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS),
+                            "the route block's frame_deny is seeded"),
+                    () -> assertNull(request.responseHeaders().get(HSTS),
+                            "the global HSTS is dropped — no key-by-key merge"),
+                    () -> assertNull(request.responseHeaders().get(NOSNIFF),
+                            "the global nosniff is dropped — no key-by-key merge"),
+                    () -> assertEquals("https://ok.example", request.responseHeaders().get(ACAO),
+                            "the global CORS header is untouched"),
+                    () -> assertEquals("GET", request.responseHeaders().get("Allow"),
+                            "a non-security entry is untouched"));
+        }
+
+        @Test
+        @DisplayName("seeds every header the route block enables")
+        void seedsEveryEnabledRouteHeader() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersStage stage =
+                    new SecurityHeadersStage(SecurityHeadersConfig.builder().frameDeny(true).build());
+            stage.process(request);
+
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder()
+                    .hsts(new Hsts(600, false)).contentTypeNosniff(true).build());
+
+            assertAll("the route block governs the response from stage 2a on",
+                    () -> assertEquals("max-age=600", request.responseHeaders().get(HSTS)),
+                    () -> assertEquals("nosniff", request.responseHeaders().get(NOSNIFF)),
+                    () -> assertNull(request.responseHeaders().get(FRAME_OPTIONS),
+                            "the global frame_deny does not survive a route block that omits it"));
+        }
+
+        @Test
+        @DisplayName("removes every gateway-owned name when the route resolves no block at all")
+        void removesSecurityNamesWhenRouteHasNoBlock() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersStage stage = new SecurityHeadersStage(global);
+            stage.process(request);
+
+            stage.applyRouteHeaders(request, null);
+
+            assertAll("a null route block leaves no gateway-owned security header behind",
+                    () -> assertNull(request.responseHeaders().get(HSTS)),
+                    () -> assertNull(request.responseHeaders().get(NOSNIFF)),
+                    () -> assertNull(request.responseHeaders().get(FRAME_OPTIONS)),
+                    () -> assertEquals("https://ok.example", request.responseHeaders().get(ACAO)));
+        }
+
+        @Test
+        @DisplayName("re-seeds an identical block unchanged when the route resolves the global block")
+        void keepsGlobalValuesWhenRouteResolvesGlobalBlock() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            SecurityHeadersStage stage = new SecurityHeadersStage(global);
+            stage.process(request);
+            Map<String, String> afterStageZero = Map.copyOf(request.responseHeaders());
+
+            stage.applyRouteHeaders(request, global);
+
+            assertEquals(afterStageZero, Map.copyOf(request.responseHeaders()),
+                    "an unanchored route resolves the global block, so stage 2a changes nothing");
+        }
+
+        @Test
+        @DisplayName("leaves the short-circuit state untouched")
+        void leavesShortCircuitUntouched() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+
+            new SecurityHeadersStage(global).applyRouteHeaders(request, global);
+
+            assertTrue(request.shortCircuitStatus().isEmpty(), "stage 2a never short-circuits a request");
+        }
     }
 
     private static SecurityHeadersStage corsStage(List<String> allowedOrigins, boolean allowCredentials) {
