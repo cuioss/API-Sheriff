@@ -235,6 +235,51 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
+         * {@code egress_tls.oidc_verify_hostname} resolved to {@code false} at boot, so the BFF OIDC
+         * back-channel — discovery, the authorization-code exchange and refresh — no longer compares
+         * the dialled name against the identity provider certificate's names.
+         * <p>
+         * The sibling of {@link #JWKS_HOSTNAME_VERIFICATION_DISABLED} on the sixth TLS leg, and a
+         * {@code WARN} rather than a boot refusal for the same reason: an identity provider reached
+         * through an address its certificate does not name is a legitimate deployment (ADR-0045).
+         * What must not happen is the relaxation reaching production silently — this leg carries the
+         * client secret and the authorization codes the gateway establishes sessions from.
+         * <p>
+         * The template states the scope rather than leaving it to be inferred: hostname matching only,
+         * chain trust unaffected, this leg only, the collision refusal with
+         * {@code egress_tls.oidc_tls_profile}, and how to restore. It names no certificate path, no
+         * anchor and no identity-provider URL.
+         * <p>
+         * Emitted once per boot, from the single build of the BFF runtime, and only on the active BFF
+         * path — a bearer-only gateway builds no such client.
+         */
+        public static final LogRecord OIDC_HOSTNAME_VERIFICATION_DISABLED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(125)
+                .template("egress_tls.oidc_verify_hostname is false — the BFF OIDC back-channel (discovery, the authorization-code exchange and refresh) no longer verifies that the identity provider certificate names the dialled host. Certificate-chain trust is unaffected and an untrusted identity provider is still refused. The relaxation applies to that leg only; egress_tls.jwks_verify_hostname and egress_tls.upstream_verify_hostname govern the JWKS back-channel and the proxy, gRPC and WebSocket egress clients separately and are unchanged by this key. Naming egress_tls.oidc_tls_profile is refused at boot while this key is false, because the two are mutually exclusive. Restore verification by removing the key or setting it back to true in gateway.yaml")
+                .build();
+
+        /**
+         * A named {@code egress_tls.oidc_tls_profile} is in effect at boot, so the BFF OIDC
+         * back-channel verifies the identity provider's certificate against the deployment-bound
+         * anchors instead of the JVM default trust store.
+         * <p>
+         * The sibling of {@link #EGRESS_TRUST_PROFILE_IN_EFFECT} on the sixth TLS leg: a named profile
+         * <em>replaces</em> the leg's anchors rather than adding to them (ADR-0045), so a profile
+         * holding only a private CA stops trusting public certificate authorities for the identity
+         * provider. That is a deliberate, legitimate posture, so it is reported and never refused.
+         * <p>
+         * The template carries the <em>logical</em> profile name only — the ADR-0011 neutral name that
+         * appears in {@code gateway.yaml}. It must never carry the deployment's store path, password,
+         * or any anchor material.
+         */
+        public static final LogRecord OIDC_TRUST_PROFILE_IN_EFFECT = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(126)
+                .template("egress_tls.oidc_tls_profile '%s' is in effect — its anchors REPLACE the JVM default trust store on the BFF OIDC back-channel (discovery, the authorization-code exchange and refresh), so a public certificate authority is no longer trusted for the identity provider unless the profile carries it too. The JWKS back-channel and the proxy, gRPC and WebSocket egress clients are not governed by this profile")
+                .build();
+
+        /**
          * The terminated <em>main</em> listener resolved to plain HTTP at startup — no server key
          * material reached it, so no HTTPS listener was started.
          * <p>

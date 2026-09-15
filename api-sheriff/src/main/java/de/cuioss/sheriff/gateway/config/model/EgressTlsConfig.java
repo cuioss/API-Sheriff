@@ -22,16 +22,31 @@ import org.jspecify.annotations.Nullable;
  * counterpart of the server-side {@link TlsConfig} block (ADR-0040).
  * <p>
  * The block is global rather than per route because the underlying settings are
- * fixed at client construction: one of the three governed egress clients is the
+ * fixed at client construction: one of the governed egress clients is the
  * edge-wide WebSocket client, which a per-route value could not bind. There is no
  * per-route override.
  * <p>
  * <strong>The block is not one switch over every https leg — read each key's own
- * scope.</strong> {@code upstreamVerifyHostname} and {@code upstreamTlsProfile} govern
- * the three Vert.x egress clients; {@code jwksVerifyHostname} governs the JWKS
- * back-channel and nothing else. The two hostname keys are deliberately separate rather
- * than one shared flag, because the legs are dialled by different clients and an operator
- * relaxing one has no reason to relax the other. The asset-origin fetch
+ * scope.</strong> The gateway dials six TLS-terminating outbound legs (enumeration
+ * re-derived from source), and each key reaches a named subset of them:
+ * <ol>
+ *   <li>the default Vert.x HTTP egress client — {@code upstreamVerifyHostname},
+ *       {@code upstreamTlsProfile};</li>
+ *   <li>the forced-HTTP/2 (gRPC) Vert.x egress client — {@code upstreamVerifyHostname},
+ *       {@code upstreamTlsProfile};</li>
+ *   <li>the edge-wide Vert.x WebSocket client — {@code upstreamVerifyHostname},
+ *       {@code upstreamTlsProfile};</li>
+ *   <li>the JWKS back-channel built in {@code TokenValidatorProducer} —
+ *       {@code jwksVerifyHostname}, with trust reached per issuer through
+ *       {@code jwks.tls_profile};</li>
+ *   <li>the asset-origin JDK client in {@code UpstreamAssetSource} — no key in this
+ *       block (see below);</li>
+ *   <li>the BFF OIDC back-channel built in {@code BffRuntimeProducer} —
+ *       {@code oidcVerifyHostname}, {@code oidcTlsProfile}.</li>
+ * </ol>
+ * The hostname keys are deliberately separate rather than one shared flag, because the
+ * legs are dialled by different clients and an operator relaxing one has no reason to
+ * relax another. The asset-origin fetch
  * ({@code UpstreamAssetSource.httpFetcher}) builds a JDK {@code java.net.http.HttpClient},
  * which carries neither setting: an {@code https} asset origin therefore keeps full
  * hostname verification and the JVM default trust store whatever this block says.
@@ -43,33 +58,33 @@ import org.jspecify.annotations.Nullable;
  * store instead. Governing the JDK client would need {@code SSLParameters} plumbing
  * that ADR-0040 deliberately did not scope.
  * <p>
- * <strong>One further leg: the BFF OIDC back-channel.</strong> The {@code ClientConfiguration}
- * built in {@code BffRuntimeProducer} is what {@code DiscoveryResolver},
- * {@code TokenEndpointClient} and {@code RefreshFlow} dial the identity provider with —
- * discovery, the authorization-code exchange and refresh — presenting the client secret under
- * {@code CLIENT_SECRET_BASIC}. Neither key in this block is bound at its construction, so it is
- * enumerated here for the same reason the asset leg is: the scope claim above is a closed list,
- * and a leg left out of it would read as governed. It is not silently unverified — the
- * library's {@code ClientConfiguration} default verifies the hostname, so the leg matches the
- * secure default of the keys that do not reach it. What is absent is a <em>local</em> pin on
- * that upstream default; the threat model records it as a countable remainder rather than
- * binding a posture here, because that would be a behavioural change on the authentication
- * back-channel.
+ * <strong>The BFF OIDC back-channel is bound through its own peer keys (ADR-0045).</strong> The
+ * {@code ClientConfiguration} built in {@code BffRuntimeProducer} is what
+ * {@code DiscoveryResolver}, {@code TokenEndpointClient} and {@code RefreshFlow} dial the
+ * identity provider with — discovery, the authorization-code exchange and refresh — presenting
+ * the client secret under {@code CLIENT_SECRET_BASIC}. {@code oidcVerifyHostname} is passed to
+ * that builder's {@code verifyHostname} on every build, the {@code true} path included, so an
+ * upstream default change cannot move the leg's posture (ADR-0022); {@code oidcTlsProfile}, when
+ * named, supplies the builder's {@code sslContext}. The two are mutually exclusive in the same way
+ * as {@code jwksVerifyHostname} and {@code jwks.tls_profile} (ADR-0041): the library relaxes
+ * hostname matching only on the default-trust-store context it derives itself, so a
+ * {@code false} flag together with a named profile is refused at boot with
+ * {@code CONFIG_INVALID}.
  * <p>
- * <strong>Both flags relax hostname matching only.</strong> Turning one off stops
+ * <strong>Every flag relaxes hostname matching only.</strong> Turning one off stops
  * the dialled name from being compared against the certificate's names; it does
  * <em>not</em> disable certificate-chain validation, does not accept a self-signed
  * certificate, and does not accept a certificate issued by an untrusted authority.
  * Chain trust is a separate mechanism, reached per leg: {@code upstreamTlsProfile} for
  * the Vert.x egress clients, the per-issuer {@code jwks.tls_profile} for the JWKS
- * back-channel.
+ * back-channel, {@code oidcTlsProfile} for the BFF OIDC back-channel.
  * <p>
  * <strong>An omitted flag resolves to {@code true}, not to the primitive default.</strong>
  * Jackson would bind an absent boolean to {@code false}, so a block naming only
- * {@code upstream_tls_profile} would silently disable hostname verification from a
- * document that never mentions it. {@code ConfigLoader}'s dedicated
- * {@code EgressTlsDeserializer} resolves each absent flag to {@code true}; this record
- * is only ever constructed with the resolved values.
+ * {@code upstream_tls_profile} would silently disable hostname verification — on every
+ * leg — from a document that never mentions it. {@code ConfigLoader}'s dedicated
+ * {@code EgressTlsDeserializer} resolves each absent flag to {@code true} and each absent
+ * profile to {@code null}; this record is only ever constructed with the resolved values.
  *
  * @param upstreamVerifyHostname whether a terminated upstream dial verifies that the
  *                               upstream certificate names the dialled host (default
@@ -105,6 +120,25 @@ import org.jspecify.annotations.Nullable;
  *                               profile <em>replaces</em> the client's anchors rather
  *                               than adding to them, on those three clients only — the
  *                               asset-origin leg keeps the JVM default trust store
+ * @param oidcVerifyHostname     whether the BFF OIDC back-channel — discovery, the
+ *                               authorization-code exchange and refresh — verifies that
+ *                               the identity provider's certificate names the dialled host
+ *                               (default {@code true}). Read by {@code BffRuntimeProducer},
+ *                               which passes it to token-sheriff's
+ *                               {@code ClientConfigurationBuilder#verifyHostname} on every
+ *                               build, so it governs that leg only. Hostname matching only:
+ *                               chain trust is untouched and an untrusted identity provider
+ *                               is still refused. Mutually exclusive with
+ *                               {@code oidcTlsProfile} — the combination is refused at boot
+ *                               with {@code CONFIG_INVALID} (ADR-0045). Resolving to
+ *                               {@code false} logs {@code ApiSheriff-125} once at boot
+ * @param oidcTlsProfile         the logical name of the trust profile whose anchors verify
+ *                               the identity provider's certificate on the BFF OIDC
+ *                               back-channel, {@code null} when omitted — the leg then keeps
+ *                               the JVM default trust store. The name carries no trust
+ *                               material (ADR-0011). A named profile <em>replaces</em> the
+ *                               leg's anchors rather than adding to them and logs
+ *                               {@code ApiSheriff-126} once at boot
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -112,15 +146,17 @@ import org.jspecify.annotations.Nullable;
 public record EgressTlsConfig(
 boolean upstreamVerifyHostname,
 boolean jwksVerifyHostname,
-@Nullable String upstreamTlsProfile) {
+@Nullable String upstreamTlsProfile,
+boolean oidcVerifyHostname,
+@Nullable String oidcTlsProfile) {
 
     /**
-     * The default {@code egress_tls} — both hostname-verification flags {@code true}
+     * The default {@code egress_tls} — every hostname-verification flag {@code true}
      * and no trust profile — applied when the block is not declared at all.
      *
-     * @return a defaults instance with both flags enabled and no trust profile
+     * @return a defaults instance with every flag enabled and no trust profile
      */
     public static EgressTlsConfig defaults() {
-        return new EgressTlsConfig(true, true, null);
+        return new EgressTlsConfig(true, true, null, true, null);
     }
 }

@@ -29,6 +29,7 @@ import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -55,8 +56,12 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
 import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
@@ -121,6 +126,18 @@ import jakarta.inject.Singleton;
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
  * unit-testable) without a live IdP, and the discovery-dependent {@code end_session_endpoint} the
  * logout leg needs is materialized only when the first logout arrives.
+ * <p>
+ * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
+ * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
+ * authorization-code exchange and refresh — is the sixth TLS-terminating outbound leg, and it is bound
+ * to the global {@code egress_tls} block through its own peer keys: {@code oidc_verify_hostname} is
+ * passed to the builder's {@code verifyHostname} on every build, the {@code true} path included, so
+ * the leg's effect never depends on token-sheriff's own default (ADR-0022); {@code oidc_tls_profile},
+ * when named, is resolved through {@link JwksTrustProfileResolver} and supplies the builder's
+ * {@code sslContext}, replacing the JVM default trust store on that leg. The relaxation and a named
+ * profile are mutually exclusive and the pair is refused at boot, ahead of the library's own
+ * builder-vocabulary rejection (the ADR-0041 pattern). Both are applied only on the active path: a
+ * bearer-only gateway builds no such client, so neither key has a leg to act on there.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -143,20 +160,39 @@ public class BffRuntimeProducer {
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
+    /** The gateway key a named BFF back-channel trust profile is declared under, for error context. */
+    private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
 
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> tokenValidator;
+    private final JwksTrustProfileResolver trustProfileResolver;
+    /**
+     * The resolved global {@code egress_tls} block, read once here for the same reason
+     * {@code TokenValidatorProducer} resolves its own key once (ADR-0040): the keys are gateway-global
+     * and have no per-issuer or per-route override. An absent block resolves to
+     * {@link EgressTlsConfig#defaults()} rather than to a null-guarded {@code false}, so "block omitted
+     * entirely" and "block present, key omitted" are the same posture — verification ON.
+     */
+    private final EgressTlsConfig egressTls;
 
     /**
-     * @param gatewayConfig  the bound global gateway document carrying the {@code oidc} block
-     * @param tokenValidator a lazy handle to the gateway's shared offline validator, resolved only on
-     *                       the active BFF path in either session mode (a bearer-only gateway never
-     *                       triggers it)
+     * @param gatewayConfig        the bound global gateway document carrying the {@code oidc} block and
+     *                             the global {@code egress_tls} block
+     * @param tokenValidator       a lazy handle to the gateway's shared offline validator, resolved
+     *                             only on the active BFF path in either session mode (a bearer-only
+     *                             gateway never triggers it)
+     * @param trustProfileResolver the single seam mapping a logical {@code egress_tls.oidc_tls_profile}
+     *                             name to concrete trust anchors, consulted only on the active path and
+     *                             only when a profile is named
      */
     public BffRuntimeProducer(GatewayConfig gatewayConfig,
-            @GatewayValidator Instance<TokenValidator> tokenValidator) {
+            @GatewayValidator Instance<TokenValidator> tokenValidator,
+            JwksTrustProfileResolver trustProfileResolver) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
+        this.trustProfileResolver = Objects.requireNonNull(trustProfileResolver, "trustProfileResolver");
+        EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
+        this.egressTls = declaredEgressTls == null ? EgressTlsConfig.defaults() : declaredEgressTls;
     }
 
     /**
@@ -198,9 +234,9 @@ public class BffRuntimeProducer {
         String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
         OidcConfig.Session session = Objects.requireNonNull(oidc.session(), "oidc.session");
         String gatewayOrigin = originOf(redirectUri);
-        String issuer = Objects.requireNonNullElse(oidc.issuer(), gatewayOrigin);
-        String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
-        String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
+        String issuer = issuerOf(oidc, redirectUri);
+        String clientId = clientIdOf(oidc);
+        String clientSecret = clientSecretOf(oidc);
 
         Duration sessionTtl = Duration.ofSeconds(
                 Objects.requireNonNullElse(session.ttlSeconds(), OidcConfig.Session.DEFAULT_TTL_SECONDS));
@@ -226,10 +262,7 @@ public class BffRuntimeProducer {
                 ? Set.of(gatewayOrigin)
                 : Set.copyOf(declaredTrustedOrigins);
 
-        ClientConfiguration clientConfiguration = ClientConfiguration.builder()
-                .issuer(issuer).clientId(clientId).clientSecret(clientSecret)
-                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
-                .scopes(oidc.scopes()).redirectUri(redirectUri).build();
+        ClientConfiguration clientConfiguration = backChannelConfiguration(oidc);
         ClientAuthentication clientAuthentication = new ClientSecretBasicAuth(clientId, clientSecret);
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
@@ -351,6 +384,79 @@ public class BffRuntimeProducer {
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
+    }
+
+    /**
+     * Builds the {@link ClientConfiguration} the BFF OIDC back-channel dials the identity provider with,
+     * carrying the pinned {@code egress_tls} posture of that leg.
+     * <p>
+     * <strong>The collision is refused before the builder is touched.</strong> token-sheriff implements
+     * {@code verifyHostname(false)} by relaxing the context <em>it</em> derives from the JVM default
+     * trust store, so it rejects that relaxation together with a caller-supplied {@code sslContext} —
+     * there is nothing to relax in a context the caller built. A named {@code oidc_tls_profile} supplies
+     * exactly such a context, so the pair is refused here with a {@code CONFIG_INVALID} naming both
+     * gateway keys, instead of surfacing as the library's {@link IllegalArgumentException} phrased in
+     * its own builder vocabulary.
+     * <p>
+     * <strong>The hostname posture is passed unconditionally.</strong> {@code verifyHostname} is called
+     * on the {@code true} path as well, so the key's effect is independent of the library default and
+     * an upstream default change cannot silently move this gateway's posture (ADR-0022). The trust
+     * context is set only when a profile is named; otherwise the leg keeps the JVM default trust store.
+     * <p>
+     * Each relaxed or replaced posture is reported once, at the single build this {@link Singleton}
+     * runtime performs: {@code ApiSheriff-125} when the hostname flag resolves {@code false},
+     * {@code ApiSheriff-126} when a trust profile is in effect.
+     *
+     * @param oidc the global {@code oidc} block, already cleared by the BFF-mode activation predicate
+     * @return the back-channel client configuration carrying the resolved hostname posture and, when a
+     *         profile is named, its trust anchors
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when
+     *                          {@code egress_tls.oidc_verify_hostname} is {@code false} while
+     *                          {@code egress_tls.oidc_tls_profile} is named, or when the named profile
+     *                          cannot be resolved to trust anchors
+     */
+    ClientConfiguration backChannelConfiguration(OidcConfig oidc) {
+        String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
+        boolean verifyHostname = egressTls.oidcVerifyHostname();
+        String tlsProfile = egressTls.oidcTlsProfile();
+        if (!verifyHostname && tlsProfile != null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    "egress_tls.oidc_tls_profile '" + tlsProfile + "' is named while "
+                            + "egress_tls.oidc_verify_hostname is false — the two are mutually exclusive. The "
+                            + "hostname relaxation applies only to the default-trust-store context the BFF "
+                            + "OIDC back-channel derives, so a profile-supplied context leaves nothing to "
+                            + "relax. Either drop egress_tls.oidc_tls_profile and bind the identity "
+                            + "provider's anchors into the JVM default trust store, or set "
+                            + "egress_tls.oidc_verify_hostname back to true");
+        }
+        if (!verifyHostname) {
+            LOGGER.warn(ConfigLogMessages.WARN.OIDC_HOSTNAME_VERIFICATION_DISABLED);
+        }
+        ClientConfiguration.ClientConfigurationBuilder builder = ClientConfiguration.builder()
+                .issuer(issuerOf(oidc, redirectUri)).clientId(clientIdOf(oidc)).clientSecret(clientSecretOf(oidc))
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .scopes(oidc.scopes()).redirectUri(redirectUri)
+                // Called unconditionally, on the true path as well, so the posture never rests on the
+                // library default (ADR-0022).
+                .verifyHostname(verifyHostname);
+        if (tlsProfile != null) {
+            builder.sslContext(trustProfileResolver.resolveEgressProfile(OIDC_TLS_PROFILE_KEY, tlsProfile));
+            LOGGER.warn(ConfigLogMessages.WARN.OIDC_TRUST_PROFILE_IN_EFFECT, tlsProfile);
+        }
+        return builder.build();
+    }
+
+    /** The configured {@code oidc.issuer}, or the gateway's own origin when the key is omitted. */
+    private static String issuerOf(OidcConfig oidc, String redirectUri) {
+        return Objects.requireNonNullElse(oidc.issuer(), originOf(redirectUri));
+    }
+
+    private static String clientIdOf(OidcConfig oidc) {
+        return Objects.requireNonNullElse(oidc.clientId(), "");
+    }
+
+    private static String clientSecretOf(OidcConfig oidc) {
+        return Objects.requireNonNullElse(oidc.clientSecret(), "");
     }
 
     /**

@@ -557,8 +557,8 @@ class TokenValidatorProducerTest {
         void hostnameVerificationGatesTheJwksFetch() {
             // Arrange — one server, one certificate, one issuer, one key set. The two validators differ
             // in exactly one respect: the value of egress_tls.jwks_verify_hostname.
-            TokenValidator verifying = fixtureValidator(new EgressTlsConfig(true, true, null));
-            TokenValidator relaxed = fixtureValidator(new EgressTlsConfig(true, false, null));
+            TokenValidator verifying = fixtureValidator(new EgressTlsConfig(true, true, null, true, null));
+            TokenValidator relaxed = fixtureValidator(new EgressTlsConfig(true, false, null, true, null));
             AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
 
             // Act & Assert — the negative leg: chain trust succeeds (the fixture's root is a JVM trust
@@ -586,7 +586,7 @@ class TokenValidatorProducerTest {
             // egress TLS produces. The producer must read EgressTlsConfig.defaults() here; reading the
             // primitive default instead would silently relax the JWKS leg for every such document.
             TokenValidator omitted = fixtureValidator(null);
-            TokenValidator relaxed = fixtureValidator(new EgressTlsConfig(true, false, null));
+            TokenValidator relaxed = fixtureValidator(new EgressTlsConfig(true, false, null, true, null));
             AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
 
             // Act & Assert — the absent block behaves exactly like an explicit true ...
@@ -618,7 +618,7 @@ class TokenValidatorProducerTest {
                                 .allowedEgressHosts(List.of(SanMismatchedJwksServer.dialledHost()))
                                 .build())
                         .build();
-                TokenValidator relaxed = producerWith(new EgressTlsConfig(true, false, null), issuer,
+                TokenValidator relaxed = producerWith(new EgressTlsConfig(true, false, null, true, null), issuer,
                         TestTlsConfigurationRegistry.empty()).gatewayTokenValidator();
                 // Built outside the lambda so the assertion below can only be satisfied by
                 // createAccessToken throwing — request construction is not the subject here.
@@ -644,7 +644,7 @@ class TokenValidatorProducerTest {
                     .url(JWKS_URL)
                     .tlsProfile(PROFILE)
                     .build());
-            TokenValidatorProducer producer = producerWith(new EgressTlsConfig(true, false, null),
+            TokenValidatorProducer producer = producerWith(new EgressTlsConfig(true, false, null, true, null),
                     withProfile, TestTlsConfigurationRegistry.with(PROFILE));
 
             // Act
@@ -672,7 +672,7 @@ class TokenValidatorProducerTest {
                     .source("http")
                     .url(JWKS_URL)
                     .build());
-            TokenValidatorProducer producer = producerWith(new EgressTlsConfig(true, false, null),
+            TokenValidatorProducer producer = producerWith(new EgressTlsConfig(true, false, null, true, null),
                     withoutProfile, TestTlsConfigurationRegistry.with(PROFILE));
 
             // Act & Assert
