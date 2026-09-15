@@ -101,8 +101,12 @@ class LargeBodyIT extends BaseIntegrationTest {
     /**
      * 68 MiB — above the {@code upload} anchor's 64 MiB cap and below the compose stack's 128 MiB
      * framework floor, so the rejection is the gateway's and not the framework's.
+     * <p>
+     * Package-private because {@code BodyLimitActivationWiringTest} reads it: its
+     * {@code containerOverrideExceedsTheNegativeCaseBody} guard compares the compose override against
+     * this value rather than against a copy of it, so the two cannot drift apart.
      */
-    private static final long NEGATIVE_BODY_BYTES = 71303168L;
+    static final long NEGATIVE_BODY_BYTES = 71303168L;
 
     private static final String UPLOAD_PATH = "/upload/small";
     private static final String PROBLEM_JSON = "application/problem+json";

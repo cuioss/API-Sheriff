@@ -103,8 +103,12 @@ class WebSocketProxyIT extends BaseIntegrationTest {
      * declares ({@code admission_cap: 8}, {@code websocket_relay_cap: 2}), so a leak of either permit
      * fails the run: the relay sub-budget would run dry on the 3rd upgrade and the general budget on
      * the 9th. With both permits returned at relay teardown, all ten succeed.
+     * <p>
+     * Package-private because {@code WsAdmissionActivationWiringTest} reads it: its
+     * {@code overlayDeclaresAnExhaustibleAdmissionBudget} guard bounds both declared caps by this
+     * value rather than by a copy of it, so lowering the upgrade count below a cap fails that guard.
      */
-    private static final int LOW_CAP_SEQUENTIAL_UPGRADES = 10;
+    static final int LOW_CAP_SEQUENTIAL_UPGRADES = 10;
 
     private static String wsBaseUri;
     private static String lowCapWsBaseUri;
