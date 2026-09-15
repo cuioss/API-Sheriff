@@ -1,4 +1,4 @@
-= API Sheriff -- FAPI 2.0 Conformance Status (0.1.0 Alpha)
+= API Sheriff -- FAPI 2.0 Conformance Status (0.2.1 Alpha)
 :toc: left
 :toclevels: 3
 :sectnums:
@@ -12,7 +12,7 @@ have (corrected in the same change that added this document).
 
 [IMPORTANT]
 ====
-*Verdict: API Sheriff 0.1.0 is NOT FAPI 2.0 conformant.* Three of the profile's mandatory client
+*Verdict: API Sheriff 0.2.1 is NOT FAPI 2.0 conformant.* Three of the profile's mandatory client
 requirements are unmet. What ships is a hardened OIDC confidential-client BFF -- a sound
 implementation of the RFC 9700 baseline -- not a FAPI 2.0 relying party. No FAPI conformance should
 be claimed, implied, or marketed for this release.
@@ -42,7 +42,8 @@ not a capability of the product.*
 | Sender-constrained access tokens -- mTLS (RFC 8705) and/or DPoP (RFC 9449) (§5.3.3.1)
 | *UNMET*
 | `BffRuntimeProducer` constructs `AuthorizationCodeFlow` with a `null` `senderConstraint`, and
-  `RefreshFlow` via its three-argument constructor. Tokens are plain bearer tokens carrying no
+  `RefreshFlow` from the configuration, token-endpoint client, validation bridge and client
+  authentication alone, passing no sender constraint. Tokens are plain bearer tokens carrying no
   `cnf` claim.
 
 | Pushed Authorization Requests (RFC 9126) (§5.3.3.2)

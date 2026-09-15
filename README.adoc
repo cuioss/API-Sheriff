@@ -31,8 +31,30 @@ image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sherif
 image:https://ghcr-badge.egpl.dev/cuioss/api-sheriff/latest_tag?ignore=sha-%2A%2Csha256-%2A&label=ghcr.io&color=blue[Container Image,link=https://github.com/cuioss/API-Sheriff/pkgs/container/api-sheriff]
 image:https://github.com/cuioss/API-Sheriff/actions/workflows/release.yml/badge.svg[Release,link=https://github.com/cuioss/API-Sheriff/actions/workflows/release.yml]
 
-image:https://img.shields.io/badge/cosign-signed-brightgreen[Cosign Signed,link=https://github.com/cuioss/API-Sheriff/blob/main/doc/user/container-image.adoc]
-image:https://img.shields.io/badge/trivy-HIGH%2FCRITICAL%20gate-brightgreen[Trivy Gate,link=https://github.com/cuioss/API-Sheriff/blob/main/doc/development/release-process.adoc]
+// There is deliberately no Cosign badge and no Trivy badge, and this is standing guidance against
+// re-adding them. Both used to sit here as static img.shields.io/badge/ images: their text and colour
+// were fixed in the URL, so they rendered "signed" and "gate" in green whatever
+// .github/workflows/release.yml contained, and would have stayed green had the steps behind them been
+// deleted. Both claims are true, and they live in prose that names the release.yml step making each
+// one true: doc/user/container-image.adoc and doc/development/release-process.adoc. The two badges
+// that remain in this block are derived from live state.
+//
+// A second reason to prefer prose: "HIGH/CRITICAL gate" read ambiguously next to maven.yml's
+// "Supply-chain scan (non-gating)" job, which runs Trivy on every change and gates nothing. The prose
+// can say which of the two scans gates; a badge cannot.
+//
+// Two alternatives were considered and rejected. Do not reintroduce either without revisiting the
+// reason recorded against it:
+//
+// (a) Re-point the badge links at release.yml. Rejected: only the link target changes. The image is
+//     still a static render asserting "signed" / "gate" whatever the workflow contains, so the
+//     always-green defect survives untouched.
+// (b) Publish badge endpoint JSON from the release run. Rejected: the badge would become derived, but
+//     it needs a new publishing step with write access to a pages branch, added to the lane that
+//     holds `id-token: write` for keyless signing and `packages: write` for the GHCR push -- a
+//     security-relevant permission widening bought for a badge. The JSON would also go stale between
+//     releases and on the non-atomic partial-release path, while the "Verify the signature under the
+//     published identity" step and the prose already carry the evidence.
 
 
 *Benchmarks*
@@ -149,15 +171,17 @@ surprise waiting to be discovered.
 A route with no `forward` block now forwards everything (behaviour change on upgrade)::
 The `forward` block used to be allow-list-only: a request header or query parameter crossed to the
 upstream *only* if the route named it, so a route declaring no block forwarded nothing. It is now a
-three-mode policy -- `headers_allow` / `query_allow` is a positive-list, `headers_deny` /
-`query_deny` is a negative-list, and *declaring neither means everything crosses*. An existing
+three-mode policy, applied by `ForwardPolicyStage` -- `headers_allow` / `query_allow` is a
+positive-list, `headers_deny` / `query_deny` is a negative-list, and *declaring neither means
+everything crosses*. An existing
 route that omitted the block, or omitted one of its two dimensions, therefore starts forwarding
 client input it previously withheld.
 +
 *The bound matters as much as the change.* This alters what crosses *within* routes the operator
 had already exposed; it never alters *which* routes are reachable. Route matching is unchanged and
 remains deny-by-default -- a request matching no route still reaches no upstream. Nor does it leak
-credentials: `Cookie` never crosses under any mode, an inbound `Authorization` is re-admitted only
+credentials: `Cookie` never crosses under any mode (`ConnectionHeaders.REQUEST_STRIP`), an inbound
+`Authorization` is re-admitted only
 where a route declares a positive-list naming it, and the hop-by-hop, framing and provenance
 headers the gateway owns are withheld regardless. Note also that a *declared-empty* list is not the
 absent state: `headers_allow: []` is a positive-list naming nothing, and keeps forwarding nothing.
@@ -172,7 +196,8 @@ Both directions carry a *gateway-owned never-relay set* -- the connection-specif
 names, plus, on the request side, the credentials and provenance headers the gateway owns. Beyond
 those sets the two directions differ: a route can *narrow* what crosses on the request side
 (`headers_deny` / `headers_allow`), while on the response side the gateway does not strip
-identifying headers an upstream emits -- `Server`, `X-Powered-By` and their kin reach the client
+identifying headers an upstream emits -- `ConnectionHeaders.RESPONSE_STRIP` holds only
+connection-specific and framing names, so `Server`, `X-Powered-By` and their kin reach the client
 unchanged. There is no response-header allowlist and no configuration knob suppresses them.
 Terminate such fingerprinting at the upstream, or in front of the gateway, if it matters to you.
 
@@ -189,10 +214,36 @@ many sessions are genuinely still live.
 Cookie mode is the stateless alternative by design.
 
 The cookie-mode BFF has had no systematic threat-model pass::
-The threat model covers the cookie-mode surface through individual catalogue entries (the AES-GCM
-sealing posture, the login-cookie replay window, per-instance refresh-token reuse detection), but
-no dedicated end-to-end review of the cookie variant has been performed. The entries that exist
+The threat model covers the cookie-mode surface (`SealedSessionCookieCodec`,
+`CookieSessionBinding`) through individual catalogue entries (the AES-GCM sealing posture, the
+login-cookie replay window, per-instance refresh-token reuse detection), but no dedicated
+end-to-end review of the cookie variant has been performed. The entries that exist
 are sound; the *coverage* is not claimed to be exhaustive.
+
+Cookie-mode refresh fits the cookie budget for a measured claim set, not for any claim set::
+A cookie-mode session that refreshes seals a live access, refresh and ID token into one cookie.
+`SealedSessionCookieCodec` deflates before it seals, and `SealedSessionCookieCodecTest` measures a
+three-token session shaped like the integration realm's at roughly 2,700 bytes against the 4019-byte
+browser-safe value budget (`BROWSER_SAFE_COOKIE_VALUE_BUDGET`) -- a margin of roughly 1,300 bytes.
+That margin belongs to one realm's claim set: an identity provider minting larger tokens spends it
+first, and a seal past the budget is refused (`ApiSheriff-114`). Two things stay unmeasured on a
+pull request: the browser lane that would observe a dropped cookie gates nothing, and no Chromium
+storage threshold has been recorded. See
+link:doc/development/bff-cookie.adoc#_route_4_package_and_compress_settled_and_built[Route 4 --
+package and compress] and
+link:doc/adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043].
+
+`tls.passthrough_sni` cannot be supplied whole from one environment variable::
+`ConfigLoader.coerce` re-types a substituted `${VAR}` by the type the schema declares at its pointer
+and has no arm for an object, while `gateway.schema.json` declares `tls.passthrough_sni` as
+`type: object`. A `passthrough_sni: "${VAR}"` therefore stays a text node, and the boot is refused
+with `ApiSheriff-200` at `/tls/passthrough_sni`, followed by `ApiSheriff-201`. Each per-host value is
+a string, so the alias for one hostname can come from an in-file `${VAR}` placeholder, and each
+alias's location moves through
+link:doc/user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[`topology.properties`];
+the hostnames themselves stay written in the file. See the
+link:doc/configuration.adoc#_tls[`passthrough_sni` field] and
+link:doc/user/tls-scenarios.adoc#_scenario_passthrough[TLS Scenarios].
 
 Integration-test coverage has recorded gaps::
 Three contributor documents enumerate them rather than leaving them implicit:
@@ -207,17 +258,20 @@ its assertions. Read all three before treating a green suite as proof of a speci
 FAPI 2.0 is not conformant::
 Three mandatory client requirements are unmet -- PAR, sender-constrained tokens, and a
 FAPI-permitted client authentication method are not wired, even though the underlying engine
-supports them. See link:doc/fapi_status.adoc[FAPI 2.0 Conformance Status]. *No FAPI conformance
-may be claimed for this release.*
+supports them: `BffRuntimeProducer` builds the flows with no sender constraint, holds no PAR client,
+and authenticates with `ClientAuthMethod.CLIENT_SECRET_BASIC`. See
+link:doc/fapi_status.adoc[FAPI 2.0 Conformance Status]. *No FAPI conformance may be claimed for
+this release.*
 
 Rate limiting is not implemented::
-The `rate_limit` field is reserved and accepted, but it is ignored and no `429` is ever produced.
+The `rate_limit` field is reserved and accepted, but it is ignored and no `429` is ever produced:
+`RateLimitConfig` is bound into the route model and read by nothing on the request path.
 
 The published image runs on x86-64-v3 only::
 `ghcr.io/cuioss/api-sheriff` is published for `linux/amd64` alone, and the native executable inside
-it is compiled for GraalVM's default target, which requires the x86-64-v3 instruction set (AVX2,
-BMI2, FMA). It therefore does not start on arm64 hosts -- Apple Silicon, AWS Graviton -- including
-under Docker's amd64 emulation, nor on x86-64 CPUs that lack AVX2. The process exits at once with
+it is compiled for GraalVM's default target -- `quarkus.native.additional-build-args` carries no
+`-march` -- which requires the x86-64-v3 instruction set (AVX2, BMI2, FMA). It therefore does not
+start on arm64 hosts -- Apple Silicon, AWS Graviton -- including under Docker's amd64 emulation, nor on x86-64 CPUs that lack AVX2. The process exits at once with
 *"The current machine does not support all of the following CPU features that are required by the
 image"*. On such a host, build the image locally -- see
 link:doc/user/compose-sample.adoc[Route B -- a locally built image] in the compose sample.

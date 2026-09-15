@@ -129,8 +129,12 @@ site. See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
 
 If your IdP presents a certificate from a *private CA* (or a self-signed cert), you must add that CA
 to the *JVM default truststore*. The confidential-client engine uses the JVM default truststore for
-its outbound OIDC calls (discovery, token, refresh, logout); the per-issuer `tls_profile` that
-validates JWKS does *not* cover these calls (token-sheriff-client#597). Without it, logins fail with
+its outbound OIDC calls (discovery, the authorization-code exchange and refresh); the per-issuer
+`tls_profile` that validates JWKS does *not* cover these calls (token-sheriff-client#597).
+RP-initiated logout is not among them: it hands the browser an `end_session_endpoint` redirect and
+opens no gateway connection to the IdP -- see
+link:tls-edge.adoc#_operator_consideration_outbound_trust_material_replaces_the_platform_bundle[TLS
+Edge]. Without it, logins fail with
 a PKIX/TLS trust error even though JWKS validation succeeds.
 
 Point the JVM default truststore at your CA store with system properties on the runner command line

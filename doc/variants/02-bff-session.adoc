@@ -292,5 +292,5 @@ What to watch on this variant specifically:
   this does not trigger -- but it is the first thing to suspect in a longer run that shows an
   unexplained latency tail.
 
-*No figures are published at 0.1.0* -- see the status note in
+*No figures are published at 0.2.1* -- see the status note in
 link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.

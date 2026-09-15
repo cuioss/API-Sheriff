@@ -79,7 +79,7 @@ Limitations].
 
 | link:fapi_status.adoc[FAPI 2.0 Conformance Status]
 | Where the BFF stands against the FAPI 2.0 Security Profile (Final), requirement by requirement,
-  with first-party evidence. *0.1.0 is not FAPI 2.0 conformant* -- three mandatory client
+  with first-party evidence. *0.2.1 is not FAPI 2.0 conformant* -- three mandatory client
   requirements are unmet. Read this before making any FAPI claim.
 
 | link:fapi_next_steps.adoc[FAPI 2.0 Next Steps]
@@ -294,8 +294,8 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   puts it. *(Status: accepted.)*
 |===
 
-NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035 and ADR-0038 are recorded in
-link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
+NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035, ADR-0038, and every ADR from
+ADR-0040 on are recorded in link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
 table as a curated entry point; a missing row is index drift, never a withdrawn decision.
 
 == Reading Order

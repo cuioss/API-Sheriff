@@ -124,16 +124,19 @@ rescaling them into agreement. Normalising would restore the gate to green in ex
 where a stalled VU inflated the window -- masking the defect the gate exists to catch.
 ====
 
-=== Status at 0.1.0 -- no per-variant figures are published
+=== Status at 0.2.1 -- no per-variant figures are published
 
 *This release publishes no per-variant baseline numbers.* That is a reported gap, not an omission,
 and the reason is stated plainly so nobody mistakes silence for a clean result:
 
-* The acceptance run (`30383723057`) *exists and reports no failed jobs*, so the suite did not
-  fail.
-* But its per-scenario k6 summaries are *not retrievable*. They are written only into the
-  successful job's log and are **never uploaded as run artifacts**, so there is no durable
-  artifact to read a figure out of.
+* *At the 0.1.0 cut* the acceptance run (`30383723057`) existed and reported no failed jobs, but
+  its per-scenario k6 summaries were not retrievable: they were written only into the job's log,
+  so there was no durable artifact to read a figure out of.
+* *At the 0.2.1 cut* the `Performance Benchmark` workflow (`.github/workflows/benchmark.yml`)
+  uploads a `benchmark-results` run artifact with 90-day retention and deploys the same set to the
+  project pages. That set is the assembled pages output -- the converted results, badges and
+  retained history -- not the raw k6 summary documents, which the run reads for its coverage
+  summary and **does not upload**. No figure from it has been re-derived and recorded per variant.
 
 Publishing figures that cannot be traced back to a retrievable run would be fiction, and a
 baseline nobody can re-derive is worse than none -- it acquires authority it has not earned. The
@@ -151,7 +154,7 @@ gateway's overhead compare to an established one?", which is a positioning quest
 regression question, and it is reported per variant in the variant sections rather than as a
 single headline number.
 
-The same no-published-figures status above applies to it at 0.1.0.
+The same no-published-figures status above applies to it at 0.2.1.
 
 [NOTE]
 ====
