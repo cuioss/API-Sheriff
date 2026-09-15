@@ -46,8 +46,12 @@ Common invocations, examples rather than a closed set:
 --command-args "test -pl api-sheriff -am"                             # module tests
 --command-args "verify -Pintegration-tests -pl integration-tests -am" # integration tests
 --command-args "verify -Pbenchmark -pl benchmarks -am"                # benchmarks
---command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest -Dsurefire.failIfNoSpecifiedTests=false" # one test
+--command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest"     # one test
 ```
+
+Add `-Dsurefire.failIfNoSpecifiedTests=false` to a one-test run only when the `-pl` target depends
+on modules with their own tests (for example `integration-tests`, which depends on `api-sheriff`);
+otherwise leave it off, so a misspelled test name fails instead of passing with zero tests.
 
 Use a 10-minute Bash timeout (600000ms) for build invocations, and read the TOON result —
 `status`, `errors[N]{file,line,message,category}`, `log_file` — rather than the exit code.

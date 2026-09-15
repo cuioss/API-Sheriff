@@ -38,8 +38,8 @@ The entries below are common **examples, not a closed set** — any Maven invoca
 - Module tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl integration-tests -am"` — only on integration-tests
 - Integration tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pintegration-tests -pl integration-tests -am"` — only on integration-tests
 - Benchmark (benchmarks): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pbenchmark -pl benchmarks -am"` — only on benchmarks
-- Targeted test (single test / pattern): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest -Dsurefire.failIfNoSpecifiedTests=false"`
-- Targeted test in an ad-hoc worktree: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest -Dsurefire.failIfNoSpecifiedTests=false" --project-dir /path/to/worktree`
+- Targeted test (single test / pattern): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest"` — add `-Dsurefire.failIfNoSpecifiedTests=false` only when the `-pl` target depends on modules with their own tests (for example `integration-tests`, which depends on `api-sheriff`); otherwise leave it off, so a misspelled test name fails instead of passing with zero tests
+- Targeted test in an ad-hoc worktree: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -am -Dtest=ConfigLoaderTest" --project-dir /path/to/worktree`
 - Native executable: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests"`
 - Use a 10-minute Bash timeout (600000ms) for build invocations
 - Analyze each build's TOON result: `status`, `errors[N]{file,line,message,category}`, `log_file`
