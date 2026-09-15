@@ -292,7 +292,7 @@ class DirectoryAssetSourceTest {
     @ParameterizedTest(name = "nested directory address ''{0}''")
     @ValueSource(strings = {"docs", "docs/"})
     @DisplayName("Should answer a nested directory address with that directory's own index file")
-    void shouldServeNestedDirectoryIndex(String subPath) throws IOException {
+    void shouldServeNestedDirectoryIndex(String subPath) throws Exception {
         Files.createDirectories(root.resolve("docs"));
         Files.writeString(root.resolve("docs/index.html"), "docs-home");
 
