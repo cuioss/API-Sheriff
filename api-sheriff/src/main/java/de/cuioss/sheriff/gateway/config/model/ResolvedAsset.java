@@ -51,6 +51,12 @@ import org.jspecify.annotations.Nullable;
  *                  {@link AssetConfig.Source#DIRECTORY} and {@code null} otherwise
  * @param upstream  the boot-resolved secondary origin, present for
  *                  {@link AssetConfig.Source#UPSTREAM} and {@code null} otherwise
+ * @param index     the directory index file name served for a directory address; only a
+ *                  {@link AssetConfig.Source#DIRECTORY} action may carry one, {@code null} when
+ *                  unconfigured
+ * @param fallback  the root-level file served for an unknown extensionless path; only a
+ *                  {@link AssetConfig.Source#DIRECTORY} action may carry one, {@code null} when
+ *                  unconfigured
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -60,14 +66,16 @@ public record ResolvedAsset(
 AssetConfig.Source source,
 AccessLevel access,
 @Nullable String directory,
-@Nullable ResolvedUpstream upstream) {
+@Nullable ResolvedUpstream upstream,
+@Nullable String index,
+@Nullable String fallback) {
 
     /**
      * Canonical constructor requiring {@code source} and {@code access} and enforcing
      * the source-to-field invariant — a {@link AssetConfig.Source#DIRECTORY} action
-     * carries a directory root and no upstream, an
+     * carries a directory root and no upstream (and may carry an index and a fallback), an
      * {@link AssetConfig.Source#UPSTREAM} action carries a resolved upstream and no
-     * directory.
+     * directory, index or fallback.
      */
     // NOSONAR java:S6916 - the rule suggests replacing each case's if with a `when` guard, but
     // guards attach only to PATTERN labels; `case DIRECTORY when ...` on an enum CONSTANT label
@@ -90,6 +98,10 @@ AccessLevel access,
                     throw new IllegalArgumentException(
                             "UPSTREAM asset requires a resolved upstream and no directory root");
                 }
+                if (index != null || fallback != null) {
+                    throw new IllegalArgumentException(
+                            "UPSTREAM asset carries no index or fallback; both apply to a DIRECTORY source only");
+                }
             }
         }
     }
@@ -97,12 +109,15 @@ AccessLevel access,
     /**
      * Creates a {@link AssetConfig.Source#DIRECTORY} asset action.
      *
-     * @param root   the configured directory root (mandatory)
-     * @param access the serving route's effective access level (mandatory)
+     * @param root     the configured directory root (mandatory)
+     * @param access   the serving route's effective access level (mandatory)
+     * @param index    the directory index file name, or {@code null} when unconfigured
+     * @param fallback the root-level fallback file name, or {@code null} when unconfigured
      * @return the resolved directory asset action
      */
-    public static ResolvedAsset directory(String root, AccessLevel access) {
-        return new ResolvedAsset(AssetConfig.Source.DIRECTORY, access, root, null);
+    public static ResolvedAsset directory(String root, AccessLevel access, @Nullable String index,
+            @Nullable String fallback) {
+        return new ResolvedAsset(AssetConfig.Source.DIRECTORY, access, root, null, index, fallback);
     }
 
     /**
@@ -113,6 +128,6 @@ AccessLevel access,
      * @return the resolved upstream asset action
      */
     public static ResolvedAsset upstream(ResolvedUpstream upstream, AccessLevel access) {
-        return new ResolvedAsset(AssetConfig.Source.UPSTREAM, access, null, upstream);
+        return new ResolvedAsset(AssetConfig.Source.UPSTREAM, access, null, upstream, null, null);
     }
 }

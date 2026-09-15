@@ -2730,6 +2730,75 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("asset.index and asset.fallback (AS-12)")
+    class AssetIndexAndFallback {
+
+        private List<ConfigError> validateAsset(AssetConfig asset) {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
+                    new AuthConfig(Require.NONE, List.of()),
+                    assetRoute("spa", "/assets", "assets", asset, HttpMethod.GET));
+            return validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
+        }
+
+        private static AssetConfig directoryWith(@Nullable String index, @Nullable String fallback) {
+            return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv/spa")
+                    .index(index).fallback(fallback).build();
+        }
+
+        @Test
+        @DisplayName("Should accept a directory asset declaring a single-segment index and fallback")
+        void shouldAcceptDirectoryIndexAndFallback() {
+            List<ConfigError> errors = validateAsset(directoryWith("index.html", "index.html"));
+
+            assertTrue(errors.isEmpty(), () -> "a directory source may declare index and fallback, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "asset.{0} on source: upstream")
+        @ValueSource(strings = {"index", "fallback"})
+        @DisplayName("Should refuse index or fallback on an upstream asset source")
+        void shouldRefuseOnUpstreamSource(String key) {
+            AssetConfig.AssetConfigBuilder asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
+                    .upstream("SECONDARY");
+            if ("index".equals(key)) {
+                asset.index("index.html");
+            } else {
+                asset.fallback("index.html");
+            }
+
+            List<ConfigError> errors = validateAsset(asset.build());
+
+            assertHasError(errors, "/endpoint/routes",
+                    "asset route 'spa' declares asset." + key + " but its source is 'upstream'");
+        }
+
+        @ParameterizedTest(name = "invalid file name ''{0}''")
+        @ValueSource(strings = {"", ".", "..", "../index.html", "sub/index.html", "sub\\index.html", "index\0.html",
+                "index\r.html"})
+        @DisplayName("Should refuse an index or fallback that is not a single file-name segment")
+        void shouldRefuseInvalidFileName(String name) {
+            List<ConfigError> indexErrors = validateAsset(directoryWith(name, null));
+            List<ConfigError> fallbackErrors = validateAsset(directoryWith(null, name));
+
+            assertAll("both keys are held to the single-segment rule",
+                    () -> assertHasError(indexErrors, "/endpoint/routes",
+                            "asset route 'spa' asset.index must be a single file-name segment"),
+                    () -> assertHasError(fallbackErrors, "/endpoint/routes",
+                            "asset route 'spa' asset.fallback must be a single file-name segment"));
+        }
+
+        @Test
+        @DisplayName("Should never echo the offending file-name value into the refusal message")
+        void shouldNotEchoOffendingValue() {
+            List<ConfigError> errors = validateAsset(directoryWith("../../etc/passwd", null));
+
+            assertTrue(errors.stream().noneMatch(error -> error.message().contains("etc/passwd")),
+                    () -> "the refused value must not reach the operator log, got: " + errors);
+        }
+    }
+
+    @Nested
     @DisplayName("upstream.rewrite_location protocol restriction (AS-11)")
     class RewriteLocationProtocol {
 

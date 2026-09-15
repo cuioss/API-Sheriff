@@ -1018,6 +1018,32 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should carry a directory asset's index and fallback onto the resolved action (AS-12)")
+        void shouldMaterializeDirectoryAssetIndexAndFallback() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("assets", assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
+            AssetConfig spa = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
+                    .directory("/srv/spa").index("index.html").fallback("shell.html").build();
+            AssetConfig plain = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
+                    .directory("/srv/plain").build();
+            EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
+                    .anchor("assets").auth(new AuthConfig(Require.NONE, List.of()))
+                    .routes(List.of(assetRoute("spa", "/assets/spa", "assets", spa),
+                            assetRoute("plain", "/assets/plain", "assets", plain)))
+                    .build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB"));
+
+            ResolvedAsset spaAsset = find(table, "spa").asset();
+            ResolvedAsset plainAsset = find(table, "plain").asset();
+            assertAll("index and fallback flow from the asset block to the resolved action",
+                    () -> assertEquals("index.html", spaAsset.index(), "the declared index is carried"),
+                    () -> assertEquals("shell.html", spaAsset.fallback(), "the declared fallback is carried"),
+                    () -> assertNull(plainAsset.index(), "an undeclared index stays absent"),
+                    () -> assertNull(plainAsset.fallback(), "an undeclared fallback stays absent"));
+        }
+
+        @Test
         @DisplayName("Should materialize an upstream asset action resolving its alias through the topology")
         void shouldMaterializeUpstreamAsset() {
             GatewayConfig config = gateway().anchors(Map.of("assets",
