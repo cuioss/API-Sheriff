@@ -234,9 +234,10 @@ public class BffRuntimeProducer {
         String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
         OidcConfig.Session session = Objects.requireNonNull(oidc.session(), "oidc.session");
         String gatewayOrigin = originOf(redirectUri);
-        String issuer = issuerOf(oidc, redirectUri);
-        String clientId = clientIdOf(oidc);
-        String clientSecret = clientSecretOf(oidc);
+        // The configured oidc.issuer, or the gateway's own origin when the key is omitted.
+        String issuer = Objects.requireNonNullElse(oidc.issuer(), gatewayOrigin);
+        String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
+        String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
 
         Duration sessionTtl = Duration.ofSeconds(
                 Objects.requireNonNullElse(session.ttlSeconds(), OidcConfig.Session.DEFAULT_TTL_SECONDS));
@@ -432,8 +433,12 @@ public class BffRuntimeProducer {
         if (!verifyHostname) {
             LOGGER.warn(ConfigLogMessages.WARN.OIDC_HOSTNAME_VERIFICATION_DISABLED);
         }
+        // The configured oidc.issuer, or the gateway's own origin when the key is omitted.
+        String issuer = Objects.requireNonNullElse(oidc.issuer(), originOf(redirectUri));
+        String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
+        String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
         ClientConfiguration.ClientConfigurationBuilder builder = ClientConfiguration.builder()
-                .issuer(issuerOf(oidc, redirectUri)).clientId(clientIdOf(oidc)).clientSecret(clientSecretOf(oidc))
+                .issuer(issuer).clientId(clientId).clientSecret(clientSecret)
                 .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
                 .scopes(oidc.scopes()).redirectUri(redirectUri)
                 // Called unconditionally, on the true path as well, so the posture never rests on the
@@ -444,19 +449,6 @@ public class BffRuntimeProducer {
             LOGGER.warn(ConfigLogMessages.WARN.OIDC_TRUST_PROFILE_IN_EFFECT, tlsProfile);
         }
         return builder.build();
-    }
-
-    /** The configured {@code oidc.issuer}, or the gateway's own origin when the key is omitted. */
-    private static String issuerOf(OidcConfig oidc, String redirectUri) {
-        return Objects.requireNonNullElse(oidc.issuer(), originOf(redirectUri));
-    }
-
-    private static String clientIdOf(OidcConfig oidc) {
-        return Objects.requireNonNullElse(oidc.clientId(), "");
-    }
-
-    private static String clientSecretOf(OidcConfig oidc) {
-        return Objects.requireNonNullElse(oidc.clientSecret(), "");
     }
 
     /**

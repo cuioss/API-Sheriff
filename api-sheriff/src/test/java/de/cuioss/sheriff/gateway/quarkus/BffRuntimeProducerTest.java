@@ -754,13 +754,13 @@ class BffRuntimeProducerTest {
         @Test
         @DisplayName("the flag decides a real dial: verifying refuses the SAN-mismatched IdP, relaxed completes discovery")
         void hostnameVerificationGatesDiscovery() {
-            ClientConfiguration verifying = backChannelFor(server, EgressTlsConfig.defaults());
-            ClientConfiguration relaxed = backChannelFor(server, oidcHostname(false));
+            DiscoveryResolver verifying = new DiscoveryResolver(backChannelFor(server, EgressTlsConfig.defaults()));
+            DiscoveryResolver relaxed = new DiscoveryResolver(backChannelFor(server, oidcHostname(false)));
 
-            assertThrows(TransportException.class, () -> new DiscoveryResolver(verifying).resolve(),
+            assertThrows(TransportException.class, verifying::resolve,
                     "with oidc_verify_hostname true discovery must fail against a certificate that does "
                             + "not name the dialled host — chain trust succeeds, so nothing else is left to fail on");
-            ProviderMetadata metadata = assertDoesNotThrow(() -> new DiscoveryResolver(relaxed).resolve(),
+            ProviderMetadata metadata = assertDoesNotThrow(relaxed::resolve,
                     "with oidc_verify_hostname false the same dial must complete — every other input is identical");
             assertEquals(Optional.of(server.issuer()), metadata.getIssuer(),
                     "the discovery document was fetched over the relaxed dial");
@@ -771,12 +771,12 @@ class BffRuntimeProducerTest {
         @Test
         @DisplayName("an omitted egress_tls block resolves to verification ON on the BFF back-channel")
         void omittedBlockVerifiesHostname() {
-            ClientConfiguration omitted = backChannelFor(server, null);
-            ClientConfiguration relaxed = backChannelFor(server, oidcHostname(false));
+            DiscoveryResolver omitted = new DiscoveryResolver(backChannelFor(server, null));
+            DiscoveryResolver relaxed = new DiscoveryResolver(backChannelFor(server, oidcHostname(false)));
 
-            assertThrows(TransportException.class, () -> new DiscoveryResolver(omitted).resolve(),
+            assertThrows(TransportException.class, omitted::resolve,
                     "an absent egress_tls block must verify the hostname, not silently relax it");
-            assertDoesNotThrow(() -> new DiscoveryResolver(relaxed).resolve(),
+            assertDoesNotThrow(relaxed::resolve,
                     "the control must reach the same server, or the refusal above proves nothing about the omitted block");
         }
 
@@ -784,9 +784,9 @@ class BffRuntimeProducerTest {
         @DisplayName("with the flag false an UNTRUSTED IdP chain is still refused — the relaxation is not a TLS disable")
         void relaxedHostnameStillRefusesAnUntrustedChain() throws Exception {
             try (SanMismatchedJwksServer untrusted = SanMismatchedJwksServer.startUntrusted(EMPTY_JWKS)) {
-                ClientConfiguration relaxed = backChannelFor(untrusted, oidcHostname(false));
+                DiscoveryResolver relaxed = new DiscoveryResolver(backChannelFor(untrusted, oidcHostname(false)));
 
-                assertThrows(TransportException.class, () -> new DiscoveryResolver(relaxed).resolve(),
+                assertThrows(TransportException.class, relaxed::resolve,
                         "oidc_verify_hostname false must relax hostname matching ONLY — an identity provider "
                                 + "whose certificate names the dialled host but does not chain to a trusted "
                                 + "anchor must still be refused");
