@@ -36,11 +36,17 @@
     },
     "demo-client-maven": {
       "description": "Reactor-visible shell for the demo client: a Java-free pom-packaging module that owns the dependency-free demo SPA sources and the Playwright end-to-end suite, and wires the pinned Node/npm toolchain plus the stack bring-up and teardown scripts behind the opt-in e2e-demo profile. A default reactor build of this module is a deliberate no-op - no Node download, no npm install, no container, no artifact - and nothing here ever reaches the production image or the native build.",
-      "generation": {}
+      "generation": {
+        "by": "architecture",
+        "tree_sha": null
+      }
     },
     "demo-client-npm": {
       "description": "npm-side view of the same demo-client directory: owns package.json, the pinned Playwright and ESLint toolchain, the lint:strict script and the browser end-to-end specs that drive the demo SPA against the integration-tests stack in both session modes (server-side and cookie). Installed and executed only from the demo-client-maven e2e-demo profile, never from a default reactor build.",
-      "generation": {}
+      "generation": {
+        "by": "architecture",
+        "tree_sha": null
+      }
     },
     "deployment": {
       "description": "Ships the operator-facing Docker Compose deployment sample: a runnable gateway stack (compose-sample/docker-compose.yml) with its bring-up and teardown scripts, self-signed certificate generation, an nginx demo upstream, a Keycloak sample realm, and the mounted sheriff-config gateway.yaml the sample gateway reads. It is reference material an operator copies and adapts, not a library the product depends on.",

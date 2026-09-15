@@ -29,6 +29,15 @@
   ],
   "key_dependencies_reasoning": "Read from api-sheriff/pom.xml at HEAD: the Quarkus runtime stack (CDI, JAX-RS for the RFC 9457 exception mappers, health, Prometheus metrics, fault tolerance for the per-route resilience guard), cui-http for inbound security filtering and forwarded-header resolution, token-sheriff-validation-quarkus for offline bearer validation, token-sheriff-client(-quarkus) as the BFF confidential-client engine, json-schema-validator for boot-time config validation, plus CUI logging and Lombok",
   "key_packages": {
+    "api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config": {
+      "description": "Config sourcing and route-table assembly. NeutralTlsConfigSource is a SmallRye ConfigSource at a single ordinal above 300 that projects neutral gateway.yaml TLS POLICY keys into the quarkus.* namespace; it deliberately never writes quarkus.tls.key-store.*, so the management interface cannot silently inherit HTTPS from the default TLS registry bucket."
+    },
+    "api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model": {
+      "description": "Neutral configuration model records (GatewayConfig, RouteConfig, TlsConfig, SecurityHeadersConfig, etc.), including ManagementConfig \u2014 the neutral, policy-only management block (tls.enabled). It declares no port: ports stay deployment-bound, and a stray management.port is refused in-schema with a message naming quarkus.management.port / QUARKUS_MANAGEMENT_PORT."
+    },
+    "api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls": {
+      "description": "Terminated-HTTPS listener security: SNI front listener, mTLS customizer, and TlsServerCustomizer, which binds the neutral gateway.yaml tls policy (min_version, cipher_suites, alpn) onto the terminated HTTPS listener \u2014 these keys had no production consumer before this plan, so the declared TLS floor and cipher allowlist were not in force; all three now fail closed at boot with an actionable message on an unsupported value. ManagementPlainHttpAudit is a StartupEvent observer that emits WARN ApiSheriff-115 when the management interface resolves to plain HTTP, naming both downgrade routes (the gateway.yaml key and the QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME override)."
+    },
     "de.cuioss.sheriff.api": {
       "description": "Application root: ApiSheriff marker/config holder and ApiSheriffApplication Quarkus entry point."
     },
@@ -40,15 +49,6 @@
     },
     "de.cuioss.sheriff.api.quarkus": {
       "description": "CDI wiring: ApiSheriffProducer exposing application-scoped beans to the Quarkus container."
-    },
-    "de.cuioss.sheriff.gateway.config": {
-      "description": "Config sourcing and route-table assembly. NeutralTlsConfigSource is a SmallRye ConfigSource at a single ordinal above 300 that projects neutral gateway.yaml TLS POLICY keys into the quarkus.* namespace; it deliberately never writes quarkus.tls.key-store.*, so the management interface cannot silently inherit HTTPS from the default TLS registry bucket."
-    },
-    "de.cuioss.sheriff.gateway.config.model": {
-      "description": "Neutral configuration model records (GatewayConfig, RouteConfig, TlsConfig, SecurityHeadersConfig, etc.), including ManagementConfig \u2014 the neutral, policy-only management block (tls.enabled). It declares no port: ports stay deployment-bound, and a stray management.port is refused in-schema with a message naming quarkus.management.port / QUARKUS_MANAGEMENT_PORT."
-    },
-    "de.cuioss.sheriff.gateway.tls": {
-      "description": "Terminated-HTTPS listener security: SNI front listener, mTLS customizer, and TlsServerCustomizer, which binds the neutral gateway.yaml tls policy (min_version, cipher_suites, alpn) onto the terminated HTTPS listener \u2014 these keys had no production consumer before this plan, so the declared TLS floor and cipher allowlist were not in force; all three now fail closed at boot with an actionable message on an unsupported value. ManagementPlainHttpAudit is a StartupEvent observer that emits WARN ApiSheriff-115 when the management interface resolves to plain HTTP, naming both downgrade routes (the gateway.yaml key and the QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME override)."
     }
   },
   "purpose": "runtime",
