@@ -48,6 +48,22 @@ endpoint:
         headers_allow: ["Content-Type", "X-Sheriff-Allowed"]
         query_allow: ["probe", "page", "size", "req"]
 
+    # --- AS-3: an exact route inside the /proxy prefix route's namespace -----
+    # match.path is an EXACT, un-normalized comparison, and exact routes are selected before prefix
+    # routes: /proxy/redirect-entry (no trailing slash) is answered here with a 308 at the gateway,
+    # while /proxy/redirect-entry/ — the Location it points at — is a different address that falls
+    # through to the httpbin-proxy prefix route above and echoes. RoutingAndResponseHeadersIT asserts
+    # both sides of that same-address split. keep_query carries the raw inbound query onto the
+    # Location. No upstream block: a redirect route resolves exactly one terminal action and never
+    # contacts an upstream. The location is a same-origin gateway path, so allow_external stays off.
+    - id: httpbin-redirect-entry
+      match:
+        path: /proxy/redirect-entry
+      redirect:
+        location: /proxy/redirect-entry/
+        status: 308
+        keep_query: true
+
     # --- The profile: minimal partial-disable route (ADR-0024) ---------------
     # Rides the SAME public, effectively-unauthenticated 'api' anchor and the endpoint's
     # require: none posture, so the boot refusal (minimal on an effectively-authenticated or

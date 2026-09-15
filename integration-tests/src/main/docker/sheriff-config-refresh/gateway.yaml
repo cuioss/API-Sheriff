@@ -87,11 +87,30 @@ tls:
 asset_defaults:
   content_types:
     webmanifest: application/manifest+json
+# The global response security headers plus the global CORS policy — mirrored from the base document,
+# which carries the explanation (RoutingAndResponseHeadersIT asserts them against the base instance).
+security_headers:
+  hsts:
+    max_age: 31536000
+    include_subdomains: true
+  cors:
+    enabled: true
+    allowed_origins: ["https://sheriff.test"]
+    allowed_methods: ["GET", "POST"]
+    allowed_headers: ["authorization", "content-type"]
+    allow_credentials: false
 anchors:
   api:
     path_prefix: /proxy
     type: proxy
     access: public
+    # Mirrored from the base document: the anchor block that replaces the global block wholesale for
+    # every /proxy route, with frame_deny in `default` mode.
+    security_headers:
+      frame_deny: true
+      content_security_policy: "default-src 'self'"
+      header_modes:
+        frame_deny: default
   bff:
     path_prefix: /bff
     type: proxy
