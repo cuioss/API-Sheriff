@@ -25,8 +25,13 @@ WORKDIR /app
 # Copy pre-built native executable
 COPY --chown=1001:root --chmod=0755 target/*-runner /app/application
 
-# Create JFR output directory with proper permissions
-RUN mkdir -p /tmp/jfr-output && chmod 777 /tmp/jfr-output
+# JFR output directory, owned by the runtime user rather than world-writable: uid 1001 (group root,
+# matching the COPY --chown above) is the only writer, so 0750 grants it write and grants nobody else
+# write. This image-side ownership and mode govern only an UNMOUNTED run. docker-compose.jfr.yml
+# bind-mounts ./target/jfr-recordings over /tmp/jfr-output, and a bind mount shadows the image's
+# directory with the host's, ownership and mode included; on that path the host directory prepared by
+# integration-tests/scripts/prepare-jfr-output-dir.sh is what uid 1001 writes into.
+RUN mkdir -p /tmp/jfr-output && chown 1001:root /tmp/jfr-output && chmod 0750 /tmp/jfr-output
 
 EXPOSE 8443 9000
 
