@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -26,17 +27,23 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import com.networknt.schema.Error;
 import com.networknt.schema.InputFormat;
@@ -88,6 +95,21 @@ import org.junit.jupiter.api.Test;
  * {@code additionalProperties: false} rejected it. The two shipped exhibits are therefore validated
  * against the bundled schema through the same {@code com.networknt} code path {@code ConfigLoader}
  * boots with, and must produce zero errors.
+ * <p>
+ * <strong>The array-key inventory is bound to the schemas themselves.</strong> {@code doc/configuration.adoc}
+ * enumerates which configuration keys are arrays — the string-item keys of {@code gateway.yaml}, the
+ * string-item keys an endpoint document adds of its own, and the arrays of objects across both — and
+ * states a count beside each list. Here the authoritative source is not Java but the two bundled
+ * schemas, so the sets are <em>derived structurally</em> from them rather than restated: the walk
+ * follows {@code properties}, {@code patternProperties} and object-valued {@code additionalProperties},
+ * descends into object items with a {@code []} suffix, and resolves {@code $ref}. A property that
+ * references a shared definition names its keys from that property, so {@code auth} reached from an
+ * anchor and from a route is the one key the document names once; each definition is counted once,
+ * and one definition reached under two different names fails rather than guessing which name the
+ * document should use. Schema shapes the walk does not model — a chained {@code $ref}, a non-local
+ * reference, a union {@code type}, a combinator — fail rather than silently deriving a smaller set.
+ * A negative control injects an array key into a copy of the gateway schema and proves the derivation
+ * reaches it through the {@code $ref} and that the documented set no longer matches.
  * <p>
  * <strong>No vacuous pass.</strong> Every extraction is anchored on a named constant — a literal
  * sentence fragment for the prose surfaces, and a JSON pointer for the posture set, which the schema
@@ -211,6 +233,80 @@ class DocumentedSetsContractTest {
      * than through a differently-configured validator of their own.
      */
     private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
+
+    /** Where the gateway schema's array-key inventory is derived from: the document root. */
+    private static final String GATEWAY_ARRAY_ROOT = "";
+
+    /**
+     * Where the endpoint schema's array-key inventory is derived from: the {@code endpoint} block,
+     * because the document names an endpoint file's keys relative to it ({@code routes}, not
+     * {@code endpoint.routes}).
+     */
+    private static final String ENDPOINT_ARRAY_ROOT = "/properties/endpoint";
+
+    /**
+     * Anchor for the total number of array keys {@code gateway.yaml} declares ("…declares 18 such keys,
+     * of which…"). The stated count immediately precedes it.
+     */
+    private static final String ARRAY_TOTAL_ANCHOR = "such keys, of which";
+
+    /**
+     * Anchor for the string-item subset of {@code gateway.yaml}'s array keys. Its count precedes it,
+     * and the backticked list runs from the anchor to the next blank line. The sentence wraps inside
+     * the anchor in the document, so it is matched whitespace-tolerantly.
+     */
+    private static final String GATEWAY_STRING_KEYS_ANCHOR = "declare string items and are the usable set:";
+
+    /**
+     * Anchor for the string-item keys an endpoint document adds beyond those it shares by name with
+     * {@code gateway.yaml}. Its count precedes it, and the backticked list runs to the closing
+     * {@code --} of the open block.
+     */
+    private static final String ENDPOINT_OWN_KEYS_ANCHOR = "further string-item keys of its own:";
+
+    /**
+     * Anchor for the arrays of objects across both schemas. Its count precedes it, and the anchor ends
+     * with the parenthesis that opens the backticked list.
+     */
+    private static final String OBJECT_ARRAYS_ANCHOR = "are arrays of *objects* rather than strings (";
+
+    /** Terminates the gateway string-item list: the paragraph break that follows it. */
+    private static final String BLANK_LINE = "\n\n";
+
+    /** Terminates the endpoint list: the delimiter closing the AsciiDoc open block it sits in. */
+    private static final String OPEN_BLOCK_CLOSE = "\n--";
+
+    /**
+     * The negative control's injection point: the {@code properties} of the shared
+     * {@code securityFilter} definition, reached in the gateway schema only through a {@code $ref} from
+     * an anchor. Injecting there proves the derivation follows references, not merely inline arrays.
+     */
+    private static final String INJECTED_ARRAY_PARENT_POINTER = "/$defs/securityFilter/properties";
+
+    /** The string-item array key the negative control injects under {@link #INJECTED_ARRAY_PARENT_POINTER}. */
+    private static final String INJECTED_ARRAY_KEY = "injected_paths";
+
+    /** The key name the derivation must produce for {@link #INJECTED_ARRAY_KEY}. */
+    private static final String INJECTED_ARRAY_NAME = "security_filter." + INJECTED_ARRAY_KEY;
+
+    private static final String SCHEMA_REF = "$ref";
+    private static final String SCHEMA_TYPE = "type";
+    private static final String SCHEMA_ITEMS = "items";
+    private static final String SCHEMA_PROPERTIES = "properties";
+    private static final String SCHEMA_PATTERN_PROPERTIES = "patternProperties";
+    private static final String SCHEMA_ADDITIONAL_PROPERTIES = "additionalProperties";
+    private static final String TYPE_ARRAY = "array";
+    private static final String TYPE_STRING = "string";
+    private static final String TYPE_OBJECT = "object";
+
+    /** The name segment standing for a key that is not fixed by the schema (pattern or additional properties). */
+    private static final String ANY_KEY = "*";
+
+    /**
+     * Combinators the derivation does not model. Each could introduce an array key the walk would not
+     * see, so a schema that starts using one fails the derivation rather than under-reporting.
+     */
+    private static final List<String> UNMODELLED_COMBINATORS = List.of("allOf", "anyOf", "oneOf");
 
     private static final Pattern BACKTICKED = Pattern.compile("`([^`]+)`");
 
@@ -393,6 +489,154 @@ class DocumentedSetsContractTest {
                         + " this control honest: any unrelated schema error — a new required key at the root or"
                         + " under oidc — would otherwise keep it green after it had stopped proving anything."
                         + " Observed errors: " + errors);
+    }
+
+    @Test
+    @DisplayName("doc/configuration.adoc names exactly the gateway schema's string-item array keys, and states both counts")
+    void configurationAdocEnumeratesTheGatewayArrayKeys() throws Exception {
+        // Arrange
+        String document = read(CONFIGURATION_ADOC);
+        Map<String, ItemKind> derived = deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE), GATEWAY_ARRAY_ROOT,
+                GATEWAY_SCHEMA_RESOURCE);
+
+        // Act
+        TokenList documented = documentedGatewayStringKeys(document);
+        int statedTotal = statedCountBefore(document,
+                anchorSpan(document, ARRAY_TOTAL_ANCHOR, CONFIGURATION_ADOC.toString()).start(),
+                CONFIGURATION_ADOC.toString(), ARRAY_TOTAL_ANCHOR);
+        int statedStringKeys = statedCountBefore(document,
+                anchorSpan(document, GATEWAY_STRING_KEYS_ANCHOR, CONFIGURATION_ADOC.toString()).start(),
+                CONFIGURATION_ADOC.toString(), GATEWAY_STRING_KEYS_ANCHOR);
+
+        // Assert
+        Set<String> derivedStringKeys = keysOfKind(derived, ItemKind.STRING);
+        assertFalse(documented.tokens().isEmpty(), CONFIGURATION_ADOC + ": anchor \"" + GATEWAY_STRING_KEYS_ANCHOR
+                + "\" matched but yielded no keys — the guard would pass vacuously");
+        assertEquals(derivedStringKeys, sorted(documented.tokens()),
+                CONFIGURATION_ADOC + " enumerates the string-item array keys of gateway.yaml, which are"
+                        + " authoritatively the array-typed nodes of " + GATEWAY_SCHEMA_RESOURCE
+                        + ", and has drifted from them");
+        assertEquals(derivedStringKeys.size(), documented.rawCount(),
+                CONFIGURATION_ADOC + " lists a different number of gateway string-item keys than the schema"
+                        + " declares. The count is taken over the raw backticked entries rather than over the"
+                        + " de-duplicated set, so a key listed twice fails here even though the set equality"
+                        + " above still holds");
+        assertEquals(derivedStringKeys.size(), statedStringKeys,
+                CONFIGURATION_ADOC + " states a string-item key count that no longer matches "
+                        + GATEWAY_SCHEMA_RESOURCE + "; the list and the stated count must move together");
+        assertEquals(derived.size(), statedTotal,
+                CONFIGURATION_ADOC + " states a total array-key count for gateway.yaml that no longer matches"
+                        + " the array-typed nodes of " + GATEWAY_SCHEMA_RESOURCE + ". Derived keys: " + derived);
+    }
+
+    @Test
+    @DisplayName("doc/configuration.adoc names exactly the endpoint schema's own string-item array keys, and states their count")
+    void configurationAdocEnumeratesTheEndpointOwnArrayKeys() throws Exception {
+        // Arrange — "own" is what an endpoint document declares beyond the keys it shares by name with
+        // gateway.yaml, so both inventories are derived
+        String document = read(CONFIGURATION_ADOC);
+        Set<String> ownKeys = keysOfKind(deriveArrayKeys(schemaTree(ENDPOINT_SCHEMA_RESOURCE), ENDPOINT_ARRAY_ROOT,
+                ENDPOINT_SCHEMA_RESOURCE), ItemKind.STRING);
+        ownKeys.removeAll(keysOfKind(deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE), GATEWAY_ARRAY_ROOT,
+                GATEWAY_SCHEMA_RESOURCE), ItemKind.STRING));
+        Span anchor = anchorSpan(document, ENDPOINT_OWN_KEYS_ANCHOR, CONFIGURATION_ADOC.toString());
+
+        // Act
+        TokenList documented = backtickedTokens(segmentUntil(document, anchor.end(), OPEN_BLOCK_CLOSE,
+                CONFIGURATION_ADOC.toString(), ENDPOINT_OWN_KEYS_ANCHOR));
+        int statedCount = statedCountBefore(document, anchor.start(), CONFIGURATION_ADOC.toString(),
+                ENDPOINT_OWN_KEYS_ANCHOR);
+
+        // Assert
+        assertFalse(ownKeys.isEmpty(), ENDPOINT_SCHEMA_RESOURCE + " derives no string-item array key beyond"
+                + " those gateway.yaml shares, so this guard would pass vacuously against an empty list");
+        assertEquals(ownKeys, sorted(documented.tokens()),
+                CONFIGURATION_ADOC + " enumerates the string-item array keys an endpoint document adds of its"
+                        + " own, which are authoritatively the array-typed nodes of " + ENDPOINT_SCHEMA_RESOURCE
+                        + " not shared by name with " + GATEWAY_SCHEMA_RESOURCE + ", and has drifted from them");
+        assertEquals(ownKeys.size(), documented.rawCount(),
+                CONFIGURATION_ADOC + " lists a different number of endpoint-own string-item keys than the"
+                        + " schemas derive. The count is taken over the raw backticked entries, so a key listed"
+                        + " twice fails here even though the set equality above still holds");
+        assertEquals(ownKeys.size(), statedCount,
+                CONFIGURATION_ADOC + " states an endpoint-own key count that no longer matches the schemas;"
+                        + " the list and the stated count must move together");
+    }
+
+    @Test
+    @DisplayName("doc/configuration.adoc names exactly the arrays of objects across both schemas, and states their count")
+    void configurationAdocEnumeratesTheObjectItemArrays() throws Exception {
+        // Arrange
+        String document = read(CONFIGURATION_ADOC);
+        Set<String> objectArrays = keysOfKind(deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE),
+                GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE), ItemKind.OBJECT);
+        objectArrays.addAll(keysOfKind(deriveArrayKeys(schemaTree(ENDPOINT_SCHEMA_RESOURCE), ENDPOINT_ARRAY_ROOT,
+                ENDPOINT_SCHEMA_RESOURCE), ItemKind.OBJECT));
+        Span anchor = anchorSpan(document, OBJECT_ARRAYS_ANCHOR, CONFIGURATION_ADOC.toString());
+
+        // Act
+        TokenList documented = backtickedTokens(
+                parenthesised(document, anchor.start(), CONFIGURATION_ADOC.toString(), OBJECT_ARRAYS_ANCHOR));
+        int statedCount = statedCountBefore(document, anchor.start(), CONFIGURATION_ADOC.toString(),
+                OBJECT_ARRAYS_ANCHOR);
+
+        // Assert
+        assertFalse(documented.tokens().isEmpty(), CONFIGURATION_ADOC + ": anchor \"" + OBJECT_ARRAYS_ANCHOR
+                + "\" matched but yielded no keys — the guard would pass vacuously");
+        assertEquals(objectArrays, sorted(documented.tokens()),
+                CONFIGURATION_ADOC + " enumerates the arrays of objects, which are authoritatively the"
+                        + " object-item array nodes of " + GATEWAY_SCHEMA_RESOURCE + " and "
+                        + ENDPOINT_SCHEMA_RESOURCE + ", and has drifted from them");
+        assertEquals(objectArrays.size(), documented.rawCount(),
+                CONFIGURATION_ADOC + " lists a different number of object-item arrays than the schemas derive."
+                        + " The count is taken over the raw backticked entries, so a key listed twice fails here"
+                        + " even though the set equality above still holds");
+        assertEquals(objectArrays.size(), statedCount,
+                CONFIGURATION_ADOC + " states an object-item array count that no longer matches the schemas;"
+                        + " the list and the stated count must move together");
+    }
+
+    @Test
+    @DisplayName("the array-key derivation detects a string-item array key added to the gateway schema")
+    void addedSchemaArrayKeyIsDetectedAgainstTheDocumentedSet() throws Exception {
+        // Arrange — the negative control: a copy of the shipped schema with one string-item array key
+        // injected into a definition the gateway reaches only through a $ref
+        String document = read(CONFIGURATION_ADOC);
+        TokenList documented = documentedGatewayStringKeys(document);
+        int statedTotal = statedCountBefore(document,
+                anchorSpan(document, ARRAY_TOTAL_ANCHOR, CONFIGURATION_ADOC.toString()).start(),
+                CONFIGURATION_ADOC.toString(), ARRAY_TOTAL_ANCHOR);
+        JsonNode shipped = schemaTree(GATEWAY_SCHEMA_RESOURCE);
+        JsonNode injected = shipped.deepCopy();
+        ObjectNode parent = injected.at(INJECTED_ARRAY_PARENT_POINTER) instanceof ObjectNode node ? node
+                : fail(GATEWAY_SCHEMA_RESOURCE + ": nothing resolves at " + INJECTED_ARRAY_PARENT_POINTER
+                        + ", so the negative control has no definition to inject into. Update"
+                        + " INJECTED_ARRAY_PARENT_POINTER to a $ref'd definition the gateway schema still declares.");
+        ObjectNode injectedArray = parent.objectNode().put(SCHEMA_TYPE, TYPE_ARRAY);
+        injectedArray.set(SCHEMA_ITEMS, parent.objectNode().put(SCHEMA_TYPE, TYPE_STRING));
+        parent.set(INJECTED_ARRAY_KEY, injectedArray);
+        String label = GATEWAY_SCHEMA_RESOURCE + " with '" + INJECTED_ARRAY_NAME + "' injected";
+
+        // Act
+        Map<String, ItemKind> shippedKeys = deriveArrayKeys(shipped, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE);
+        Map<String, ItemKind> injectedKeys = deriveArrayKeys(injected, GATEWAY_ARRAY_ROOT, label);
+
+        // Assert — the precondition first: against the shipped schema the documented set matches, so any
+        // mismatch below is caused by the injection alone
+        assertEquals(keysOfKind(shippedKeys, ItemKind.STRING), sorted(documented.tokens()),
+                "the negative control needs the shipped schema and the document to agree before injecting;"
+                        + " they already disagree, which the gateway array-key guard reports in detail");
+        assertEquals(ItemKind.STRING, injectedKeys.get(INJECTED_ARRAY_NAME),
+                "the derivation did not report '" + INJECTED_ARRAY_NAME + "' as a string-item array key after it"
+                        + " was injected under " + INJECTED_ARRAY_PARENT_POINTER + ". That definition is reached only"
+                        + " through a $ref, so a derivation that misses it would silently accept every key added"
+                        + " to a shared definition. Derived keys: " + injectedKeys);
+        assertNotEquals(keysOfKind(injectedKeys, ItemKind.STRING), sorted(documented.tokens()),
+                "the documented gateway string-item key set still equals the derived set after a key was added"
+                        + " to the schema, so the gateway array-key guard cannot detect schema drift");
+        assertNotEquals(injectedKeys.size(), statedTotal,
+                "the documented total array-key count still equals the derived count after a key was added to"
+                        + " the schema, so the stated-count assertion cannot detect schema drift");
     }
 
     // --- helpers ---------------------------------------------------------------------------------
@@ -710,6 +954,277 @@ class DocumentedSetsContractTest {
                     + "\"; the anchor no longer describes the document");
         }
         return text.substring(open + 1, close);
+    }
+
+    /**
+     * The gateway string-item array keys {@code doc/configuration.adoc} lists: the backticked entries
+     * from {@link #GATEWAY_STRING_KEYS_ANCHOR} to the paragraph break that ends the list.
+     *
+     * @param document the configuration document
+     * @return the de-duplicated keys and the number of entries that produced them
+     */
+    private static TokenList documentedGatewayStringKeys(String document) {
+        Span anchor = anchorSpan(document, GATEWAY_STRING_KEYS_ANCHOR, CONFIGURATION_ADOC.toString());
+        return backtickedTokens(segmentUntil(document, anchor.end(), BLANK_LINE, CONFIGURATION_ADOC.toString(),
+                GATEWAY_STRING_KEYS_ANCHOR));
+    }
+
+    /**
+     * Where an anchor sits in a document, matched with any run of whitespace standing for each space
+     * in the anchor — AsciiDoc prose wraps freely, so a sentence fragment may span a line break.
+     *
+     * @param start the index of the anchor's first character
+     * @param end   the index just past the anchor's last character
+     */
+    private record Span(int start, int end) {
+    }
+
+    /**
+     * Locates an anchor whitespace-tolerantly, failing with a message naming the document when it is
+     * absent.
+     *
+     * @param text     the document text
+     * @param anchor   the literal anchor fragment; each space matches any run of whitespace
+     * @param document the document label used in the failure message
+     * @return where the first occurrence of the anchor starts and ends
+     */
+    private static Span anchorSpan(String text, String anchor, String document) {
+        String regex = Arrays.stream(anchor.split(" ")).map(Pattern::quote).collect(Collectors.joining("\\s+"));
+        Matcher matcher = Pattern.compile(regex).matcher(text);
+        if (!matcher.find()) {
+            return fail(document + ": the anchor \"" + anchor + "\" is gone, so this contract guard no"
+                    + " longer reaches the enumeration it protects. Restore the sentence, or update the"
+                    + " anchor constant in DocumentedSetsContractTest to match the rewritten wording.");
+        }
+        return new Span(matcher.start(), matcher.end());
+    }
+
+    /**
+     * The text from an index up to the next occurrence of a terminator.
+     *
+     * @param text       the document text
+     * @param from       the index the segment starts at
+     * @param terminator the literal that ends the segment
+     * @param document   the document label used in the failure message
+     * @param label      the anchor fragment, named in the failure message
+     * @return the segment, without the terminator
+     */
+    private static String segmentUntil(String text, int from, String terminator, String document, String label) {
+        int end = text.indexOf(terminator, from);
+        if (end < 0) {
+            return fail(document + ": the list after the anchor \"" + label + "\" is not terminated by "
+                    + terminator.replace("\n", "\\n") + "; the anchor no longer describes the document and this"
+                    + " guard would otherwise assert over the rest of the file");
+        }
+        return text.substring(from, end);
+    }
+
+    /** What an array-typed schema node declares as its items. */
+    private enum ItemKind {
+        /** Items are strings, directly or through a referenced definition. */
+        STRING,
+        /** Items are objects, whose own array keys are derived with a {@code []} suffix. */
+        OBJECT,
+        /** Anything else, including an array declaring no items at all. */
+        OTHER
+    }
+
+    /**
+     * A bundled schema parsed into a tree, read off the classpath.
+     *
+     * @param resource the classpath resource of the schema to read
+     * @return the parsed schema
+     * @throws IOException when the resource cannot be read or parsed
+     */
+    private static JsonNode schemaTree(String resource) throws IOException {
+        return new ObjectMapper().readTree(readSchema(resource));
+    }
+
+    /**
+     * Derives every array-typed key reachable from a node of a schema, named the way
+     * {@code doc/configuration.adoc} names them.
+     *
+     * @param schema       the whole schema, against which every {@code $ref} resolves
+     * @param startPointer the JSON pointer of the node the derivation starts at; key names are relative to it
+     * @param label        the schema label used in every failure message
+     * @return each derived key name mapped to what its items are, sorted by name
+     */
+    private static Map<String, ItemKind> deriveArrayKeys(JsonNode schema, String startPointer, String label) {
+        JsonNode start = schema.at(startPointer);
+        if (start.isMissingNode()) {
+            return fail(label + ": nothing resolves at the derivation root '" + startPointer + "', so the"
+                    + " array-key inventory cannot be derived from it");
+        }
+        Map<String, ItemKind> keys = new TreeMap<>();
+        walkChildren(schema, start, "", keys, new HashMap<>(), label);
+        if (keys.isEmpty()) {
+            return fail(label + ": no array-typed key is derivable from '" + startPointer + "', so every"
+                    + " assertion over the inventory would pass vacuously");
+        }
+        return keys;
+    }
+
+    /**
+     * Walks the keys an object schema declares: its {@code properties}, its {@code patternProperties}
+     * and an object-valued {@code additionalProperties}. Keys not fixed by the schema are named
+     * {@link #ANY_KEY}.
+     *
+     * @param schema   the whole schema
+     * @param node     the object schema node
+     * @param name     the key name of the node, empty at the derivation root
+     * @param keys     the inventory being derived
+     * @param followed each referenced definition already followed, mapped to the name it was followed under
+     * @param label    the schema label used in every failure message
+     */
+    private static void walkChildren(JsonNode schema, JsonNode node, String name, Map<String, ItemKind> keys,
+            Map<String, String> followed, String label) {
+        for (String combinator : UNMODELLED_COMBINATORS) {
+            if (node.has(combinator)) {
+                fail(label + ": '" + qualified(name, combinator) + "' uses " + combinator + ", which the array-key"
+                        + " derivation does not model; extend DocumentedSetsContractTest before relying on it, or"
+                        + " the inventory would silently miss any array key declared inside it");
+            }
+        }
+        for (Map.Entry<String, JsonNode> property : node.path(SCHEMA_PROPERTIES).properties()) {
+            walkKey(schema, property.getValue(), property.getKey(), qualified(name, property.getKey()), keys,
+                    followed, label);
+        }
+        for (Map.Entry<String, JsonNode> pattern : node.path(SCHEMA_PATTERN_PROPERTIES).properties()) {
+            walkKey(schema, pattern.getValue(), ANY_KEY, qualified(name, ANY_KEY), keys, followed, label);
+        }
+        JsonNode additional = node.path(SCHEMA_ADDITIONAL_PROPERTIES);
+        if (additional.isObject()) {
+            walkKey(schema, additional, ANY_KEY, qualified(name, ANY_KEY), keys, followed, label);
+        }
+    }
+
+    /**
+     * Walks one declared key. A key that references a shared definition names its descendants from the
+     * key itself rather than from its full path, so a definition reached from several places yields one
+     * set of names; the definition is walked once, and reaching it again under a different name fails.
+     *
+     * @param schema    the whole schema
+     * @param node      the key's schema node
+     * @param key       the key's own name
+     * @param qualified the key's name qualified by its parents
+     * @param keys      the inventory being derived
+     * @param followed  each referenced definition already followed, mapped to the name it was followed under
+     * @param label     the schema label used in every failure message
+     */
+    private static void walkKey(JsonNode schema, JsonNode node, String key, String qualified,
+            Map<String, ItemKind> keys, Map<String, String> followed, String label) {
+        if (!node.has(SCHEMA_REF)) {
+            walkNode(schema, node, qualified, keys, followed, label);
+            return;
+        }
+        String pointer = node.get(SCHEMA_REF).asText();
+        String previous = followed.putIfAbsent(pointer, key);
+        if (previous == null) {
+            walkNode(schema, resolve(schema, pointer, label), key, keys, followed, label);
+        } else if (!previous.equals(key)) {
+            fail(label + ": the definition " + pointer + " is referenced as both '" + previous + "' and '" + key
+                    + "', so the array keys it declares have no single documented name. Either give the"
+                    + " references one name or teach DocumentedSetsContractTest how the document names them");
+        }
+    }
+
+    /**
+     * Records a node when it is array-typed — descending into object items with a {@code []} suffix —
+     * and otherwise walks its children.
+     *
+     * @param schema   the whole schema
+     * @param node     the (already resolved) schema node
+     * @param name     the node's key name
+     * @param keys     the inventory being derived
+     * @param followed each referenced definition already followed, mapped to the name it was followed under
+     * @param label    the schema label used in every failure message
+     */
+    private static void walkNode(JsonNode schema, JsonNode node, String name, Map<String, ItemKind> keys,
+            Map<String, String> followed, String label) {
+        JsonNode type = node.path(SCHEMA_TYPE);
+        if (type.isArray()) {
+            fail(label + ": '" + name + "' declares a union type " + type + ", which the array-key derivation"
+                    + " does not model; it could be an array the inventory silently misses");
+        }
+        if (!TYPE_ARRAY.equals(type.asText())) {
+            walkChildren(schema, node, name, keys, followed, label);
+            return;
+        }
+        JsonNode items = node.path(SCHEMA_ITEMS);
+        if (items.has(SCHEMA_REF)) {
+            items = resolve(schema, items.get(SCHEMA_REF).asText(), label);
+        }
+        ItemKind kind = kindOf(items);
+        if (keys.put(name, kind) != null) {
+            fail(label + ": two array-typed nodes derive the same key name '" + name + "' without sharing a"
+                    + " definition, so the document could not tell them apart");
+        }
+        if (kind == ItemKind.OBJECT) {
+            walkChildren(schema, items, name + "[]", keys, followed, label);
+        }
+    }
+
+    /**
+     * Classifies an array's (already resolved) items node.
+     *
+     * @param items the items node, missing when the array declares none
+     * @return what the items are
+     */
+    private static ItemKind kindOf(JsonNode items) {
+        String type = items.path(SCHEMA_TYPE).asText();
+        if (TYPE_STRING.equals(type)) {
+            return ItemKind.STRING;
+        }
+        if (TYPE_OBJECT.equals(type) || items.has(SCHEMA_PROPERTIES)) {
+            return ItemKind.OBJECT;
+        }
+        return ItemKind.OTHER;
+    }
+
+    /**
+     * Resolves a local {@code $ref}. A non-local reference, a dangling pointer and a reference to
+     * another reference each fail, because following any of them wrongly would shrink the inventory.
+     *
+     * @param schema  the whole schema
+     * @param pointer the {@code $ref} value
+     * @param label   the schema label used in every failure message
+     * @return the referenced definition
+     */
+    private static JsonNode resolve(JsonNode schema, String pointer, String label) {
+        if (!pointer.startsWith("#")) {
+            return fail(label + ": the reference " + pointer + " is not local to the schema, which the array-key"
+                    + " derivation does not follow");
+        }
+        JsonNode target = schema.at(pointer.substring(1));
+        if (target.isMissingNode()) {
+            return fail(label + ": the reference " + pointer + " resolves to nothing");
+        }
+        if (target.has(SCHEMA_REF)) {
+            return fail(label + ": the reference " + pointer + " points at another reference, which the array-key"
+                    + " derivation does not follow");
+        }
+        return target;
+    }
+
+    private static String qualified(String parent, String key) {
+        return parent.isEmpty() ? key : parent + "." + key;
+    }
+
+    /**
+     * The derived key names whose items are of one kind.
+     *
+     * @param keys the derived inventory
+     * @param kind the item kind to select
+     * @return a mutable, sorted set of the matching names
+     */
+    private static Set<String> keysOfKind(Map<String, ItemKind> keys, ItemKind kind) {
+        Set<String> names = new TreeSet<>();
+        keys.forEach((name, itemKind) -> {
+            if (itemKind == kind) {
+                names.add(name);
+            }
+        });
+        return names;
     }
 
     /**
