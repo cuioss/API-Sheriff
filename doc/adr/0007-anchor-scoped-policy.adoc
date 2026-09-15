@@ -4,7 +4,8 @@
 
 == Status
 
-Accepted.
+Accepted. Amended by <<amendment-a1>> (`security_headers` apply after route selection; CORS stays
+global and pre-auth).
 
 == Context
 
@@ -127,6 +128,50 @@ Three lessons condense out:
   two surfaces need different auth anyway.
 * Namespace enforcement had to land *before* the request pipeline froze route selection --
   retrofitting it into an existing pipeline is substantially harder -- and it did.
+
+[[amendment-a1]]
+== Amendment A1 -- `security_headers` apply after route selection; CORS stays global and pre-auth
+
+=== Context
+
+The Decision above materializes an anchor's `security_headers` block onto every member route, but
+the response headers were seeded by stage 0 of the request pipeline -- *before* route selection --
+from the global block alone. The per-route effective block was carried on the route and never
+applied, so an anchor declaring `frame_deny` changed nothing on the wire. The block could not simply
+move behind route selection either: stage 0 also owns CORS, and a CORS preflight must be answered
+before authentication, which runs after route selection.
+
+=== Decision
+
+* *The stage splits in two positions.* Stage 0 keeps CORS -- the preflight short-circuit and the
+  `Access-Control-Allow-*` headers of an actual request -- and seeds the gateway-owned response
+  security headers (`Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`) from
+  the *global* block. A new stage 2a runs immediately after route selection and before the verb gate:
+  it removes every gateway-owned security-header name from the response and seeds the selected
+  route's resolved block (the anchor's block when its anchor declares one, otherwise the global
+  block).
+* *Pre-route responses keep the global block.* Everything answered before a route is selected -- a
+  stage-1 rejection, a `404` for an unrouted path, the CORS preflight -- carries the global block,
+  because no anchor is known yet. Every response after stage 2a, the verb gate's `405` included,
+  carries the route's block.
+* *The anchor block replaces the global block wholesale.* There is no key-by-key merge, in line with
+  the replacement rule of the Decision: an anchor block declaring only `frame_deny` drops the global
+  `Strict-Transport-Security` for its routes. An operator who wants both declares both on the anchor.
+* *CORS is global only.* It is evaluated before route selection, so an anchor cannot scope it. The
+  bundled `gateway.schema.json` therefore accepts `cors` in the global `security_headers` block only;
+  an anchor-level `cors` block fails the boot at schema load instead of being silently ignored, and
+  the configuration validator's CORS rule checks the global block alone.
+* CORS headers and every non-security header already accumulated on the response (for example
+  `Allow` or `WWW-Authenticate`) are never touched by stage 2a.
+
+=== Consequences
+
+* Anchor-scoped response headers take effect on routed responses, closing the gap between the
+  materialized posture printed in the boot log and the headers actually served.
+* A browser preflight still never reaches route selection, authentication or an upstream, and its
+  outcome is unchanged.
+* A configuration that placed `cors` under an anchor -- previously accepted and ignored -- is now a
+  refused boot; the fix is to move the block to the global `security_headers`.
 
 == References
 

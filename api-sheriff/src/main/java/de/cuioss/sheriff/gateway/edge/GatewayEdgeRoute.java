@@ -139,10 +139,13 @@ import org.jspecify.annotations.Nullable;
  * first, under the {@linkplain EdgeHardeningOptions#reservedBodyMaxBytes() reserved-body byte
  * ceiling}, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
  * <ol>
- *   <li>stage 0 — response-header preparation + CORS preflight (short-circuits a preflight here);</li>
+ *   <li>stage 0 — global response security headers + global CORS (short-circuits a preflight here,
+ *       before route selection and authentication);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
  *       guard, and the framing gate;</li>
- *   <li>stage 2 / 2b — deny-by-default route selection then the per-route verb gate;</li>
+ *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
+ *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
+ *       then the per-route verb gate;</li>
  *   <li>stage 3 — per-route thorough checks ({@code allowed_paths}, body cap, divergent pipeline);</li>
  *   <li>stage 4 — offline bearer-token validation;</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
@@ -770,8 +773,13 @@ public class GatewayEdgeRoute {
                 return;
             }
             routeSelectionStage.process(request);
-            verbGateStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
+            // Stage 2a: from here on every response — the 405 of the verb gate included — is
+            // route-scoped, so the route's resolved security_headers block (anchor before global,
+            // wholesale) replaces the global block seeded at stage 0. Everything answered earlier
+            // (a stage-1 rejection, an unrouted 404, the CORS preflight) keeps the global block.
+            securityHeadersStage.applyRouteHeaders(request, route.getSecurityHeaders());
+            verbGateStage.process(request);
             ctx.put(ROUTE_KEY, route.getId());
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
             // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin

@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.pipeline;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -26,16 +28,29 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Hsts;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Stage 0 — response-header preparation and CORS preflight, run before authentication.
+ * Response security-header preparation, applied at two fixed positions in the pipeline.
  * <p>
- * The stage seeds the {@link PipelineRequest#responseHeaders() response-header map} the edge
- * applies to <em>every</em> response (success and rejection alike): {@code Strict-Transport-Security},
+ * <strong>Stage 0 — {@link #process}, before route selection and authentication.</strong> The stage
+ * seeds the {@link PipelineRequest#responseHeaders() response-header map} the edge applies to
+ * <em>every</em> response (success and rejection alike) from the <em>global</em>
+ * {@code security_headers} block: {@code Strict-Transport-Security},
  * {@code X-Content-Type-Options: nosniff}, and {@code X-Frame-Options: DENY}, each emitted only when
- * the global {@code security_headers} block enables it. When CORS is enabled and the inbound request
- * is a preflight ({@code OPTIONS} carrying {@code Origin} and {@code Access-Control-Request-Method}
- * from an allow-listed origin), the stage answers it here — {@linkplain PipelineRequest#shortCircuit(int)
+ * the block enables it. CORS is global and stays here: the {@code Access-Control-Allow-*} headers of
+ * an actual request are added at this position, and when the inbound request is a preflight
+ * ({@code OPTIONS} carrying {@code Origin} and {@code Access-Control-Request-Method} from an
+ * allow-listed origin) the stage answers it — {@linkplain PipelineRequest#shortCircuit(int)
  * short-circuiting} with {@code 204} and the CORS response headers — so a browser preflight never
- * reaches authentication or the upstream.
+ * reaches route selection, authentication or the upstream. Every response produced before a route is
+ * selected (a stage-1 rejection, a 404 for an unrouted path, the preflight) therefore carries the
+ * global block.
+ * <p>
+ * <strong>Stage 2a — {@link #applyRouteHeaders}, immediately after route selection.</strong> Once a
+ * route is selected, its resolved {@code security_headers} block (ADR-0007: the anchor block when its
+ * anchor declares one, otherwise the global block) replaces the gateway-owned security headers seeded
+ * at stage 0 <em>wholesale</em>: every gateway-owned name is removed first and only the names the
+ * route's block enables are seeded again — there is no key-by-key merge, so an anchor block declaring
+ * only {@code frame_deny} drops the global {@code Strict-Transport-Security} for its routes. CORS
+ * headers and every non-security entry already on the map are left untouched.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -44,6 +59,13 @@ public final class SecurityHeadersStage {
 
     private static final int NO_CONTENT = 204;
     private static final String WILDCARD_ORIGIN = "*";
+    private static final String STRICT_TRANSPORT_SECURITY = "Strict-Transport-Security";
+    private static final String CONTENT_TYPE_OPTIONS = "X-Content-Type-Options";
+    private static final String FRAME_OPTIONS = "X-Frame-Options";
+
+    /** The response security-header names this stage owns — and the only names stage 2a replaces. */
+    private static final List<String> GATEWAY_OWNED_HEADERS =
+            List.of(STRICT_TRANSPORT_SECURITY, CONTENT_TYPE_OPTIONS, FRAME_OPTIONS);
 
     private final @Nullable SecurityHeadersConfig config;
 
@@ -55,7 +77,8 @@ public final class SecurityHeadersStage {
     }
 
     /**
-     * Seeds response headers and, for an allow-listed CORS preflight, short-circuits the request.
+     * Stage 0: seeds the global response security headers and applies global CORS; for an
+     * allow-listed CORS preflight, short-circuits the request.
      *
      * @param request the in-flight request context
      */
@@ -71,6 +94,30 @@ public final class SecurityHeadersStage {
         }
     }
 
+    /**
+     * Stage 2a: replaces the gateway-owned response security headers with the selected route's resolved
+     * block. Every gateway-owned name is removed from the response map, then the names
+     * {@code routeHeaders} enables are seeded — a wholesale replacement, never a merge. CORS headers
+     * and non-security entries (for example {@code Allow} or {@code WWW-Authenticate}) are untouched,
+     * and so is the short-circuit state.
+     *
+     * @param request      the in-flight request context, with a route already selected
+     * @param routeHeaders the route's resolved {@code security_headers} block, {@code null} when neither
+     *                     its anchor nor the gateway declares one
+     */
+    public void applyRouteHeaders(PipelineRequest request, @Nullable SecurityHeadersConfig routeHeaders) {
+        Objects.requireNonNull(request, "request");
+        Map<String, String> responseHeaders = request.responseHeaders();
+        responseHeaders.keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
+        if (routeHeaders != null) {
+            applyResponseHeaders(request, routeHeaders);
+        }
+    }
+
+    private static boolean isGatewayOwned(String name) {
+        return GATEWAY_OWNED_HEADERS.stream().anyMatch(owned -> owned.equalsIgnoreCase(name));
+    }
+
     private static void applyResponseHeaders(PipelineRequest request, SecurityHeadersConfig headers) {
         Hsts hsts = headers.hsts();
         if (hsts != null) {
@@ -79,13 +126,13 @@ public final class SecurityHeadersStage {
             if (Boolean.TRUE.equals(hsts.includeSubdomains())) {
                 value.append("; includeSubDomains");
             }
-            request.responseHeaders().put("Strict-Transport-Security", value.toString());
+            request.responseHeaders().put(STRICT_TRANSPORT_SECURITY, value.toString());
         }
         if (Boolean.TRUE.equals(headers.contentTypeNosniff())) {
-            request.responseHeaders().put("X-Content-Type-Options", "nosniff");
+            request.responseHeaders().put(CONTENT_TYPE_OPTIONS, "nosniff");
         }
         if (Boolean.TRUE.equals(headers.frameDeny())) {
-            request.responseHeaders().put("X-Frame-Options", "DENY");
+            request.responseHeaders().put(FRAME_OPTIONS, "DENY");
         }
     }
 

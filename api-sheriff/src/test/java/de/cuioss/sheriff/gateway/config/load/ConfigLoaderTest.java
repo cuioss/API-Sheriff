@@ -1879,6 +1879,139 @@ class ConfigLoaderTest {
                 "a well-formed media type, with and without a parameter, must still bind");
     }
 
+    /**
+     * ADR-0007 Amendment A1: CORS is evaluated before route selection, so an anchor can never scope it.
+     * The anchor {@code security_headers} schema therefore carries only the response security headers,
+     * and a {@code cors} block there fails the boot at load rather than being accepted and ignored.
+     */
+    @Test
+    void refusesCorsUnderAnAnchorSecurityHeadersBlock() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  frontend:
+                    path_prefix: /app
+                    type: proxy
+                    access: public
+                    security_headers:
+                      frame_deny: true
+                      cors:
+                        enabled: true
+                        allowed_origins: ["https://app.example"]
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("security_headers")),
+                () -> "an anchor-level cors block must be refused at schema load, got: " + exception.errors());
+    }
+
+    @Test
+    void bindsAnAnchorResponseHeadersBlockAlongsideGlobalCors() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                security_headers:
+                  hsts:
+                    max_age: 31536000
+                  cors:
+                    enabled: true
+                    allowed_origins: ["https://app.example"]
+                anchors:
+                  frontend:
+                    path_prefix: /app
+                    type: proxy
+                    access: public
+                    security_headers:
+                      hsts:
+                        max_age: 600
+                        include_subdomains: true
+                      content_type_nosniff: true
+                      frame_deny: true
+                """);
+
+        GatewayConfig gateway = loader(Map.of()).load().gateway();
+
+        AnchorConfig frontend = gateway.anchors().get("frontend");
+        assertAll("the anchor accepts every response security header and the global block keeps cors",
+                () -> assertEquals(600, frontend.securityHeaders().hsts().maxAge()),
+                () -> assertTrue(frontend.securityHeaders().contentTypeNosniff()),
+                () -> assertTrue(frontend.securityHeaders().frameDeny()),
+                () -> assertNull(frontend.securityHeaders().cors(), "the anchor block carries no cors"),
+                () -> assertNotNull(gateway.securityHeaders().cors(), "the global block still binds cors"));
+    }
+
+    @Test
+    void bindsUpstreamRewriteLocationAndAssetIndexAndFallback() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/web.yaml", """
+                endpoint:
+                  id: web
+                  base_url: WEB
+                  auth:
+                    require: none
+                  routes:
+                    - id: rewritten
+                      match:
+                        path_prefix: /api
+                      upstream:
+                        path: /svc
+                        rewrite_location: true
+                    - id: verbatim
+                      match:
+                        path_prefix: /other
+                    - id: spa
+                      match:
+                        path_prefix: /app
+                      asset:
+                        source: directory
+                        directory: /srv/spa
+                        index: index.html
+                        fallback: index.html
+                """);
+
+        EndpointConfig endpoint = loader(Map.of()).load().endpoints().getFirst();
+
+        RouteConfig rewritten = endpoint.routes().get(0);
+        RouteConfig verbatim = endpoint.routes().get(1);
+        RouteConfig spa = endpoint.routes().get(2);
+        assertAll("the new keys bind through the schema and the snake_case strategy",
+                () -> assertEquals(Boolean.TRUE, rewritten.upstream().rewriteLocation(),
+                        "upstream.rewrite_location binds"),
+                () -> assertNull(verbatim.upstream(), "a route without an upstream block binds none"),
+                () -> assertEquals("index.html", spa.asset().index(), "asset.index binds"),
+                () -> assertEquals("index.html", spa.asset().fallback(), "asset.fallback binds"));
+    }
+
+    @Test
+    void refusesAnUnknownKeyBesideAssetIndexAndFallback() throws Exception {
+        // THE CONTROL for the binding test above: the asset block still declares additionalProperties:
+        // false, so a misspelt key next to the new ones is refused rather than silently ignored.
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/web.yaml", """
+                endpoint:
+                  id: web
+                  auth:
+                    require: none
+                  routes:
+                    - id: spa
+                      match:
+                        path_prefix: /app
+                      asset:
+                        source: directory
+                        directory: /srv/spa
+                        index_file: index.html
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream().anyMatch(error -> error.file().contains("web.yaml")),
+                () -> "a misspelt asset key must be refused at schema load, got: " + exception.errors());
+    }
+
     @Test
     void refusesAnAssetContentTypeValueCarryingATrailingNewline() throws Exception {
         // The value is served verbatim as the asset's Content-Type response header, so a trailing CR/LF is a

@@ -41,18 +41,30 @@
         "allowed_content_types": { "type": "array", "items": { "type": "string" } }
       }
     },
-    "securityHeaders": {
+    "hsts": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "hsts": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "max_age": { "type": "integer" },
-            "include_subdomains": { "type": "boolean" }
-          }
-        },
+        "max_age": { "type": "integer" },
+        "include_subdomains": { "type": "boolean" }
+      }
+    },
+    "responseHeaders": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The gateway-owned response security headers of an anchor block. An anchor block replaces the global security_headers block WHOLESALE for the anchor's routes (no key-by-key merge) and is applied right after route selection; responses produced before a route is selected keep the global block. CORS is global only and is not accepted here.",
+      "properties": {
+        "hsts": { "$ref": "#/$defs/hsts" },
+        "content_type_nosniff": { "type": "boolean" },
+        "frame_deny": { "type": "boolean" }
+      }
+    },
+    "securityHeaders": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The global security_headers block: the gateway-owned response security headers (seeded for every response, and replaced wholesale by an anchor block once a route under that anchor is selected) plus the global CORS policy, which is evaluated before route selection and authentication.",
+      "properties": {
+        "hsts": { "$ref": "#/$defs/hsts" },
         "content_type_nosniff": { "type": "boolean" },
         "frame_deny": { "type": "boolean" },
         "cors": {
@@ -210,7 +222,7 @@
             "access": { "type": "string", "enum": ["public", "authenticated"] },
             "auth": { "$ref": "#/$defs/auth" },
             "security_filter": { "$ref": "#/$defs/securityFilter" },
-            "security_headers": { "$ref": "#/$defs/securityHeaders" },
+            "security_headers": { "$ref": "#/$defs/responseHeaders" },
             "allowed_methods": { "$ref": "#/$defs/allowedMethods" }
           }
         }
