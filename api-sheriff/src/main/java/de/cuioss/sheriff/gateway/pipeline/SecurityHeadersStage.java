@@ -34,8 +34,8 @@ import org.jspecify.annotations.Nullable;
  * seeds the {@link PipelineRequest#responseHeaders() response-header map} the edge applies to
  * <em>every</em> response (success and rejection alike) from the <em>global</em>
  * {@code security_headers} block: {@code Strict-Transport-Security},
- * {@code X-Content-Type-Options: nosniff}, and {@code X-Frame-Options: DENY}, each emitted only when
- * the block enables it. CORS is global and stays here: the {@code Access-Control-Allow-*} headers of
+ * {@code X-Content-Type-Options: nosniff}, {@code X-Frame-Options: DENY}, and the verbatim
+ * {@code Content-Security-Policy}, each emitted only when the block enables (or declares) it. CORS is global and stays here: the {@code Access-Control-Allow-*} headers of
  * an actual request are added at this position, and when the inbound request is a preflight
  * ({@code OPTIONS} carrying {@code Origin} and {@code Access-Control-Request-Method} from an
  * allow-listed origin) the stage answers it — {@linkplain PipelineRequest#shortCircuit(int)
@@ -62,10 +62,11 @@ public final class SecurityHeadersStage {
     private static final String STRICT_TRANSPORT_SECURITY = "Strict-Transport-Security";
     private static final String CONTENT_TYPE_OPTIONS = "X-Content-Type-Options";
     private static final String FRAME_OPTIONS = "X-Frame-Options";
+    private static final String CONTENT_SECURITY_POLICY = "Content-Security-Policy";
 
     /** The response security-header names this stage owns — and the only names stage 2a replaces. */
     private static final List<String> GATEWAY_OWNED_HEADERS =
-            List.of(STRICT_TRANSPORT_SECURITY, CONTENT_TYPE_OPTIONS, FRAME_OPTIONS);
+            List.of(STRICT_TRANSPORT_SECURITY, CONTENT_TYPE_OPTIONS, FRAME_OPTIONS, CONTENT_SECURITY_POLICY);
 
     private final @Nullable SecurityHeadersConfig config;
 
@@ -133,6 +134,12 @@ public final class SecurityHeadersStage {
         }
         if (Boolean.TRUE.equals(headers.frameDeny())) {
             request.responseHeaders().put(FRAME_OPTIONS, "DENY");
+        }
+        String contentSecurityPolicy = headers.contentSecurityPolicy();
+        if (contentSecurityPolicy != null) {
+            // Served verbatim: a control character in the value is refused at schema load and again at
+            // boot by ConfigValidator, so no header can be injected through it.
+            request.responseHeaders().put(CONTENT_SECURITY_POLICY, contentSecurityPolicy);
         }
     }
 
