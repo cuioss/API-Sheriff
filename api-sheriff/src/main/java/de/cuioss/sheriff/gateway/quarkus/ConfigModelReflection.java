@@ -73,6 +73,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         ManagementConfig.ManagementTls.class,
         SecurityHeadersConfig.class,
         SecurityHeadersConfig.Hsts.class,
+        SecurityHeadersConfig.HeaderModes.class,
+        SecurityHeadersConfig.HeaderMode.class,
         SecurityHeadersConfig.Cors.class,
         SecurityDefaultsConfig.class,
         SecurityFilterConfig.class,

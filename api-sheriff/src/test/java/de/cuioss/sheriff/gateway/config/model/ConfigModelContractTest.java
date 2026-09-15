@@ -128,6 +128,10 @@ class ConfigModelContractTest {
                 .build();
     }
 
+    private static SecurityHeadersConfig.HeaderModes frameDenyDefault() {
+        return SecurityHeadersConfig.HeaderModes.builder().frameDeny(SecurityHeadersConfig.HeaderMode.DEFAULT).build();
+    }
+
     private static TokenValidationConfig tokenValidationConfig() {
         return new TokenValidationConfig(List.of(issuerConfig()));
     }
@@ -310,9 +314,16 @@ class ConfigModelContractTest {
                     // content_security_policy participates in identity: the unequal instance varies only
                     // that component, so dropping it from equals() fails this case alone.
                     voCase("SecurityHeadersConfig (content_security_policy)",
-                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null),
-                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null),
-                            new SecurityHeadersConfig(null, true, true, "default-src 'none'", null)),
+                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null, null),
+                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null, null),
+                            new SecurityHeadersConfig(null, true, true, "default-src 'none'", null, null)),
+                    voCase("SecurityHeadersConfig (header_modes)",
+                            new SecurityHeadersConfig(null, null, true, null, frameDenyDefault(), null),
+                            new SecurityHeadersConfig(null, null, true, null, frameDenyDefault(), null),
+                            new SecurityHeadersConfig(null, null, true, null, null, null)),
+                    voCase("SecurityHeadersConfig.HeaderModes", frameDenyDefault(), frameDenyDefault(),
+                            SecurityHeadersConfig.HeaderModes.builder()
+                                    .frameDeny(SecurityHeadersConfig.HeaderMode.SET).build()),
                     voCase("SecurityHeadersConfig.Hsts",
                             new SecurityHeadersConfig.Hsts(1, true),
                             new SecurityHeadersConfig.Hsts(1, true),
@@ -517,12 +528,14 @@ class ConfigModelContractTest {
         @Test
         void securityHeadersConfigBuilderMatchesConstructor() {
             SecurityHeadersConfig.Hsts hsts = new SecurityHeadersConfig.Hsts(600, false);
-            SecurityHeadersConfig viaCtor = new SecurityHeadersConfig(hsts, null, true, "default-src 'self'", null);
+            SecurityHeadersConfig viaCtor = new SecurityHeadersConfig(hsts, null, true, "default-src 'self'",
+                    frameDenyDefault(), null);
             SecurityHeadersConfig viaBuilder = SecurityHeadersConfig.builder().hsts(hsts).frameDeny(true)
-                    .contentSecurityPolicy("default-src 'self'").build();
-            assertAll("the positional content_security_policy component sits between frame_deny and cors",
+                    .contentSecurityPolicy("default-src 'self'").headerModes(frameDenyDefault()).build();
+            assertAll("content_security_policy and header_modes sit, in that order, between frame_deny and cors",
                     () -> assertEquals(viaCtor, viaBuilder),
                     () -> assertEquals("default-src 'self'", viaCtor.contentSecurityPolicy()),
+                    () -> assertEquals(frameDenyDefault(), viaCtor.headerModes()),
                     () -> assertNull(viaCtor.cors()));
         }
 
@@ -569,13 +582,31 @@ class ConfigModelContractTest {
 
         @Test
         void securityHeadersConfigKeepsAnAbsentContentSecurityPolicyAbsent() {
-            SecurityHeadersConfig cfg = new SecurityHeadersConfig(null, null, null, null, null);
+            SecurityHeadersConfig cfg = new SecurityHeadersConfig(null, null, null, null, null, null);
             assertAll("every security_headers component round-trips null — an absent policy emits no header",
                     () -> assertNull(cfg.hsts()),
                     () -> assertNull(cfg.contentTypeNosniff()),
                     () -> assertNull(cfg.frameDeny()),
                     () -> assertNull(cfg.contentSecurityPolicy()),
+                    () -> assertNull(cfg.headerModes()),
                     () -> assertNull(cfg.cors()));
+        }
+
+        @Test
+        void securityHeadersConfigResolvesEveryAbsentModeToSet() {
+            SecurityHeadersConfig noBlock = SecurityHeadersConfig.builder().build();
+            SecurityHeadersConfig partialBlock = SecurityHeadersConfig.builder().headerModes(frameDenyDefault()).build();
+            assertAll("an absent header_modes block, and an absent key inside a declared one, both mean set",
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.hstsMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.contentTypeNosniffMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.frameDenyMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.contentSecurityPolicyMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.DEFAULT, partialBlock.frameDenyMode(),
+                            "a declared key resolves to its declared mode"),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, partialBlock.hstsMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, partialBlock.contentTypeNosniffMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET,
+                            partialBlock.contentSecurityPolicyMode()));
         }
 
         @Test

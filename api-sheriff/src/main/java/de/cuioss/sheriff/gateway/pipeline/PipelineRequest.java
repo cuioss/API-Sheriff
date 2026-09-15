@@ -60,6 +60,7 @@ public final class PipelineRequest {
     private final boolean bodyPresent;
 
     private final Map<String, String> responseHeaders = new LinkedHashMap<>();
+    private final Map<String, String> responseDefaultHeaders = new LinkedHashMap<>();
     private final List<String> responseSetCookies = new ArrayList<>();
     private @Nullable String canonicalPath;
     private @Nullable RouteRuntime selectedRoute;
@@ -227,13 +228,44 @@ public final class PipelineRequest {
     }
 
     /**
-     * The mutable response-header map stage 0 seeds and later stages append to; the edge applies
-     * it to every response, including rejections.
+     * The mutable <em>set</em>-header map stage 0 seeds and later stages append to; the edge applies
+     * it to every response, including rejections, overwriting any value an upstream response carried
+     * for the same name.
+     * <p>
+     * A header name lives in exactly one of this map and {@link #responseDefaultHeaders()}: the
+     * security-headers stage seeds a gateway-owned header into one or the other according to its
+     * {@code header_modes} entry, and removes the name from both before re-seeding.
      *
-     * @return the accumulating response headers
+     * @return the accumulating set-mode response headers
      */
     public Map<String, String> responseHeaders() {
         return responseHeaders;
+    }
+
+    /**
+     * The mutable <em>default</em>-header map: gateway-owned security headers whose
+     * {@code header_modes} entry is {@code default}. The proxy relay applies an entry only when the
+     * upstream response did not carry that name; a response the gateway authors itself has no origin
+     * header to defer to, so it applies every entry. A name lives in exactly one of this map and
+     * {@link #responseHeaders()}.
+     *
+     * @return the accumulating default-mode response headers, empty when no header is in default mode
+     */
+    public Map<String, String> responseDefaultHeaders() {
+        return responseDefaultHeaders;
+    }
+
+    /**
+     * The headers a response the gateway authors itself carries: the default-mode entries overlaid
+     * by the set-mode entries. The two maps hold disjoint names, so the overlay order only matters
+     * as a guard, and it is the one that keeps a set-mode value authoritative.
+     *
+     * @return an immutable snapshot of both header maps merged, empty when both are empty
+     */
+    public Map<String, String> gatewayAuthoredResponseHeaders() {
+        Map<String, String> merged = new LinkedHashMap<>(responseDefaultHeaders);
+        merged.putAll(responseHeaders);
+        return Map.copyOf(merged);
     }
 
     /**

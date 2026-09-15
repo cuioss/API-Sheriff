@@ -906,7 +906,7 @@ public class GatewayEdgeRoute {
 
     private void renderReserved(RoutingContext ctx, PipelineRequest request,
             BffRuntime.ReservedHttpResponse response) {
-        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse httpResponse = ctx.response();
@@ -983,10 +983,14 @@ public class GatewayEdgeRoute {
         // (renderProblem / writeShortCircuit / failRelay); doing the relay off-loop races the
         // response object and corrupts / truncates the streamed body.
         List<String> stageSetCookies = request.responseSetCookies();
+        // Snapshot both header maps on this virtual thread: the relay runs on the event loop, and a
+        // proxied response is the one path where the default-mode map defers to an origin header.
+        Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         ctx.vertx().runOnContext(v -> {
             applyStageSetCookies(ctx.response(), stageSetCookies);
             responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), route.getLocationRewriter(),
-                    request.responseHeaders())
+                    setHeaders, defaultHeaders)
                     .onFailure(failure -> failRelay(ctx, failure));
         });
     }
@@ -1040,7 +1044,9 @@ public class GatewayEdgeRoute {
         // whether there is a sub-permit to return.
         ctx.put(WEBSOCKET_RELAY_GUARD_KEY, new AtomicBoolean());
         applyStageSetCookies(ctx.response(), request.responseSetCookies());
-        webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri,
+        // A handshake-failure response is gateway-authored — there is no origin header to defer to — so
+        // the relay receives both header maps merged.
+        webSocketRelayStage.relay(ctx, route, forward.headers(), request.gatewayAuthoredResponseHeaders(), uri,
                 () -> releaseAdmission(ctx, admissionGuard));
     }
 
@@ -1072,10 +1078,12 @@ public class GatewayEdgeRoute {
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
         // like the HTTP relay path.
         List<String> stageSetCookies = request.responseSetCookies();
+        Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         ctx.vertx().runOnContext(v -> {
             applyStageSetCookies(ctx.response(), stageSetCookies);
             responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
-                    request.responseHeaders())
+                    setHeaders, defaultHeaders)
                     .onFailure(failure -> failRelay(ctx, failure));
         });
     }
@@ -1097,7 +1105,7 @@ public class GatewayEdgeRoute {
     }
 
     private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served) {
-        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
@@ -1139,7 +1147,7 @@ public class GatewayEdgeRoute {
      * last so no stage header can displace it — and an empty body.
      */
     private void writeRedirect(RoutingContext ctx, PipelineRequest request, RedirectStage.Answer answer) {
-        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
@@ -1156,7 +1164,7 @@ public class GatewayEdgeRoute {
 
     private void writeShortCircuit(RoutingContext ctx, PipelineRequest request) {
         int status = request.shortCircuitStatus().orElse(204);
-        Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> setCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
@@ -1179,7 +1187,7 @@ public class GatewayEdgeRoute {
     private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType) {
         RouteRuntime selected = request != null ? request.selectedRoute() : null;
         if (selected != null && selected.getProtocol() == Protocol.GRPC) {
-            Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
+            Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
             List<String> setCookies = request.responseSetCookies();
             ctx.vertx().runOnContext(v -> {
                 applyStageSetCookies(ctx.response(), setCookies);
@@ -1205,7 +1213,7 @@ public class GatewayEdgeRoute {
             title = category != null ? category.title() : "Internal Server Error";
         }
         String body = "{\"type\":\"" + type + "\",\"title\":\"" + title + "\",\"status\":" + status + "}";
-        Map<String, String> responseHeaders = request != null ? Map.copyOf(request.responseHeaders()) : Map.of();
+        Map<String, String> responseHeaders = request != null ? request.gatewayAuthoredResponseHeaders() : Map.of();
         // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
         // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
         List<String> setCookies = request != null ? request.responseSetCookies() : List.of();

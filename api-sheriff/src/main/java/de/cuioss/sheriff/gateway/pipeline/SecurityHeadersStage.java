@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.gateway.pipeline;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -24,6 +23,7 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Cors;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.HeaderMode;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Hsts;
 import org.jspecify.annotations.Nullable;
 
@@ -51,6 +51,12 @@ import org.jspecify.annotations.Nullable;
  * route's block enables are seeded again — there is no key-by-key merge, so an anchor block declaring
  * only {@code frame_deny} drops the global {@code Strict-Transport-Security} for its routes. CORS
  * headers and every non-security entry already on the map are left untouched.
+ * <p>
+ * <strong>Precedence relative to origin headers.</strong> At both positions each gateway-owned header is
+ * seeded according to its resolved {@code header_modes} entry: a {@code set} header goes into
+ * {@link PipelineRequest#responseHeaders()} (overwrites an origin value), a {@code default} header into
+ * {@link PipelineRequest#responseDefaultHeaders()} (applied by the proxy relay only when the origin sent no
+ * value for that name). A name lives in exactly one of the two maps. CORS headers are always set-mode.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -108,8 +114,8 @@ public final class SecurityHeadersStage {
      */
     public void applyRouteHeaders(PipelineRequest request, @Nullable SecurityHeadersConfig routeHeaders) {
         Objects.requireNonNull(request, "request");
-        Map<String, String> responseHeaders = request.responseHeaders();
-        responseHeaders.keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
+        request.responseHeaders().keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
+        request.responseDefaultHeaders().keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
         if (routeHeaders != null) {
             applyResponseHeaders(request, routeHeaders);
         }
@@ -127,19 +133,34 @@ public final class SecurityHeadersStage {
             if (Boolean.TRUE.equals(hsts.includeSubdomains())) {
                 value.append("; includeSubDomains");
             }
-            request.responseHeaders().put(STRICT_TRANSPORT_SECURITY, value.toString());
+            seed(request, headers.hstsMode(), STRICT_TRANSPORT_SECURITY, value.toString());
         }
         if (Boolean.TRUE.equals(headers.contentTypeNosniff())) {
-            request.responseHeaders().put(CONTENT_TYPE_OPTIONS, "nosniff");
+            seed(request, headers.contentTypeNosniffMode(), CONTENT_TYPE_OPTIONS, "nosniff");
         }
         if (Boolean.TRUE.equals(headers.frameDeny())) {
-            request.responseHeaders().put(FRAME_OPTIONS, "DENY");
+            seed(request, headers.frameDenyMode(), FRAME_OPTIONS, "DENY");
         }
         String contentSecurityPolicy = headers.contentSecurityPolicy();
         if (contentSecurityPolicy != null) {
             // Served verbatim: a control character in the value is refused at schema load and again at
             // boot by ConfigValidator, so no header can be injected through it.
-            request.responseHeaders().put(CONTENT_SECURITY_POLICY, contentSecurityPolicy);
+            seed(request, headers.contentSecurityPolicyMode(), CONTENT_SECURITY_POLICY, contentSecurityPolicy);
+        }
+    }
+
+    /**
+     * Seeds one gateway-owned header into the map its mode selects — the set-map for
+     * {@link HeaderMode#SET}, the default-map for {@link HeaderMode#DEFAULT} — and removes the name from
+     * the other map, so a name lives in exactly one of the two.
+     */
+    private static void seed(PipelineRequest request, HeaderMode mode, String name, String value) {
+        if (mode == HeaderMode.DEFAULT) {
+            request.responseHeaders().remove(name);
+            request.responseDefaultHeaders().put(name, value);
+        } else {
+            request.responseDefaultHeaders().remove(name);
+            request.responseHeaders().put(name, value);
         }
     }
 
