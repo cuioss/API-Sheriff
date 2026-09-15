@@ -238,6 +238,96 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("content_security_policy — header-injection refusal on the global and every anchor block")
+    class ContentSecurityPolicyInjection {
+
+        private static final String GLOBAL_POINTER = "/security_headers/content_security_policy";
+        private static final String ANCHOR_POINTER = "/anchors/frontend/security_headers/content_security_policy";
+        private static final String VALID_POLICY = "default-src 'self'; img-src 'self' data:";
+
+        private static GatewayConfig gatewayWithPolicies(@Nullable String globalPolicy, @Nullable String anchorPolicy) {
+            AnchorConfig frontend = AnchorConfig.builder()
+                    .name("frontend")
+                    .pathPrefix("/frontend")
+                    .type(AnchorType.PROXY)
+                    .access(AccessLevel.PUBLIC)
+                    .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build())
+                    .build();
+            return validGateway()
+                    .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(globalPolicy).build())
+                    .anchors(Map.of(frontend.name(), frontend))
+                    .build();
+        }
+
+        private static List<ConfigError> policyErrors(List<ConfigError> errors) {
+            return errors.stream().filter(error -> error.pointer().endsWith("/content_security_policy")).toList();
+        }
+
+        @ParameterizedTest(name = "global value #{index}")
+        @ValueSource(strings = {"default-src 'self'\r\nSet-Cookie: session=forged", "default-src 'self'\nX-Injected: 1",
+                "default-src 'self'\rX-Injected: 1", "default-src 'self'", "default-src\t'self'",
+                "default-src'self'", "   "})
+        @DisplayName("Should refuse a global policy that is blank or carries a CR, LF or other control character")
+        void shouldRefuseInjectingGlobalPolicy(String policy) {
+            List<ConfigError> errors = validator.validate(gatewayWithPolicies(policy, null), List.of(), topologyWith());
+
+            assertHasError(errors, GLOBAL_POINTER, "without CR, LF or other control characters");
+        }
+
+        @ParameterizedTest(name = "anchor value #{index}")
+        @ValueSource(strings = {"default-src 'self'\r\nSet-Cookie: session=forged", "default-src 'self'\nX-Injected: 1",
+                "default-src 'self'", "   "})
+        @DisplayName("Should refuse an anchor policy that is blank or carries a control character, naming the anchor block")
+        void shouldRefuseInjectingAnchorPolicy(String policy) {
+            List<ConfigError> errors = validator.validate(gatewayWithPolicies(VALID_POLICY, policy), List.of(),
+                    topologyWith());
+
+            assertAll("only the anchor block is named",
+                    () -> assertHasError(errors, ANCHOR_POINTER, "without CR, LF or other control characters"),
+                    () -> assertTrue(errors.stream().noneMatch(error -> GLOBAL_POINTER.equals(error.pointer())),
+                            () -> "the valid global policy must not be reported, got: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should never echo a raw line terminator of the refused value into the error message")
+        void shouldNotEchoRawLineTerminator() {
+            List<ConfigError> errors = validator.validate(
+                    gatewayWithPolicies("default-src 'self'\r\nSet-Cookie: session=forged", null), List.of(),
+                    topologyWith());
+
+            assertAll("the refusal message stays single-line (CWE-117)",
+                    policyErrors(errors).stream().map(error -> () -> assertFalse(
+                            error.message().contains("\r") || error.message().contains("\n"),
+                            () -> "the message must not carry a raw line terminator: " + error.message())));
+        }
+
+        @Test
+        @DisplayName("Should collect a global and an anchor violation together rather than stopping at the first")
+        void shouldCollectGlobalAndAnchorViolationsTogether() {
+            List<ConfigError> errors = validator.validate(gatewayWithPolicies("a\nb", "c\rd"), List.of(),
+                    topologyWith());
+
+            List<String> pointers = policyErrors(errors).stream().map(ConfigError::pointer).toList();
+            assertAll("both blocks are reported in one pass",
+                    () -> assertEquals(2, pointers.size(), () -> "exactly one error per block, got: " + pointers),
+                    () -> assertTrue(pointers.containsAll(List.of(GLOBAL_POINTER, ANCHOR_POINTER)),
+                            () -> "the global and the anchor block are both named, got: " + pointers));
+        }
+
+        @Test
+        @DisplayName("Should accept a well-formed policy on both blocks, and an omitted policy on either")
+        void shouldAcceptWellFormedOrOmittedPolicies() {
+            List<ConfigError> declared = validator.validate(gatewayWithPolicies(VALID_POLICY, VALID_POLICY), List.of(),
+                    topologyWith());
+            List<ConfigError> omitted = validator.validate(gatewayWithPolicies(null, null), List.of(), topologyWith());
+
+            assertAll("a control-character-free policy, or none, raises no content_security_policy error",
+                    () -> assertTrue(policyErrors(declared).isEmpty(), () -> "got: " + declared),
+                    () -> assertTrue(policyErrors(omitted).isEmpty(), () -> "got: " + omitted));
+        }
+    }
+
+    @Nested
     @DisplayName("Conditional base_url — mandatory exactly with a proxy route (AS-4)")
     class ConditionalBaseUrl {
 

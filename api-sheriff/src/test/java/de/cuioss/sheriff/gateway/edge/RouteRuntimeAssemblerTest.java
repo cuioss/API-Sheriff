@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
@@ -298,6 +299,43 @@ class RouteRuntimeAssemblerTest {
                 () -> assertNull(effective.headersDeny()),
                 () -> assertNull(effective.queryAllow()),
                 () -> assertNull(effective.queryDeny()));
+    }
+
+    @Test
+    @DisplayName("Should carry the resolved security headers onto every route kind and leave a block-less route without any")
+    void shouldCarryResolvedSecurityHeaders() {
+        SecurityHeadersConfig anchorBlock = SecurityHeadersConfig.builder()
+                .frameDeny(true).contentSecurityPolicy("default-src 'self'").build();
+        ResolvedRoute proxy = ResolvedRoute.builder()
+                .id("proxy").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/p").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(anchorBlock)
+                .upstream(upstream("a.example")).build();
+        ResolvedRoute asset = ResolvedRoute.builder()
+                .id("asset").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/a").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(anchorBlock)
+                .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html")).build();
+        ResolvedRoute redirect = ResolvedRoute.builder()
+                .id("redirect").protocol(Protocol.HTTP).match(MatchConfig.builder().path("/old").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(anchorBlock)
+                .redirect(new RedirectConfig("/new", 301, false, false)).build();
+        RouteTable table = new RouteTable(List.of(proxy, asset, redirect,
+                route("block-less", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
+                assetSourceFactory);
+
+        assertAll("the resolved block reaches RouteRuntime.securityHeaders unchanged for every terminal action",
+                () -> assertEquals(anchorBlock, runtimes.getFirst().getSecurityHeaders(), "proxy route"),
+                () -> assertEquals(anchorBlock, runtimes.get(1).getSecurityHeaders(), "asset route"),
+                () -> assertEquals(anchorBlock, runtimes.get(2).getSecurityHeaders(), "redirect route"),
+                () -> assertNull(runtimes.get(3).getSecurityHeaders(),
+                        "a route resolving no block carries none, so stage 2a seeds no gateway-owned header"));
     }
 
     @Test
