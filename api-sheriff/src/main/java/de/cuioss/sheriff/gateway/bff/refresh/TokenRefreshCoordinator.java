@@ -314,8 +314,8 @@ public final class TokenRefreshCoordinator {
             LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
             return Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
         } catch (RuntimeException persistFailure) {
-            return endSession(new SessionEnd(sessionId, latest, presentedRefreshToken, now), persistFailure,
-                    REASON_PERSIST_FAILURE, rotation.refreshToken());
+            return endSession(sessionId, latest, now, persistFailure, REASON_PERSIST_FAILURE,
+                    rotation.refreshToken());
         }
     }
 
@@ -325,10 +325,9 @@ public final class TokenRefreshCoordinator {
         // A switch expression, not a statement: javac rejects it the moment the engine adds a fourth kind.
         return switch (classification.kind()) {
             case PRE_REDEMPTION -> Disposition.of(backOff(sessionId, latest, refreshFailure, now));
-            case CREDENTIAL_REJECTED -> endSession(new SessionEnd(sessionId, latest, presentedRefreshToken, now),
-                    refreshFailure, REASON_CREDENTIAL_REJECTED, null);
-            case REDEEMED -> endSession(new SessionEnd(sessionId, latest, presentedRefreshToken, now),
-                    refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
+            case CREDENTIAL_REJECTED -> endSession(sessionId, latest, now, refreshFailure,
+                    REASON_CREDENTIAL_REJECTED, null);
+            case REDEEMED -> endSession(sessionId, latest, now, refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
                     liveRefreshToken(Objects.requireNonNull(classification.redemption(), "redemption"),
                             presentedRefreshToken));
         };
@@ -389,12 +388,17 @@ public final class TokenRefreshCoordinator {
      * session destroyed, the presented refresh token marked ended until the session's absolute lifetime,
      * and {@code ApiSheriff-111} recorded. The live refresh token is only handed back; {@link #refresh}
      * revokes it after the outcome has been published to the coalesced waiters.
+     * <p>
+     * The presented refresh token is {@code latest.refreshToken()}: {@link #performRefresh} only reaches a
+     * session-ending disposition after confirming it is present.
      */
-    private Disposition endSession(SessionEnd end, RuntimeException failure, String reason,
-            @Nullable String liveRefreshToken) {
-        retryNotBefore.remove(end.sessionId());
-        sessionBinding.destroy(end.latest());
-        endedRefreshTokens.markEnded(end.presentedRefreshToken(), end.latest().expiresAt(), end.now());
+    private Disposition endSession(String sessionId, SessionRecord latest, Instant now, RuntimeException failure,
+            String reason, @Nullable String liveRefreshToken) {
+        String presentedRefreshToken = Objects.requireNonNull(latest.refreshToken(),
+                "a session-ending disposition requires the presented refresh token");
+        retryNotBefore.remove(sessionId);
+        sessionBinding.destroy(latest);
+        endedRefreshTokens.markEnded(presentedRefreshToken, latest.expiresAt(), now);
         // Bounded, non-sensitive reason only — never the presented refresh token or session id.
         LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
         return new Disposition(RefreshOutcome.failed(), liveRefreshToken);
@@ -494,18 +498,6 @@ public final class TokenRefreshCoordinator {
                 .authTime(previous.authTime())
                 .sessionNonce(previous.sessionNonce())
                 .build();
-    }
-
-    /**
-     * The session a session-ending disposition acts on: its single-flight key, the re-resolved record, the
-     * refresh token it presented and the reference instant. {@link #toString()} never renders the token.
-     */
-    private record SessionEnd(String sessionId, SessionRecord latest, String presentedRefreshToken, Instant now) {
-
-        @Override
-        public String toString() {
-            return "SessionEnd[now=" + now + "]";
-        }
     }
 
     /**

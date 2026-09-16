@@ -72,6 +72,9 @@ public sealed interface EndedRefreshTokens permits EndedRefreshTokens.Inert, End
 
     /**
      * Marks a refresh token whose session was ended, until the session's absolute lifetime.
+     * <p>
+     * Every argument is non-null (the package is {@code @NullMarked}); the implementations do not
+     * re-check, because the only production caller, {@link TokenRefreshCoordinator}, guarantees it.
      *
      * @param refreshToken the refresh token the ended session presented
      * @param expiresAt    the session's absolute lifetime ({@code SessionRecord#expiresAt()}); the marker
@@ -82,6 +85,9 @@ public sealed interface EndedRefreshTokens permits EndedRefreshTokens.Inert, End
 
     /**
      * Whether a refresh token was marked ended and the marker has not yet expired.
+     * <p>
+     * Every argument is non-null (the package is {@code @NullMarked}); the implementations do not
+     * re-check, because the only production caller, {@link TokenRefreshCoordinator}, guarantees it.
      *
      * @param refreshToken the presented refresh token
      * @param now          the reference instant
@@ -156,9 +162,6 @@ public sealed interface EndedRefreshTokens permits EndedRefreshTokens.Inert, End
 
         @Override
         public void markEnded(String refreshToken, Instant expiresAt, Instant now) {
-            Objects.requireNonNull(refreshToken, "refreshToken");
-            Objects.requireNonNull(expiresAt, "expiresAt");
-            Objects.requireNonNull(now, "now");
             if (!now.isBefore(expiresAt)) {
                 // The session is already past its absolute lifetime; resolve() refuses it without us.
                 return;
@@ -180,8 +183,6 @@ public sealed interface EndedRefreshTokens permits EndedRefreshTokens.Inert, End
 
         @Override
         public boolean isEnded(String refreshToken, Instant now) {
-            Objects.requireNonNull(refreshToken, "refreshToken");
-            Objects.requireNonNull(now, "now");
             Instant expiry = ended.get(digest(refreshToken));
             return expiry != null && now.isBefore(expiry);
         }
