@@ -103,8 +103,15 @@ recorded at `DEBUG` and never changes the disposition, because destroying the lo
 ends the session. Every session-ending disposition clears the session cookie on the response.
 
 The back-off is fixed rather than exponential, bounded in the number of sessions it tracks, read and
-written under the per-session single-flight, and per instance. It bounds both the engine calls and
-the `ApiSheriff-127` records to one per session per window during a provider outage.
+written under the per-session single-flight, and per instance. While the tracked sessions stay below
+that bound it limits both the engine calls and the `ApiSheriff-127` records to one per session per
+window during a provider outage. Once the bound is saturated with unexpired windows, a further
+failing session is not tracked individually; it opens one coarse overflow window instead, and every
+session without its own window makes no engine call and records nothing until that window closes.
+The throttle therefore degrades to one attempt per overflow window for all untracked sessions
+together rather than disappearing under exactly the largest outages. The accepted trade is that a
+session which has not failed itself may see its refresh deferred for up to the fixed back-off while
+the bound is saturated; its still-valid access token is mediated meanwhile.
 
 === `on_failure` answers the request; it does not decide the session
 
@@ -175,7 +182,8 @@ and deleting the session behind a sealed cookie ends that cookie session on its 
   reuse detection on either side: the provider refreshes a replayed token and a copied cookie becomes
   a working session. The gateway cannot see the provider's setting and cannot warn about its absence.
 * *The back-off is per instance.* With several stateless instances a provider outage costs one
-  attempt per session per instance per window, not per session.
+  attempt per session per instance per window, not per session -- or, on an instance whose bounded
+  back-off map is saturated, one attempt per overflow window for its untracked sessions together.
 
 === Risks
 

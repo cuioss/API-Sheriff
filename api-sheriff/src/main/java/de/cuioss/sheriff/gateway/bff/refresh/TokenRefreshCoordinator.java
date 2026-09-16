@@ -23,6 +23,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
@@ -92,7 +93,10 @@ import org.jspecify.annotations.Nullable;
  * already-rotated token and makes no engine call. The pre-redemption back-off is read and written
  * under the same exclusion, so for one session only the leader decides whether an attempt is due.
  * Across stateless instances the back-off is per instance: each instance attempts at most once per
- * window.
+ * window. The per-session windows are bounded ({@link #MAX_BACKOFF_ENTRIES}); once that bound is
+ * saturated, the sessions without their own window share one coarse overflow window instead, so an
+ * outage large enough to fill the bound is still throttled — at the cost that such a session may see
+ * its refresh deferred for up to the fixed back-off even if it has not failed itself.
  * <p>
  * <strong>On-failure semantics.</strong> A {@link RefreshOutcome#failed() failed} outcome means the
  * session has already been destroyed; an {@link RefreshOutcome#unavailable() unavailable} outcome
@@ -110,16 +114,25 @@ public final class TokenRefreshCoordinator {
 
     /**
      * How long a session waits after a pre-redemption failure before its next refresh attempt. Fixed
-     * and deliberately short: it bounds the engine calls and the warning records an identity-provider
-     * outage produces to one per session per window, while a transient fault still heals within
-     * seconds. Not configurable.
+     * and deliberately short: while fewer than {@link #MAX_BACKOFF_ENTRIES} sessions are backing off it
+     * bounds the engine calls and the warning records an identity-provider outage produces to one per
+     * session per window, and beyond that bound to one per overflow window for all the untracked
+     * sessions together, while a transient fault still heals within seconds. Not configurable.
      */
     static final Duration PRE_REDEMPTION_RETRY_BACKOFF = Duration.ofSeconds(5);
 
     /**
-     * The upper bound on sessions carrying a pending back-off. Once reached, expired entries are
-     * pruned; a session arriving while the map is still full is not recorded and is simply retried on
-     * its next near-expiry request, so memory stays bounded under any number of failing sessions.
+     * The upper bound on sessions carrying their own pending back-off. Once reached, expired entries are
+     * pruned; when the map is still full, the failing session is not given an entry — instead one coarse
+     * overflow window of {@link #PRE_REDEMPTION_RETRY_BACKOFF} is opened, and every session without its
+     * own entry makes no engine call and records nothing until it closes. The throttle therefore degrades
+     * rather than disappears, and memory stays bounded — one entry per tracked session plus a single
+     * instant — under any number of failing sessions.
+     * <p>
+     * The accepted trade: while the map is saturated, the untracked sessions share that one window, so a
+     * session that has not failed itself may also see its refresh deferred for up to the fixed back-off;
+     * its still-valid access token is mediated meanwhile, and only an access token that has actually
+     * expired leaves a request without one.
      */
     static final int MAX_BACKOFF_ENTRIES = 10_000;
 
@@ -139,6 +152,12 @@ public final class TokenRefreshCoordinator {
     private final RefreshTokenRevocation refreshTokenRevocation;
     private final ConcurrentMap<String, CompletableFuture<RefreshOutcome>> inFlight = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Instant> retryNotBefore = new ConcurrentHashMap<>();
+    /**
+     * The coarse back-off window shared by every session without its own {@link #retryNotBefore} entry,
+     * opened when a failing session could not be recorded because the map held
+     * {@link #MAX_BACKOFF_ENTRIES} unexpired windows. {@link Instant#MIN} while no window was ever opened.
+     */
+    private final AtomicReference<Instant> overflowNotBefore = new AtomicReference<>(Instant.MIN);
 
     /**
      * Assembles the coordinator with the refresh leeway, the engine seams, and the session binding.
@@ -219,8 +238,7 @@ public final class TokenRefreshCoordinator {
             // A coalesced leader already rotated this session — share the current token, no engine call.
             return RefreshOutcome.current(latest);
         }
-        Instant notBefore = retryNotBefore.get(sessionId);
-        if (notBefore != null && now.isBefore(notBefore)) {
+        if (backingOff(sessionId, now)) {
             // A pre-redemption failure is still backing off — no engine call, same disposition.
             return keptSession(latest, now);
         }
@@ -271,13 +289,35 @@ public final class TokenRefreshCoordinator {
         return keptSession(latest, now);
     }
 
+    /**
+     * Whether an attempt for this session is still inside a back-off window: its own window when it
+     * holds an entry, otherwise the shared overflow window recorded while the map was saturated. A
+     * session holding its own entry is governed by that entry alone.
+     */
+    private boolean backingOff(String sessionId, Instant now) {
+        Instant own = retryNotBefore.get(sessionId);
+        if (own != null) {
+            return now.isBefore(own);
+        }
+        return now.isBefore(overflowNotBefore.get());
+    }
+
     private void recordBackOff(String sessionId, Instant notBefore, Instant now) {
+        if (retryNotBefore.computeIfPresent(sessionId, (id, previous) -> notBefore) != null) {
+            // Already tracked: the session's own window moves forward and takes no capacity.
+            return;
+        }
         if (retryNotBefore.size() >= MAX_BACKOFF_ENTRIES) {
             retryNotBefore.values().removeIf(entry -> !now.isBefore(entry));
         }
-        if (retryNotBefore.size() < MAX_BACKOFF_ENTRIES || retryNotBefore.containsKey(sessionId)) {
+        if (retryNotBefore.size() < MAX_BACKOFF_ENTRIES) {
             retryNotBefore.put(sessionId, notBefore);
+            return;
         }
+        // Still saturated with unexpired windows: degrade to one coarse window shared by every session
+        // without its own entry, rather than dropping the throttle for exactly the largest outages.
+        overflowNotBefore.accumulateAndGet(notBefore, (current, candidate) ->
+                candidate.isAfter(current) ? candidate : current);
     }
 
     /**

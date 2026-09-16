@@ -190,9 +190,11 @@ public final class BffLogMessages {
          * A transparent token refresh failed before the identity provider processed the grant — a
          * connection or DNS failure, a {@code 5xx}, or a {@code 4xx} not attributed to the
          * credential — so the presented refresh token is still valid and the session is kept. The
-         * session's next attempt waits out the fixed back-off, which bounds this record to one per
-         * session per window during an identity-provider outage. Records only the back-off in
-         * seconds — never the presented refresh token or session id.
+         * session's next attempt waits out the fixed back-off, which bounds this record during an
+         * identity-provider outage to one per session per window while the per-instance back-off map
+         * has room, and — once that map is saturated — to one per shared overflow window for all the
+         * sessions it could not track. Records only the back-off in seconds — never the presented
+         * refresh token or session id.
          */
         public static final LogRecord SESSION_REFRESH_DEFERRED = LogRecordModel.builder()
                 .prefix(PREFIX)

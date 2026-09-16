@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.refresh;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -67,6 +68,7 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
@@ -392,6 +394,144 @@ class TokenRefreshCoordinatorTest {
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, recovered.kind());
             assertEquals(ROTATED_ACCESS, store.resolve(SESSION_ID, NOW).orElseThrow().accessToken());
+        }
+    }
+
+    /**
+     * The back-off map at its bound: {@link TokenRefreshCoordinator#MAX_BACKOFF_ENTRIES} sessions each
+     * hold an unexpired window from a real {@code PRE_REDEMPTION} failure, so a further failing session
+     * cannot be tracked individually and must open the shared overflow window rather than dropping the
+     * throttle. The saturating failures run with the coordinator's logger raised to {@code ERROR} so the
+     * ten thousand expected {@code ApiSheriff-127} records are neither retained nor printed; the level is
+     * lowered again before anything this suite asserts about records.
+     */
+    @Nested
+    @DisplayName("Pre-redemption back-off at capacity — the overflow window")
+    class BackOffSaturation {
+
+        private static final String SATURATING_PREFIX = "saturating-";
+        private static final TransportException OUTAGE = new TransportException("Token endpoint returned HTTP 503");
+
+        private final AtomicInteger calls = new AtomicInteger();
+        private InMemorySessionStore saturationStore;
+        private SessionBinding saturationBinding;
+
+        @BeforeEach
+        void setUpSaturation() {
+            saturationStore = new InMemorySessionStore(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + 16);
+            saturationBinding = new ServerSessionBinding(saturationStore,
+                    new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
+        }
+
+        private TokenRefreshCoordinator failingCoordinator(Instant accessExpiry) {
+            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, presented -> {
+                calls.incrementAndGet();
+                throw OUTAGE;
+            }, saturationBinding, revoked::add);
+        }
+
+        private SessionRecord stored(String sessionId) {
+            SessionRecord live = SessionRecord.builder()
+                    .sessionId(sessionId)
+                    .accessToken("access-" + sessionId)
+                    .refreshToken("refresh-" + sessionId)
+                    .idToken("id-" + sessionId)
+                    .sub("sub-" + sessionId)
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .build();
+            saturationStore.create(live, NOW);
+            return live;
+        }
+
+        private RefreshOutcome refresh(TokenRefreshCoordinator coordinator, SessionRecord live, Instant at) {
+            return coordinator.refresh(live, SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + live.sessionId(), at);
+        }
+
+        /** Fills the back-off map with unexpired windows opened at {@link #NOW} through real failures. */
+        private void saturate(TokenRefreshCoordinator coordinator) {
+            TestLogLevel.ERROR.addLogger(TokenRefreshCoordinator.class);
+            for (int i = 0; i < TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES; i++) {
+                refresh(coordinator, stored(SATURATING_PREFIX + i), NOW);
+            }
+            TestLogLevel.INFO.addLogger(TokenRefreshCoordinator.class);
+            TestLoggerFactory.getTestHandler().clearRecords();
+            assertEquals(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES, calls.get(),
+                    "every saturating session reached the engine exactly once");
+        }
+
+        @Test
+        @DisplayName("Should throttle a session without its own window through the overflow window, with no engine call and no record")
+        void shouldThrottleUntrackedSessionInsideOverflowWindow() {
+            TokenRefreshCoordinator coordinator = failingCoordinator(NOW.plusSeconds(3));
+            saturate(coordinator);
+            SessionRecord overflowing = stored("overflowing");
+            SessionRecord untracked = stored("untracked");
+
+            RefreshOutcome overflowed = refresh(coordinator, overflowing, NOW);
+            int callsAfterOverflow = calls.get();
+            TestLoggerFactory.getTestHandler().clearRecords();
+            RefreshOutcome whileValid = refresh(coordinator, untracked, NOW.plusSeconds(2));
+            RefreshOutcome onceExpired = refresh(coordinator, untracked, NOW.plusSeconds(4));
+
+            assertAll("a saturated map degrades the throttle to one shared window instead of dropping it",
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, overflowed.kind(),
+                            "the session that could not be tracked is still kept"),
+                    () -> assertEquals(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + 1, callsAfterOverflow,
+                            "the overflowing failure itself reached the engine once"),
+                    () -> assertEquals(callsAfterOverflow, calls.get(),
+                            "a session without its own window makes no engine call inside the overflow window"),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, whileValid.kind(),
+                            "its still-valid access token is mediated"),
+                    () -> assertEquals(RefreshOutcome.Kind.UNAVAILABLE, onceExpired.kind(),
+                            "an access token that expired inside the window leaves the request without one"),
+                    () -> assertTrue(saturationStore.resolve("untracked", NOW.plusSeconds(4)).isPresent(),
+                            "the overflow window never ends a session"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
+        }
+
+        @Test
+        @DisplayName("Should let a session without its own window attempt the refresh again once the overflow window elapsed")
+        void shouldRetryUntrackedSessionAfterOverflowWindow() {
+            TokenRefreshCoordinator coordinator = failingCoordinator(NEAR);
+            saturate(coordinator);
+            refresh(coordinator, stored("overflowing"), NOW);
+            int callsAfterOverflow = calls.get();
+
+            RefreshOutcome retried = refresh(coordinator, stored("untracked"),
+                    NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF));
+
+            assertEquals(RefreshOutcome.Kind.DEFERRED, retried.kind());
+            assertEquals(callsAfterOverflow + 1, calls.get(),
+                    "the overflow window expires on its own after the fixed back-off");
+        }
+
+        @Test
+        @DisplayName("Should govern a session holding its own window by that window alone, even while the overflow window is open")
+        void shouldKeepPerSessionBehaviourForTrackedSession() {
+            TokenRefreshCoordinator coordinator = failingCoordinator(NEAR);
+            saturate(coordinator);
+            SessionRecord tracked = saturationStore.resolve(SATURATING_PREFIX + 0, NOW).orElseThrow();
+            Instant overflowOpened = NOW.plusSeconds(3);
+            Instant ownWindowElapsed = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
+            refresh(coordinator, stored("overflowing"), overflowOpened);
+            int callsAfterOverflow = calls.get();
+
+            RefreshOutcome insideOwnWindow = refresh(coordinator, tracked, NOW.plusSeconds(4));
+            int callsInsideOwnWindow = calls.get();
+            RefreshOutcome untracked = refresh(coordinator, stored("untracked"), ownWindowElapsed);
+            int callsForUntracked = calls.get();
+            RefreshOutcome afterOwnWindow = refresh(coordinator, tracked, ownWindowElapsed);
+
+            assertAll("the overflow window applies only to sessions without their own window",
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, insideOwnWindow.kind()),
+                    () -> assertEquals(callsAfterOverflow, callsInsideOwnWindow,
+                            "the tracked session's own window still suppresses its engine call"),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, untracked.kind()),
+                    () -> assertEquals(callsInsideOwnWindow, callsForUntracked,
+                            "the overflow window opened at +3s is still in force at +5s for an untracked session"),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, afterOwnWindow.kind()),
+                    () -> assertEquals(callsForUntracked + 1, calls.get(),
+                            "once its own window elapsed the tracked session attempts again, overflow window or not"));
         }
     }
 
