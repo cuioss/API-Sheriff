@@ -1143,6 +1143,26 @@ authentication, so under an authenticated anchor an anonymous caller is challeng
 `Location` is revealed; and the action is refused on every protocol but `http`, and together with an
 `upstream` or `asset` block, so no configuration reaches it silently.
 
+*Control -- the rewritten upstream `Location`.* The `redirect` action is not the only `Location` the
+gateway authors. A route with `upstream.rewrite_location: true`
+(link:user/endpoint-routes.adoc#_rewrite_location[Rewriting upstream `Location` headers]) replaces an
+upstream `Location` pointing inside its own upstream with a *gateway-relative* value, and that value
+carries the gateway origin exactly as a configured one does. The target is not attacker-supplied --
+it comes from the configured backend -- but its *spelling* is, in every scenario where the backend
+reflects a request parameter into its own redirect, and stripping the upstream authority is what makes
+a spelling dangerous that was not: an absolute URI binds its authority before its path, so
+`https://app1.internal:8443/%5Cattacker.com` keeps the browser on the upstream, while the mapping
+`/%5Cattacker.com` is read as `/\attacker.com` once decoded and therefore, per the same WHATWG
+backslash rule above, as `//attacker.com`. The rewrite therefore applies *the refusal set of the boot
+review* to the candidate path and to the computed mapping alike, relaying the header unchanged rather
+than mapping it: no leading `//`, no backslash, no percent-encoded `/` or `\` (`%2F`, `%5C`, either
+case), no dot-segment (`.`, `..` or their `%2E` spellings). The encoded-slash arm additionally closes
+a confinement hole the dot-segment test alone cannot see, since that test splits on the literal `/`:
+`/app1/a%2f..%2f..%2fadmin` is one segment to it and decodes outside the match key. The refusal is
+never a normalization -- the value is emitted to the browser, so confinement proved against a
+normalized string the browser never sees would bound nothing. The query and fragment are outside the
+refusal and carried verbatim: a separator after the `?` or `#` cannot form an authority.
+
 *Control -- the answer is not stored.* A redirect answer is an ordinary cacheable response, and `301`
 and `308` are cacheable by default under RFC 9111 §4.2.2 heuristic freshness. Because the redirect is
 answered after authentication, a `Set-Cookie` an earlier stage produced -- a re-sealed or rotated
@@ -1159,6 +1179,12 @@ displace it.
 corpus (`ConfigValidatorRedirectTest`: `//host`, `/\host`, `\\host`, `/%2F%2Fhost`, `/%5chost`,
 `/a/../b`, an external URI without the opt-in, `javascript:` and user-info with it, `#` with
 `keep_query`, the `keep_query` + `allow_external` pair, plus the accepted forms and each flag alone);
+`LocationRewriterTest` carries the same refusal corpus for the rewritten upstream `Location`
+(`/\host`, `/\\host`, `%5C`/`%5c`, `%2F`/`%2f`, a mixed spelling, and each of them on an absolute
+upstream URI -- the form in which the mapping would otherwise *create* the cross-origin value --
+against the matched positive controls that must still map: an ordinary path, an absolute URI with an
+ordinary path, the neighbouring non-separator encodings `%5B`/`%5D`/`%2D`, and an encoded separator in
+the query or fragment);
 the native boot refusal of an external location without the
 opt-in is exercised by `verify-invalid-config-fails.sh`; `RedirectStageTest` pins the cacheability
 verdict on both its conditions and on the public control; `GatewayEdgePipelineTest` asserts the
@@ -1177,6 +1203,9 @@ refused -- being fixed configuration an attacker cannot influence through the re
 *Assertion.* Every refused spelling above fails the boot with the value escaped in the message; a
 gateway path and, under the opt-in, a well-formed `http`/`https` URI boot; `keep_query` together with
 `allow_external` fails the boot naming both keys and never the target, while either flag alone boots;
+an upstream `Location` whose path carries any of those spellings is relayed unchanged rather than
+rewritten, while a path free of them -- including one whose query or fragment carries an encoded
+separator -- still maps onto the route's match key;
 a redirect answer carries
 exactly the configured status and `Location` (the raw query appended only under `keep_query`) and
 causes no upstream request; an authenticated or cookie-bearing redirect answer carries

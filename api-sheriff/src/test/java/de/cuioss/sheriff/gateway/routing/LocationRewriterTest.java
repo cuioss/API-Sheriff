@@ -191,6 +191,143 @@ class LocationRewriterTest {
         }
     }
 
+    /**
+     * A backslash and a percent-encoded {@code /} or {@code \} are separators the mapping does not see
+     * but the browser -- or an intermediary that decodes first -- does. The encoded backslash can move
+     * the <em>origin</em>, and the encoded slash hides a traversal from the dot-segment guard, which
+     * splits on the literal {@code /} only. The refusal set mirrors
+     * {@code ConfigValidator.gatewayPathRefusal}, which already applies it to a configured redirect
+     * target (AS-3 / GW-13).
+     */
+    @Nested
+    @DisplayName("ambiguous separators")
+    class AmbiguousSeparators {
+
+        /**
+         * The empty base path and the root match key are what make the origin reachable: the mapping
+         * emits {@code gatewayPrefix + remainder} with the upstream authority stripped, so the
+         * separator lands at the front of a gateway-relative value.
+         */
+        private final LocationRewriter rootRewriter =
+                new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", false);
+
+        /**
+         * The origin-change arm, and the one the mapping would <em>manufacture</em>: each value below is
+         * an absolute upstream URI, which binds its authority before its path and therefore keeps the
+         * browser on the upstream as it stands. Mapped, the authority is gone and the decoded path is
+         * read as one -- {@code /\attacker.com} is {@code //attacker.com} under the WHATWG URL Standard,
+         * which parses {@code \} as {@code /} in the special schemes. The absolute form is also what
+         * makes the assertion non-vacuous: a path-absolute input under a root match key maps to itself,
+         * so it would pass with or without the guard.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "http://backend:8080/%5Cattacker.com",
+                "http://backend:8080/%5cattacker.com",
+                "http://backend:8080/%5C%5Cattacker.com",
+                "http://backend:8080/%2f%2fattacker.com",
+                "http://backend:8080/%2F%2Fattacker.com",
+                "http://backend:8080/%5c%2Fattacker.com"})
+        @DisplayName("relays an absolute upstream URI whose path carries an encoded separator unchanged")
+        void relaysEncodedSeparatorOntoRootUnchanged(String location) {
+            assertEquals(location, rootRewriter.rewrite(location),
+                    "stripping the upstream authority would turn a path that is inert on the upstream"
+                            + " into one the browser resolves as a foreign origin");
+        }
+
+        /**
+         * The confinement arm. {@code %2f} is a separator the dot-segment guard cannot see, because it
+         * splits on the literal {@code /}: every value below is a single segment to that guard, and
+         * {@code /svc/v1/%2e%2e%2fadmin} defeats even its {@code %2e} recognizer, since the segment ends
+         * in {@code %2f} rather than in dots. Decoded, each leaves the match key the mapping promises to
+         * confine the redirect to.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "/svc/v1/a%2f..%2f..%2fadmin",
+                "https://backend:8443/svc/v1/a%2F..%2F..%2Fadmin",
+                "/svc/v1/%2e%2e%2fadmin",
+                "/svc/v1/x%2fy",
+                "/svc/v1/%5Cattacker.com",
+                "https://backend:8443/svc/v1/%5cattacker.com",
+                "/svc/v1/%5c%2Fx"})
+        @DisplayName("relays a path carrying an encoded separator in any case spelling unchanged")
+        void relaysEncodedSeparatorPathsUnchanged(String location) {
+            assertEquals(location, REWRITER.rewrite(location),
+                    "the mapping would carry the encoded separator through to the browser, which resolves"
+                            + " it outside the match key the rewrite is supposed to confine it to");
+        }
+
+        /**
+         * A literal backslash is refused too, but by an earlier gate: {@code \} is not a legal path
+         * character, so {@link java.net.URI} rejects the value and {@code rewrite} relays it from its
+         * parse-failure branch before the separator guard is reached. Pinned here because the refusal is
+         * what this class is about, wherever it is decided -- and because a laxer parser would hand these
+         * values to the guard, which refuses them on its own terms.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "/\\attacker.com",
+                "/\\\\attacker.com",
+                "http://backend:8080/\\attacker.com",
+                "/svc/v1/\\attacker.com",
+                "https://backend:8443/svc/v1/\\attacker.com"})
+        @DisplayName("relays a path carrying a literal backslash unchanged")
+        void relaysLiteralBackslashPathsUnchanged(String location) {
+            assertEquals(location, REWRITER.rewrite(location));
+            assertEquals(location, rootRewriter.rewrite(location));
+        }
+
+        /**
+         * The matched positive controls for the refusals above: a guard that refused every encoded octet,
+         * or every absolute URI, would pass every assertion in this class but these. {@code %5B} /
+         * {@code %5D} and {@code %2D} are the neighbours of {@code %5C} and {@code %2F} in the encoding
+         * table, so they also prove the test is on the separator and not on a {@code "%5"} / {@code "%2"}
+         * prefix.
+         */
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource({
+                "/svc/v1/items/7, /api/items/7",
+                "https://backend:8443/svc/v1/items/7, /api/items/7",
+                "/svc/v1/%5Bx%5D, /api/%5Bx%5D",
+                "/svc/v1/%2Dx, /api/%2Dx",
+                "/svc/v1/%2ex, /api/%2ex"})
+        @DisplayName("still maps a path whose encodings are not separators")
+        void mapsPathsWithoutAmbiguousSeparators(String location, String expected) {
+            assertEquals(expected, REWRITER.rewrite(location));
+        }
+
+        @Test
+        @DisplayName("still maps an absolute upstream URI with an ordinary path onto the root match key")
+        void mapsOrdinaryAbsoluteUriOntoRoot() {
+            assertEquals("/login", rootRewriter.rewrite("http://backend:8080/login"),
+                    "the refusal must be driven by the separator, not by the value being absolute");
+        }
+
+        /**
+         * The deliberate scope boundary: the guard runs on the path, the way the dot-segment guard does.
+         * An encoded separator after the {@code ?} or {@code #} cannot form an authority -- a relative
+         * reference's authority is decided before the query delimiter -- and refusing it would stop
+         * mapping the ordinary encoded-path parameter an upstream redirect carries, which
+         * {@code ExactMatchKey.keepsQueryAndFragmentOnExactMapping} already asserts is kept. A
+         * <em>literal</em> backslash has no case here: {@link java.net.URI} rejects it in a query and a
+         * fragment exactly as it does in a path, so the encoded spelling is the only one that reaches
+         * the mapping.
+         */
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource({
+                "/svc/v1/items?next=%2Fhome, /api/items?next=%2Fhome",
+                "/svc/v1/items?next=a%5Cb, /api/items?next=a%5Cb",
+                "/svc/v1/items#frag%5Cx, /api/items#frag%5Cx",
+                "/svc/v1/items?next=a%5Cb#frag%2Fy, /api/items?next=a%5Cb#frag%2Fy"})
+        @DisplayName("still maps a path whose query or fragment carries an encoded separator")
+        void mapsEncodedSeparatorInQueryAndFragment(String location, String expected) {
+            assertEquals(expected, REWRITER.rewrite(location),
+                    "only the path decides confinement and the origin; the query and fragment are carried"
+                            + " verbatim and cannot form an authority");
+        }
+    }
+
     @Nested
     @DisplayName("segment boundary")
     class SegmentBoundary {

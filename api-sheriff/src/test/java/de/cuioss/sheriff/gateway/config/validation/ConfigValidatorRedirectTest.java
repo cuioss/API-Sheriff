@@ -321,7 +321,7 @@ class ConfigValidatorRedirectTest {
         }
 
         @ParameterizedTest(name = "refuses protocol {0}")
-        @EnumSource(value = Protocol.class, names = {"GRPC", "WEBSOCKET", "GRAPHQL"})
+        @EnumSource(value = Protocol.class, mode = EnumSource.Mode.EXCLUDE, names = "HTTP")
         @DisplayName("Should refuse a redirect on every protocol other than http")
         void shouldRefuseRedirectOnNonHttpProtocol(Protocol protocol) {
             String id = routeId();
