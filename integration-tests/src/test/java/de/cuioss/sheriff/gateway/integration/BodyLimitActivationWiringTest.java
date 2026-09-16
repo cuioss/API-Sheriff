@@ -92,9 +92,6 @@ class BodyLimitActivationWiringTest {
      */
     private static final int COMMITTED_DESCRIPTOR_COUNT = 5;
 
-    /** {@code LargeBodyIT}'s negative-case body size — the container override must exceed it. */
-    private static final long NEGATIVE_CASE_BODY_BYTES = 71303168L;
-
     @Test
     @DisplayName("application.properties declares the framework body-size floor")
     void applicationPropertiesDeclaresTheFrameworkLimit() throws Exception {
@@ -159,9 +156,9 @@ class BodyLimitActivationWiringTest {
         assertNotNull(override, "the api-sheriff service must set " + CONTAINER_OVERRIDE_KEY
                 + " so the gateway — not the Quarkus root handler — rejects LargeBodyIT's oversize body");
         long overrideBytes = parseMemorySize(override);
-        assertTrue(overrideBytes > NEGATIVE_CASE_BODY_BYTES,
+        assertTrue(overrideBytes > LargeBodyIT.NEGATIVE_BODY_BYTES,
                 CONTAINER_OVERRIDE_KEY + " is " + overrideBytes + " but must be strictly greater than "
-                        + NEGATIVE_CASE_BODY_BYTES + " (LargeBodyIT's negative-case body size), otherwise the"
+                        + LargeBodyIT.NEGATIVE_BODY_BYTES + " (LargeBodyIT's negative-case body size), otherwise the"
                         + " framework pre-check shadows the gateway's own 413 envelope");
     }
 

@@ -71,12 +71,12 @@ class WsAdmissionActivationWiringTest {
     private static final String WS_ADMISSION_PORT_PREFIX = "10447:";
 
     /**
-     * The ceiling both caps must stay under. The exhaustion regression drives ten sequential
-     * upgrades, so any cap at ten or above is never reached and the regression silently stops
-     * regressing — this bound is what makes cap drift a build failure rather than a quiet no-op.
+     * Both caps must stay below {@link WebSocketProxyIT#LOW_CAP_SEQUENTIAL_UPGRADES}, the number of
+     * sequential upgrades the exhaustion regression actually drives. A cap at or above that count is
+     * never reached and the regression silently stops regressing — this bound is what makes cap drift
+     * a build failure rather than a quiet no-op. The bound is read from the IT, not copied, so a change
+     * to the upgrade count is checked against the overlay too.
      */
-    private static final int SEQUENTIAL_UPGRADES = 10;
-
     @Test
     @DisplayName("the ws-admission overlay declares an edge_hardening budget small enough to exhaust")
     void overlayDeclaresAnExhaustibleAdmissionBudget() throws Exception {
@@ -92,11 +92,12 @@ class WsAdmissionActivationWiringTest {
         // the number of upgrades the regression actually drives.
         assertInstanceOf(Integer.class, admissionCap, "edge_hardening.admission_cap must be declared explicitly");
         assertInstanceOf(Integer.class, relayCap, "edge_hardening.websocket_relay_cap must be declared explicitly");
-        assertTrue((Integer) admissionCap < SEQUENTIAL_UPGRADES,
-                "admission_cap must stay below the " + SEQUENTIAL_UPGRADES
+        int upgrades = WebSocketProxyIT.LOW_CAP_SEQUENTIAL_UPGRADES;
+        assertTrue((Integer) admissionCap < upgrades,
+                "admission_cap must stay below the " + upgrades
                         + " sequential upgrades the regression drives, was: " + admissionCap);
-        assertTrue((Integer) relayCap < SEQUENTIAL_UPGRADES,
-                "websocket_relay_cap must stay below the " + SEQUENTIAL_UPGRADES
+        assertTrue((Integer) relayCap < upgrades,
+                "websocket_relay_cap must stay below the " + upgrades
                         + " sequential upgrades the regression drives, was: " + relayCap);
     }
 

@@ -29,10 +29,14 @@ import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
@@ -43,6 +47,7 @@ import com.tngtech.archunit.core.domain.AccessTarget.MethodCallTarget;
 import com.tngtech.archunit.core.domain.JavaAccess;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaConstructorCall;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -89,29 +94,57 @@ import org.junit.jupiter.api.Test;
  * recorded rather than left implicit so a green rule is not read as more than it proves.
  * <p>
  * <strong>Scope: the test tree only.</strong> Production binds configured ports rather than
- * ephemeral ones, and {@code SniFrontListener.start()} binds the wildcard deliberately via
- * {@code netServer.listen(publicPort)}. Selecting production would make this guard demand a change
- * that would break the gateway. {@link MatchedControls#productionWildcardBinderIsOutOfScope()} pins
- * that exclusion so it cannot erode silently.
+ * ephemeral ones, and {@code SniFrontListener.start()} binds through the host-bound
+ * {@code netServer.listen(publicPort, host)} overload, where the delegating five-argument constructor
+ * that {@code TlsEdgeProducer} uses supplies the Vert.x wildcard default host deliberately. Selecting
+ * production would make this guard demand a change that would break the gateway.
+ * {@link MatchedControls#productionWildcardBinderIsOutOfScope()} pins that exclusion so it cannot
+ * erode silently.
  * <p>
  * <strong>Carve-out 1 — the specimen package.</strong>
  * {@code de.cuioss.sheriff.gateway.arch.specimen} is excluded from the guarded selection because it
  * holds the controls themselves, one of which violates the rule on purpose. Without the exclusion
  * the negative control would fail the main rule and the guard could never be green.
  * <p>
- * <strong>Carve-out 2 — {@code de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest}.</strong> Its
- * wildcard-bound sockets are the only ones in this tree that stay wildcard-bound, and deliberately
- * so. They serve two roles: the collision holders occupy a port precisely so that production's
- * <em>wildcard</em> bind is refused, and {@code freePort()} binds to allocate a candidate and again
- * to re-probe it against the bind scope production will use. No count is given — it has gone stale
- * twice already, and the carve-out is the class rather than an enumerated list of sites. None
- * is ever dialled, so none is exposed. Narrowing them to loopback would leave the wildcard free,
- * the producer's bind would succeed, and {@code failsWhenThePublicPortIsHeld} would go red on macOS
- * while staying green on Linux CI — the exact platform-divergent failure class this whole change
- * exists to remove. The full justification is recorded in place, at each site and in
- * the {@code freePort()} Javadoc, and is not restated here. The carve-out covers the outer class
- * <em>and its nested classes</em>, since the three collision holders live inside {@code @Nested}
- * fixtures.
+ * <strong>Carve-out 2 — four named sites in {@code de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest}.</strong>
+ * The exemption is per site, not per class: {@link #WILDCARD_SITE_EXEMPTIONS} names exactly four
+ * code units, and each is permitted exactly one thing — constructing the bare
+ * {@link ServerSocket#ServerSocket(int)}, once. A bare {@code listen(int)} is never exempt, and every other
+ * code unit of {@code TlsEdgeProducerTest} and its {@code @Nested} classes is guarded like any other
+ * fixture, so a new bare bind added anywhere else in that class fails the rule. The four are:
+ * <ul>
+ * <li>the three collision holders — {@code PassthroughConfigured#failsWhenThePublicPortIsHeld()},
+ * {@code PassthroughUnconfigured#noFrontListenerWhenPassthroughEmpty()} and
+ * {@code PassthroughUnconfigured#skipsUnresolvedAlias()} — which occupy a port precisely so that
+ * production's <em>wildcard</em> bind is refused;</li>
+ * <li>{@code isFreeForWildcardBind(int)}, the re-probe that tests a candidate port against the bind
+ * scope production will use.</li>
+ * </ul>
+ * <p>
+ * <strong>Each entry is keyed by signature, not by name.</strong> {@link #codeUnitOf(JavaAccess)}
+ * renders a site as {@code owner#method(parameterTypes)}, so the four keys above carry their empty
+ * or {@code (int)} parameter lists and every overload is a key of its own. A name-only key would
+ * make "per site" untrue in one specific way: the bare bind could be <em>moved</em> into a same-named
+ * overload of an exempt method and stay exempt, with the exact-set control still seeing four strings
+ * and the count still at four, so a wildcard bind would sit in a code unit nobody justified. No such
+ * overload exists among the four today; keying on the signature is what keeps it that way.
+ * <p>
+ * <strong>Why the carve-out cannot be removed entirely.</strong> Production's front listener binds
+ * the Vert.x wildcard default host. A holder narrowed to loopback leaves the wildcard free, so the
+ * producer's bind succeeds on macOS and the control silently stops controlling — while staying green
+ * on Linux CI, the exact platform-divergent failure class this guard exists to remove. The re-probe
+ * has the same constraint from the other side: probing loopback alone answers a narrower question
+ * than the bind it predicts, so a port held on another interface would be reported free and then
+ * fail the producer's bind. None of the four sockets is ever dialled, so none carries the stall
+ * exposure. The allocation socket in {@code freePort()} is not among them: it is loopback-bound like
+ * every other ephemeral listener here. The per-site justification is also recorded in place, at each
+ * site and in the {@code freePort()} Javadoc.
+ * <p>
+ * {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} pins the list and the count:
+ * a stale entry, a new unexempted wildcard site in that class, a second bare bind inside one of the
+ * four exempt code units, and — since the key carries the signature — a bind moved into a same-named
+ * overload of an exempt method all fail it, so the exemption cannot rot or widen silently in any
+ * direction.
  * <p>
  * This is a plain JUnit 5 test (no ArchUnit {@code @AnalyzeClasses} runner) so it runs in both
  * {@code test} and {@code verify -Ppre-commit}, wiring the guard into the quality gate — the same
@@ -127,10 +160,33 @@ class LoopbackEphemeralBindArchTest {
     private static final String WILDCARD_SPECIMEN = SPECIMEN_PACKAGE + ".WildcardEphemeralBindSpecimen";
     private static final String LOOPBACK_SPECIMEN = SPECIMEN_PACKAGE + ".LoopbackEphemeralBindSpecimen";
 
-    /** The single carved-out fixture; its nested classes are carved out with it. */
-    private static final String CARVED_OUT_TEST = "de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest";
+    /** The only fixture holding per-site exemptions; the three collision holders live in its nested classes. */
+    private static final String TLS_EDGE_PRODUCER_TEST = "de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest";
 
-    /** Production's deliberate wildcard binder, which this guard must never select. */
+    /**
+     * The four code units, as {@code owner#method(parameterTypes)}, whose bare
+     * {@link ServerSocket#ServerSocket(int)} construction is permitted. Nothing else is exempt: not
+     * the rest of their classes, not a bare {@code listen(int)} in these same code units, and — because
+     * the key carries the signature — not a same-named overload of any of the four. The reason each
+     * must stay wildcard-bound is in the class Javadoc ("Carve-out 2") and at each site.
+     * <p>
+     * These strings are compared against {@link #codeUnitOf(JavaAccess)}'s rendering verbatim, so the
+     * parameter lists here must be exactly what ArchUnit's {@code JavaClass#getName()} produces for the
+     * origin's raw parameter types. {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()}
+     * is what proves the two sides still agree: a spelling that drifts exempts nothing, and the main
+     * rule then reports all four sites.
+     */
+    private static final Set<String> WILDCARD_SITE_EXEMPTIONS = Set.of(
+            TLS_EDGE_PRODUCER_TEST + "$PassthroughConfigured#failsWhenThePublicPortIsHeld()",
+            TLS_EDGE_PRODUCER_TEST + "$PassthroughUnconfigured#noFrontListenerWhenPassthroughEmpty()",
+            TLS_EDGE_PRODUCER_TEST + "$PassthroughUnconfigured#skipsUnresolvedAlias()",
+            TLS_EDGE_PRODUCER_TEST + "#isFreeForWildcardBind(int)");
+
+    /**
+     * Production's deliberate wildcard binder, which this guard must never select. It binds through
+     * {@code listen(publicPort, host)}; the wildcard comes from the delegating constructor's
+     * {@code NetServerOptions.DEFAULT_HOST} default rather than from the call shape.
+     */
     private static final String PRODUCTION_WILDCARD_BINDER = "de.cuioss.sheriff.gateway.tls.SniFrontListener";
 
     private static final String LISTEN = "listen";
@@ -213,8 +269,8 @@ class LoopbackEphemeralBindArchTest {
      *
      * <p>Verified before inverting: all 22 host arguments in the guarded fixtures were already
      * exactly this, so the allow-list starts with no exceptions to grandfather. A fixture that
-     * genuinely needs a different host belongs in the carve-out, deliberately, rather than widening
-     * this. Reported by CodeRabbit on PR #255.
+     * genuinely needs a different host needs a deliberate, recorded exemption rather than a wider
+     * allow-list. Reported by CodeRabbit on PR #255.
      */
     private static final String APPROVED_HOST = "LoopbackHost.ADDRESS";
 
@@ -278,27 +334,30 @@ class LoopbackEphemeralBindArchTest {
 
     /**
      * Production is imported only so {@link MatchedControls#productionWildcardBinderIsOutOfScope()}
-     * can assert the near-miss property still holds before asserting the exclusion.
+     * can assert the binder's host-bound call shape still holds before asserting the exclusion.
      */
     private static final JavaClasses PRODUCTION_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
             .importPackages(BASE_PACKAGE);
 
     private static final DescribedPredicate<JavaClass> IN_GUARDED_SELECTION =
-            new DescribedPredicate<>("test classes outside the specimen package and outside the "
-                    + "TlsEdgeProducerTest carve-out") {
+            new DescribedPredicate<>("test classes outside the specimen package") {
                 @Override
                 public boolean test(JavaClass javaClass) {
                     return isGuarded(javaClass);
                 }
             };
 
+    /**
+     * Whether a class is in the guarded selection. Only the specimen package is excluded wholesale;
+     * {@code TlsEdgeProducerTest} and its nested classes are selected, and their four exempt sites are
+     * handled per call by {@link #notBindABareEphemeralWildcard(Set)}.
+     *
+     * @param javaClass an imported test class
+     * @return {@code true} when the rule checks the class
+     */
     private static boolean isGuarded(JavaClass javaClass) {
-        String name = javaClass.getName();
-        if (name.startsWith(SPECIMEN_PACKAGE + ".")) {
-            return false;
-        }
-        return !CARVED_OUT_TEST.equals(name) && !name.startsWith(CARVED_OUT_TEST + "$");
+        return !javaClass.getName().startsWith(SPECIMEN_PACKAGE + ".");
     }
 
     /**
@@ -307,24 +366,32 @@ class LoopbackEphemeralBindArchTest {
      * event polarity, so a condition that emits {@code violated} events reports nothing at all and
      * the rule passes vacuously. Emitting {@code violated} from a positive rule keeps the polarity
      * unambiguous — the same reasoning {@link NoStoredOptionalArchTest} records.
+     * <p>
+     * Each violation event corresponds to the offending call itself rather than to its owner class,
+     * so {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} can read back which
+     * code units violated and how many offending calls each made.
      *
+     * @param exemptSites the {@code owner#method(parameterTypes)} code units whose bare
+     *                    {@code ServerSocket(int)} construction is skipped; a bare {@code listen(int)}
+     *                    is reported regardless
      * @return the condition both the main rule and every control are checked against
      */
-    private static ArchCondition<JavaClass> notBindABareEphemeralWildcard() {
+    private static ArchCondition<JavaClass> notBindABareEphemeralWildcard(Set<String> exemptSites) {
         return new ArchCondition<>("not call the single-int ServerSocket(int) constructor "
                 + "nor the single-int listen(int) overload") {
             @Override
             public void check(JavaClass javaClass, ConditionEvents events) {
                 for (JavaConstructorCall call : javaClass.getConstructorCallsFromSelf()) {
-                    if (isBareServerSocketConstructor(call.getTarget())) {
-                        events.add(violation(javaClass, call, "new ServerSocket(int)",
+                    if (isBareServerSocketConstructor(call.getTarget())
+                            && !exemptSites.contains(codeUnitOf(call))) {
+                        events.add(violation(call, "new ServerSocket(int)",
                                 "new ServerSocket(port, backlog, "
                                         + "InetAddress.getByName(LoopbackHost.ADDRESS))"));
                     }
                 }
                 for (JavaMethodCall call : javaClass.getMethodCallsFromSelf()) {
                     if (isBareListenOverload(call.getTarget())) {
-                        events.add(violation(javaClass, call, "listen(int)",
+                        events.add(violation(call, "listen(int)",
                                 "listen(port, LoopbackHost.ADDRESS)"));
                     }
                 }
@@ -332,14 +399,46 @@ class LoopbackEphemeralBindArchTest {
         };
     }
 
-    private static ConditionEvent violation(JavaClass owner, JavaAccess<?> call, String spelling,
-            String replacement) {
-        return SimpleConditionEvent.violated(owner,
-                owner.getName() + " calls the bare " + spelling + " form at "
+    /**
+     * The code unit a call originates from, in the {@code owner#method(parameterTypes)} form
+     * {@link #WILDCARD_SITE_EXEMPTIONS} uses.
+     *
+     * <p><strong>The parameter types are part of the key, not decoration.</strong>
+     * {@code JavaCodeUnit#getName()} is name-granular, so every overload of a method collapses onto
+     * one key. That is enough to defeat the carve-out documented as per-<em>site</em>: moving the
+     * bare {@code ServerSocket(int)} out of an exempt method and into a same-named overload of it
+     * leaves the main rule exempting the new overload, the exact-set control seeing the same four
+     * strings, and the per-code-unit count still at four — a bare wildcard bind living in a code
+     * unit whose justification was never written. Rendering the origin's own raw parameter types
+     * makes each overload its own key, so the move is a new, unexempted site. Reported by
+     * CodeRabbit on PR #308.
+     *
+     * <p>The types come from the origin code unit itself rather than from a hand-assembled shape,
+     * so {@link #WILDCARD_SITE_EXEMPTIONS} has one rendering to match rather than a convention to
+     * guess at. A primitive renders as {@code int}, a reference type by its fully-qualified name —
+     * which is what ArchUnit's own {@code JavaClass#getName()} returns, and what
+     * {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} proves the two sides
+     * agree on.
+     *
+     * @param call a call found in an imported class
+     * @return the originating code unit's owner class name, method name and parameter types
+     */
+    private static String codeUnitOf(JavaAccess<?> call) {
+        JavaCodeUnit origin = call.getOrigin();
+        String parameterTypes = origin.getRawParameterTypes().stream()
+                .map(JavaClass::getName)
+                .collect(Collectors.joining(", "));
+        return origin.getOwner().getName() + "#" + origin.getName() + "(" + parameterTypes + ")";
+    }
+
+    private static ConditionEvent violation(JavaAccess<?> call, String spelling, String replacement) {
+        return SimpleConditionEvent.violated(call,
+                codeUnitOf(call) + " calls the bare " + spelling + " form at "
                         + call.getSourceCodeLocation() + " — that binds the dual-stack wildcard while "
                         + "the fixture dials loopback, which is the measured stall exposure. Use "
-                        + replacement + " instead, or carve the site out explicitly with its "
-                        + "justification recorded in place.");
+                        + replacement + " instead, or, where the wildcard bind is itself under test, "
+                        + "add the code unit to WILDCARD_SITE_EXEMPTIONS with its justification "
+                        + "recorded in place.");
     }
 
     private static boolean isBareServerSocketConstructor(ConstructorCallTarget target) {
@@ -353,13 +452,14 @@ class LoopbackEphemeralBindArchTest {
     /**
      * The {@code .java} sources the wildcard sweep scans.
      *
-     * <p>Excludes the same two things {@link #isGuarded(JavaClass)} does, and that agreement is the
-     * point: the sweep and the bytecode rule are two halves of one guard, so a file exempt from one
-     * must be exempt from the other. The specimen package carries the sweep's own deliberate
-     * violations. {@code TlsEdgeProducerTest} is the class-level carve-out for deliberate wildcard
-     * binds — scanning it here while the rule excludes it would let the sweep reject a collision
-     * control the rule deliberately permits, so the two halves would disagree about what the guard
-     * protects.
+     * <p>A file is exempt from the sweep only when the bytecode rule exempts it <em>wholesale</em>,
+     * and that agreement is the point: the sweep and the rule are two halves of one guard, so they
+     * must not disagree about which files the guard protects. The specimen package is the one wholesale
+     * exemption — it carries the sweep's own deliberate violations. {@code TlsEdgeProducerTest} is
+     * scanned: its rule exemption is per site, and every exempt site is a
+     * {@code ServerSocket(int)} construction, which the sweep never targets, so scanning the file
+     * cannot reject anything the rule permits. The guard's own source is the other file left out, for
+     * the reason given in {@link #isCarvedOutSource(Path)}.
      *
      * @return the guarded source files
      * @throws IOException when the source tree cannot be walked
@@ -377,7 +477,8 @@ class LoopbackEphemeralBindArchTest {
     }
 
     /**
-     * Whether a source path is outside the sweep's scope, mirroring {@link #isGuarded(JavaClass)}.
+     * Whether a source path is outside the sweep's scope: the specimen package, which
+     * {@link #isGuarded(JavaClass)} also excludes wholesale, and the guard's own source.
      *
      * @param path a source file
      * @return {@code true} when the sweep must not scan it
@@ -385,7 +486,6 @@ class LoopbackEphemeralBindArchTest {
     private static boolean isCarvedOutSource(Path path) {
         String normalised = path.toString().replace('\\', '/');
         return normalised.contains("/" + SPECIMEN_PACKAGE.replace('.', '/') + "/")
-                || normalised.endsWith("/" + CARVED_OUT_TEST.replace('.', '/') + ".java")
                 // The guard's own source necessarily contains the literals it refuses — in the
                 // patterns, the assertions and the prose explaining both. Scanning itself would make
                 // it permanently red for the reason it exists.
@@ -625,7 +725,7 @@ class LoopbackEphemeralBindArchTest {
     private static ArchRule ruleAgainst(String fullyQualifiedName) {
         return classes()
                 .that().haveFullyQualifiedName(fullyQualifiedName)
-                .should(notBindABareEphemeralWildcard())
+                .should(notBindABareEphemeralWildcard(WILDCARD_SITE_EXEMPTIONS))
                 .allowEmptyShould(true);
     }
 
@@ -634,7 +734,7 @@ class LoopbackEphemeralBindArchTest {
     void fixturesMustNotBindABareEphemeralWildcard() {
         ArchRule rule = classes()
                 .that(IN_GUARDED_SELECTION)
-                .should(notBindABareEphemeralWildcard())
+                .should(notBindABareEphemeralWildcard(WILDCARD_SITE_EXEMPTIONS))
                 .because("a wildcard ephemeral bind that is later dialled on loopback can coexist with a "
                         + "foreign 127.0.0.1 listener on the same port, and the kernel then routes the "
                         + "fixture's own client to that other process, which never answers; binding "
@@ -948,23 +1048,26 @@ class LoopbackEphemeralBindArchTest {
         }
 
         /**
-         * The sweep and the bytecode rule must exempt the same files. Without this, the sweep could
-         * scan {@code TlsEdgeProducerTest} — which the rule excludes as a class-level carve-out —
-         * and reject a wildcard-host collision control the rule deliberately permits, so the two
-         * halves of one guard would disagree about what they protect.
+         * The sweep exempts a file only where the bytecode rule exempts it wholesale. A file whose
+         * rule exemption is per site — {@code TlsEdgeProducerTest} — is scanned, because every
+         * exempt site is a {@code ServerSocket(int)} construction the sweep never targets. Without
+         * the first assertion, a file-level exclusion could quietly return and leave a whole fixture
+         * outside the sweep while the rule guards it, so the two halves of one guard would again
+         * disagree about what they protect.
          */
         @Test
-        @DisplayName("The sweep exempts the same files the bytecode rule does")
+        @DisplayName("The sweep exempts only the files the bytecode rule exempts wholesale")
         void sweepScopeMatchesRuleScope() throws Exception {
             List<Path> scanned = guardedSources();
 
             assertAll("the sweep's scope mirrors isGuarded()",
-                    () -> assertTrue(scanned.stream().noneMatch(p -> p.toString()
+                    () -> assertTrue(scanned.stream().anyMatch(p -> p.toString()
                                     .replace('\\', '/').endsWith("/TlsEdgeProducerTest.java")),
-                            "The sweep scans TlsEdgeProducerTest, which the bytecode rule carves out. "
-                                    + "A deliberate wildcard-host collision control there would be "
-                                    + "reported as an offender by one half of the guard and permitted "
-                                    + "by the other."),
+                            "The sweep does not scan TlsEdgeProducerTest. The bytecode rule guards "
+                                    + "that class except four ServerSocket(int) sites, none of which "
+                                    + "the sweep targets, so excluding the file leaves its listen "
+                                    + "calls and host literals unchecked for no reason the rule "
+                                    + "shares."),
                     () -> assertTrue(scanned.stream().noneMatch(p -> p.toString()
                                     .replace('\\', '/').contains("/arch/specimen/")),
                             "The sweep scans the specimen package, whose whole purpose is to hold "
@@ -972,9 +1075,9 @@ class LoopbackEphemeralBindArchTest {
                                     + "offenders."),
                     () -> assertTrue(scanned.stream().anyMatch(p -> p.toString()
                                     .replace('\\', '/').endsWith("/AwaitsTest.java")),
-                            "The sweep scans neither specimen nor carve-out AND misses an ordinary "
-                                    + "fixture, so the exclusions have over-reached and the sweep is "
-                                    + "covering less than it claims."));
+                            "The sweep skips the specimen package AND misses an ordinary fixture, so "
+                                    + "the exclusions have over-reached and the sweep is covering less "
+                                    + "than it claims."));
         }
 
         /** Non-vacuity: the sweep must actually be reading a populated source tree. */
@@ -1034,17 +1137,89 @@ class LoopbackEphemeralBindArchTest {
         }
 
         /**
-         * Matched positive control for the scope boundary: production's deliberate wildcard binder
-         * must stay outside the guarded selection.
+         * The non-vacuity leg for the per-site exemption (ADR-0030 fitness-function shape). The
+         * same condition, run <em>without</em> any exemption against {@code TlsEdgeProducerTest} and
+         * its nested classes, must report exactly the code units {@link #WILDCARD_SITE_EXEMPTIONS}
+         * names — no more, no fewer.
          * <p>
-         * The order of the two assertions is load-bearing. "Not selected" is trivially true of a
-         * class that no longer calls the bare form at all, so the near-miss property is asserted
-         * first: {@code SniFrontListener} really does call {@code listen(int)}, and would really be
-         * reported if it were ever selected. Only then does the exclusion mean anything.
+         * Each direction closes a distinct way for the exemption to rot. An entry that no longer
+         * matches a bare bind (a renamed test, a holder moved to another method, a mistyped nested
+         * class) would otherwise exempt nothing while still reading as a justified carve-out. A new
+         * bare bind in any other code unit of the class shows up as an extra violating code unit —
+         * which the main rule also reports, but this control additionally names it as a failure of
+         * the exemption list rather than of an ordinary fixture.
+         * <p>
+         * <strong>One bare bind per exempt code unit, pinned by count.</strong> The set comparison
+         * alone works at code-unit granularity, so a second {@code ServerSocket(int)} added inside
+         * one of the four exempt code units would collapse into the existing set entry — and the
+         * main rule exempts it too, so the four-site exemption would widen silently while every
+         * check stayed green. The condition emits one violation event per offending call rather than
+         * per class, so this control also asserts that the number of violating events equals
+         * {@link #WILDCARD_SITE_EXEMPTIONS}{@code .size()}. Together the two assertions hold each
+         * exempt code unit to exactly one bare bind: the set proves which code units bind, the count
+         * proves none of them binds twice.
+         * <p>
+         * <strong>"Code unit" here means a signature, not a name.</strong> Both assertions compare
+         * {@link #codeUnitOf(JavaAccess)} renderings, which carry the origin's parameter types, so a
+         * bare bind moved into a same-named overload of an exempt method is a key neither side has
+         * seen: it is absent from the exemptions and present in the violations, and the set
+         * comparison fails. Under a name-only key that move would have been invisible to both
+         * assertions and to the main rule at once — the gap CodeRabbit reported on PR #308 — and the
+         * claim above would have held only for the name, not for the site.
+         */
+        @Test
+        @DisplayName("The wildcard exemptions are exactly the bare bind sites in TlsEdgeProducerTest, one bind each (exact-set control)")
+        void wildcardExemptionsAreExactlyTheBareBindSites() {
+            List<JavaClass> fixture = TEST_CLASSES.stream()
+                    .filter(javaClass -> TLS_EDGE_PRODUCER_TEST.equals(javaClass.getName())
+                            || javaClass.getName().startsWith(TLS_EDGE_PRODUCER_TEST + "$"))
+                    .toList();
+            assertTrue(fixture.stream().anyMatch(javaClass -> TLS_EDGE_PRODUCER_TEST.equals(javaClass.getName())),
+                    TLS_EDGE_PRODUCER_TEST + " did not resolve in the test import, so this control "
+                            + "compares the exemption list against nothing");
+
+            ArchCondition<JavaClass> unexempted = notBindABareEphemeralWildcard(Set.of());
+            ConditionEvents events = ConditionEvents.Factory.create();
+            fixture.forEach(javaClass -> unexempted.check(javaClass, events));
+            Collection<ConditionEvent> violating = events.getViolating();
+            Set<String> violatingCodeUnits = new HashSet<>();
+            violating.forEach(event -> event.handleWith((correspondingObjects, _) ->
+                    correspondingObjects.forEach(corresponding ->
+                            violatingCodeUnits.add(codeUnitOf((JavaAccess<?>) corresponding)))));
+
+            assertAll("each exempt code unit in TlsEdgeProducerTest must contain exactly one bare bind",
+                    () -> assertEquals(WILDCARD_SITE_EXEMPTIONS, violatingCodeUnits,
+                            "Without the exemption, the bare wildcard binds in TlsEdgeProducerTest must be "
+                                    + "exactly the exempted code units. An exempted entry missing from the "
+                                    + "violations is stale and exempts nothing; a violation missing from the "
+                                    + "exemptions is a new wildcard bind that nobody justified."),
+                    () -> assertEquals(WILDCARD_SITE_EXEMPTIONS.size(), violating.size(),
+                            "Without the exemption, TlsEdgeProducerTest must make exactly one bare "
+                                    + "wildcard bind per exempted code unit. A count above the number of "
+                                    + "exempted code units means a second bare bind was added inside an "
+                                    + "exempt code unit, where the set comparison cannot see it and the "
+                                    + "main rule exempts it — the exemption has widened without anyone "
+                                    + "justifying the extra socket."));
+        }
+
+        /**
+         * Matched positive control for the scope boundary: production's deliberate wildcard binder
+         * must stay outside both halves of the guard.
+         * <p>
+         * The order of the assertions is load-bearing. "Not selected" is trivially true of a class
+         * that makes no bind call at all, so the call shape is asserted first: {@code SniFrontListener}
+         * binds through the host-bound {@code listen(int, String)} overload and no longer through the
+         * bare {@code listen(int)} one. Its host argument is a field that the delegating constructor
+         * defaults to the Vert.x wildcard, not {@code LoopbackHost.ADDRESS}, so the source sweep's
+         * allow-list is now the half that would reject production if the scope ever widened — which is
+         * why the sweep's source set is asserted to exclude it too. Only then does the exclusion mean
+         * anything.
+         *
+         * @throws IOException when the guarded source tree cannot be walked
          */
         @Test
         @DisplayName("Production's deliberate wildcard binder stays out of scope (positive control)")
-        void productionWildcardBinderIsOutOfScope() {
+        void productionWildcardBinderIsOutOfScope() throws IOException {
             Optional<JavaClass> binder = PRODUCTION_CLASSES.stream()
                     .filter(javaClass -> PRODUCTION_WILDCARD_BINDER.equals(javaClass.getName()))
                     .findFirst();
@@ -1052,17 +1227,30 @@ class LoopbackEphemeralBindArchTest {
                     PRODUCTION_WILDCARD_BINDER + " did not resolve in the production import, so this "
                             + "control cannot establish anything about the scope boundary");
 
-            assertTrue(callsBareListen(binder.get()),
-                    PRODUCTION_WILDCARD_BINDER + " no longer calls the bare listen(int) overload, so it "
-                            + "is no longer the near-miss this control needs. Either production changed "
-                            + "its bind, in which case retarget this control, or the overload matcher "
-                            + "stopped matching, in which case the whole guard is blind");
+            assertAll("production binds through the host-bound overload only",
+                    () -> assertTrue(callsHostBoundListen(binder.get()),
+                            PRODUCTION_WILDCARD_BINDER + " no longer calls the host-bound listen(int, String) "
+                                    + "overload, so it is no longer the near-miss this control needs. Either "
+                                    + "production changed its bind, in which case retarget this control, or "
+                                    + "the overload matcher stopped matching, in which case the whole guard is "
+                                    + "blind"),
+                    () -> assertFalse(callsBareListen(binder.get()),
+                            PRODUCTION_WILDCARD_BINDER + " calls the bare listen(int) overload again. The "
+                                    + "front listener is meant to bind the host its constructor was given; "
+                                    + "the bare overload ignores it and always binds the wildcard"));
 
             assertFalse(TEST_CLASSES.stream()
                             .anyMatch(javaClass -> PRODUCTION_WILDCARD_BINDER.equals(javaClass.getName())),
                     PRODUCTION_WILDCARD_BINDER + " appeared in the guarded test selection. The guard "
                             + "would demand a loopback bind from production, which binds its configured "
                             + "public port on purpose — fix the import scope rather than the production "
+                            + "bind");
+
+            assertTrue(guardedSources().stream().noneMatch(p -> p.toString()
+                            .replace('\\', '/').endsWith("/SniFrontListener.java")),
+                    "The wildcard sweep scans SniFrontListener.java. Its host-bound listen call passes a "
+                            + "host field rather than LoopbackHost.ADDRESS, so the sweep's allow-list would "
+                            + "report production — fix the sweep's source root rather than the production "
                             + "bind");
         }
     }

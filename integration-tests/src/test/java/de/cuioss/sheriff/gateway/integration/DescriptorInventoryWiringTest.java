@@ -44,19 +44,13 @@ import org.junit.jupiter.api.Test;
  * {@code doc/development/declared-limit-assertion-coverage.adoc} machine-checked
  * <em>against that note</em>.
  * <p>
- * That note opens by enumerating the declared surface as <em>sixteen files</em> — seven
- * {@code gateway.yaml} documents, one per {@code sheriff-config*} directory, eight
- * {@code sheriff-config/endpoints/*.yaml} files and one
- * {@code sheriff-config/topology.properties} — and then states that a limit-shaped key sweep over
- * those sixteen returns hits only in the seven gateway documents and in five of the eight endpoint
- * files. Both are load-bearing claims: every status row in the note is scoped to that surface, so a
- * descriptor the note never enumerated is not merely undocumented, it is <em>invisible</em> to the
- * whole coverage index.
- * <p>
- * The counts in the paragraph above are prose and are <em>not</em> what this guard asserts — it
- * derives every expectation from the note at runtime, so a stale count here cannot make the build
- * pass or fail. They are restated only so a reader arriving at the test knows roughly what surface
- * it covers; the note is the authority.
+ * The surface this guard covers is the one that note enumerates in its "The Enumerated Surface"
+ * section: the tagged {@code inventory} block lists every committed file under the
+ * {@code sheriff-config*} directories, and the tagged {@code limit-bearing} block lists the subset a
+ * limit-shaped key sweep hits. Read the note for the current membership — this Javadoc deliberately
+ * restates none of it. Both are load-bearing claims: every status row in the note is scoped to that
+ * surface, so a descriptor the note never enumerated is not merely undocumented, it is
+ * <em>invisible</em> to the whole coverage index.
  * <p>
  * <strong>This guard owns no copy of either claim.</strong> It reads three AsciiDoc tagged blocks
  * out of the note at runtime — {@code inventory}, {@code limit-key-regex} and

@@ -142,7 +142,7 @@ class SniFrontListenerTest {
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget)
             throws Exception {
         PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient());
-        SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, 0);
+        SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, 0, HOST);
         Awaits.connect(front.start(), "the SNI front listener to start");
         return front;
     }

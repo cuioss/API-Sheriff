@@ -30,7 +30,22 @@ import org.junit.jupiter.api.Test;
 class ApiSheriffIntegrationIT extends BaseIntegrationTest {
 
     /**
-     * Test that the Quarkus health check endpoint is available on the management interface.
+     * The Quarkus health endpoint answers {@code 200} with a JSON body over HTTPS on the management
+     * interface — the same endpoint the {@code gatewayHealth} k6 benchmark resolves to.
+     * <p>
+     * <strong>Contract being pinned:</strong> moving this endpoint, or reverting the management
+     * interface to plain HTTP, breaks the {@code gatewayHealth} benchmark. This guard lives here
+     * rather than in the benchmark pre-flight because {@code .github/workflows/benchmark.yml} runs
+     * only on {@code pull_request: types: [closed]}, tags and {@code workflow_dispatch} — it never
+     * runs on an open PR and is therefore not merge-queue gated. That blind spot is precisely how a
+     * red {@code gatewayHealth} benchmark merged four times. The integration-test job IS merge-queue
+     * gated, so a break is caught before merge only if it is caught here.
+     * <p>
+     * It pins the endpoint, not the benchmark's own target resolution: this test reaches the endpoint
+     * through {@link BaseIntegrationTest#givenManagement()}, while
+     * {@code benchmarks/src/main/resources/k6-scripts/gateway_health.js} reaches it through
+     * {@code lib/target.js}'s {@code managementUrl('/health')} or {@code __ENV.TARGET_URL}, so a change
+     * to the benchmark's target leaves this test green.
      */
     @Test
     void quarkusHealthEndpoint() {
@@ -40,35 +55,6 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
                 .then()
                 .statusCode(200)
                 .contentType("application/json");
-    }
-
-    /**
-     * Pins that the ENDPOINT the {@code gatewayHealth} k6 benchmark resolves to keeps answering
-     * {@code 200} over HTTPS on the management port.
-     * <p>
-     * <strong>It does not pin the benchmark's own target resolution, and cannot.</strong> This test
-     * reaches the endpoint through {@link BaseIntegrationTest#givenManagement()};
-     * {@code benchmarks/src/main/resources/k6-scripts/gateway_health.js} reaches it through
-     * {@code lib/target.js}'s {@code managementUrl('/health')}, or from {@code __ENV.TARGET_URL}.
-     * The two resolutions never meet, so a change to the benchmark's target leaves this test green.
-     * That narrowing is deliberate: reading {@code lib/target.js} from a Java IT would couple this
-     * suite to the k6 script's internals for a guard whose whole purpose is endpoint survival.
-     * <p>
-     * <strong>Contract being pinned:</strong> moving this endpoint, or reverting the management
-     * interface to plain HTTP, breaks the {@code gatewayHealth} benchmark. This guard lives here
-     * rather than in the benchmark pre-flight because {@code .github/workflows/benchmark.yml} runs
-     * only on {@code pull_request: types: [closed]}, tags and {@code workflow_dispatch} — it never
-     * runs on an open PR and is therefore not merge-queue gated. That blind spot is precisely how a
-     * red {@code gatewayHealth} benchmark merged four times. The integration-test job IS merge-queue
-     * gated, so a break is caught before merge only if it is caught here.
-     */
-    @Test
-    void benchmarkGatewayHealthTargetServesOverHttps() {
-        givenManagement()
-                .when()
-                .get("/health")
-                .then()
-                .statusCode(200);
     }
 
     /**

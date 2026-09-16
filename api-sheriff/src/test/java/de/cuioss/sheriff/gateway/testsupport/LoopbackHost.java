@@ -23,11 +23,12 @@ package de.cuioss.sheriff.gateway.testsupport;
  * at every one of those call sites. It is not the only way a fixture in this module reaches
  * loopback, and two exclusions are worth naming rather than leaving to be discovered.
  *
- * <p>{@code TlsEdgeProducerTest} is a documented class-level carve-out that deliberately keeps
- * wildcard-bound sockets: collision holders that occupy a port so production's own wildcard bind is
- * refused, and the {@code freePort()} probes. Those bind wildcard on purpose and must not route
- * through this constant — {@code LoopbackEphemeralBindArchTest} excludes that class entirely and
- * enforces nothing inside it.
+ * <p>{@code TlsEdgeProducerTest} deliberately keeps four wildcard-bound {@code ServerSocket(int)}
+ * sites: three collision holders that occupy a port so production's own wildcard bind is refused, and
+ * the {@code isFreeForWildcardBind} re-probe behind {@code freePort()}. Those bind wildcard on purpose
+ * and must not route through this constant. {@code LoopbackEphemeralBindArchTest} exempts exactly
+ * those four named sites and enforces the rest of that class like any other fixture — including
+ * {@code freePort()}'s allocation socket, which is loopback-bound.
  *
  * <p>Fixtures that bind a {@code java.net.ServerSocket} rather than a Vert.x server are already
  * loopback-bound by a different mechanism: {@code AwaitsTest} passes
