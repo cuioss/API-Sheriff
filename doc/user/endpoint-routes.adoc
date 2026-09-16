@@ -203,11 +203,24 @@ mounted behind `/api/orders` -- sends the browser off the gateway namespace, and
   unchanged instead. A prefix route is unaffected -- it serves the whole subtree, so every mapping
   under its match key is routable.
 * Everything else is relayed *unchanged*: a foreign origin, a scheme-relative `//host` value, an
-  unparseable value, a path outside the effective base path, and a path carrying a `.` or `..`
+  unparseable value, a path outside the effective base path, a path carrying a `.` or `..`
   segment in either its literal or its percent-encoded spelling (`/app1/orders/../login`,
-  `/app1/orders/%2e%2e/login`). The base-path test is made on the path as received, so a dot segment
-  would survive into the mapping and the browser would resolve it *outside* the match key -- the same
-  reason a `redirect` target may not carry one (see <<_redirect_external_targets>>).
+  `/app1/orders/%2e%2e/login`), and a path carrying an *ambiguous separator* -- a backslash, or a
+  percent-encoded `/` or `\` (`%2F`, `%5C`, either case). The base-path test is made on the path as
+  received, so either construct would survive into the mapping and the browser would resolve it
+  *outside* the match key -- the same reason a `redirect` target may not carry one (see
+  <<_redirect_external_targets>>). The refused set is the same one the boot review applies to a
+  configured `redirect` target, so the two cannot disagree about which paths are dangerous.
+* The ambiguous-separator refusal also covers the one case where the rewrite would *create* a
+  cross-origin redirect out of a value that did not carry one. An absolute URI binds its authority
+  before its path, so `Location: https://app1.internal:8443/%5Cattacker.com` keeps the browser on the
+  upstream; the gateway-relative mapping `/%5Cattacker.com` does not, and a client that decodes before
+  resolving reads `/\attacker.com`, which the WHATWG URL Standard parses as `//attacker.com` -- a
+  foreign origin. A percent-encoded `/` is the same class from the other side: it hides a `..`
+  traversal from the dot-segment test, which splits on the literal `/` only.
+* The query and fragment are *not* covered by that refusal: they are carried verbatim, and a separator
+  after the `?` or `#` cannot form an authority, so `Location: /app1/orders/login?next=%2Fhome` still
+  maps to `/api/orders/login?next=%2Fhome`.
 
 With the alias `APP1=https://app1.internal:8443/app1` and `upstream.path: /orders` on
 `path_prefix: /api/orders`, the effective base path is `/app1/orders`: an upstream

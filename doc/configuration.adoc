@@ -2413,8 +2413,9 @@ value, or an absolute URI whose scheme, host and effective port equal the route 
 equals the effective upstream base path (alias base path + `upstream.path`) or continues it on a
 segment boundary, is rewritten to the route's match key plus the remainder, emitted as a
 gateway-relative path with query and fragment kept verbatim. A foreign origin, a scheme-relative
-`//host` value, an unparseable value and a path outside the effective base path are relayed
-unchanged. It is valid on `http` and `graphql` routes; declaring it on a `grpc` or `websocket` route
+`//host` value, an unparseable value, a path outside the effective base path, and a path carrying a
+dot segment or an ambiguous separator (a backslash, or a percent-encoded `/` or `\`, either case) are
+relayed unchanged. It is valid on `http` and `graphql` routes; declaring it on a `grpc` or `websocket` route
 fails the boot. See link:user/endpoint-routes.adoc#_rewrite_location[Rewriting upstream `Location`
 headers].
 
