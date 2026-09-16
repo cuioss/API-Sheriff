@@ -85,8 +85,22 @@ import org.junit.jupiter.api.Test;
  * {@code Secure} or {@code __Host-} rule (see {@link BffKeycloakLoginFlow}'s LIMITATION note). The
  * size assertion above is the one narrow deliverability check available at this layer — it measures
  * what the gateway <em>emits</em>, never what a browser <em>keeps</em>. It also does not exercise the
- * {@code FAILED} refresh branch, refresh-token reuse or family revocation, concurrent requests
+ * {@code FAILED} refresh branch — an IdP-rejected refresh token ending the session is proven in server
+ * mode by {@code BffTokenRefreshIT}, which pins it to the {@code credential-rejected} disposition — nor a
+ * replayed refresh token or a targeted revocation of one refresh grant, which {@code BffRefreshReuseIT}
+ * covers against the realm's strict refresh-token rotation. Nor does it exercise concurrent requests
  * coalescing onto one single-flight refresh, or a refresh racing the session's absolute deadline.
+ * <p>
+ * <strong>Strict rotation and this suite.</strong> The {@code integration} realm enforces strict
+ * refresh-token rotation ({@code revokeRefreshToken: true}, {@code refreshTokenMaxReuse: 0}), so every
+ * refresh token here is single-use and a second redemption would be refused with {@code invalid_grant}.
+ * No test redeems one twice: each test logs in afresh and drives at most one refresh, and the one test
+ * that makes a request after the refresh replays the <em>re-sealed</em> cookie, whose rotated refresh
+ * token is untouched, rather than the login cookie whose token the refresh already spent. A test that
+ * replayed the login cookie after a rotation would redeem a spent token and fail for that reason, not
+ * for the re-seal under test. This suite shares {@link BffKeycloakLoginFlow#REFRESH_USERNAME} with
+ * {@code BffTokenRefreshIT}, whose failure legs end every session of that user; that is safe only
+ * because Failsafe runs the IT classes one at a time (see {@code BffTokenRefreshIT}).
  * <p>
  * <strong>Timing.</strong> The waits are wall-clock and deliberate: the property under test is
  * defined in elapsed time against a token lifespan, so there is no state to poll for.

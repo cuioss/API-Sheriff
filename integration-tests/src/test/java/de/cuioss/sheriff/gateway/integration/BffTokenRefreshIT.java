@@ -22,7 +22,11 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
@@ -58,14 +62,33 @@ import org.junit.jupiter.api.Test;
  *       continuity: a session that merely still works proves only that it was not destroyed, which is
  *       equally true of {@code CURRENT}.</li>
  *   <li>{@code FAILED} — after the IdP revokes the session, a mediated call once the window has
- *       opened is rejected as unauthenticated and the session cookie is cleared.</li>
+ *       opened is rejected as unauthenticated and the session cookie is cleared. The rejection is
+ *       pinned to its <em>named reason</em>: the admin logout makes Keycloak answer the refresh
+ *       grant with {@code invalid_grant}, the engine classifies that as {@code CREDENTIAL_REJECTED},
+ *       and the refresh instance's container log must gain a WARN {@code ApiSheriff-111} line with
+ *       reason {@code credential-rejected} for the request under test. A {@code 401} or {@code 302}
+ *       alone would also be produced by a session the gateway lost for any other reason, so without
+ *       the log line the leg would be green without proving which disposition ran.</li>
  * </ul>
  * <p>
- * <strong>What this suite does NOT prove.</strong> It does not exercise refresh-token reuse or
- * family revocation, cookie-mode re-seal on rotation, a refresh racing session expiry, concurrent
- * requests coalescing onto one single-flight refresh, or an IdP returning a failure other than
- * {@code invalid_grant}. It also asserts nothing about browser cookie policy — it replays a cookie
+ * <strong>What this suite does NOT prove.</strong> It does not exercise a replayed refresh token or
+ * a targeted revocation of one refresh grant — those are {@code BffRefreshReuseIT}'s, which drives
+ * the realm's strict refresh-token rotation directly. It does not exercise cookie-mode re-seal on
+ * rotation ({@code BffCookieRefreshIT}), a refresh racing session expiry, concurrent requests
+ * coalescing onto one single-flight refresh, or an IdP refusal other than {@code invalid_grant}: the
+ * pre-redemption back-off, the redeemed-response and the persist-failure dispositions are proven
+ * at unit level only. It also asserts nothing about browser cookie policy — it replays a cookie
  * map, exactly as {@link BffKeycloakLoginFlow} documents.
+ * <p>
+ * <strong>Why the realm-wide admin logout is safe to use here.</strong> The {@code FAILED} legs end
+ * <em>every</em> Keycloak session of {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, which
+ * {@code BffCookieRefreshIT} logs in as too. The two suites cannot overlap: the
+ * {@code integration-tests} Failsafe execution declares no {@code forkCount} (so the default of one
+ * fork at a time applies), sets {@code reuseForks=false}, and configures no JUnit parallel execution,
+ * so test classes run strictly one after another and every test logs in afresh. A logout therefore
+ * only ever ends sessions this suite created itself. Enabling parallel IT execution would break that
+ * premise, and the fix then belongs in the tests (a distinct user per suite), never in the realm's
+ * rotation settings.
  * <p>
  * <strong>The defect this suite reproduced, and its cause.</strong> Run against the live stack on
  * 2026-09-07 ({@code verify -Pintegration-tests}, 130 integration tests, of which the five below),
@@ -96,16 +119,21 @@ import org.junit.jupiter.api.Test;
  * <strong>Fixed.</strong> The engine gained a third {@code refreshToken} component on
  * {@code AuthenticationResult} and populates it from the token response inside {@code exchange()};
  * the gateway now threads it into the created {@code SessionRecord}, so the coordinator gets past
- * its null guard and the near-expiry path runs. The five assertions below are unchanged — they
- * asserted the specified behaviour throughout, never the observed one, so they became the
- * regression guard for the fix without a line of them moving.
+ * its null guard and the near-expiry path runs. The five tests asserted the specified behaviour
+ * throughout, never the observed one, so they became the regression guard for the fix without a
+ * line of them moving. The two {@code FAILED} legs were later tightened to also require the
+ * {@code credential-rejected} log line, once refresh failures began to be disposed per kind.
  * <p>
- * <strong>Bounding the result.</strong> Exercised: the near-expiry trigger on a server-mode session
- * with a 45-second access token; IdP-side session invalidation via admin logout; the XHR and
- * navigation challenge legs. NOT exercised, and therefore neither confirmed nor disproved:
- * refresh-token reuse and family revocation, cookie-mode re-seal on rotation, a refresh racing
- * session expiry, concurrent requests coalescing onto one single-flight refresh, and an IdP
- * returning a failure other than {@code invalid_grant}.
+ * <strong>Bounding the result.</strong> Exercised, against a realm enforcing strict refresh-token
+ * rotation ({@code revokeRefreshToken: true}, {@code refreshTokenMaxReuse: 0}): the near-expiry
+ * trigger on a server-mode session with a 45-second access token; IdP-side session invalidation via
+ * admin logout, disposed as {@code credential-rejected}; the XHR and navigation challenge legs. That
+ * the {@code CURRENT} and {@code REFRESHED} legs stay green under strict rotation is itself evidence
+ * that none of them redeems one refresh token twice. NOT exercised here, and therefore neither
+ * confirmed nor disproved by this suite: a replayed refresh token and targeted grant revocation
+ * (see {@code BffRefreshReuseIT}), cookie-mode re-seal on rotation, a refresh racing session expiry,
+ * concurrent requests coalescing onto one single-flight refresh, and an IdP refusal other than
+ * {@code invalid_grant}.
  * <p>
  * <strong>Why this verdict could not be reached earlier.</strong> Until the failsafe include pattern
  * in {@code integration-tests/pom.xml} was corrected, the lifecycle-bound execution matched no test
@@ -148,6 +176,29 @@ class BffTokenRefreshIT {
      * would be a different failure than the refresh under test.
      */
     private static final int WAIT_INTO_REFRESH_WINDOW_SECONDS = 22;
+
+    /** The refresh instance's container log, written by compose into {@code test.log.dir}. */
+    private static final String REFRESH_INSTANCE_LOG_FILE = "quarkus-refresh.log";
+
+    /** The identifier of the WARN every session-ending refresh disposition records. */
+    private static final String SESSION_REFRESH_FAILED_IDENTIFIER = "ApiSheriff-111";
+
+    /**
+     * The bounded reason {@code ApiSheriff-111} renders when the IdP rejected the presented refresh
+     * token. Spelled out as it appears in the record's template — parenthesised — so the match
+     * cannot be satisfied by the other reasons ({@code redeemed-response-refused},
+     * {@code persist-failure}).
+     */
+    private static final String CREDENTIAL_REJECTED_REASON = "(credential-rejected)";
+
+    /**
+     * How long to wait for the WARN to reach the host-mounted log file. The record is written before
+     * the response is sent, but the bind mount can surface the append a moment later, so the read is
+     * retried briefly rather than taken once.
+     */
+    private static final long LOG_VISIBILITY_TIMEOUT_MILLIS = 5_000L;
+
+    private static final long LOG_POLL_INTERVAL_MILLIS = 250L;
 
     @Test
     @DisplayName("the refresh-client access token is minted with the declared 45-second lifespan")
@@ -214,6 +265,7 @@ class BffTokenRefreshIT {
         // CURRENT without ever contacting the IdP, so the request would still succeed. The wait is
         // what forces the refresh attempt that then fails.
         sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+        long rejectionsBefore = credentialRejectedRecordCount();
         Response response = BffKeycloakLoginFlow
                 .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
                 .header("Accept", "application/json")
@@ -225,6 +277,7 @@ class BffTokenRefreshIT {
         assertTrue(response.contentType().contains("application/problem+json"),
                 "a failed refresh on a non-navigation request must render RFC 9457 problem+json");
         assertClearsSessionCookie(response);
+        assertCredentialRejectedRecordedAfter(rejectionsBefore);
     }
 
     @Test
@@ -234,6 +287,7 @@ class BffTokenRefreshIT {
         revokeSessionsOf(BffKeycloakLoginFlow.REFRESH_USERNAME);
 
         sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+        long rejectionsBefore = credentialRejectedRecordCount();
         Response response = BffKeycloakLoginFlow
                 .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
                 .header("Accept", "text/html")
@@ -247,6 +301,7 @@ class BffTokenRefreshIT {
         assertTrue(location.contains("/protocol/openid-connect/auth"),
                 "the navigation challenge must redirect into the OIDC authorization endpoint");
         assertClearsSessionCookie(response);
+        assertCredentialRejectedRecordedAfter(rejectionsBefore);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -331,6 +386,59 @@ class BffTokenRefreshIT {
         }
         String lower = remainder.toLowerCase(Locale.ROOT);
         return lower.contains("max-age=0") || lower.contains("expires=thu, 01 jan 1970");
+    }
+
+    /**
+     * Counts the {@code ApiSheriff-111} lines carrying reason {@code credential-rejected} in the
+     * refresh instance's container log.
+     * <p>
+     * A count, not a presence check: both {@code FAILED} legs write to the same log, so a line the
+     * earlier leg left behind would satisfy a presence check for the later one. Comparing the count
+     * before and after the request under test attributes the record to that request.
+     */
+    private static long credentialRejectedRecordCount() {
+        return readRefreshInstanceLog().lines()
+                .filter(line -> line.contains(SESSION_REFRESH_FAILED_IDENTIFIER))
+                .filter(line -> line.contains(CREDENTIAL_REJECTED_REASON))
+                .count();
+    }
+
+    /**
+     * Asserts that the request just made recorded a new {@code credential-rejected} refresh failure,
+     * so the {@code FAILED} leg is green for the named disposition rather than for any session loss.
+     */
+    @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded wait for a bind-mounted log append
+    private static void assertCredentialRejectedRecordedAfter(long countBefore) {
+        long deadline = System.currentTimeMillis() + LOG_VISIBILITY_TIMEOUT_MILLIS;
+        long observed = credentialRejectedRecordCount();
+        while (observed <= countBefore && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(LOG_POLL_INTERVAL_MILLIS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while waiting for the refresh log record", interrupted);
+            }
+            observed = credentialRejectedRecordCount();
+        }
+        long finalObserved = observed;
+        assertTrue(finalObserved > countBefore,
+                () -> "the IdP-side revocation must be disposed as CREDENTIAL_REJECTED: expected a new WARN "
+                        + SESSION_REFRESH_FAILED_IDENTIFIER + " line with reason " + CREDENTIAL_REJECTED_REASON
+                        + " in " + REFRESH_INSTANCE_LOG_FILE + " (count before the request " + countBefore
+                        + ", after " + finalObserved + "); without it the 401/302 proves only that the "
+                        + "session was lost, not which refresh disposition ended it");
+    }
+
+    private static String readRefreshInstanceLog() {
+        Path logFile = Path.of(System.getProperty("test.log.dir", "target/quarkus-logs"))
+                .resolve(REFRESH_INSTANCE_LOG_FILE);
+        assertTrue(Files.isRegularFile(logFile),
+                () -> "expected the refresh instance log at " + logFile.toAbsolutePath());
+        try {
+            return Files.readString(logFile, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + logFile, e);
+        }
     }
 
     /**
