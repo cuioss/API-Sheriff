@@ -856,7 +856,7 @@ class TokenRefreshCoordinatorTest {
                         () -> assertTrue(TestLoggerFactory.getTestHandler().resolveLogMessages(TestLogLevel.ERROR)
                                 .isEmpty(), "a failing revocation records no ERROR"),
                         () -> assertTrue(TestLoggerFactory.getTestHandler().resolveLogMessages(TestLogLevel.WARN)
-                                .stream().allMatch(entry -> String.valueOf(entry.getMessage()).contains(REFRESH_FAILED_ID)),
+                                        .stream().allMatch(entry -> String.valueOf(entry.getMessage()).contains(REFRESH_FAILED_ID)),
                                 "the only WARN is the session end's own ApiSheriff-111"));
             }
         }
@@ -978,7 +978,7 @@ class TokenRefreshCoordinatorTest {
     }
 
     private record BlockedRevocationRun(RefreshOutcome.Kind leader, RefreshOutcome.Kind waiter,
-            boolean revocationStarted, boolean stillBlockedWhenObserved, boolean revocationFinished) {
+    boolean revocationStarted, boolean stillBlockedWhenObserved, boolean revocationFinished) {
 
         BlockedRevocationRun(RefreshOutcome leader, RefreshOutcome waiter, boolean revocationStarted,
                 boolean stillBlockedWhenObserved, boolean revocationFinished) {
