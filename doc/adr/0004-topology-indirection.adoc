@@ -107,9 +107,16 @@ supersedes that one bullet: `route.upstream.path` is now *appended* to the alias
 on exactly one `/`.
 
 ----
-effective base path = stripTrailingSlash(alias base path) + "/" + stripLeadingSlash(route.upstream.path)
+effective base path = stripTrailingSlashes(alias base path) + "/" + stripLeadingSlashes(route.upstream.path)
+                      -- both helpers remove REPEATED slashes at the seam, so exactly one "/" survives
 forward URI         = stripTrailingSlash(effective base path) + <request-path remainder after the match key>
 ----
+
+The two `*Slashes` helpers are plural on purpose: `RouteTableBuilder` strips *all* trailing slashes
+from the alias base path and *all* leading slashes from `route.upstream.path` before joining, so an
+alias ending `/anything//` and an `upstream.path` of `//graphql` still join to `/anything/graphql`
+rather than to a doubled seam. `RouteTableBuilderTest.shouldJoinOnExactlyOneSlash` is the assertion
+that covers exactly that pair.
 
 A blank or absent `route.upstream.path` keeps the alias base path unchanged, exactly as before.
 

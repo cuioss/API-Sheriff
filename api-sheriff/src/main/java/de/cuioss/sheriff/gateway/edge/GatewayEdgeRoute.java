@@ -154,7 +154,8 @@ import org.jspecify.annotations.Nullable;
  *       streamed response relay for a proxy route, the buffered governed asset response for an
  *       asset route, or — for a redirect route — the {@link RedirectStage} answer (configured
  *       status, {@code Location}, the accumulated stage headers, {@code Cache-Control: no-store}
- *       when the route is authenticated or the answer carries a {@code Set-Cookie}, empty body)
+ *       when the route is authenticated or the answer carries a {@code Set-Cookie}, {@code Vary}
+ *       naming the route's {@code match.headers} matchers, empty body)
  *       written without consuming the forward policy or contacting any upstream. A redirect is
  *       answered only after stage 4, so an unauthenticated request under an authenticated anchor is
  *       challenged before the location is disclosed.</li>
@@ -189,6 +190,10 @@ public class GatewayEdgeRoute {
     private static final String CACHE_CONTROL_HEADER = "Cache-Control";
     /** The {@code Cache-Control} value forced on an authenticated or cookie-bearing redirect answer. */
     private static final String NO_STORE = "no-store";
+    /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
+    private static final String VARY_HEADER = "Vary";
+    /** The separator RFC 9110 section 12.5.5 uses between {@code Vary} field names. */
+    private static final String VARY_SEPARATOR = ", ";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final String CONNECTION_HEADER = "Connection";
     private static final String CONNECTION_CLOSE = "close";
@@ -811,7 +816,8 @@ public class GatewayEdgeRoute {
             RedirectConfig redirect = route.getRedirect();
             if (redirect != null) {
                 writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query(),
-                        route.getEffectiveAuth(), request.responseSetCookies()));
+                        route.getEffectiveAuth(), request.responseSetCookies(),
+                        route.getMatcher().matchHeaderNames()));
                 return;
             }
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
@@ -1149,13 +1155,15 @@ public class GatewayEdgeRoute {
      * Writes a redirect route's terminal answer on the event loop: the configured status, the
      * accumulated stage headers and {@code Set-Cookie} lines, the gateway-owned
      * {@code Cache-Control: no-store} when the answer is {@linkplain RedirectStage.Answer#noStore()
-     * uncacheable}, then the {@code Location} — written last so no stage header can displace it —
-     * and an empty body.
+     * uncacheable} and the gateway-owned {@code Vary} when the answer names
+     * {@linkplain RedirectStage.Answer#vary() varying request headers}, then the {@code Location} —
+     * written last so no stage header can displace it — and an empty body.
      * <p>
-     * Both gateway-owned headers are written <em>after</em> the stage headers, so neither can be
-     * displaced by an accumulated value of the same name. {@code Cache-Control} is not a
-     * gateway-owned security header, so it carries no {@code header_modes} entry and the
-     * set/default precedence does not apply to it.
+     * All three gateway-owned headers are written <em>after</em> the stage headers, so none can be
+     * displaced by an accumulated value of the same name. Neither {@code Cache-Control} nor
+     * {@code Vary} is a gateway-owned security header, so neither carries a {@code header_modes}
+     * entry and the set/default precedence does not apply to them — and a redirect answer has no
+     * origin response to defer to in any case.
      */
     private void writeRedirect(RoutingContext ctx, PipelineRequest request, RedirectStage.Answer answer) {
         Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
@@ -1170,6 +1178,9 @@ public class GatewayEdgeRoute {
             applyStageSetCookies(response, stageSetCookies);
             if (answer.noStore()) {
                 response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
+            }
+            if (!answer.vary().isEmpty()) {
+                response.putHeader(VARY_HEADER, String.join(VARY_SEPARATOR, answer.vary()));
             }
             response.putHeader(LOCATION_HEADER, answer.location());
             response.end();
