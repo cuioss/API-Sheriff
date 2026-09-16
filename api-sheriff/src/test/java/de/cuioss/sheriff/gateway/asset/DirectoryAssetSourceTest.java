@@ -581,8 +581,7 @@ class DirectoryAssetSourceTest {
     }
 
     private DirectoryAssetSource cappedSource(long maxBytes, DirectoryAssetSource.Opener opener) {
-        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null, new PathConfinement(), maxBytes,
-                Map.of(), opener);
+        return cappedSource(maxBytes).withOpener(opener);
     }
 
     @Test

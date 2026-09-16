@@ -144,24 +144,11 @@ public final class LocationRewriter {
         } catch (URISyntaxException _) {
             return location;
         }
-        if (uri.isOpaque() || !pointsAtUpstream(uri)) {
+        Optional<String> candidate = candidatePath(uri);
+        if (candidate.isEmpty()) {
             return location;
         }
-        String rawPath = uri.getRawPath();
-        if (rawPath == null || rawPath.isEmpty()) {
-            // An empty path means the ORIGIN ROOT only when the reference is absolute. Without a
-            // scheme it is a relative reference whose empty path RFC 3986 section 5.3 resolves
-            // against the current request path, so `?page=2`, `#section` and the empty reference
-            // all keep the browser where it is. Synthesizing "/" here would map them onto the match
-            // key instead — turning `?page=2` into `/api/?page=2` and moving the redirect to a
-            // different address than the upstream named.
-            if (uri.getScheme() == null) {
-                return location;
-            }
-            rawPath = "/";
-        } else if (!rawPath.startsWith("/")) {
-            return location;
-        }
+        String rawPath = candidate.get();
         if (LocationPathReview.refusalReason(rawPath).isPresent()) {
             return location;
         }
@@ -182,6 +169,46 @@ public final class LocationRewriter {
         if (exactMatch && !mapped.equals(matchKey)) {
             return location;
         }
+        return withQueryAndFragment(mapped, uri);
+    }
+
+    /**
+     * The path a {@code Location} value offers as a mapping candidate — the first of the refusals
+     * {@link #rewrite} applies in order, and the only one that decides <em>whether the value names a
+     * path at all</em> rather than whether that path is safe. Empty means relay the value unchanged:
+     * it is opaque, points somewhere other than the route upstream, is a relative-path reference, or
+     * is a scheme-less reference with an empty path.
+     *
+     * @param uri the parsed {@code Location} value
+     * @return the path-absolute candidate path, or empty when the value is not a candidate
+     */
+    private Optional<String> candidatePath(URI uri) {
+        if (uri.isOpaque() || !pointsAtUpstream(uri)) {
+            return Optional.empty();
+        }
+        String rawPath = uri.getRawPath();
+        if (rawPath != null && !rawPath.isEmpty()) {
+            return rawPath.startsWith("/") ? Optional.of(rawPath) : Optional.empty();
+        }
+        // An empty path means the ORIGIN ROOT only when the reference is absolute. Without a
+        // scheme it is a relative reference whose empty path RFC 3986 section 5.3 resolves
+        // against the current request path, so `?page=2`, `#section` and the empty reference
+        // all keep the browser where it is. Synthesizing "/" here would map them onto the match
+        // key instead — turning `?page=2` into `/api/?page=2` and moving the redirect to a
+        // different address than the upstream named.
+        return uri.getScheme() == null ? Optional.empty() : Optional.of("/");
+    }
+
+    /**
+     * Reassembles the emitted value once every refusal has passed. The query and fragment are carried
+     * over verbatim and are deliberately not reviewed — a relative reference's authority is decided
+     * before the {@code ?}, so neither can form one.
+     *
+     * @param mapped the reviewed gateway-relative path
+     * @param uri    the parsed {@code Location} value the query and fragment come from
+     * @return {@code mapped} carrying the upstream value's query and fragment
+     */
+    private static String withQueryAndFragment(String mapped, URI uri) {
         StringBuilder rewritten = new StringBuilder(mapped);
         String rawQuery = uri.getRawQuery();
         if (rawQuery != null) {

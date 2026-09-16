@@ -125,8 +125,26 @@ class ConfigValidatorRedirectTest {
     @DisplayName("Open-redirect review without allow_external")
     class GatewayPathReview {
 
+        /**
+         * Every location spelling the review must refuse, in two groups that share one body.
+         * <p>
+         * The first group is the single-decoding set: a scheme-relative prefix, a backslash in either
+         * spelling, a percent-encoded separator, a dot segment, a foreign or non-HTTP absolute URI, a
+         * scheme-less host, the empty value, and a path carrying whitespace.
+         * <p>
+         * The second group is the class the substring tests this review used to carry could not see,
+         * now refused because the path portion is handed to {@code LocationPathReview} and through it
+         * to the {@code cui-http} {@code URL_PATH} pipeline. {@code %252f} is not the {@code %2f} the
+         * encoded-separator test looks for and {@code %252e} is not the {@code %2e} the dot-segment
+         * test recognizes, so every value in that group used to be admitted at boot.
+         * <p>
+         * They are one test rather than two because the assertion is identical — the same refusal,
+         * about the same production path — and a failure is identified by the offending value in the
+         * case name, never by which group's method held it.
+         */
         @ParameterizedTest(name = "refuses {0}")
         @ValueSource(strings = {
+                // Single-decoding spellings
                 "//evil.example",
                 "//evil.example/path",
                 "/\\evil.example",
@@ -146,7 +164,14 @@ class ConfigValidatorRedirectTest {
                 "javascript:alert(1)",
                 "",
                 "/a b",
-                "/a\tb"
+                "/a\tb",
+                // Double-encoded or malformed escapes the single-decoding spellings above miss
+                "/%252F%252Fevil.example",
+                "/%252f%252fevil.example",
+                "/a/%252f..%252fadmin",
+                "/a/%252e%252e/b",
+                "/a%00b",
+                "/a%c0%afb"
         })
         @DisplayName("Should refuse every location spelling that can leave the gateway origin")
         void shouldRefuseOpenRedirectSpellings(String location) {
@@ -193,31 +218,6 @@ class ConfigValidatorRedirectTest {
             List<ConfigError> errors = validate(redirectRoute(routeId(), redirect(location, true, false)).build());
 
             assertTrue(errors.isEmpty(), () -> "gateway path '" + location + "' should be admitted, got: " + errors);
-        }
-
-        /**
-         * The class the substring tests this review used to carry could not see, now refused because
-         * the path portion is handed to {@code LocationPathReview} and through it to the
-         * {@code cui-http} {@code URL_PATH} pipeline. {@code %252f} is not the {@code %2f} the
-         * encoded-separator test looks for and {@code %252e} is not the {@code %2e} the dot-segment
-         * test recognizes, so every value below used to be admitted at boot.
-         */
-        @ParameterizedTest(name = "refuses {0}")
-        @ValueSource(strings = {
-                "/%252F%252Fevil.example",
-                "/%252f%252fevil.example",
-                "/a/%252f..%252fadmin",
-                "/a/%252e%252e/b",
-                "/a%00b",
-                "/a%c0%afb"
-        })
-        @DisplayName("Should refuse a double-encoded or malformed escape the single-decoding tests miss")
-        void shouldRefuseDoubleEncodedSpellings(String location) {
-            String id = routeId();
-
-            List<ConfigError> errors = validate(redirectRoute(id, redirect(location, false, false)).build());
-
-            assertRefused(errors, "route '%s' redirect location".formatted(id));
         }
 
         @Test
