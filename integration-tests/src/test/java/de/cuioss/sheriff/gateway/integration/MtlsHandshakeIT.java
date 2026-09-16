@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
@@ -85,8 +86,18 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
         return Integer.parseInt(System.getProperty("test.mtls.port", "10443"));
     }
 
-    /** Read timeout on every handshake socket; bounds both the handshake and the post-refusal read. */
+    /**
+     * Read timeout on every handshake socket. It bounds every blocking read — the handshake records the
+     * client waits for and the post-refusal application-data probe — but not connection establishment,
+     * which {@link #CONNECT_TIMEOUT_MILLIS} bounds. No overall watchdog closes the socket on a deadline:
+     * the client's own TLS flight is a few kilobytes against a loopback socket buffer far larger, so a
+     * handshake write cannot block, and a scheduled closer would add concurrency to a test whose
+     * refusal evidence depends on a deterministic sequence.
+     */
     private static final int SO_TIMEOUT_MILLIS = 15_000;
+
+    /** Connect timeout for every handshake socket; bounds establishing the TCP connection to the listener. */
+    private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
 
     /**
      * How long a refused handshake waits for a completion notification that must never arrive. The JDK
@@ -264,15 +275,21 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
      * server certificate is trust-all (the stack's self-signed material); only the CLIENT-auth outcome
      * is under test.
      * <p>
-     * A failure to connect at all propagates as a test error — an unreachable listener is not a
-     * handshake refusal. When the handshake throws, the socket is probed for application data before it
-     * is closed; the client itself never writes any.
+     * The socket is created unconnected so both timeouts are in force before any blocking call: the read
+     * timeout is set first, then the connection is established under {@link #CONNECT_TIMEOUT_MILLIS}. The
+     * peer is still named by the host name {@code localhost}, which the socket adopts as its peer host
+     * exactly as {@code createSocket("localhost", port)} did, so the handshake takes the same listener
+     * path (a dotless host name carries no SNI either way). A failure to connect at all — refused or
+     * timed out — propagates as a test error: an unreachable listener is not a handshake refusal. When
+     * the handshake throws, the socket is probed for application data before it is closed; the client
+     * itself never writes any.
      */
     private static HandshakeOutcome attemptHandshake(SSLContext context)
             throws IOException, InterruptedException {
         SSLSocketFactory factory = context.getSocketFactory();
-        try (SSLSocket socket = (SSLSocket) factory.createSocket("localhost", mtlsPort())) {
+        try (SSLSocket socket = (SSLSocket) factory.createSocket()) {
             socket.setSoTimeout(SO_TIMEOUT_MILLIS);
+            socket.connect(new InetSocketAddress("localhost", mtlsPort()), CONNECT_TIMEOUT_MILLIS);
             CountDownLatch completed = new CountDownLatch(1);
             socket.addHandshakeCompletedListener(event -> completed.countDown());
             IOException failure = null;
