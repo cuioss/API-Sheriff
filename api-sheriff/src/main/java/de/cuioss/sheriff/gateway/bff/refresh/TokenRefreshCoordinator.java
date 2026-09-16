@@ -114,7 +114,12 @@ import org.jspecify.annotations.Nullable;
  * window. The per-session windows are bounded ({@link #MAX_BACKOFF_ENTRIES}); once that bound is
  * saturated, the sessions without their own window share one coarse overflow window instead, so an
  * outage large enough to fill the bound is still throttled — at the cost that such a session may see
- * its refresh deferred for up to the fixed back-off even if it has not failed itself.
+ * its refresh deferred for up to the fixed back-off even if it has not failed itself. Once an overflow
+ * window elapses, exactly one untracked session claims it atomically and probes the identity provider;
+ * every other untracked session is deferred with no engine call and no record, so the untracked
+ * sessions together make one attempt per window however many arrive at once. A probe the provider
+ * processes, or one that fails but can be tracked on its own window, releases the claim; a probe that
+ * fails while the map is still saturated keeps the window in force.
  * <p>
  * <strong>On-failure semantics.</strong> A {@link RefreshOutcome#failed() failed} outcome means the
  * session has already been destroyed; an {@link RefreshOutcome#unavailable() unavailable} outcome
@@ -135,7 +140,8 @@ public final class TokenRefreshCoordinator {
      * and deliberately short: while fewer than {@link #MAX_BACKOFF_ENTRIES} sessions are backing off it
      * bounds the engine calls and the warning records an identity-provider outage produces to one per
      * session per window, and beyond that bound to one per overflow window for all the untracked
-     * sessions together, while a transient fault still heals within seconds. Not configurable.
+     * sessions together — the single session that claims the elapsed window's probe — while a transient
+     * fault still heals within seconds. Not configurable.
      */
     static final Duration PRE_REDEMPTION_RETRY_BACKOFF = Duration.ofSeconds(5);
 
@@ -143,9 +149,12 @@ public final class TokenRefreshCoordinator {
      * The upper bound on sessions carrying their own pending back-off. Once reached, expired entries are
      * pruned; when the map is still full, the failing session is not given an entry — instead one coarse
      * overflow window of {@link #PRE_REDEMPTION_RETRY_BACKOFF} is opened, and every session without its
-     * own entry makes no engine call and records nothing until it closes. The throttle therefore degrades
-     * rather than disappears, and memory stays bounded — one entry per tracked session plus a single
-     * instant — under any number of failing sessions.
+     * own entry makes no engine call and records nothing until it closes. When it closes, one untracked
+     * session claims the probe for the next window and every other one keeps waiting; the claim is
+     * released once the identity provider processes a grant or the probe can be tracked on its own window,
+     * and kept while the map stays saturated. The throttle therefore degrades rather than disappears, and
+     * memory stays bounded — one entry per tracked session plus a single instant — under any number of
+     * failing sessions.
      * <p>
      * The accepted trade: while the map is saturated, the untracked sessions share that one window, so a
      * session that has not failed itself may also see its refresh deferred for up to the fixed back-off;
@@ -183,7 +192,10 @@ public final class TokenRefreshCoordinator {
     /**
      * The coarse back-off window shared by every session without its own {@link #retryNotBefore} entry,
      * opened when a failing session could not be recorded because the map held
-     * {@link #MAX_BACKOFF_ENTRIES} unexpired windows. {@link Instant#MIN} while no window was ever opened.
+     * {@link #MAX_BACKOFF_ENTRIES} unexpired windows. An elapsed window is claimed by moving it, with a
+     * compare-and-set against the exact instance read, to the claiming probe's own window; the claim is
+     * released by a compare-and-set from that claimed instance back to {@link Instant#MIN}.
+     * {@link Instant#MIN} while no window is open — never opened, or released.
      */
     private final AtomicReference<Instant> overflowNotBefore = new AtomicReference<>(Instant.MIN);
 
@@ -289,8 +301,10 @@ public final class TokenRefreshCoordinator {
             LOGGER.debug("Refresh refused locally: the presented refresh token belongs to an already-ended session");
             return Disposition.of(RefreshOutcome.failed());
         }
-        if (backingOff(sessionId, now)) {
-            // A pre-redemption failure is still backing off — no engine call, same disposition.
+        Admission admission = admit(sessionId, now);
+        if (!admission.admitted()) {
+            // A pre-redemption failure is still backing off, or another untracked session holds this
+            // overflow window's probe — no engine call, same disposition.
             return Disposition.of(keptSession(latest, now));
         }
         RotationResult rotation;
@@ -300,8 +314,10 @@ public final class TokenRefreshCoordinator {
         try {
             rotation = refreshExchange.exchange(presentedRefreshToken);
         } catch (RuntimeException refreshFailure) {
-            return disposeRefusal(sessionId, latest, presentedRefreshToken, refreshFailure, now);
+            return disposeRefusal(sessionId, latest, presentedRefreshToken, refreshFailure, now, admission);
         }
+        // The identity provider processed the grant: whatever follows, the outage the probe tested is over.
+        releaseProbe(admission);
         // The presented token is already redeemed here, so a persist failure cannot keep the session.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
@@ -320,56 +336,101 @@ public final class TokenRefreshCoordinator {
     }
 
     private Disposition disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
-            RuntimeException refreshFailure, Instant now) {
+            RuntimeException refreshFailure, Instant now, Admission admission) {
         RefreshFailureClassification classification = RefreshFlow.classify(refreshFailure);
         // A switch expression, not a statement: javac rejects it the moment the engine adds a fourth kind.
         return switch (classification.kind()) {
-            case PRE_REDEMPTION -> Disposition.of(backOff(sessionId, latest, refreshFailure, now));
-            case CREDENTIAL_REJECTED -> endSession(sessionId, latest, now, refreshFailure,
-                    REASON_CREDENTIAL_REJECTED, null);
-            case REDEEMED -> endSession(sessionId, latest, now, refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
-                    liveRefreshToken(Objects.requireNonNull(classification.redemption(), "redemption"),
-                            presentedRefreshToken));
+            case PRE_REDEMPTION -> Disposition.of(backOff(sessionId, latest, refreshFailure, now, admission));
+            case CREDENTIAL_REJECTED -> {
+                releaseProbe(admission);
+                yield endSession(sessionId, latest, now, refreshFailure, REASON_CREDENTIAL_REJECTED, null);
+            }
+            case REDEEMED -> {
+                releaseProbe(admission);
+                yield endSession(sessionId, latest, now, refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
+                        liveRefreshToken(Objects.requireNonNull(classification.redemption(), "redemption"),
+                                presentedRefreshToken));
+            }
         };
     }
 
     private RefreshOutcome backOff(String sessionId, SessionRecord latest, RuntimeException refreshFailure,
-            Instant now) {
-        recordBackOff(sessionId, now.plus(PRE_REDEMPTION_RETRY_BACKOFF), now);
+            Instant now, Admission admission) {
+        if (!recordBackOff(sessionId, now.plus(PRE_REDEMPTION_RETRY_BACKOFF), now)) {
+            // The probe could be tracked on its own window, so the per-session windows govern again. When it
+            // opened or extended the overflow window instead, the claim simply stays in force as that window.
+            releaseProbe(admission);
+        }
         LOGGER.warn(refreshFailure, BffLogMessages.WARN.SESSION_REFRESH_DEFERRED,
                 PRE_REDEMPTION_RETRY_BACKOFF.toSeconds());
         return keptSession(latest, now);
     }
 
     /**
-     * Whether an attempt for this session is still inside a back-off window: its own window when it
-     * holds an entry, otherwise the shared overflow window recorded while the map was saturated. A
-     * session holding its own entry is governed by that entry alone.
+     * Decides whether this attempt may reach the engine. A session holding its own back-off entry is
+     * governed by that entry alone. A session without one proceeds with a single read while no overflow
+     * window is open, and is deferred while an overflow window is still in force. Once an overflow window
+     * has elapsed, exactly one untracked session claims the probe for it — atomically moving the window to
+     * {@code now} plus the back-off, compared against the exact instance just read — and every other
+     * untracked session is deferred with no engine call and no record. A probe that hangs past its claimed
+     * window lets the next session claim the next window, so attempts stay at one per window.
      */
-    private boolean backingOff(String sessionId, Instant now) {
+    private Admission admit(String sessionId, Instant now) {
         Instant own = retryNotBefore.get(sessionId);
         if (own != null) {
-            return now.isBefore(own);
+            return now.isBefore(own) ? Admission.BACKING_OFF : Admission.ADMITTED;
         }
-        return now.isBefore(overflowNotBefore.get());
+        while (true) {
+            Instant window = overflowNotBefore.get();
+            if (Instant.MIN.equals(window)) {
+                return Admission.ADMITTED;
+            }
+            if (now.isBefore(window)) {
+                return Admission.BACKING_OFF;
+            }
+            Instant claim = now.plus(PRE_REDEMPTION_RETRY_BACKOFF);
+            if (overflowNotBefore.compareAndSet(window, claim)) {
+                return Admission.probe(claim);
+            }
+            // Another session claimed, extended or released the window meanwhile — decide on its new value.
+        }
     }
 
-    private void recordBackOff(String sessionId, Instant notBefore, Instant now) {
+    /**
+     * Releases an overflow probe claim back to "no window open", but only from the exact claimed
+     * instance: a newer window that another failure or a later probe opened meanwhile is never erased.
+     */
+    private void releaseProbe(Admission admission) {
+        Instant claim = admission.probeClaim();
+        if (claim != null) {
+            overflowNotBefore.compareAndSet(claim, Instant.MIN);
+        }
+    }
+
+    /**
+     * Records a pre-redemption back-off for the session.
+     *
+     * @return {@code true} when the session could not be tracked on its own window and the shared overflow
+     *         window was used instead — the explicit signal a probe needs, because with an equal instant the
+     *         overflow reference does not change
+     */
+    private boolean recordBackOff(String sessionId, Instant notBefore, Instant now) {
         if (retryNotBefore.computeIfPresent(sessionId, (id, previous) -> notBefore) != null) {
             // Already tracked: the session's own window moves forward and takes no capacity.
-            return;
+            return false;
         }
         if (retryNotBefore.size() >= MAX_BACKOFF_ENTRIES) {
             retryNotBefore.values().removeIf(entry -> !now.isBefore(entry));
         }
         if (retryNotBefore.size() < MAX_BACKOFF_ENTRIES) {
             retryNotBefore.put(sessionId, notBefore);
-            return;
+            return false;
         }
         // Still saturated with unexpired windows: degrade to one coarse window shared by every session
         // without its own entry, rather than dropping the throttle for exactly the largest outages.
         overflowNotBefore.accumulateAndGet(notBefore, (current, candidate) ->
                 candidate.isAfter(current) ? candidate : current);
+        return true;
     }
 
     /**
@@ -505,6 +566,16 @@ public final class TokenRefreshCoordinator {
      * redemption, the one refresh token still live at the identity provider, revoked only after the
      * outcome has been published. {@link #toString()} never renders the token.
      */
+    private record Admission(boolean admitted, @Nullable Instant probeClaim) {
+
+        static final Admission ADMITTED = new Admission(true, null);
+        static final Admission BACKING_OFF = new Admission(false, null);
+
+        static Admission probe(Instant claim) {
+            return new Admission(true, claim);
+        }
+    }
+
     private record Disposition(RefreshOutcome outcome, @Nullable String liveRefreshToken) {
 
         static Disposition of(RefreshOutcome outcome) {

@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -39,6 +40,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -422,6 +424,7 @@ class TokenRefreshCoordinatorTest {
 
         private static final String SATURATING_PREFIX = "saturating-";
         private static final TransportException OUTAGE = new TransportException("Token endpoint returned HTTP 503");
+        private static final int PROBE_CONTENDERS = 8;
 
         private final AtomicInteger calls = new AtomicInteger();
         private InMemorySessionStore saturationStore;
@@ -543,6 +546,167 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, afterOwnWindow.kind()),
                     () -> assertEquals(callsForUntracked + 1, calls.get(),
                             "once its own window elapsed the tracked session attempts again, overflow window or not"));
+        }
+
+        @Test
+        @DisplayName("Should let exactly one of many concurrent untracked sessions probe an elapsed overflow window")
+        void shouldAdmitOneProbePerElapsedOverflowWindow() throws Exception {
+            CountDownLatch othersReturned = new CountDownLatch(PROBE_CONTENDERS - 1);
+            AtomicBoolean holdProbe = new AtomicBoolean();
+            AtomicBoolean holdExpired = new AtomicBoolean();
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+                calls.incrementAndGet();
+                if (holdProbe.get()) {
+                    holdExpired.set(!awaitQuietly(othersReturned));
+                }
+                throw OUTAGE;
+            });
+            saturate(coordinator);
+            refresh(coordinator, stored("overflowing"), NOW);
+            int callsAfterOverflow = calls.get();
+            Instant windowElapsed = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
+            List<SessionRecord> contenders = new ArrayList<>();
+            for (int i = 0; i < PROBE_CONTENDERS; i++) {
+                contenders.add(stored("contender-" + i));
+            }
+            TestLoggerFactory.getTestHandler().clearRecords();
+            holdProbe.set(true);
+
+            List<RefreshOutcome> outcomes = new ArrayList<>();
+            ExecutorService pool = Executors.newFixedThreadPool(PROBE_CONTENDERS);
+            try {
+                List<Future<RefreshOutcome>> futures = new ArrayList<>();
+                for (SessionRecord contender : contenders) {
+                    futures.add(pool.submit(() -> {
+                        try {
+                            return refresh(coordinator, contender, windowElapsed);
+                        } finally {
+                            othersReturned.countDown();
+                        }
+                    }));
+                }
+                for (Future<RefreshOutcome> future : futures) {
+                    outcomes.add(Awaits.connect(future, "a contending untracked refresh to complete"));
+                }
+            } finally {
+                pool.shutdownNow();
+            }
+
+            assertAll("the untracked sessions together make one attempt for the elapsed overflow window",
+                    () -> assertEquals(callsAfterOverflow + 1, calls.get(),
+                            "exactly one contender claims the probe and reaches the engine (probe hold expired: "
+                                    + holdExpired.get() + ")"),
+                    () -> assertTrue(outcomes.stream().allMatch(o -> o.kind() == RefreshOutcome.Kind.DEFERRED),
+                            "every contender keeps its session with a still-valid access token: " + outcomes),
+                    () -> assertTrue(contenders.stream().allMatch(
+                            c -> saturationStore.resolve(c.sessionId(), windowElapsed).isPresent()),
+                            "no contender's session was ended"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
+        }
+
+        @Test
+        @DisplayName("Should release the probe claim once the identity provider processes the probe's grant")
+        void shouldReleaseProbeClaimOnRecovery() {
+            AtomicBoolean recovered = new AtomicBoolean();
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+                calls.incrementAndGet();
+                if (recovered.get()) {
+                    return rotation();
+                }
+                throw OUTAGE;
+            });
+            saturate(coordinator);
+            refresh(coordinator, stored("overflowing"), NOW);
+            Instant windowElapsed = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
+            recovered.set(true);
+            int callsBeforeProbe = calls.get();
+
+            RefreshOutcome probe = refresh(coordinator, stored("probe"), windowElapsed);
+            RefreshOutcome next = refresh(coordinator, stored("next"), windowElapsed);
+
+            assertAll("a recovered provider stops serializing the untracked sessions",
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, probe.kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, next.kind(),
+                            "the next untracked session is not deferred behind a released claim"),
+                    () -> assertEquals(callsBeforeProbe + 2, calls.get(),
+                            "both the probe and the next untracked session reach the engine"));
+        }
+
+        @Test
+        @DisplayName("Should release the probe claim when the failing probe can be tracked on its own window")
+        void shouldReleaseProbeClaimWhenProbeIsTracked() {
+            TokenRefreshCoordinator coordinator = failingCoordinator(NEAR);
+            saturate(coordinator);
+            refresh(coordinator, stored("overflowing"), NOW);
+            Instant windowElapsed = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
+            int callsBeforeProbe = calls.get();
+
+            RefreshOutcome probe = refresh(coordinator, stored("probe"), windowElapsed);
+            RefreshOutcome next = refresh(coordinator, stored("next"), windowElapsed);
+
+            assertAll("the saturating windows expired, so the per-session windows govern again",
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, probe.kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, next.kind()),
+                    () -> assertEquals(callsBeforeProbe + 2, calls.get(),
+                            "the next untracked session is governed by no window and reaches the engine"));
+        }
+
+        @Test
+        @DisplayName("Should keep the overflow window after a probe that fails while the map is still saturated, even at an equal instant")
+        void shouldRetainOverflowWindowAfterSaturatedProbeFailure() {
+            TokenRefreshCoordinator coordinator = failingCoordinator(NEAR);
+            saturate(coordinator);
+            refresh(coordinator, stored("overflowing"), NOW);
+            Instant windowElapsed = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
+            refailTracked(coordinator, windowElapsed);
+            int callsBeforeProbe = calls.get();
+
+            RefreshOutcome probe = refresh(coordinator, stored("probe"), windowElapsed);
+            int callsAfterProbe = calls.get();
+            RefreshOutcome sameInstant = refresh(coordinator, stored("same-instant"), windowElapsed);
+            RefreshOutcome insideWindow = refresh(coordinator, stored("inside-window"), windowElapsed.plusSeconds(3));
+
+            assertAll("the probe's failure, recorded at the claimed instant, keeps the overflow window in force",
+                    () -> assertEquals(callsBeforeProbe + 1, callsAfterProbe, "the probe reached the engine"),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, probe.kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, sameInstant.kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, insideWindow.kind()),
+                    () -> assertEquals(callsAfterProbe, calls.get(),
+                            "no further untracked session reaches the engine inside the retained window"));
+        }
+
+        private TokenRefreshCoordinator coordinatorWith(Instant accessExpiry, RefreshExchange exchange) {
+            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, saturationBinding,
+                    revoked::add, DIRECT, EndedRefreshTokens.inert());
+        }
+
+        /**
+         * Fails every saturating session again at {@code at}, once its own window has elapsed, so the map
+         * holds {@link TokenRefreshCoordinator#MAX_BACKOFF_ENTRIES} unexpired windows past that instant.
+         */
+        private void refailTracked(TokenRefreshCoordinator coordinator, Instant at) {
+            TestLogLevel.ERROR.addLogger(TokenRefreshCoordinator.class);
+            for (int i = 0; i < TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES; i++) {
+                refresh(coordinator, saturationStore.resolve(SATURATING_PREFIX + i, at).orElseThrow(), at);
+            }
+            TestLogLevel.INFO.addLogger(TokenRefreshCoordinator.class);
+            TestLoggerFactory.getTestHandler().clearRecords();
+        }
+
+        /**
+         * Holds the probe until the other contenders have returned, bounded and deliberately non-failing:
+         * against a coordinator without the claim every contender holds here, and the test must then go red
+         * on the engine-call count rather than on a timeout.
+         *
+         * @return whether the other contenders returned within the bound
+         */
+        private static boolean awaitQuietly(CountDownLatch latch) {
+            try {
+                return latch.await(Awaits.TEARDOWN_CEILING_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException _) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
         }
     }
 
