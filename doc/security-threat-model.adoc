@@ -341,14 +341,30 @@ anchor's own `path_prefix` covers the namespace -- in which case longest-prefix 
 member every address inside it. So no address in an anchor namespace is served by a route outside the
 anchor.
 
-*Residual risk (accepted) -- a host- or method-narrowed covering route.* Like the two rules it
-mirrors, the coverage rule is path-geometric: it does not read `match.host` or `match.methods`. A
-covering route that declares either covers only what it matches, so the complement -- another host, or
-a verb the covering route omits -- still reaches the enclosing route. It is accepted because teaching
-one of the three anchor-containment rules to reason about match dimensions the other two ignore would
-make the model inconsistent for a case that predates exact routes; it is bounded by the covering
-route being visible in the endpoint file, and by the enclosing route still having to satisfy every
-other anchor rule.
+*The mirror rule reaches every protocol, including `grpc`.* The two declaration-scoped rules waive
+`protocol: grpc` routes, because a service-rooted gRPC method path can never nest inside a gateway
+namespace on a segment boundary -- an argument about where the route's own match key sits. The mirror
+rule asks the opposite question, and nothing constrains a gRPC route's declared match key to a bare
+service path. Selection is protocol-blind (the route table looks a request path up on the path alone,
+and the matcher carries no protocol dimension), so a gRPC route declaring a broad `path_prefix` would
+answer plain HTTP requests inside the swallowed namespace with its own posture. Waiving it there
+would reopen precisely this entry's desync in configuration, so it is not waived.
+
+*Residual risk (accepted) -- a covering route narrowed by a non-path match dimension.* Like the two
+rules it mirrors, the coverage rule is path-geometric: it marks an anchor covered on prefix equality
+alone and reads no other match dimension. The declaring source for what actually narrows a match at
+request time is the route matcher, which ANDs the path with every further dimension it applies --
+`match.methods`, `match.host` and `match.headers` at present; read the matcher rather than this list.
+A covering route narrowed by *any* of them covers only what it matches, so the complement still
+reaches the enclosing route: another host, a verb the covering route omits, or simply a request that
+does not send the header it requires. It is accepted because teaching one of the three
+anchor-containment rules to reason about match dimensions the other two ignore would make the model
+inconsistent for a case that predates exact routes; it is bounded by the covering route being visible
+in the endpoint file, and by the enclosing route still having to satisfy every other anchor rule.
+Note the bound is weakest for `match.headers`: reaching the complement of a host- or method-narrowed
+covering route means changing the `Host` (which the passthrough host guard also sees) or the verb
+(which the enclosing route's own verb gate then judges), whereas the complement of a
+header-narrowed one is reached by simply not sending that header.
 
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the
 normalized path, and anchor prefixes are normalized before the disjointness check -- but the
@@ -362,7 +378,9 @@ public and dispatched to a protected upstream. Upstream request-count = 0 on eve
 attempt. A configuration whose anchor namespace is left uncovered while a broader route encloses it
 fails the boot, and the same configuration with a prefix route at the anchor prefix boots
 (`ConfigValidatorTest.AnchorRules`, rule 4b -- including the partial-coverage case, where an anchored
-route on a sub-path only is not coverage).
+route on a sub-path only is not coverage). The same pair holds with the enclosing route declared
+`protocol: grpc` (`ConfigValidatorTest.GrpcNamespaceExemption`), alongside the controls proving the
+two declaration-scoped directions are still waived for it.
 
 [#gw-02]
 === GW-02 -- HTTP request smuggling / desync
@@ -1201,11 +1219,14 @@ precedence or by replacement. The anchor-namespace coverage rule (<<gw-01>>) ref
 configuration at boot, so "a routed response carries exactly its anchor block" extends beyond the
 addresses the anchor's own routes happen to name.
 
-*Residual risk (accepted) -- a host- or method-narrowed covering route.* That rule is
-path-geometric: it marks an anchor covered on prefix equality alone and reads neither `match.host`
-nor `match.methods`, so a covering route narrowed by either leaves the complement of what it matches
-to the enclosing route -- and that response carries the enclosing route's header block, not the
-anchor's. The same residual is recorded against the auth floor under <<gw-01>>; it bounds this
+*Residual risk (accepted) -- a covering route narrowed by a non-path match dimension.* That rule is
+path-geometric: it marks an anchor covered on prefix equality alone and reads no other match
+dimension. The route matcher is the declaring source for what narrows a match, and it ANDs the path
+with every further dimension it applies (`match.methods`, `match.host` and `match.headers` at
+present -- read the matcher rather than this list), so a covering route narrowed by *any* of them
+leaves the complement of what it matches to the enclosing route -- and that response carries the
+enclosing route's header block, not the anchor's. The same residual is recorded against the auth
+floor under <<gw-01>>, including why the bound is weakest for `match.headers`; it bounds this
 mechanism's closure identically.
 
 `content_security_policy` values are refused at boot when blank or carrying a CR, LF or other control
