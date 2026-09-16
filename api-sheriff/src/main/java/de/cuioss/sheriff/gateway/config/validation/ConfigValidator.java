@@ -72,6 +72,7 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
+import de.cuioss.sheriff.gateway.http.LocationPathReview;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -1227,12 +1228,14 @@ public final class ConfigValidator {
      *       control character (a CR/LF would forge a response header) — and must not carry a
      *       {@code #} when {@code keep_query} is set, since a query appended after a fragment never
      *       reaches the server;</li>
-     *   <li>a <strong>gateway path</strong> must start with exactly one {@code /} — {@code //host}
-     *       is scheme-relative and names another origin — and must contain no {@code \} (browsers
-     *       read {@code /\host} as {@code //host}), no percent-encoded {@code /} or {@code \}
-     *       ({@code %2F}, {@code %5C}, in either case), and no dot-segment ({@code .} or {@code ..},
-     *       including their {@code %2E} spellings) in its path, which a client would normalize
-     *       away;</li>
+     *   <li>a <strong>gateway path</strong> must pass {@link #gatewayPathRefusal}, which delegates to
+     *       the shared {@link LocationPathReview}: exactly one leading {@code /} ({@code //host} is
+     *       scheme-relative and names another origin), no {@code \} (browsers read {@code /\host} as
+     *       {@code //host}), no percent-encoded {@code /} or {@code \} ({@code %2F}, {@code %5C}, in
+     *       either case), no dot-segment ({@code .} or {@code ..}, including their {@code %2E}
+     *       spellings) in its path, and nothing the {@code cui-http} {@code URL_PATH} pipeline
+     *       refuses — double encoding, escaping traversal, null bytes, control characters and the
+     *       1024-character length cap;</li>
      *   <li>anything else is refused unless the route sets {@code allow_external: true}, which
      *       additionally admits an absolute {@code http}/{@code https} URI with a non-empty host and
      *       no user-info. Every other scheme ({@code javascript:}, {@code data:}, …) stays refused.
@@ -1309,28 +1312,40 @@ public final class ConfigValidator {
     }
 
     /**
-     * The gateway-path half of the location review: exactly one leading {@code /}, no backslash,
-     * no percent-encoded slash or backslash, no dot-segment in the path.
+     * The gateway-path half of the location review. The refusal set itself is not this class's own:
+     * the path portion is handed to {@link LocationPathReview#refusalReason(String)}, the single place
+     * the gateway decides which {@code Location} path is dangerous, so this boot review and the
+     * runtime {@code routing.LocationRewriter} mapping of an <em>upstream</em> {@code Location} cannot
+     * disagree (GW-13). That review covers the scheme-relative {@code //} prefix, the percent-encoded
+     * separators, the dot segments, and everything the {@code cui-http} {@code URL_PATH} pipeline owns
+     * — double encoding above all, which no hand-written substring test here ever caught
+     * ({@code /%252F%252Fevil.example}).
+     * <p>
+     * Two tests stay here rather than moving into that review, because a <em>configured</em> value is
+     * scoped more widely than an upstream-supplied one. Both are applied to the whole location, query
+     * and fragment included:
+     * <ul>
+     *   <li>a <strong>literal backslash</strong> anywhere. The shared review sees the path only, where
+     *       the {@code cui-http} pipeline already refuses it as {@code INVALID_CHARACTER}; this arm is
+     *       what extends the refusal past the {@code ?}.</li>
+     *   <li>a <strong>percent-encoded separator</strong> anywhere, via
+     *       {@link LocationPathReview#carriesEncodedSeparator(String)} — the same test the shared
+     *       review applies to the path, reused rather than restated so the two cannot drift.</li>
+     * </ul>
+     * The wider scope is deliberate and costs a configured value nothing: an operator writing a fixed
+     * redirect target has no reason to encode a separator in its query, whereas an upstream redirect
+     * routinely carries one (which is why {@code LocationRewriter} scopes the same test to the path).
+     * A separator after the {@code ?} cannot form an authority, so this is a tightening for
+     * operator-authored values, not a security necessity.
      */
     private static Optional<String> gatewayPathRefusal(String location) {
-        if (location.startsWith("//")) {
-            return Optional.of("a leading '//' is scheme-relative and names another origin");
-        }
         if (location.indexOf('\\') >= 0) {
             return Optional.of("a backslash is read as '/' by browsers");
         }
-        String lowerCase = location.toLowerCase(Locale.ROOT);
-        if (lowerCase.contains("%2f") || lowerCase.contains("%5c")) {
+        if (LocationPathReview.carriesEncodedSeparator(location)) {
             return Optional.of("a percent-encoded '/' or '\\' is decoded by intermediaries");
         }
-        int pathEnd = firstIndexOf(location, '?', '#');
-        String path = lowerCase.substring(0, pathEnd).replace("%2e", ".");
-        for (String segment : path.split("/", -1)) {
-            if (".".equals(segment) || "..".equals(segment)) {
-                return Optional.of("a dot-segment is normalized away by clients");
-            }
-        }
-        return Optional.empty();
+        return LocationPathReview.refusalReason(location.substring(0, firstIndexOf(location, '?', '#')));
     }
 
     /** The index of the first occurrence of either character, or the value's length when neither occurs. */

@@ -205,12 +205,15 @@ mounted behind `/api/orders` -- sends the browser off the gateway namespace, and
 * Everything else is relayed *unchanged*: a foreign origin, a scheme-relative `//host` value, an
   unparseable value, a path outside the effective base path, a path carrying a `.` or `..`
   segment in either its literal or its percent-encoded spelling (`/app1/orders/../login`,
-  `/app1/orders/%2e%2e/login`), and a path carrying an *ambiguous separator* -- a backslash, or a
-  percent-encoded `/` or `\` (`%2F`, `%5C`, either case). The base-path test is made on the path as
-  received, so either construct would survive into the mapping and the browser would resolve it
+  `/app1/orders/%2e%2e/login`), a path carrying an *ambiguous separator* -- a backslash, or a
+  percent-encoded `/` or `\` (`%2F`, `%5C`, either case) -- and a path carrying a *double-encoded or
+  malformed escape*: `%252F`, `%252e`, a null byte, an overlong UTF-8 sequence, or a path longer than
+  1024 characters. The base-path test is made on the path as
+  received, so any of those constructs would survive into the mapping and the browser would resolve it
   *outside* the match key -- the same reason a `redirect` target may not carry one (see
-  <<_redirect_external_targets>>). The refused set is the same one the boot review applies to a
-  configured `redirect` target, so the two cannot disagree about which paths are dangerous.
+  <<_redirect_external_targets>>). The refused set is *literally* the one the boot review applies to a
+  configured `redirect` target -- one shared implementation, not two lists kept in step -- so the two
+  cannot disagree about which paths are dangerous.
 * The ambiguous-separator refusal also covers the one case where the rewrite would *create* a
   cross-origin redirect out of a value that did not carry one. An absolute URI binds its authority
   before its path, so `Location: https://app1.internal:8443/%5Cattacker.com` keeps the browser on the
@@ -218,6 +221,13 @@ mounted behind `/api/orders` -- sends the browser off the gateway namespace, and
   resolving reads `/\attacker.com`, which the WHATWG URL Standard parses as `//attacker.com` -- a
   foreign origin. A percent-encoded `/` is the same class from the other side: it hides a `..`
   traversal from the dot-segment test, which splits on the literal `/` only.
+* The double-encoded and malformed-escape classes come from cui-http's `URL_PATH` validation
+  pipeline, the same library the inbound request filter uses. It is consulted only for *whether it
+  rejected* the path; the canonical value it returns is discarded, because the `Location` is emitted
+  to the browser and a confinement proved against a normalised string the browser never sees would
+  bound nothing. That is also why the dot-segment and encoded-separator refusals above are not left to
+  the library: it *normalises* those spellings away -- `/a/x%2fy` becomes `/a/x/y`, `/a/./b` becomes
+  `/a/b`, `/%5Cattacker.com` becomes `/\attacker.com` -- rather than rejecting them.
 * The query and fragment are *not* covered by that refusal: they are carried verbatim, and a separator
   after the `?` or `#` cannot form an authority, so `Location: /app1/orders/login?next=%2Fhome` still
   maps to `/api/orders/login?next=%2Fhome`.
@@ -494,12 +504,23 @@ the only place a target is judged. Without `allow_external`, the value must be a
 | `/a/../b`, `/a/./b`, `/a/%2e%2e/b`
 | A dot-segment is normalized away by clients.
 
+| `/%252F%252Fevil.example`, `/a/%252e%252e/b`, `/a%00b`
+| A double-encoded or malformed escape reaches the refused spellings above after a second decode.
+  Refused by cui-http's `URL_PATH` pipeline, together with overlong UTF-8, unicode-normalising escapes
+  and a path longer than 1024 characters.
+
 | a value with whitespace or a control character
 | A CR/LF would forge a response header; whitespace is never a valid `Location`.
 
 | `https://elsewhere.example/`, `javascript:...`
 | Not a gateway path -- only admitted under `allow_external` (below), and `javascript:` never.
 |===
+
+The backslash and percent-encoded-separator rows are checked against the *whole* value, query and
+fragment included -- a fixed configured target has no reason to encode a separator anywhere. The
+remaining path rows are checked against the path portion, and are the same shared review the
+`upstream.rewrite_location` mapping applies to an upstream `Location` (see <<_rewrite_location>>), so
+a spelling refused at boot in a configured target is refused at runtime in a rewritten one.
 
 `allow_external: true` additionally admits an *absolute `http` or `https` URI with a non-empty host
 and no user-info* (`https://user@evil.example` disguises the real host and stays refused). Every other
