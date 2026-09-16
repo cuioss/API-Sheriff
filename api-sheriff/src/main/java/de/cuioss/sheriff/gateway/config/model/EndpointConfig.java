@@ -28,11 +28,14 @@ import org.jspecify.annotations.Nullable;
  * {@code id} is mandatory and unique across all endpoint files (a duplicate
  * fails the boot). {@code enabled} defaults to {@code true}; a disabled endpoint
  * is inert (its routes are not merged and its alias need not resolve).
- * {@code baseUrl} is conditionally mandatory: an endpoint must declare it exactly
- * when at least one of its routes is a proxy route
+ * {@code baseUrl} is conditionally mandatory: an endpoint must declare it when at
+ * least one of its routes is a proxy route
  * ({@link RouteConfig#isProxyRoute()}); an endpoint serving only {@code asset} and/or
- * {@code redirect} routes may omit it. Absence is modelled as {@code null} and the
- * conditional rule is enforced by the configuration validator, not the record.
+ * {@code redirect} routes may omit it. Only the <em>obligation</em> is conditional —
+ * declaring an alias is never refused for want of a proxy route, and a declared alias
+ * must resolve in the topology whether or not a proxy route uses it. Absence is
+ * modelled as {@code null} and the conditional rule is enforced by the configuration
+ * validator, not the record.
  * {@code anchor}, when present, is the default anchor membership for this
  * endpoint's routes (ADR-0007); a route may override it. {@code auth} is the
  * default auth posture for the routes; it is optional — an anchored endpoint whose

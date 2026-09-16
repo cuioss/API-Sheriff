@@ -226,6 +226,25 @@ class LocationRewriterTest {
             assertEquals(expected, rewriter.rewrite(location));
         }
 
+        /**
+         * RFC 3986 section 5.3 resolves a scheme-less reference with an empty path against the
+         * <em>current request path</em>, so these keep the browser where it is. An empty base path is
+         * what makes the case reachable: they pass {@code pointsAtUpstream}, and synthesizing
+         * {@code /} for their empty path would map {@code ?page=2} onto {@code /app/?page=2} — a
+         * different address than the upstream named. The positive control for the same branch is
+         * {@code everyPathContinuesEmptyBase}'s {@code http://backend:8080 -> /app/} row: an
+         * <em>absolute</em> URI with no path does name the origin root and must still map, so a fix
+         * that returned early for every empty path would fail there.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {"?page=2", "#section", "?page=2#section", ""})
+        @DisplayName("relays a scheme-less reference with an empty path unchanged")
+        void relaysEmptyPathRelativeReferenceUnchanged(String location) {
+            assertEquals(location, rewriter.rewrite(location),
+                    "an empty path is relative to the current gateway path, not to the upstream root,"
+                            + " so mapping it onto the match key would move the redirect");
+        }
+
         @Test
         @DisplayName("keeps the path as-is under a root match key")
         void keepsPathUnderRootMatchKey() {
