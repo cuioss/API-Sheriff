@@ -405,6 +405,11 @@ public final class RouteTableBuilder {
      * @param route         the route whose optional {@code upstream.path} is appended to the base path
      * @return the per-route upstream carrying the effective base path
      */
+    // java:S1075 — the "/" below is the RFC 3986 path separator joining two URL path segments, not a
+    // hard-coded location: both operands are operator-supplied (the alias base path and upstream.path)
+    // and only the separator between them is fixed, because the URI grammar admits no other character
+    // for it. Making it configurable, or deriving it from File.separator, would emit a non-URI address.
+    @SuppressWarnings("java:S1075")
     private static ResolvedUpstream applyRouteUpstreamPath(ResolvedUpstream aliasUpstream, RouteConfig route) {
         UpstreamConfig upstream = route.upstream();
         String path = upstream == null ? null : upstream.path();

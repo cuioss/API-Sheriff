@@ -139,12 +139,12 @@ class DirectoryAssetServingIT extends BaseIntegrationTest {
         @Test
         @DisplayName("a traversal attempt is refused 400 before it can reach index or fallback")
         void traversalIsRefusedBeforeTheAssetSource() {
-            // 400, not 404: the strict inbound filter refuses an encoded dot segment at stage 0,
-            // before route selection, so a traversal attempt never reaches the directory source and
-            // the index/fallback substitution is never consulted. That is the stronger refusal — the
-            // fallback cannot mask what the request never reaches. The source-level guarantee (index
-            // and fallback never substitute for a traversal) is pinned over seven traversal
-            // spellings, this one included, by DirectoryAssetSourceTest.
+            // 400, not 404. This asserts the status only: the request is refused, so no asset is
+            // served and the index/fallback substitution cannot mask a traversal. WHICH guard
+            // refuses it is deliberately not claimed here — the response carries no attribution and
+            // this test observes nothing that would distinguish one from another. The source-level
+            // guarantee (index and fallback never substitute for a traversal) is pinned over seven
+            // traversal spellings, this one included, by DirectoryAssetSourceTest.
             given()
                     .urlEncodingEnabled(false)
                     .when()

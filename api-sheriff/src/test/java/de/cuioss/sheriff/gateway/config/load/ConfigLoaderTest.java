@@ -494,65 +494,62 @@ class ConfigLoaderTest {
                 "the JWKS flag binds by the same rules as its upstream peer");
     }
 
-    @Test
-    void rejectsNonBooleanJwksVerifyHostname() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                egress_tls:
-                  jwks_verify_hostname: "no"
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        // The bundled schema must refuse it BEFORE bind. That ordering is the whole assertion: the
-        // record component is a primitive boolean, so a value that reached the deserializer would be
-        // coerced rather than rejected — "no" is a YAML 1.1 boolean and Jackson's asBoolean would be
-        // free to read it as false, silently relaxing hostname verification from a document the
-        // operator believes disables nothing. The JSON pointer is asserted by name rather than by
-        // the enclosing block alone, so a schema that refused the whole egress_tls object for an
-        // unrelated reason could not satisfy this.
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("jwks_verify_hostname")),
-                () -> "a non-boolean jwks_verify_hostname must be refused at schema validation, naming "
-                        + "the key's own pointer, got: " + exception.errors());
+    /**
+     * One case per gateway-level block the bundled schema must refuse, each carrying the JSON pointer
+     * the refusal has to name. The three previously stood as separate {@code @Test} methods with a
+     * byte-identical body: what differs between them is the document and the pointer, which is
+     * exactly what an argument row carries, so they are one parameterized test. Each case's own
+     * reason is recorded at its row rather than lost in the merge.
+     *
+     * @return (case description, {@code gateway.yaml} text, the pointer fragment the refusal names)
+     */
+    static Stream<Arguments> refusedGatewayBlocks() {
+        return Stream.of(
+                // The schema must refuse this BEFORE bind, and that ordering is the whole case: the
+                // record component is a primitive boolean, so a value reaching the deserializer would
+                // be coerced rather than rejected — "no" is a YAML 1.1 boolean and Jackson's
+                // asBoolean would be free to read it as false, silently relaxing hostname
+                // verification from a document the operator believes disables nothing. The pointer is
+                // asserted by name rather than by the enclosing block alone, so a schema that refused
+                // the whole egress_tls object for an unrelated reason could not satisfy it.
+                Arguments.of("a non-boolean jwks_verify_hostname - refused before bind, never coerced",
+                        """
+                                version: 1
+                                egress_tls:
+                                  jwks_verify_hostname: "no"
+                                """,
+                        "jwks_verify_hostname"),
+                // An unprefixed verify_hostname is a plausible operator abbreviation of any of the
+                // three prefixed keys, so it must be refused rather than silently ignored.
+                Arguments.of("an unknown key inside egress_tls - a plausible operator abbreviation",
+                        """
+                                version: 1
+                                egress_tls:
+                                  verify_hostname: false
+                                """,
+                        "egress_tls"),
+                Arguments.of("a forwarded block omitting the mandatory trusted_proxies",
+                        """
+                                version: 1
+                                forwarded:
+                                  trust_scheme_host: true
+                                """,
+                        "forwarded"));
     }
 
-    @Test
-    void rejectsUnknownKeyInsideEgressTls() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                egress_tls:
-                  verify_hostname: false
-                """);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("refusedGatewayBlocks")
+    void rejectsRefusedGatewayBlock(String description, String gatewayYaml, String pointerFragment) throws Exception {
+        writeConfig("gateway.yaml", gatewayYaml);
 
         ConfigLoader loader = loader(Map.of());
         ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("egress_tls")),
-                () -> "an unprefixed verify_hostname is a plausible operator abbreviation and must be "
-                        + "refused rather than silently ignored, got: " + exception.errors());
-    }
-
-    @Test
-    void rejectsForwardedBlockOmittingTrustedProxies() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                forwarded:
-                  trust_scheme_host: true
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("forwarded")),
-                () -> "expected a schema violation for a forwarded block omitting trusted_proxies, got: "
-                        + exception.errors());
+                                && error.pointer().contains(pointerFragment)),
+                () -> "expected " + description + " to be refused at a pointer naming '" + pointerFragment
+                        + "', got: " + exception.errors());
     }
 
     @Test
