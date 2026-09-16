@@ -78,8 +78,8 @@ import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
+import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
 import de.cuioss.sheriff.token.client.token.RotationResult;
-import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
@@ -467,6 +467,9 @@ class BffRuntimeProducerTest {
         private static final Instant NOW = Instant.parse("2026-07-25T10:00:00Z");
         private static final Duration LEEWAY = Duration.ofSeconds(60);
         private static final Duration SESSION_TTL = Duration.ofHours(8);
+        /** None of these seam decisions reaches a revocation, so the seam is bound inert. */
+        private static final TokenRefreshCoordinator.RefreshTokenRevocation NO_REVOCATION = refreshToken -> {
+        };
 
         private final InMemorySessionStore store = new InMemorySessionStore(16);
         private final SessionBinding binding = new ServerSessionBinding(store,
@@ -582,9 +585,9 @@ class BffRuntimeProducerTest {
             SessionRecord live = storedSession(token());
             TokenRefreshCoordinator rejecting = new TokenRefreshCoordinator(LEEWAY, sessionRecord -> NOW,
                     refreshToken -> {
-                        throw new ClientProtocolException("token endpoint rejected the refresh grant");
+                        throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
                     },
-                    binding);
+                    binding, NO_REVOCATION);
 
             Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer.nearExpiryRefresh(rejecting)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -600,7 +603,7 @@ class BffRuntimeProducerTest {
                         engineCalls.incrementAndGet();
                         return rotation();
                     },
-                    binding);
+                    binding, NO_REVOCATION);
         }
 
         private SessionRecord storedSession(@Nullable String refreshToken) {

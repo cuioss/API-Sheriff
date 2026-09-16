@@ -29,54 +29,74 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.UnaryOperator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.AccessTokenExpiry;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.RefreshExchange;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.RefreshOutcome;
+import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.RefreshTokenRevocation;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
+import de.cuioss.sheriff.token.client.flow.RedeemedResponseException;
+import de.cuioss.sheriff.token.client.flow.RedeemedScopeRefusalException;
+import de.cuioss.sheriff.token.client.flow.RefreshRedemption;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
+import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests for {@link TokenRefreshCoordinator}: the single-flight, per-session transparent refresh.
+ * Tests for {@link TokenRefreshCoordinator}: the single-flight, per-session transparent refresh and the
+ * per-kind disposition of a refused refresh.
  * <p>
- * The engine refresh is driven through the {@link RefreshExchange} seam and the near-expiry decision
- * through the {@link AccessTokenExpiry} seam, so every path — not-needed, refreshed, failed, reuse,
- * and the concurrent single-flight coalesce — is exercised with hand-built engine objects and no
- * test-double framework. The failed-refresh outcome's downstream content negotiation
- * (navigation → login, XHR → 401) belongs to the session runtime stage and is tested there; this
- * suite covers the coordinator's own contract: which {@link RefreshOutcome} it returns and its
- * session-store side effects.
+ * The engine refresh is driven through the {@link RefreshExchange} seam, the near-expiry decision
+ * through the {@link AccessTokenExpiry} seam and revocation through a recording
+ * {@link RefreshTokenRevocation}, so every path — not-needed, refreshed, each failure kind, the
+ * post-exchange persist failure, the pre-redemption back-off and the concurrent single-flight coalesce
+ * — is exercised with the engine's own exception types and no test-double framework. The engine's
+ * {@code RefreshFlow.classify} is NOT stubbed: each test throws the exception the engine actually raises
+ * for that situation, so a change in the classification is observed here. The downstream content
+ * negotiation belongs to the session runtime stage and is tested there; this suite covers the
+ * coordinator's own contract: which {@link RefreshOutcome} it returns, its session-binding side effects,
+ * which refresh token it revokes, and which record it logs.
  */
+@EnableTestLogger
 class TokenRefreshCoordinatorTest {
 
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
     private static final Duration LEEWAY = Duration.ofSeconds(60);
     private static final Instant NOT_NEAR = NOW.plusSeconds(600);
     private static final Instant NEAR = NOW.plusSeconds(30);
+    private static final Instant EXPIRED = NOW.minusSeconds(1);
     private static final Duration SESSION_TTL = Duration.ofHours(8);
     private static final String SESSION_ID = "session-1";
     private static final String CURRENT_REFRESH = "refresh-current";
@@ -86,17 +106,23 @@ class TokenRefreshCoordinatorTest {
 
     private static final String COOKIE_HEADER = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID;
 
+    private static final String REFRESH_FAILED_ID = BffLogMessages.WARN.SESSION_REFRESH_FAILED.resolveIdentifierString();
+    private static final String REFRESH_DEFERRED_ID =
+            BffLogMessages.WARN.SESSION_REFRESH_DEFERRED.resolveIdentifierString();
+
     private InMemorySessionStore store;
     private SessionBinding binding;
+    private List<String> revoked;
 
     @BeforeEach
     void setUp() {
         store = new InMemorySessionStore(16);
         binding = new ServerSessionBinding(store,
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
+        revoked = new CopyOnWriteArrayList<>();
     }
 
-    private static SessionRecord session(String refreshToken) {
+    private static SessionRecord session(@Nullable String refreshToken) {
         return SessionRecord.builder()
                 .sessionId(SESSION_ID)
                 .accessToken("access-current")
@@ -118,12 +144,10 @@ class TokenRefreshCoordinatorTest {
         // the "the IdP declared no scope on the refresh response" pair here — a null grantedScope
         // (the component is nullable; only scopeDelta is requireNonNull) with UNDECLARED — because
         // that is the neutral value for THESE tests: every case below exercises refresh scheduling,
-        // single-flight coordination and session rebinding, none of which reads either component.
-        // Picking EQUAL instead would assert a scope comparison the fixture never performs.
-        // NOT adopted deliberately, and recorded rather than implied: nothing in the gateway reads
-        // scopeDelta yet, so a NARROWED or BROADENED scope on refresh is currently unobserved. That
-        // is a real signal this bump made available and a behaviour change well outside this plan's
-        // scope (JWKS hostname verification); it needs its own plan and its own assertions.
+        // single-flight coordination, session rebinding and failure disposition, none of which reads
+        // either component. Picking EQUAL instead would assert a scope comparison the fixture never
+        // performs. Nothing in the gateway reads scopeDelta yet, so a NARROWED or BROADENED scope on
+        // refresh is currently unobserved; that needs its own plan and its own assertions.
         return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true,
                 null, RotationResult.ScopeDelta.UNDECLARED);
     }
@@ -142,7 +166,27 @@ class TokenRefreshCoordinatorTest {
     }
 
     private TokenRefreshCoordinator coordinator(Instant accessExpiry, RefreshExchange exchange) {
-        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding);
+        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add);
+    }
+
+    private SessionRecord storedSession() {
+        SessionRecord live = session(CURRENT_REFRESH);
+        store.create(live, NOW);
+        return live;
+    }
+
+    private boolean sessionResolvable(Instant at) {
+        return store.resolve(SESSION_ID, at).isPresent();
+    }
+
+    private static RefreshExchange throwing(RuntimeException failure) {
+        return presented -> {
+            throw failure;
+        };
+    }
+
+    private static CredentialRejectedException credentialRejected() {
+        return new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
     }
 
     @Nested
@@ -153,8 +197,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should return the current session unchanged when not within the expiry leeway")
         void shouldReturnCurrentWhenNotNearExpiry() {
             AtomicInteger calls = new AtomicInteger();
-            SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live, NOW);
+            SessionRecord live = storedSession();
             TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, rt -> {
                 calls.incrementAndGet();
                 return rotation();
@@ -192,25 +235,25 @@ class TokenRefreshCoordinatorTest {
         @Test
         @DisplayName("Should refresh through the engine and persist the rotated token material")
         void shouldRefreshAndPersist() {
-            SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live, NOW);
+            SessionRecord live = storedSession();
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
             SessionRecord rotated = outcome.session();
+            assertNotNull(rotated);
             assertEquals(ROTATED_ACCESS, rotated.accessToken());
             assertEquals(ROTATED_REFRESH, rotated.refreshToken());
             assertEquals(ROTATED_ID, rotated.idToken());
             assertEquals(live.expiresAt(), rotated.expiresAt(), "the absolute session cap is unchanged by a refresh");
+            assertTrue(revoked.isEmpty(), "a successful refresh revokes nothing");
         }
 
         @Test
         @DisplayName("Should pass the session's current refresh token to the engine")
         void shouldPresentCurrentRefreshToken() {
-            SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live, NOW);
+            SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
             TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
                 calls.incrementAndGet();
@@ -226,40 +269,267 @@ class TokenRefreshCoordinatorTest {
         }
     }
 
+    /**
+     * A refusal the engine classifies {@code PRE_REDEMPTION}: the identity provider never processed the
+     * grant, so the presented refresh token is still valid and the session must survive.
+     */
     @Nested
-    @DisplayName("Failure and reuse detection")
-    class Failure {
+    @DisplayName("Pre-redemption failure — the session is kept")
+    class PreRedemption {
 
         @Test
-        @DisplayName("Should destroy the session and fail when the engine refresh is rejected")
-        void shouldFailAndDestroyOnEngineRejection() {
-            SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live, NOW);
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
-                throw new ClientProtocolException("token endpoint rejected the refresh grant");
+        @DisplayName("Should defer and keep the session when the access token is still valid")
+        void shouldDeferWhileAccessTokenIsValid() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    throwing(new TransportException("Connection refused by the token endpoint")));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertEquals(RefreshOutcome.Kind.DEFERRED, outcome.kind());
+            assertEquals(live, outcome.session(), "the unchanged session is mediated with its still-valid token");
+            assertFalse(outcome.isFailure(), "a deferred refresh did not end the session");
+            assertFalse(outcome.requestFailed(), "a deferred refresh still has a token to mediate");
+            assertTrue(outcome.setCookieHeaders().isEmpty(), "nothing was re-bound, so no cookie is emitted");
+            assertTrue(sessionResolvable(NOW), "a pre-redemption failure never destroys the session");
+            assertTrue(revoked.isEmpty(), "the presented token is still valid and must not be revoked");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should report unavailable yet keep the session when the access token has expired")
+        void shouldBeUnavailableOnceAccessTokenExpired() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(EXPIRED,
+                    throwing(new IllegalStateException("provider metadata is missing the token endpoint")));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertEquals(RefreshOutcome.Kind.UNAVAILABLE, outcome.kind());
+            assertNull(outcome.session(), "an expired access token leaves nothing to mediate");
+            assertTrue(outcome.requestFailed(), "this request fails");
+            assertFalse(outcome.isFailure(), "but the session did not end");
+            assertTrue(sessionResolvable(NOW), "an expired access token does not turn a transient fault into a logout");
+            assertTrue(revoked.isEmpty());
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should keep the session on a non-redeemed client-protocol refusal, which the engine reads as pre-redemption")
+        void shouldKeepSessionOnPlainClientProtocolRefusal() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    throwing(new ClientProtocolException("token endpoint rejected the refresh grant")));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertEquals(RefreshOutcome.Kind.DEFERRED, outcome.kind(),
+                    "a ClientProtocolException carrying no redemption is PRE_REDEMPTION, not a rejected credential");
+            assertTrue(sessionResolvable(NOW));
+        }
+
+        @Test
+        @DisplayName("Should make no engine call while the back-off is in force, and retry once it has elapsed")
+        void shouldBackOffBeforeRetrying() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
+                calls.incrementAndGet();
+                throw new TransportException("Token endpoint returned HTTP 503");
             });
+            Instant insideWindow = NOW.plusSeconds(2);
+            Instant windowElapsed = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
+
+            RefreshOutcome first = coordinator.refresh(live, COOKIE_HEADER, NOW);
+            RefreshOutcome backedOff = coordinator.refresh(live, COOKIE_HEADER, insideWindow);
+            int callsInsideWindow = calls.get();
+            RefreshOutcome retried = coordinator.refresh(live, COOKIE_HEADER, windowElapsed);
+
+            assertEquals(RefreshOutcome.Kind.DEFERRED, first.kind());
+            assertEquals(RefreshOutcome.Kind.DEFERRED, backedOff.kind(),
+                    "a backed-off request takes the same disposition without reaching the engine");
+            assertEquals(1, callsInsideWindow, "no second engine call is made inside the back-off window");
+            assertEquals(RefreshOutcome.Kind.DEFERRED, retried.kind());
+            assertEquals(2, calls.get(), "the next near-expiry request after the window attempts the refresh again");
+        }
+
+        @Test
+        @DisplayName("Should report unavailable for a backed-off request whose access token has expired meanwhile")
+        void shouldBeUnavailableWhileBackingOffOnceExpired() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            Instant accessExpiry = NOW.plusSeconds(1);
+            TokenRefreshCoordinator coordinator = coordinator(accessExpiry, presented -> {
+                calls.incrementAndGet();
+                throw new TransportException("Token endpoint returned HTTP 503");
+            });
+
+            coordinator.refresh(live, COOKIE_HEADER, NOW);
+            RefreshOutcome backedOff = coordinator.refresh(live, COOKIE_HEADER, NOW.plusSeconds(3));
+
+            assertEquals(RefreshOutcome.Kind.UNAVAILABLE, backedOff.kind());
+            assertEquals(1, calls.get(), "the back-off still suppresses the engine call");
+            assertTrue(sessionResolvable(NOW.plusSeconds(3)), "the session is kept throughout");
+        }
+
+        @Test
+        @DisplayName("Should refresh normally once the identity provider recovers after the back-off")
+        void shouldRefreshAfterRecovery() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
+                if (calls.incrementAndGet() == 1) {
+                    throw new TransportException("Token endpoint returned HTTP 503");
+                }
+                return rotation();
+            });
+
+            coordinator.refresh(live, COOKIE_HEADER, NOW);
+            RefreshOutcome recovered = coordinator.refresh(live, COOKIE_HEADER,
+                    NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF));
+
+            assertEquals(RefreshOutcome.Kind.REFRESHED, recovered.kind());
+            assertEquals(ROTATED_ACCESS, store.resolve(SESSION_ID, NOW).orElseThrow().accessToken());
+        }
+    }
+
+    /**
+     * A refusal that ends the session: the identity provider rejected the credential, the gateway
+     * refused a response the provider had already redeemed, or the rotated session could not be
+     * persisted.
+     */
+    @Nested
+    @DisplayName("Session-ending failures")
+    class SessionEnding {
+
+        @Test
+        @DisplayName("Should destroy the session and revoke nothing when the identity provider rejects the credential")
+        void shouldFailAndDestroyOnCredentialRejection() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, throwing(credentialRejected()));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertTrue(outcome.isFailure());
             assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind());
             assertNull(outcome.session(), "a failed outcome carries no session");
-            assertTrue(store.resolve(SESSION_ID, NOW).isEmpty(), "the session is destroyed on refresh failure");
+            assertFalse(sessionResolvable(NOW), "the session is destroyed on a rejected credential");
+            assertTrue(revoked.isEmpty(), "nothing was redeemed, so there is no live refresh token to revoke");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_CREDENTIAL_REJECTED);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
         }
 
+        /**
+         * Reuse detection is the identity provider's strict rotation: a replayed superseded refresh token
+         * is answered {@code invalid_grant}, which the engine raises as {@link CredentialRejectedException}.
+         */
         @Test
-        @DisplayName("Should destroy the session when the engine reports refresh-token reuse (family revoked)")
-        void shouldFailOnReuseDetection() {
-            SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live, NOW);
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
-                throw new ClientProtocolException("refresh token family is revoked");
+        @DisplayName("Should destroy the session when the identity provider rejects a replayed refresh token")
+        void shouldFailOnReplayRejectedByIdentityProvider() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
+                calls.incrementAndGet();
+                throw credentialRejected();
             });
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+            RefreshOutcome afterwards = coordinator.refresh(live, COOKIE_HEADER, NOW.plusSeconds(1));
 
-            assertTrue(outcome.isFailure(), "a revoked refresh-token family fails the refresh");
-            assertTrue(store.resolve(SESSION_ID, NOW).isEmpty(), "a reused-token session is destroyed");
+            assertTrue(outcome.isFailure(), "a replay rejected under strict rotation fails the refresh");
+            assertFalse(sessionResolvable(NOW), "the replaying session is destroyed");
+            assertTrue(afterwards.isFailure(), "the destroyed session cannot be resumed on a later request");
+            assertEquals(1, calls.get(), "a destroyed session never reaches the engine again");
+        }
+
+        @Test
+        @DisplayName("Should destroy the session and revoke the successor when a rotated response is refused")
+        void shouldRevokeSuccessorOnRefusedRotatedRedemption() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, throwing(new RedeemedScopeRefusalException(
+                    "granted a broader scope than requested", RefreshRedemption.rotated(ROTATED_REFRESH))));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind());
+            assertFalse(sessionResolvable(NOW), "a refused redeemed response ends the session");
+            assertEquals(List.of(ROTATED_REFRESH), revoked,
+                    "the presented token is burned, so the successor is the one live refresh token");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_REDEEMED_RESPONSE_REFUSED);
+        }
+
+        @Test
+        @DisplayName("Should destroy the session and revoke the presented token when a non-rotated response is refused")
+        void shouldRevokePresentedTokenOnRefusedNonRotatedRedemption() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, throwing(new RedeemedScopeRefusalException(
+                    "granted a broader scope than requested", RefreshRedemption.notRotated())));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind());
+            assertFalse(sessionResolvable(NOW));
+            assertEquals(List.of(CURRENT_REFRESH), revoked,
+                    "without rotation the presented token survived the exchange and is the live one");
+        }
+
+        @Test
+        @DisplayName("Should destroy the session and revoke nothing when rotation is unknown")
+        void shouldRevokeNothingWhenRotationUnknown() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    throwing(new RedeemedResponseException("Token endpoint returned an unparseable 2xx body")));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind());
+            assertFalse(sessionResolvable(NOW), "an unknown rotation fails closed");
+            assertTrue(revoked.isEmpty(), "no successor is known, so nothing can be named for revocation");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_REDEEMED_RESPONSE_REFUSED);
+        }
+
+        @Test
+        @DisplayName("Should destroy the session and revoke the returned refresh token when persisting the rotation fails")
+        void shouldEndSessionOnPersistFailure() {
+            storedSession();
+            SessionBinding persistFailing = new PersistFailingBinding(binding);
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    rt -> rotation(), persistFailing, revoked::add);
+
+            RefreshOutcome outcome = coordinator.refresh(session(CURRENT_REFRESH), COOKIE_HEADER, NOW);
+
+            assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind(),
+                    "the presented token is already redeemed, so a persist failure cannot keep the session");
+            assertFalse(sessionResolvable(NOW), "the session holding the burned token is destroyed");
+            assertEquals(List.of(ROTATED_REFRESH), revoked, "the refresh token the exchange returned is revoked");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
+        }
+
+        @Test
+        @DisplayName("Should still fail and destroy the session when the revocation endpoint fails")
+        void shouldIgnoreRevocationFailure() {
+            SessionRecord live = storedSession();
+            AtomicInteger attempts = new AtomicInteger();
+            RefreshTokenRevocation failingRevocation = token -> {
+                attempts.incrementAndGet();
+                throw new TransportException("Revocation endpoint returned unexpected HTTP status 500");
+            };
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
+                            RefreshRedemption.rotated(ROTATED_REFRESH))),
+                    binding, failingRevocation);
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertEquals(1, attempts.get(), "revocation was attempted");
+            assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind(), "a failing revocation never changes the disposition");
+            assertFalse(sessionResolvable(NOW));
         }
 
         @Test
@@ -282,8 +552,62 @@ class TokenRefreshCoordinatorTest {
         @Test
         @DisplayName("Should coalesce concurrent refreshes on one session into a single engine call")
         void shouldCoalesceConcurrentRefreshes() throws Exception {
-            SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live, NOW);
+            CoalescedRun run = coalesce(rotation -> rotation);
+
+            assertEquals(1, run.calls(), "concurrent requests on one session share a single engine refresh");
+            assertEquals(RefreshOutcome.Kind.REFRESHED, run.leader().kind());
+            assertEquals(RefreshOutcome.Kind.REFRESHED, run.follower().kind(),
+                    "the coalesced follower shares the successful refresh");
+            assertEquals(ROTATED_ACCESS, store.resolve(SESSION_ID, NOW).orElseThrow().accessToken());
+        }
+
+        @Test
+        @DisplayName("Should hand the coalesced follower the leader's deferred outcome on a pre-redemption failure")
+        void shouldShareDeferredOutcome() throws Exception {
+            CoalescedRun run = coalesce(rotation -> {
+                throw new TransportException("Connection reset by the token endpoint");
+            });
+
+            assertEquals(1, run.calls());
+            assertEquals(RefreshOutcome.Kind.DEFERRED, run.leader().kind());
+            assertEquals(RefreshOutcome.Kind.DEFERRED, run.follower().kind());
+            assertTrue(sessionResolvable(NOW));
+        }
+
+        @Test
+        @DisplayName("Should hand the coalesced follower the leader's failed outcome on a rejected credential")
+        void shouldShareCredentialRejectedOutcome() throws Exception {
+            CoalescedRun run = coalesce(rotation -> {
+                throw credentialRejected();
+            });
+
+            assertEquals(1, run.calls());
+            assertEquals(RefreshOutcome.Kind.FAILED, run.leader().kind());
+            assertEquals(RefreshOutcome.Kind.FAILED, run.follower().kind());
+            assertFalse(sessionResolvable(NOW));
+        }
+
+        @Test
+        @DisplayName("Should hand the coalesced follower the leader's failed outcome on a refused redemption")
+        void shouldShareRedeemedOutcome() throws Exception {
+            CoalescedRun run = coalesce(rotation -> {
+                throw new RedeemedScopeRefusalException("granted a broader scope than requested",
+                        RefreshRedemption.rotated(ROTATED_REFRESH));
+            });
+
+            assertEquals(1, run.calls());
+            assertEquals(RefreshOutcome.Kind.FAILED, run.leader().kind());
+            assertEquals(RefreshOutcome.Kind.FAILED, run.follower().kind());
+            assertEquals(List.of(ROTATED_REFRESH), revoked, "the successor is revoked exactly once");
+        }
+
+        /**
+         * Runs one leader and one coalesced follower on the stored session. The leader enters the
+         * exchange and blocks there until the follower has been submitted, then applies
+         * {@code afterRelease} to the rotation — returning it, or throwing the failure under test.
+         */
+        private CoalescedRun coalesce(UnaryOperator<RotationResult> afterRelease) throws Exception {
+            SessionRecord live = storedSession();
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch proceed = new CountDownLatch(1);
             AtomicInteger calls = new AtomicInteger();
@@ -291,7 +615,7 @@ class TokenRefreshCoordinatorTest {
                 calls.incrementAndGet();
                 entered.countDown();
                 awaitRelease(proceed);
-                return rotation();
+                return afterRelease.apply(rotation());
             });
 
             ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -308,15 +632,14 @@ class TokenRefreshCoordinatorTest {
                 RefreshOutcome leaderOutcome = Awaits.connect(leader, "the leader refresh to complete");
                 RefreshOutcome followerOutcome = Awaits.connect(follower,
                         "the coalesced follower refresh to complete");
-
-                assertEquals(1, calls.get(), "concurrent requests on one session share a single engine refresh");
-                assertFalse(leaderOutcome.isFailure());
-                assertFalse(followerOutcome.isFailure(), "the coalesced follower shares the successful refresh");
-                assertEquals(ROTATED_ACCESS, store.resolve(SESSION_ID, NOW).orElseThrow().accessToken());
+                return new CoalescedRun(leaderOutcome, followerOutcome, calls.get());
             } finally {
                 pool.shutdownNow();
             }
         }
+    }
+
+    private record CoalescedRun(RefreshOutcome leader, RefreshOutcome follower, int calls) {
     }
 
     @Nested
@@ -349,7 +672,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         private TokenRefreshCoordinator cookieCoordinator(RefreshExchange exchange) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, cookieBinding);
+            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, cookieBinding, revoked::add);
         }
 
         @Test
@@ -360,7 +683,7 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
-            assertEquals(ROTATED_ACCESS, outcome.session().accessToken());
+            assertEquals(ROTATED_ACCESS, rotatedSession(outcome).accessToken());
             assertEquals(1, outcome.setCookieHeaders().size(),
                     "a stateless refresh persists by emitting exactly one re-sealed cookie");
             String reSealed = outcome.setCookieHeaders().getFirst();
@@ -397,7 +720,7 @@ class TokenRefreshCoordinatorTest {
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
-            assertEquals(cookieSession.sessionNonce(), outcome.session().sessionNonce(),
+            assertEquals(cookieSession.sessionNonce(), rotatedSession(outcome).sessionNonce(),
                     "the rotated record carries the previous record's nonce verbatim — never a fresh one");
         }
 
@@ -417,7 +740,7 @@ class TokenRefreshCoordinatorTest {
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
-            assertEquals(cookieSession.sessionId(), outcome.session().sessionId(),
+            assertEquals(cookieSession.sessionId(), rotatedSession(outcome).sessionId(),
                     "the single-flight key expression is unchanged in cookie mode");
         }
 
@@ -461,17 +784,34 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should fail and destroy the session when the engine rejects the cookie-mode refresh")
-        void shouldFailOnEngineRejection() {
-            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> {
-                throw new ClientProtocolException("invalid_grant");
-            });
+        @DisplayName("Should fail when the identity provider rejects the cookie-mode refresh token")
+        void shouldFailOnCredentialRejection() {
+            TokenRefreshCoordinator coordinator = cookieCoordinator(throwing(credentialRejected()));
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
             assertTrue(outcome.isFailure(),
-                    "reuse-as-failure is identical in cookie mode — the stage clears the cookie and re-negotiates");
+                    "a rejected credential ends the session in cookie mode too — the stage clears the cookie");
             assertTrue(outcome.setCookieHeaders().isEmpty(), "a failed refresh emits no re-seal");
+        }
+
+        @Test
+        @DisplayName("Should keep the sealed cookie and mediate it on a cookie-mode pre-redemption failure")
+        void shouldDeferOnPreRedemptionFailure() {
+            TokenRefreshCoordinator coordinator = cookieCoordinator(
+                    throwing(new TransportException("Token endpoint returned HTTP 502")));
+
+            RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+
+            assertEquals(RefreshOutcome.Kind.DEFERRED, outcome.kind());
+            assertEquals(cookieSession, outcome.session(), "the still-valid sealed session is mediated as it is");
+            assertTrue(outcome.setCookieHeaders().isEmpty(), "nothing was re-sealed, so the browser keeps its cookie");
+        }
+
+        private static SessionRecord rotatedSession(RefreshOutcome outcome) {
+            SessionRecord rotated = outcome.session();
+            assertNotNull(rotated, "a refreshed outcome carries the rotated session");
+            return rotated;
         }
     }
 
@@ -490,10 +830,32 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should reject constructing a non-failed outcome without a session")
+        @DisplayName("Should reject a missing revocation seam")
+        void shouldRejectMissingRevocationSeam() {
+            RefreshExchange exchange = rt -> rotation();
+
+            assertThrows(NullPointerException.class,
+                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, null));
+        }
+
+        @Test
+        @DisplayName("Should reject a session-carrying kind constructed without a session")
         void shouldRejectPresentContractViolation() {
             assertThrows(IllegalArgumentException.class,
                     () -> new RefreshOutcome(RefreshOutcome.Kind.CURRENT, null, List.of()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new RefreshOutcome(RefreshOutcome.Kind.DEFERRED, null, List.of()));
+        }
+
+        @Test
+        @DisplayName("Should reject a session-less kind constructed with a session")
+        void shouldRejectAbsentContractViolation() {
+            SessionRecord live = session(CURRENT_REFRESH);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> new RefreshOutcome(RefreshOutcome.Kind.UNAVAILABLE, live, List.of()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new RefreshOutcome(RefreshOutcome.Kind.FAILED, live, List.of()));
         }
 
         @Test
@@ -502,8 +864,72 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome failed = RefreshOutcome.failed();
 
             assertTrue(failed.isFailure());
+            assertFalse(failed.requestFailed());
             assertNull(failed.session());
             assertTrue(failed.setCookieHeaders().isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should tell an unavailable outcome apart from a failed one")
+        void unavailableOutcomeIsNotASessionEnd() {
+            RefreshOutcome unavailable = RefreshOutcome.unavailable();
+
+            assertTrue(unavailable.requestFailed());
+            assertFalse(unavailable.isFailure());
+            assertNull(unavailable.session());
+        }
+    }
+
+    /**
+     * A binding that behaves like the wrapped one except that re-binding a rotated session fails, the
+     * way {@link CookieSessionBinding#persist} does when the sealed cookie exceeds its size budget.
+     */
+    private static final class PersistFailingBinding implements SessionBinding {
+
+        private final SessionBinding delegate;
+
+        PersistFailingBinding(SessionBinding delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public BoundSession bind(SessionRecord session, Instant now) {
+            return delegate.bind(session, now);
+        }
+
+        @Override
+        public Optional<SessionRecord> resolve(@Nullable String cookieHeader, Instant now) {
+            return delegate.resolve(cookieHeader, now);
+        }
+
+        @Override
+        public BoundSession persist(SessionRecord rotated, Instant now) {
+            throw new IllegalStateException("sealed session cookie exceeds the size budget");
+        }
+
+        @Override
+        public void destroy(SessionRecord session) {
+            delegate.destroy(session);
+        }
+
+        @Override
+        public int destroyBySid(String sid) {
+            return delegate.destroyBySid(sid);
+        }
+
+        @Override
+        public int destroyBySub(String sub) {
+            return delegate.destroyBySub(sub);
+        }
+
+        @Override
+        public IdpDestruction idpDestruction() {
+            return delegate.idpDestruction();
+        }
+
+        @Override
+        public String clearingSetCookieHeader() {
+            return delegate.clearingSetCookieHeader();
         }
     }
 }

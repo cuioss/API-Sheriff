@@ -56,6 +56,7 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -75,6 +76,7 @@ import de.cuioss.sheriff.token.client.flow.IssValidator;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
+import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
@@ -162,6 +164,8 @@ public class BffRuntimeProducer {
     private static final String DEFAULT_FINAL_REDIRECT = "/";
     /** The gateway key a named BFF back-channel trust profile is declared under, for error context. */
     private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
+    /** The RFC 7009 {@code token_type_hint} sent when a live refresh token is revoked. */
+    private static final String REFRESH_TOKEN_TYPE_HINT = "refresh_token";
 
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> tokenValidator;
@@ -314,12 +318,17 @@ public class BffRuntimeProducer {
         // stage's refresh seam degrades to sessionUnchanged() — the unwired binding
         // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies) — so the
         // gateway mediates the current token verbatim until the session's absolute TTL expires.
+        // The revocation client is built from the SAME back-channel configuration, so a refresh token
+        // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
+        RevocationClient revocationClient = new RevocationClient(clientConfiguration);
         SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
                 ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
-                sessionBinding))
+                sessionBinding,
+                liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
+                        clientAuthentication)))
                 : sessionUnchanged();
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
@@ -458,10 +467,11 @@ public class BffRuntimeProducer {
 
     /**
      * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
-     * seam: a {@code FAILED} outcome becomes {@link Optional#empty()} so the stage re-drives the
-     * unauthenticated negotiation instead of mediating the pre-refresh token of a session the
-     * gateway just revoked; any other outcome yields the session to mediate from plus whatever
-     * {@code Set-Cookie} the re-bind produced.
+     * seam: an outcome carrying no session ({@code FAILED}, or {@code UNAVAILABLE} after a
+     * pre-redemption failure with an expired access token) becomes {@link Optional#empty()} so the
+     * stage re-drives the unauthenticated negotiation instead of mediating a token that is revoked or
+     * expired; any other outcome yields the session to mediate from plus whatever {@code Set-Cookie}
+     * the re-bind produced.
      * <p>
      * Extracted so the enabled and disabled bindings of the seam read as the two alternatives they
      * are, rather than one of them being a multi-statement lambda inline in the assembly.
@@ -472,13 +482,33 @@ public class BffRuntimeProducer {
     static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
         return (sessionRecord, cookieHeader, now) -> {
             TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
-            if (outcome.isFailure()) {
+            SessionRecord mediated = outcome.session();
+            if (mediated == null) {
                 return Optional.empty();
             }
-            return Optional.of(new SessionBinding.BoundSession(
-                    Objects.requireNonNullElse(outcome.session(), sessionRecord),
-                    outcome.setCookieHeaders()));
+            return Optional.of(new SessionBinding.BoundSession(mediated, outcome.setCookieHeaders()));
         };
+    }
+
+    /**
+     * Binds the coordinator's best-effort refresh-token revocation to the engine's RFC 7009 client.
+     * A provider that declares no {@code revocation_endpoint} leaves nothing to call, so the token is
+     * not revoked and the gap is recorded at {@code DEBUG}; the session has already been destroyed
+     * locally either way.
+     *
+     * @param revocationClient     the engine revocation client on the pinned back-channel posture
+     * @param metadata             the resolved provider metadata
+     * @param refreshToken         the refresh token still live at the provider
+     * @param clientAuthentication the confidential-client authentication to present
+     */
+    static void revokeRefreshToken(RevocationClient revocationClient, ProviderMetadata metadata,
+            String refreshToken, ClientAuthentication clientAuthentication) {
+        Optional<String> revocationEndpoint = metadata.getRevocationEndpoint();
+        if (revocationEndpoint.isEmpty()) {
+            LOGGER.debug("Provider declares no revocation_endpoint — refresh token not revoked after the session ended");
+            return;
+        }
+        revocationClient.revoke(revocationEndpoint.get(), refreshToken, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
     }
 
     /**
