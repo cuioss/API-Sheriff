@@ -189,8 +189,11 @@ class RedirectStageTest {
                     "a public redirect carrying no cookie is ordinary cacheable configuration");
         }
 
+        // Derived, not listed: RedirectStage.requiresNoStore treats every posture except NONE as
+        // authenticated, so the population is exactly that complement. Naming BEARER and SESSION
+        // would let a fourth Require constant be added without this assertion ever covering it.
         @ParameterizedTest(name = "require {0}")
-        @EnumSource(value = Require.class, names = {"BEARER", "SESSION"})
+        @EnumSource(value = Require.class, mode = EnumSource.Mode.EXCLUDE, names = "NONE")
         @DisplayName("Should force no-store on every authenticated posture, cookie or not")
         void shouldForceNoStoreOnAuthenticatedRoute(Require require) {
             AuthConfig authenticated = AuthConfig.builder().require(require).build();

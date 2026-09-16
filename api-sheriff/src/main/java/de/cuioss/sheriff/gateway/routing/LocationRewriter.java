@@ -47,10 +47,15 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
  *       untouched rather than mapped; a prefix route is unaffected, since its matcher admits the whole
  *       subtree.</li>
  *   <li><strong>Everything else is returned untouched</strong>: a foreign origin, a scheme-relative
- *       {@code //host} value, a relative-path reference, an unparseable value, a path outside the base
- *       path, a path carrying a {@code .} or {@code ..} segment in either its literal or its
+ *       {@code //host} value, a relative-path reference, a <em>scheme-less</em> reference with an
+ *       empty path ({@code ?query}, {@code #fragment} or the empty value — RFC 3986 section 5.3
+ *       resolves such a path against the current request path, not against the upstream root, so
+ *       mapping it onto the match key would move the redirect), an unparseable value, a path outside
+ *       the base path, a path carrying a {@code .} or {@code ..} segment in either its literal or its
  *       percent-encoded spelling — and any mapping that would itself start with {@code //}, since
- *       emitting a scheme-relative value would turn an upstream-internal path into another origin.</li>
+ *       emitting a scheme-relative value would turn an upstream-internal path into another origin.
+ *       An <em>absolute</em> same-origin URI with no path ({@code http://upstream:8080}) does name the
+ *       origin root, so it alone still maps through {@code /}.</li>
  * </ul>
  * <p>
  * The dot-segment refusal is a confinement rule rather than a tidiness one. The base-path test is
@@ -123,6 +128,15 @@ public final class LocationRewriter {
         }
         String rawPath = uri.getRawPath();
         if (rawPath == null || rawPath.isEmpty()) {
+            // An empty path means the ORIGIN ROOT only when the reference is absolute. Without a
+            // scheme it is a relative reference whose empty path RFC 3986 section 5.3 resolves
+            // against the current request path, so `?page=2`, `#section` and the empty reference
+            // all keep the browser where it is. Synthesizing "/" here would map them onto the match
+            // key instead — turning `?page=2` into `/api/?page=2` and moving the redirect to a
+            // different address than the upstream named.
+            if (uri.getScheme() == null) {
+                return location;
+            }
             rawPath = "/";
         } else if (!rawPath.startsWith("/")) {
             return location;

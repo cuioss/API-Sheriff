@@ -97,7 +97,8 @@ subdirectories, are ignored.
   `${VAR}` placeholder lets an environment value win over the placeholder's default, see
   link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology]); the resolved URL is *decomposed once* into
   `{scheme, host, port, base-path}` (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
-* The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias,
+* The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias
+  *of an enabled endpoint* (a disabled endpoint's alias is exempt -- see the bullet above),
   a malformed topology URL, or a route referencing a missing endpoint all *fail the boot*.
 * Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
   commit. Topology values may be literal (they are locations, not secrets) but are still
@@ -3050,8 +3051,19 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * When an `anchors` block is configured: every enabled route's match key (`match.path_prefix`, or the
   exact `match.path`) lies inside its *declared* anchor's `path_prefix`, and every enabled route whose
   path lies inside any
-  anchor's namespace declares exactly that anchor. A membership/namespace mismatch, a missing
+  anchor's namespace declares exactly that anchor -- so a route whose path lies outside *every* anchor
+  namespace declares no anchor at all. A membership/namespace mismatch, a missing
   declaration inside an anchor namespace, or a reference to an undefined anchor fails the boot.
+  `protocol: grpc` routes are exempt from *these two containment checks only* -- a service-rooted gRPC
+  method path can never nest inside a gateway path namespace on a segment boundary -- and stay subject
+  to every other anchor rule (see link:user/anchors.adoc#_anchors[Anchors]).
+* *Namespace coverage.* A *prefix* route whose namespace strictly contains an anchor's `path_prefix`
+  without declaring that anchor fails the boot, *unless* a prefix route declared at the anchor's own
+  `path_prefix` covers the namespace. This rule judges what a route's prefix *contains* rather than
+  where its own match key sits, so -- unlike the two checks above -- it applies to `protocol: grpc`
+  routes unchanged. Coverage is decided on prefix equality alone: a covering route narrowed by any
+  further `match` dimension covers only what it matches (an accepted residual, see
+  link:user/anchors.adoc#_anchors[Anchors]).
 * Where a route's anchor declares `auth.require` of `bearer` or `session`, the route's
   *effective* auth must not resolve to `require: none` -- the anchor floor cannot be weakened;
   violation fails the boot. Non-auth overrides that relax anchor limits are logged as boot

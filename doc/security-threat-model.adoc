@@ -338,8 +338,9 @@ the router-vs-enforcement desync of this entry expressed in configuration rather
 boot now closes it with the mirror rule: a prefix route whose namespace strictly contains an anchor's
 `path_prefix` without declaring that anchor fails the boot, unless a prefix route declared at the
 anchor's own `path_prefix` covers the namespace -- in which case longest-prefix selection gives that
-member every address inside it. So no address in an anchor namespace is served by a route outside the
-anchor.
+member every address inside it *that the member also matches*. So no address in an anchor namespace is
+served by a route outside the anchor, *except* where the covering route narrows on a non-path `match`
+dimension -- the accepted residual recorded below.
 
 *The mirror rule reaches every protocol, including `grpc`.* The two declaration-scoped rules waive
 `protocol: grpc` routes, because a service-rooted gRPC method path can never nest inside a gateway
