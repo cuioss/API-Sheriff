@@ -2513,7 +2513,7 @@ link:user/endpoint-routes.adoc#_redirect_terminal_action[Endpoint Routes -- Redi
 | `allow_external`
 | *Boolean, default `false`.* When `true`, `location` may additionally be an absolute `http` or
   `https` URI with a non-empty host and no user-info; every other scheme stays refused. Opting in
-  emits `WARN ApiSheriff-125` at boot, naming the route id but never the location.
+  emits `WARN ApiSheriff-127` at boot, naming the route id but never the location.
 |===
 
 A route declares *exactly one* terminal action: a `redirect` block together with an `asset` block or
@@ -3215,7 +3215,7 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   `/`, no backslash, no percent-encoded `/` or `\`, no dot-segment, printable ASCII without
   whitespace, and no `#` when `keep_query` is `true`. With `allow_external: true` it may instead be an
   absolute `http`/`https` URI with a non-empty host and no user-info. Any other value fails the boot;
-  a route opting into `allow_external` emits the `ApiSheriff-125` boot WARN. `redirect.status` must be
+  a route opting into `allow_external` emits the `ApiSheriff-127` boot WARN. `redirect.status` must be
   one of `301`, `302`, `303`, `307`, `308` (enforced by the schema).
 * `upstream.rewrite_location: true` is refused on `grpc` and `websocket` routes.
 * `asset.index` and `asset.fallback` are refused on a `source: upstream` asset block, and each value

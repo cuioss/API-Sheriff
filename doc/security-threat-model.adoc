@@ -1128,7 +1128,7 @@ only the raw query is appended under `keep_query`. The configuration validator r
   CR/LF would forge a response header), and no `#` together with `keep_query`;
 * with the opt-in, it may additionally be an absolute `http`/`https` URI with a non-empty host and no
   user-info; every other scheme (`javascript:`, `data:`, ...) stays refused, and the opt-in is
-  reported at boot by `WARN ApiSheriff-125`, naming the route and never the target;
+  reported at boot by `WARN ApiSheriff-127`, naming the route and never the target;
 * refusal messages echo the value through the injection-safe renderer (CWE-117, see <<gw-12>>).
 
 *Control -- the query is same-origin only.* The review above establishes that the *target* is a value
@@ -1173,7 +1173,7 @@ contact.
 and with it the ability to point clients at another origin. The review proves the target is a
 well-formed `http`/`https` URI; it cannot prove the operator meant that host. The exposure is bounded
 by it being an explicit per-route opt-in, visible in the endpoint file and announced at every boot by
-`ApiSheriff-125`, and by the target -- and now the whole `Location`, since the query hand-off is
+`ApiSheriff-127`, and by the target -- and now the whole `Location`, since the query hand-off is
 refused -- being fixed configuration an attacker cannot influence through the request.
 
 *Assertion.* Every refused spelling above fails the boot with the value escaped in the message; a
