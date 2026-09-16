@@ -85,26 +85,26 @@ public final class SecurityHeadersStage {
 
         /** {@code Strict-Transport-Security}, rendered from the block's {@code hsts} settings. */
         HSTS("Strict-Transport-Security") {
-            @Override
-            @Nullable
-            String value(SecurityHeadersConfig headers) {
-                Hsts hsts = headers.hsts();
-                if (hsts == null) {
-                    return null;
-                }
-                Integer maxAge = hsts.maxAge();
-                StringBuilder rendered = new StringBuilder("max-age=").append(maxAge != null ? maxAge : 0);
-                if (Boolean.TRUE.equals(hsts.includeSubdomains())) {
-                    rendered.append("; includeSubDomains");
-                }
-                return rendered.toString();
+        @Override
+        @Nullable
+        String value(SecurityHeadersConfig headers) {
+            Hsts hsts = headers.hsts();
+            if (hsts == null) {
+                return null;
             }
+            Integer maxAge = hsts.maxAge();
+            StringBuilder rendered = new StringBuilder("max-age=").append(maxAge != null ? maxAge : 0);
+            if (Boolean.TRUE.equals(hsts.includeSubdomains())) {
+                rendered.append("; includeSubDomains");
+            }
+            return rendered.toString();
+        }
 
-            @Override
-            HeaderMode mode(SecurityHeadersConfig headers) {
-                return headers.hstsMode();
-            }
-        },
+        @Override
+        HeaderMode mode(SecurityHeadersConfig headers) {
+            return headers.hstsMode();
+        }
+    },
 
         /** {@code X-Content-Type-Options: nosniff}, emitted when the block enables it. */
         CONTENT_TYPE_OPTIONS("X-Content-Type-Options") {
