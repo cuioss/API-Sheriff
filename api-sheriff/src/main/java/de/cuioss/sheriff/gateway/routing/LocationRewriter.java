@@ -40,11 +40,25 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
  *       it on a segment boundary, is mapped onto {@code stripTrailingSlash(matchKey) + remainder} and
  *       emitted as a gateway-relative path. With an empty base path every candidate path continues
  *       it. The query and fragment are carried over verbatim.</li>
+ *   <li><strong>Exact routes only map onto their own match key.</strong> An exact route's
+ *       {@link RouteMatcher} admits the match key by string equality and nothing below it, so a
+ *       mapping that is not <em>equal</em> to the match key names a path this gateway does not route
+ *       and the browser would follow it into a {@code 404}. Such a candidate is therefore returned
+ *       untouched rather than mapped; a prefix route is unaffected, since its matcher admits the whole
+ *       subtree.</li>
  *   <li><strong>Everything else is returned untouched</strong>: a foreign origin, a scheme-relative
  *       {@code //host} value, a relative-path reference, an unparseable value, a path outside the base
- *       path — and any mapping that would itself start with {@code //}, since emitting a
- *       scheme-relative value would turn an upstream-internal path into another origin.</li>
+ *       path, a path carrying a {@code .} or {@code ..} segment in either its literal or its
+ *       percent-encoded spelling — and any mapping that would itself start with {@code //}, since
+ *       emitting a scheme-relative value would turn an upstream-internal path into another origin.</li>
  * </ul>
+ * <p>
+ * The dot-segment refusal is a confinement rule rather than a tidiness one. The base-path test is
+ * performed on the path as received, so {@code /svc/v1/../login} continues the base path
+ * {@code /svc/v1} textually and would map onto {@code /api/../login} — which the browser resolves to
+ * {@code /login}, outside the match key the mapping is supposed to confine the redirect to. Canonical
+ * confinement cannot be proved for such a value without resolving it, so it is not mapped at all.
+ * <p>
  * Immutable and therefore thread-safe; one instance serves every request on its route.
  *
  * @author API Sheriff Team
@@ -57,24 +71,33 @@ public final class LocationRewriter {
     private static final int HTTP_DEFAULT_PORT = 80;
     private static final int HTTPS_DEFAULT_PORT = 443;
     private static final String SCHEME_RELATIVE = "//";
+    /** The percent-encoded spelling of {@code .}; matched case-insensitively, so {@code %2E} counts too. */
+    private static final String ENCODED_DOT = "%2e";
 
     private final String scheme;
     private final String host;
     private final int port;
     private final String basePath;
+    private final String matchKey;
+    private final boolean exactMatch;
     private final String gatewayPrefix;
 
     /**
-     * @param upstream the route's effective upstream: scheme, host, port and the effective base path
-     * @param matchKey the route's match key — its {@code path_prefix}, or its exact {@code path}
+     * @param upstream   the route's effective upstream: scheme, host, port and the effective base path
+     * @param matchKey   the route's match key — its {@code path_prefix}, or its exact {@code path}
+     * @param exactMatch whether {@code matchKey} is an exact {@code path} matcher; an exact route only
+     *                   maps a {@code Location} whose mapping equals the match key, because its
+     *                   {@link RouteMatcher} routes nothing below it
      */
-    public LocationRewriter(ResolvedUpstream upstream, String matchKey) {
+    public LocationRewriter(ResolvedUpstream upstream, String matchKey, boolean exactMatch) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(matchKey, "matchKey");
         this.scheme = upstream.scheme().toLowerCase(Locale.ROOT);
         this.host = upstream.host().toLowerCase(Locale.ROOT);
         this.port = upstream.port();
         this.basePath = stripTrailingSlashes(upstream.basePath());
+        this.matchKey = matchKey;
+        this.exactMatch = exactMatch;
         this.gatewayPrefix = stripTrailingSlashes(matchKey);
     }
 
@@ -104,6 +127,9 @@ public final class LocationRewriter {
         } else if (!rawPath.startsWith("/")) {
             return location;
         }
+        if (carriesDotSegment(rawPath)) {
+            return location;
+        }
         Optional<String> remainder = remainderBelowBasePath(rawPath);
         if (remainder.isEmpty()) {
             return location;
@@ -113,6 +139,9 @@ public final class LocationRewriter {
             mapped = "/";
         }
         if (mapped.startsWith(SCHEME_RELATIVE)) {
+            return location;
+        }
+        if (exactMatch && !mapped.equals(matchKey)) {
             return location;
         }
         StringBuilder rewritten = new StringBuilder(mapped);
@@ -154,6 +183,45 @@ public final class LocationRewriter {
             case HTTPS -> HTTPS_DEFAULT_PORT;
             default -> -1;
         };
+    }
+
+    /**
+     * Whether any segment of {@code rawPath} is a {@code .} or {@code ..} segment. The test runs on the
+     * raw (still percent-encoded) path and treats {@code %2e} / {@code %2E} as the dot it encodes, so
+     * an encoded traversal is caught on the same terms as a literal one — decoding the path first would
+     * mean mapping a value whose confinement was proved against a different string than the one the
+     * browser receives.
+     *
+     * @param rawPath the candidate's raw path
+     * @return {@code true} when the path carries a dot segment in either spelling
+     */
+    private static boolean carriesDotSegment(String rawPath) {
+        for (String segment : rawPath.split("/", -1)) {
+            if (isDotSegment(segment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @return {@code true} when {@code segment} consists of exactly one or two dots, each written
+     *         literally or as {@code %2e} in either case
+     */
+    private static boolean isDotSegment(String segment) {
+        int index = 0;
+        int dots = 0;
+        while (index < segment.length()) {
+            if (segment.charAt(index) == '.') {
+                index++;
+            } else if (segment.regionMatches(true, index, ENCODED_DOT, 0, ENCODED_DOT.length())) {
+                index += ENCODED_DOT.length();
+            } else {
+                return false;
+            }
+            dots++;
+        }
+        return dots == 1 || dots == 2;
     }
 
     /**

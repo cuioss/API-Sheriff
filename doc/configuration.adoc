@@ -59,7 +59,9 @@ Configuration is three kinds of artifact:
 | `endpoints/*.yaml`
 | *One file per endpoint* -- a service / host / app, or a logical group. Each file declares the
   routes for that endpoint and, when at least one route proxies, binds to one `base_url` *alias*
-  (an endpoint of asset and redirect routes only needs none). These files are
+  (an endpoint of asset and redirect routes only needs none, and a *disabled* endpoint needs none
+  either -- the requirement is checked for enabled endpoints only, see
+  link:#_endpoint_identity[`enabled`]). These files are
   *environment-independent* in their backend leg -- they never contain a real *upstream* host.
   (An inbound `match.host` matcher names the gateway's own public vhost and is
   environment-specific; write it as a `${VAR}` placeholder.)
@@ -89,7 +91,9 @@ subdirectories, are ignored.
 
 * `gateway.yaml`, every file under `endpoints/`, and `topology.properties` are read once at
   startup.
-* Each declared `base_url` alias is *resolved* against the topology (an explicit in-file
+* Each `base_url` alias declared by an *enabled* endpoint is *resolved* against the topology (a
+  disabled endpoint takes no part in resolution, so its alias may stay unresolved -- see
+  link:#_endpoint_identity[`enabled`]; an explicit in-file
   `${VAR}` placeholder lets an environment value win over the placeholder's default, see
   link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology]); the resolved URL is *decomposed once* into
   `{scheme, host, port, base-path}` (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
@@ -458,8 +462,11 @@ enablement fields:
 
 The endpoint's other fields are documented under their own headings: `base_url`
 (link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004];
-*mandatory exactly when the endpoint carries a proxy route* -- a route declaring neither `asset` nor
-`redirect` -- and omitted by an endpoint of asset and redirect routes only, see
+*mandatory exactly when an enabled endpoint carries a proxy route* -- a route declaring neither
+`asset` nor `redirect` -- and omitted by an endpoint of asset and redirect routes only. A *disabled*
+endpoint is exempt on both counts: the validator is handed only the enabled endpoints, so such an
+endpoint may omit `base_url` while carrying proxy routes, and may name an alias the topology does not
+resolve. See
 link:user/endpoint-routes.adoc#_base_url_only_with_proxy_routes[`base_url` is mandatory only with a
 proxy route]), `anchor`
 (link:user/anchors.adoc#_anchors[Anchors] -- the normative reference for both the gateway `anchors` block and
@@ -2877,8 +2884,13 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   substitution pass over `gateway.yaml` against the gateway schema and over each
   `endpoints/*.yaml` against the endpoint schema, so an endpoint document's array keys are reached
   on identical terms. The authoritative sets are the `array`-typed nodes of
-  `schema/gateway.schema.json` and `schema/endpoint.schema.json`; the enumerations below name them
-  as of this writing and are checked against those files, not maintained independently of them.
+  `schema/gateway.schema.json` and `schema/endpoint.schema.json`. The enumerations below name them as
+  of this writing and are *maintained by hand* against those files -- they are not derived from the
+  schemas, and no contract test compares them: `DocumentedSetsContractTest` binds several other
+  restated sets back to their sources, and this inventory is deliberately not among them. Read the
+  schemas when the answer has to be current. What cannot go stale is the *rule* itself -- it keys on
+  the declared type alone, so an `array` key added to either schema is in radius whether or not it is
+  named below.
 +
 --
 In `gateway.yaml` the schema declares 18 such keys. Seventeen declare string items and are the
