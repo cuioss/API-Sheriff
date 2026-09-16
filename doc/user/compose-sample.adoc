@@ -447,6 +447,44 @@ public proxy namespace, and a token issuer with a host-exact egress allowlist. T
 `auth: require: none`, which is the first thing to change when adapting the sample -- switch it to
 `require: bearer` and the route is gated on a token from the declared issuer.
 
+[[_the_sample_realm_enables_strict_refresh_token_rotation]]
+== The sample realm enables strict refresh-token rotation
+
+One realm setting is *not* a placeholder, and it is worth keeping when you adapt the sample: the
+`sample` realm sets `"revokeRefreshToken": true` and `"refreshTokenMaxReuse": 0` in
+`docker/keycloak/sample-realm.json`. That is strict refresh-token rotation -- every refresh returns a
+new refresh token, and the one it replaced is spent the moment it is redeemed.
+
+*It is the refresh-token replay defence, and it lives at the identity provider.* The gateway cannot
+recognise a replayed refresh token: a confidential client only ever sees the tokens it presents
+itself, and a stateless cookie-mode instance keeps no token family to compare against. An identity
+provider enforcing strict rotation refuses the replay with `invalid_grant`, and the gateway disposes
+that refusal as a credential rejection -- it ends the session and records `ApiSheriff-111` with reason
+`credential-rejected` (see link:../configuration.adoc#_oidc[`session.refresh.on_failure`]). Against
+Keycloak the defence reaches further than the replayed copy: the integration suite
+`BffRefreshReuseIT` observed that a detected replay also revokes the successor refresh token, so the
+legitimate holder's session ends too, while the Keycloak user session survives.
+
+The sample gateway itself mediates no session -- its one route is `auth: require: none` -- so the
+setting only acts once you add a BFF route with refresh enabled. It is shipped on so the realm you
+copy already carries the defence.
+
+*The cost you take on.* With no reuse permitted, a *duplicate* refresh of the same refresh token is
+indistinguishable from theft, and it ends the session. The gateway single-flights refreshes per
+session within one instance, so two requests on one instance never present the same token twice. It
+cannot coordinate across instances: two gateway instances refreshing the same session, or -- in
+cookie mode -- two parallel requests carrying the same cookie that land on different instances, can
+both present the same token, and the second one logs the user out. That is the concurrent-refresh
+trade link:../variants/03-bff-cookie.adoc#_transparent_refresh_and_step_up[the cookie variant]
+describes; with rotation strict, its residual effect is a rare forced re-login.
+
+*What your own identity provider needs.* Configure strict refresh-token rotation on the client's
+realm or tenant -- on Keycloak, *Revoke Refresh Token* on with *Refresh Token Max Reuse* `0`; on other
+providers, refresh-token rotation with reuse detection and no reuse grace window. *Without it neither
+side detects reuse*: the gateway never could, and the provider accepts the replayed token and simply
+refreshes it. Allowing a reuse count or grace window instead buys back availability under the
+duplicate-refresh race at the price of exactly the detection signal rotation exists to provide.
+
 == Where configuration comes from
 
 The shipped artifact declares nothing about where its configuration or key material lives; the
