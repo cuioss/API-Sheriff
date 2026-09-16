@@ -1506,8 +1506,15 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("gRPC anchor-namespace containment exemption (ADR-0007)")
+    @DisplayName("gRPC anchor-namespace containment exemption — rules 3 and 4 only (ADR-0007)")
     class GrpcNamespaceExemption {
+
+        // The exemption is SCOPED, and this class pins both sides of that scope. Rules 3 and 4 judge a
+        // route by where its OWN match key sits, which a service-rooted gRPC method path can never
+        // satisfy — those two are waived (the first three cases below, the negative controls for the
+        // inversion). Rule 4b judges the opposite geometry — what the route's prefix CONTAINS — and
+        // selection is protocol-blind (RouteTable.lookup filters on path alone), so a gRPC route
+        // swallowing an uncovered anchor namespace fails the boot exactly like an http one.
 
         private static final String ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.Echo";
         private static final String SECURE_ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.SecureEcho";
@@ -1568,17 +1575,64 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Rule 4b exemption: a gRPC route whose prefix swallows an uncovered anchor namespace is accepted")
-        void shouldExemptGrpcRouteFromNamespaceCoverageRule() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
-            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", null,
+        @DisplayName("Rule 4b applies to gRPC: a gRPC route whose prefix swallows an uncovered anchor namespace fails the boot")
+        void shouldRejectGrpcRouteContainingUncoveredAnchorNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    exactRoute("admin-entry", "/admin", "admin"));
+            EndpointConfig echo = anchoredEndpoint("echo", "ECHO", null,
                     new AuthConfig(Require.NONE, List.of()),
                     grpcRoute("grpc-echo", "/", null, null));
 
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, echo),
+                    topologyWith("ADMIN", "ECHO"));
 
+            // Selection is protocol-blind, so a plain GET /admin/x matches no route belonging to the
+            // anchor, falls through to this gRPC route, and is served with its require: none posture
+            // and its security_headers block — the anchor's bearer floor escaped for every address in
+            // the namespace but the one exact string.
+            assertHasError(errors, "/endpoint/routes",
+                    "route 'grpc-echo' path_prefix '/' contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
+        @Test
+        @DisplayName("Rule 4b coverage exception applies to gRPC too: a covered anchor namespace boots beside a gRPC catch-all")
+        void shouldAcceptGrpcRouteContainingCoveredAnchorNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-app", "/admin", "admin"));
+            EndpointConfig echo = anchoredEndpoint("echo", "ECHO", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    grpcRoute("grpc-echo", "/", null, null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, echo),
+                    topologyWith("ADMIN", "ECHO"));
+
+            // Same geometry as the case above with the one thing that matters changed: the anchor now
+            // carries a prefix route at its own path_prefix, so longest-prefix selection gives it every
+            // address in the namespace and the gRPC route alongside it is not a bypass.
             assertTrue(errors.isEmpty(),
-                    () -> "the gRPC exemption covers the coverage mirror too, not only rules 3 and 4, got: " + errors);
+                    () -> "a covered anchor namespace must not refuse a broader gRPC sibling route, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 4b applies to gRPC only as a container: a gRPC route on a bare service path swallows no anchor")
+        void shouldNotJudgeBareServicePathGrpcRouteAgainstTheCoverageRule() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    exactRoute("admin-entry", "/admin", "admin"));
+            EndpointConfig echo = anchoredEndpoint("echo", "ECHO", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    grpcRoute("grpc-echo", ECHO_PATH, null, null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, echo),
+                    topologyWith("ADMIN", "ECHO"));
+
+            // The shipped gRPC descriptors ride bare service paths, which contain no anchor prefix, so
+            // extending rule 4b to gRPC leaves them booting exactly as before.
+            assertTrue(errors.isEmpty(),
+                    () -> "a service-rooted gRPC route contains no anchor namespace and must not be refused, got: "
+                            + errors);
         }
 
         @Test

@@ -714,15 +714,26 @@ public final class ConfigValidator {
      * covers it with a prefix route of its own — the mirror of rule (4), see
      * {@link #checkRouteContainsUncoveredAnchor}.
      * <p>
-     * {@code protocol: grpc} routes are exempt from all three containment rules. A gRPC
-     * method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
+     * {@code protocol: grpc} routes are exempt from rules (3) and (4) — and from those two only.
+     * Both are <em>declaration</em>-scoped: they judge a route by where its own match key sits. A
+     * gRPC method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
      * service segment is a single opaque path segment (dots, no slashes), so it is
      * structurally never nested under a gateway path namespace on a segment boundary
      * — no non-root anchor {@code path_prefix} can contain it, and stock gRPC clients
-     * cannot be told to prepend a namespace prefix. Only the path-prefix containment
-     * geometry is skipped for gRPC routes: a gRPC route still declares an anchor for
-     * its ADR-0013 type/access classification and its ADR-0007 auth floor, and every
-     * other anchor rule (declared-anchor existence, pairwise-disjoint prefixes,
+     * cannot be told to prepend a namespace prefix.
+     * <p>
+     * Rule (4b) judges the opposite geometry — whether the route's own prefix <em>contains</em> an
+     * anchor namespace — so that rationale does not reach it, and it is applied to gRPC routes
+     * unchanged. Nothing constrains a gRPC route's declared match key to a bare service path, and
+     * selection is protocol-blind ({@code RouteTable.lookup} filters on path alone, and
+     * {@code RouteMatcher} carries no protocol dimension), so a gRPC route declaring a broad
+     * {@code path_prefix} answers plain HTTP requests inside the swallowed anchor namespace with
+     * <em>its</em> auth posture and <em>its</em> {@code security_headers} block — the same CWE-284
+     * desync rule (4b) exists to close.
+     * <p>
+     * Only the two declaration-scoped containment checks are skipped for gRPC routes: a gRPC route
+     * still declares an anchor for its ADR-0013 type/access classification and its ADR-0007 auth
+     * floor, and every other anchor rule (declared-anchor existence, pairwise-disjoint prefixes,
      * non-weakenable auth floor, access→auth matrix) stays enforced for it unchanged.
      * {@code websocket} and {@code http} routes keep full containment enforcement.
      */
@@ -734,16 +745,18 @@ public final class ConfigValidator {
         Set<String> coveredAnchors = anchorsCoveredByOwnPrefixRoute(gateway, endpoints);
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                if (effectiveProtocol(route) == Protocol.GRPC) {
-                    // gRPC routes ride a service-rooted single-segment path that no gateway path
-                    // namespace can contain on a segment boundary — exempt from containment
-                    // (rules 3, 4 and 4b).
-                    continue;
-                }
                 String declaredName = declaredAnchorName(endpoint, route);
                 String routeMatchKey = route.match().matchKey();
-                checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routeMatchKey, errors);
-                checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routeMatchKey, errors);
+                // gRPC routes ride a service-rooted single-segment path that no gateway path namespace
+                // can contain on a segment boundary, so the two declaration-scoped containment rules
+                // (3) and (4) are skipped for them — and only those two.
+                if (effectiveProtocol(route) != Protocol.GRPC) {
+                    checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routeMatchKey,
+                            errors);
+                    checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routeMatchKey, errors);
+                }
+                // Rule 4b judges what the route's prefix CONTAINS, not where its match key sits, and
+                // selection is protocol-blind — so it applies to every protocol, gRPC included.
                 checkRouteContainsUncoveredAnchor(gateway, endpoint, route, declaredName, coveredAnchors, errors);
             }
         }
@@ -806,11 +819,18 @@ public final class ConfigValidator {
      * is not a bypass.
      * <p>
      * Only prefix routes are judged here: an exact route covers exactly one address, and an exact
-     * route whose address lies inside an anchor namespace is rule (4)'s case, not this one. Like
-     * rules (3) and (4), this rule is path-geometric — it does not reason about {@code match.host}
-     * or {@code match.methods}, so a covering route narrowed by either still leaves the complement
-     * of that narrowing to the containing route (recorded as a residual risk under GW-01 in the
-     * threat model).
+     * route whose address lies inside an anchor namespace is rule (4)'s case, not this one. Unlike
+     * rules (3) and (4), this rule is <em>not</em> waived for {@code protocol: grpc} routes — see
+     * {@link #validateAnchorNamespaceMembership} for why the exemption's rationale stops at the two
+     * declaration-scoped rules.
+     * <p>
+     * The rule is path-geometric: {@link #anchorsCoveredByOwnPrefixRoute} marks an anchor covered on
+     * prefix equality alone and reads no other match dimension. The declaring source for what
+     * actually narrows a match at request time is {@code RouteMatcher.matches}, which ANDs the path
+     * with every further dimension it applies ({@code match.methods}, {@code match.host} and
+     * {@code match.headers} at present — read the matcher, not this list). A covering route narrowed
+     * by <em>any</em> of them covers only what it matches, so the complement of that narrowing still
+     * reaches the containing route (recorded as a residual risk under GW-01 in the threat model).
      */
     private static void checkRouteContainsUncoveredAnchor(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route, @Nullable String declaredName, Set<String> coveredAnchors, List<ConfigError> errors) {
@@ -838,6 +858,12 @@ public final class ConfigValidator {
      * anchor — a route whose normalized {@code match.path_prefix} equals the normalized anchor
      * {@code path_prefix}. Computed once per validation pass and consumed by
      * {@link #checkRouteContainsUncoveredAnchor}.
+     * <p>
+     * Coverage is decided on path geometry alone: the two tests below are non-exactness and prefix
+     * equality, and no further dimension of {@code match} is read. A covering route that narrows on
+     * any dimension {@code RouteMatcher.matches} applies beyond the path therefore still counts as
+     * coverage here while serving only part of the namespace at request time — the accepted residual
+     * recorded on {@link #checkRouteContainsUncoveredAnchor}.
      */
     private static Set<String> anchorsCoveredByOwnPrefixRoute(GatewayConfig gateway,
             List<EndpointConfig> endpoints) {
