@@ -1081,9 +1081,15 @@ A third mechanism is closed at the boundary rather than here: because the anchor
 *per selected route*, an address inside an anchor namespace that a route *outside* the anchor answers
 carries that route's block, not the anchor's -- the header floor escaped by routing rather than by
 precedence or by replacement. The anchor-namespace coverage rule (<<gw-01>>) refuses that
-configuration at boot, so an anchor's namespace is served only by routes that resolve the anchor and
-"a routed response carries exactly its anchor block" holds for every address in the namespace, not
-only for the addresses the anchor's routes happen to name.
+configuration at boot, so "a routed response carries exactly its anchor block" extends beyond the
+addresses the anchor's own routes happen to name.
+
+*Residual risk (accepted) -- a host- or method-narrowed covering route.* That rule is
+path-geometric: it marks an anchor covered on prefix equality alone and reads neither `match.host`
+nor `match.methods`, so a covering route narrowed by either leaves the complement of what it matches
+to the enclosing route -- and that response carries the enclosing route's header block, not the
+anchor's. The same residual is recorded against the auth floor under <<gw-01>>; it bounds this
+mechanism's closure identically.
 
 `content_security_policy` values are refused at boot when blank or carrying a CR, LF or other control
 character, on every block, so the header cannot become an injection vector (<<gw-03>>).
