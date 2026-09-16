@@ -915,7 +915,6 @@ class DocumentedSetsContractTest {
                 + INJECTED_ITEMS_PARENT_POINTER;
     }
 
-
     /**
      * Asserts a documented extension enumeration against {@link AssetResponseEnvelope} — the set it
      * names, and how many entries it actually listed to name it.
