@@ -169,11 +169,31 @@ gateway as BFF:
 When the stored access token is within the configured leeway of expiry, the gateway refreshes
 it through the engine using the stored refresh token (with rotation), transparently during a
 normal API request.
-On refresh-token reuse detection the token family is revoked; on refresh failure the session
-is destroyed and the request is handled as unauthenticated -- a *navigation* request is
-re-driven through the login flow, while an API/XHR request receives `401`
-`application/problem+json` (the same content negotiation as `require: session`). See
-link:../configuration.adoc[`oidc.session.refresh`].
+
+A refused refresh is disposed by *what the identity provider did to the presented refresh token*:
+
+* *Before the provider processed the grant* (connection failure, `5xx`, a `4xx` not attributed to
+  the credential) the session is *kept*. While the access token is still valid the request is
+  mediated with it; once it has expired the request is answered as below without ending the
+  session, and the next attempt waits out a fixed five-second back-off.
+* *The provider rejected the refresh token* (`invalid_grant`) -- the session ends.
+* *The provider redeemed the grant but the gateway refused its response*, or *the rotated session
+  could not be stored* -- the session ends and the one refresh token still live at the provider is
+  revoked best-effort.
+
+A request left without a token is answered by `oidc.session.refresh.on_failure`: with
+`reauthenticate` (the default) a *navigation* request is re-driven through the login flow while an
+API/XHR request receives `401` `application/problem+json` (the same content negotiation as
+`require: session`); with `reject` every request receives the `401`. See
+link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table].
+
+*Refresh-token reuse detection is the identity provider's job.* The gateway keeps no token family
+and cannot recognise a replayed refresh token; in this variant the refresh token never leaves the
+server-side store, so a replay through the gateway is not reachable in the first place. A refresh
+token stolen elsewhere is caught by *strict refresh-token rotation at the provider* (on Keycloak
+`revokeRefreshToken: true`, `refreshTokenMaxReuse: 0`), and the provider's revocation reaches the
+gateway session on its next refresh, which then ends as a credential rejection. Without that
+setting neither side detects reuse (ADR-0046).
 
 == Step-Up Authentication (RFC 9470)
 

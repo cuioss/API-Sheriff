@@ -216,7 +216,8 @@ Cookie mode is the stateless alternative by design.
 The cookie-mode BFF has had no systematic threat-model pass::
 The threat model covers the cookie-mode surface (`SealedSessionCookieCodec`,
 `CookieSessionBinding`) through individual catalogue entries (the AES-GCM sealing posture, the
-login-cookie replay window, per-instance refresh-token reuse detection), but no dedicated
+login-cookie replay window, refresh-token replay rejected by the identity provider's strict
+rotation), but no dedicated
 end-to-end review of the cookie variant has been performed. The entries that exist
 are sound; the *coverage* is not claimed to be exhaustive.
 

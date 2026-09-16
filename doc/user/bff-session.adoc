@@ -113,6 +113,29 @@ its origin in `oidc.session.csrf.trusted_origins` *and* enable `security_headers
 truly cross-site SPA never gets the `SameSite=Lax` cookie attached -- host it under the gateway's
 site. See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
 
+== Configure strict refresh-token rotation at the IdP
+
+The gateway does *not* detect refresh-token reuse, and cannot: it keeps no token family and only
+ever sees the refresh tokens it presents itself. Reuse detection is your identity provider's job, so
+turn it on there for the client's realm or tenant:
+
+* *Keycloak:* *Revoke Refresh Token* on and *Refresh Token Max Reuse* `0` (`revokeRefreshToken: true`,
+  `refreshTokenMaxReuse: 0` in a realm export). The project's integration and compose-sample realms
+  ship with exactly this.
+* *Other providers:* refresh-token rotation with reuse detection and no reuse grace window.
+
+With it on, a refresh token stolen from anywhere and redeemed at the provider is detected, and the
+provider revokes the grant; the gateway session behind it then ends on its next refresh, recorded as
+`ApiSheriff-111` with reason `credential-rejected`. On Keycloak a detected replay revokes the
+successor token as well, so the legitimate session ends too, while the Keycloak user session
+survives. *Without it, neither side detects reuse* -- the provider simply refreshes a replayed token.
+
+*The trade.* With no reuse permitted, a duplicate refresh of one token ends the session. In this
+variant the gateway single-flights refreshes per session, and a single-node or sticky deployment
+routes every request of a session to one instance, so the duplicate does not arise from the gateway
+itself; it would take two instances refreshing the same session. Allowing a reuse count or grace
+window buys that back at the cost of exactly the detection signal rotation provides.
+
 == Operate
 
 * *Sessions are in-memory.* A gateway restart drops all sessions and users re-authenticate. Size
@@ -121,6 +144,14 @@ site. See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
   expired entries first, so only genuinely live sessions hold the ceiling.
 * *Absolute TTL.* `ttl_seconds` is counted from login and is not extended by refresh; on expiry the
   user re-authenticates.
+* *Refresh failures do not all end the session.* If the IdP is unreachable or answers `5xx`, the
+  session is *kept*: requests keep using the current access token until it expires, then are
+  answered as unauthenticated without the session being destroyed, and the next refresh attempt
+  waits five seconds (`ApiSheriff-127`). A refresh the IdP rejects, or one the gateway cannot
+  complete after the IdP redeemed it, ends the session (`ApiSheriff-111`). `on_failure` only picks
+  how the failing request is answered: `reauthenticate` redirects navigations to login and answers
+  API calls `401`, `reject` answers `401` to everything. See
+  link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table].
 * *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
   without the IdP -- but logins fail until the issuer is reachable. Confirm egress to the issuer
   (and its JWKS) is permitted.

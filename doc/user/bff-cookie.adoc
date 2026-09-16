@@ -230,6 +230,43 @@ link:../development/bff-cookie.adoc[the contributor guide]. Note what the 4019 b
 every browser guarantees, not a limit measured in any particular browser.
 ====
 
+[[_configure_strict_refresh_token_rotation_at_the_idp]]
+== Configure strict refresh-token rotation at the IdP
+
+In this variant the refresh token travels inside the sealed cookie, so a copied cookie is a copied
+refresh token. Once the gateway has refreshed a session, the *older* cookie still unseals -- the
+gateway keeps no state to tell it apart from the current one -- and replaying it makes the gateway
+present the already-spent refresh token again. *The gateway cannot detect that*: it keeps no token
+family, and a stateless instance could not share one if it did. Detection is your identity
+provider's job, so turn it on for the client's realm or tenant:
+
+* *Keycloak:* *Revoke Refresh Token* on and *Refresh Token Max Reuse* `0` (`revokeRefreshToken: true`,
+  `refreshTokenMaxReuse: 0` in a realm export). The project's integration and compose-sample realms
+  ship with exactly this.
+* *Other providers:* refresh-token rotation with reuse detection and no reuse grace window.
+
+With it on, the replay is refused with `invalid_grant`, the gateway ends that session, clears the
+cookie and records `ApiSheriff-111` with reason `credential-rejected`. Keycloak additionally revokes
+the successor token, so the session the legitimate browser holds ends on its next refresh as well,
+while the Keycloak user session survives -- a replay costs the attacker and the user the whole grant.
+*Without strict rotation, neither side detects reuse*: the provider refreshes the replayed token and
+the copied cookie becomes a working session.
+
+*The trade you accept.* Strict rotation cannot tell a replay from a benign duplicate. Each instance
+single-flights refreshes per session, but two parallel requests carrying the same cookie that land on
+*different* instances inside the refresh window both present the same refresh token, and the second
+ends the session -- a forced re-login. Allowing a reuse count or grace window at the IdP avoids that
+at the price of the detection itself; see
+link:../variants/03-bff-cookie.adoc#_transparent_refresh_and_step_up[the concurrent-refresh race].
+
+*How a failing refresh is answered.* Only the failure kinds above end the session. If the IdP is
+unreachable or answers `5xx`, the session is kept: requests keep using the current access token until
+it expires, then are answered as unauthenticated *without* the cookie being cleared, and the next
+attempt waits five seconds (`ApiSheriff-127`, per instance). `on_failure` picks how a failing request
+is answered -- `reauthenticate` redirects navigations to login and answers API calls `401`, `reject`
+answers `401` to everything. See link:../configuration.adoc#_refresh_failure_dispositions[the
+per-kind table].
+
 == What is unavailable in this variant
 
 A stateless gateway holds no session index and cannot reach another browser's cookie, so
@@ -238,7 +275,12 @@ IdP-driven destruction is *unsupported*:
 * *Back-channel logout answers `404`.* The reserved path stays wired and deliberately returns `404`
   rather than falling through to the proxy route table -- it never claims a destruction that did not
   happen.
-* *No destroy-by-`sid` / destroy-by-`sub`.* Nothing can be revoked centrally mid-session.
+* *No destroy-by-`sid` / destroy-by-`sub`.* Nothing can be revoked centrally with *immediate*
+  effect. The one IdP-side lever that reaches a cookie session is revoking its grant at the IdP
+  (deleting the user's session there): with `session.refresh` enabled, the cookie keeps working
+  until its access token enters the refresh window, and that refresh is then rejected and ends the
+  session (`ApiSheriff-111`, `credential-rejected`). With refresh disabled it keeps working until
+  `ttl_seconds` expires.
 
 RP-initiated logout (the user logging themselves out) works normally: the browser's cookie is
 cleared, and an expired cookie the browser keeps anyway is still refused server-side by the absolute

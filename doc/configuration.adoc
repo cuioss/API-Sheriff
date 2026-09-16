@@ -2123,17 +2123,80 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   expires and never re-contacts the IdP mid-session.
 
 | `session.refresh.on_failure`
-| What happens to the *request during which* refresh fails; the session is destroyed either
-  way. `reauthenticate` (default): treat the request as unauthenticated -- navigation requests
-  are redirected into a fresh authorization-code flow, others get `401` (the same content
-  negotiation as `require: session`). `reject`: always answer `401` `application/problem+json`,
-  even for navigations -- for deployments whose SPA handles re-login entirely itself.
+| How the *request during which* refresh fails is answered when it is left with no token to
+  mediate. Whether the *session* survives is not this key's decision: it follows from what the
+  identity provider did with the refresh token -- see <<_refresh_failure_dispositions>>.
+  `reauthenticate` (default, also when the key is omitted): treat the request as unauthenticated --
+  navigation requests are redirected into a fresh authorization-code flow, others get `401` (the
+  same content negotiation as `require: session`). `reject`: always answer `401`
+  `application/problem+json`, even for navigations -- for deployments whose SPA handles re-login
+  entirely itself. Any other value is refused at boot.
 
 | `step_up.*`
 | RFC 9470: honour an upstream `401` + `insufficient_user_authentication` challenge by silent
   refresh, then re-authorization with elevated `acr_values`/`max_age`. See
   link:variants/02-bff-session.adoc[Variant 2].
 |===
+
+[[_refresh_failure_dispositions]]
+==== Refresh failures: what happens to the session
+
+A refused refresh is disposed by *what the identity provider did to the presented refresh token*,
+as the token engine classifies the exchange. The disposition is fixed per kind -- there is no key
+that changes it -- and `on_failure` only decides how a request that is left without a token is
+answered.
+
+[cols="2,3,2,1", options="header"]
+|===
+| Failure kind | Session | Refresh token revoked | Recorded as
+
+| *Pre-redemption* -- the provider never processed the grant: a connection or DNS failure, a `5xx`,
+  or a `4xx` it did not attribute to the credential
+| *Kept.* While the access token has not expired the request is mediated with it; once it has, the
+  request is answered through `on_failure` and the session cookie is *not* cleared. The session's
+  next attempt waits out a fixed five-second back-off (per instance).
+| None -- the presented token is still valid.
+| `ApiSheriff-127`
+
+| *Credential rejected* -- the provider answered `invalid_grant`, which is also how strict
+  rotation refuses a replayed refresh token
+| *Ended.* The session cookie is cleared and the request is answered through `on_failure`.
+| None -- nothing was redeemed.
+| `ApiSheriff-111` (`credential-rejected`)
+
+| *Redeemed* -- the provider redeemed the grant, but the gateway refused its response
+| *Ended*, as above.
+| Best-effort, the one live token the gateway can name: the successor when the provider rotated,
+  the presented token when it did not, none when rotation is unknown.
+| `ApiSheriff-111` (`redeemed-response-refused`)
+
+| *Persist failure* -- the exchange succeeded, but the rotated session could not be stored or
+  re-sealed
+| *Ended*, as above.
+| Best-effort, the refresh token the exchange returned.
+| `ApiSheriff-111` (`persist-failure`)
+|===
+
+Revocation is best-effort: a failed revocation never changes the disposition, because the local
+session destruction is what ends the session.
+
+*Refresh-token reuse detection is the identity provider's job, not the gateway's.* A confidential
+client only sees the refresh tokens it presents itself, and a stateless cookie-mode instance keeps no
+token family to compare against, so the gateway cannot recognise a replayed refresh token. The
+operator control is *strict refresh-token rotation at the identity provider* -- on Keycloak,
+`revokeRefreshToken: true` with `refreshTokenMaxReuse: 0` (*Revoke Refresh Token* on, *Refresh Token
+Max Reuse* `0`). The provider then refuses a replay with `invalid_grant`, which arrives as *credential
+rejected* and ends the session. The integration and compose-sample realms ship with it on. Against
+Keycloak a detected replay also revokes the successor refresh token, so the legitimate holder's
+session ends as well; the Keycloak user session itself survives
+(see link:security-threat-model.adoc[the threat model] and
+link:adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+
+*Residual:* without strict rotation at the provider there is *no* reuse detection on either side --
+the provider accepts a replayed refresh token and simply refreshes it. The cost of turning it on is
+the duplicate-refresh race: two gateway instances refreshing one session, or two parallel cookie-mode
+requests on different instances, present the same token, and the second ends the session
+(link:variants/03-bff-cookie.adoc#_transparent_refresh_and_step_up[Variant 3]).
 
 === `match`
 

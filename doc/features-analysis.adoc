@@ -59,9 +59,14 @@ set of things well, with zero mandatory external dependencies.
 
 | *Transparent automatic token refresh*
 | Inspired by APISIX `renew_access_token_on_expiry` + `access_token_expires_leeway`.
-  Refresh silently before expiry using the refresh token; on refresh failure fall back to a
-  full authorization-code flow. Adopt a pre-expiry *leeway* to avoid edge-of-expiry races,
-  and destroy the session on failed refresh (Kong `unauthorized_destroy_session` behaviour).
+  Refresh silently before expiry using the refresh token, with a pre-expiry *leeway* to avoid
+  edge-of-expiry races. A failed refresh is disposed by its kind rather than uniformly: a
+  failure before the IdP processed the grant keeps the session with a back-off, while a rejected
+  or redeemed-but-refused refresh ends it (Kong `unauthorized_destroy_session` behaviour, applied
+  only where the refresh token can no longer be used), and the request falls back to a full
+  authorization-code flow or a `401` per `on_failure`. Refresh-token reuse detection is left to
+  the IdP's strict rotation, not the gateway (see
+  link:configuration.adoc#_refresh_failure_dispositions[the configuration reference]).
 
 | *Offline JWT validation with cached JWKS*
 | Table stakes across KrakenD/Tyk/Gravitee/APISIX. API Sheriff uses
