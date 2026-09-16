@@ -119,6 +119,8 @@ public final class ConfigLoader {
     private static final String UPSTREAM_VERIFY_HOSTNAME_FIELD = "upstream_verify_hostname";
     private static final String JWKS_VERIFY_HOSTNAME_FIELD = "jwks_verify_hostname";
     private static final String UPSTREAM_TLS_PROFILE_FIELD = "upstream_tls_profile";
+    private static final String OIDC_VERIFY_HOSTNAME_FIELD = "oidc_verify_hostname";
+    private static final String OIDC_TLS_PROFILE_FIELD = "oidc_tls_profile";
     private static final String YAML_EXTENSION = ".yaml";
     private static final String YML_EXTENSION = ".yml";
     private static final int MAX_YAML_NESTING_DEPTH = 100;
@@ -850,15 +852,17 @@ public final class ConfigLoader {
 
     /**
      * Binds the flat {@code egress_tls} YAML block to {@link EgressTlsConfig}, resolving each
-     * <em>absent</em> hostname-verification flag to {@code true}.
+     * <em>absent</em> hostname-verification flag ({@code upstream_verify_hostname},
+     * {@code jwks_verify_hostname}, {@code oidc_verify_hostname}) to {@code true} and each absent
+     * trust profile ({@code upstream_tls_profile}, {@code oidc_tls_profile}) to {@code null}.
      * <p>
      * The defaulting is the whole reason this deserializer exists. Jackson binds an omitted
      * {@code boolean} to {@code false}, so a block that names only {@code upstream_tls_profile} would
-     * otherwise resolve {@code upstream_verify_hostname} to {@code false} — hostname verification
-     * silently disabled by a document that never mentions it, which is the shape of the failure the
-     * threat model's GW-06 control exists to prevent. The record's own {@code defaults()} does not
-     * close this: it is reached only when the whole block is absent, never when the block is present
-     * and a key inside it is not.
+     * otherwise resolve every hostname flag to {@code false} — hostname verification silently
+     * disabled by a document that never mentions it, which is the shape of the failure the threat
+     * model's GW-06 control exists to prevent. The record's own {@code defaults()} does not close
+     * this: it is reached only when the whole block is absent, never when the block is present and a
+     * key inside it is not.
      */
     private static final class EgressTlsDeserializer extends JsonDeserializer<EgressTlsConfig>
             implements Serializable {
@@ -872,7 +876,9 @@ public final class ConfigLoader {
             return new EgressTlsConfig(
                     readFlag(node, UPSTREAM_VERIFY_HOSTNAME_FIELD),
                     readFlag(node, JWKS_VERIFY_HOSTNAME_FIELD),
-                    readProfile(node));
+                    readProfile(node, UPSTREAM_TLS_PROFILE_FIELD),
+                    readFlag(node, OIDC_VERIFY_HOSTNAME_FIELD),
+                    readProfile(node, OIDC_TLS_PROFILE_FIELD));
         }
 
         private static boolean readFlag(JsonNode node, String field) {
@@ -880,8 +886,8 @@ public final class ConfigLoader {
             return flag == null || flag.asBoolean(true);
         }
 
-        private static @Nullable String readProfile(JsonNode node) {
-            JsonNode profile = node.get(UPSTREAM_TLS_PROFILE_FIELD);
+        private static @Nullable String readProfile(JsonNode node, String field) {
+            JsonNode profile = node.get(field);
             return profile == null || profile.isNull() ? null : profile.asText();
         }
     }

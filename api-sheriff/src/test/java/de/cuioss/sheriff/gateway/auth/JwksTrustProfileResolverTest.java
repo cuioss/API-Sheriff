@@ -27,6 +27,7 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 @DisplayName("JwksTrustProfileResolver — maps a logical tls_profile name to concrete trust anchors")
@@ -169,5 +170,87 @@ class JwksTrustProfileResolverTest {
                 () -> "the diagnostic must name the failing profile, got: " + message);
         assertTrue(message.contains("could not be loaded"),
                 () -> "the diagnostic must report the load failure, not a missing profile, got: " + message);
+    }
+
+    /**
+     * The leg-neutral resolution the BFF OIDC back-channel uses for {@code egress_tls.oidc_tls_profile}.
+     * It shares its resolution core with {@link JwksTrustProfileResolver#resolve(IssuerConfig, String)},
+     * so each of the four fail-closed refusals is asserted here again for this entry point — a core that
+     * forked would pass the issuer cases above and fail one of these.
+     */
+    @Nested
+    @DisplayName("resolveEgressProfile — the same refusals under a global egress_tls key")
+    class EgressProfile {
+
+        private static final String EGRESS_KEY = "egress_tls.oidc_tls_profile";
+
+        @Test
+        @DisplayName("a defined profile resolves to the SSL context carrying its trust anchors")
+        void resolvesDefinedProfile() {
+            TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
+
+            SSLContext context = new JwksTrustProfileResolver(registry).resolveEgressProfile(EGRESS_KEY, PROFILE);
+
+            assertSame(registry.profileContext(), context,
+                    "a defined trust profile must yield the context carrying that profile's anchors");
+        }
+
+        @Test
+        @DisplayName("an unbound profile fails config-invalid, naming the gateway key and the runtime key")
+        void unboundProfileFailsFast() {
+            GatewayException thrown = refusalFrom(TestTlsConfigurationRegistry.empty());
+
+            String message = thrown.getMessage();
+            assertTrue(message.contains("quarkus.tls." + PROFILE + ".trust-store"),
+                    () -> "the diagnostic must name the concrete key that binds the profile, got: " + message);
+        }
+
+        @Test
+        @DisplayName("a trust-all profile is refused for what trust-all does, ahead of the anchor-free check")
+        void trustAllProfileFailsFast() {
+            GatewayException thrown = refusalFrom(TestTlsConfigurationRegistry.withTrustAll(PROFILE));
+
+            String message = thrown.getMessage();
+            assertTrue(message.contains("trust-all") && message.contains("accept any certificate"),
+                    () -> "the diagnostic must name trust-all and what it does, got: " + message);
+        }
+
+        @Test
+        @DisplayName("a bound but anchor-free profile fails rather than silently using default trust")
+        void trustMaterialFreeProfileFailsFast() {
+            GatewayException thrown = refusalFrom(TestTlsConfigurationRegistry.withoutTrustMaterial(PROFILE));
+
+            String message = thrown.getMessage();
+            assertTrue(message.contains("default trust store"),
+                    () -> "the diagnostic must name the fallback being refused, got: " + message);
+        }
+
+        @Test
+        @DisplayName("unloadable trust material fails config-invalid and reports the load failure")
+        void unloadableTrustMaterialFailsFast() {
+            GatewayException thrown = refusalFrom(TestTlsConfigurationRegistry.withBrokenMaterial(PROFILE));
+
+            String message = thrown.getMessage();
+            assertTrue(message.contains("could not be loaded"),
+                    () -> "the diagnostic must report the load failure, not a missing profile, got: " + message);
+        }
+
+        /**
+         * @param registry the registry shape under test
+         * @return the refusal, already asserted to be {@code CONFIG_INVALID} naming the gateway key and
+         *         the profile — the context every refusal on this entry point must carry
+         */
+        private GatewayException refusalFrom(TestTlsConfigurationRegistry registry) {
+            JwksTrustProfileResolver resolver = new JwksTrustProfileResolver(registry);
+
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> resolver.resolveEgressProfile(EGRESS_KEY, PROFILE));
+
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+            String message = thrown.getMessage();
+            assertTrue(message.contains(EGRESS_KEY) && message.contains(PROFILE),
+                    () -> "the diagnostic must name the declaring gateway key and the profile, got: " + message);
+            return thrown;
+        }
     }
 }

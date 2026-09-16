@@ -34,9 +34,18 @@ import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import okhttp3.tls.HeldCertificate;
 
 /**
- * A local HTTPS server that serves a JWKS document under a certificate whose subject alternative
- * name deliberately does <em>not</em> name the address it is dialled on — the one fixture shape that
- * can tell {@code egress_tls.jwks_verify_hostname} apart from every neighbouring control.
+ * A local HTTPS server that serves a JWKS document — and, alongside it, an OIDC discovery document —
+ * under a certificate whose subject alternative name deliberately does <em>not</em> name the address
+ * it is dialled on: the one fixture shape that can tell a hostname-verification key apart from every
+ * neighbouring control.
+ * <p>
+ * Two keys are proven against it: {@code egress_tls.jwks_verify_hostname} dials {@link #jwksUrl()}
+ * through the JWKS back-channel, and {@code egress_tls.oidc_verify_hostname} dials the
+ * {@value #DISCOVERY_PATH} document under {@link #issuer()} through the BFF OIDC back-channel. The
+ * class is public so the {@code quarkus} test package, where the BFF producer is tested, reaches the
+ * same fixture rather than a second copy of it. The discovery document names the fixture's own
+ * {@link #issuer()} and a token endpoint beneath it, which is all discovery validates before
+ * returning; the JWKS behaviour is unchanged by its presence.
  *
  * <h2>Why the SAN mismatch has to be the ONLY defect</h2>
  *
@@ -92,7 +101,7 @@ import okhttp3.tls.HeldCertificate;
  * @author API Sheriff Team
  * @since 1.0
  */
-final class SanMismatchedJwksServer implements AutoCloseable {
+public final class SanMismatchedJwksServer implements AutoCloseable {
 
     /**
      * The only name the served certificate vouches for. Under the reserved {@code .invalid} TLD
@@ -104,6 +113,9 @@ final class SanMismatchedJwksServer implements AutoCloseable {
     static final String MISMATCHED_SUBJECT_ALTERNATIVE_NAME = "idp.san-mismatch.invalid";
 
     private static final String JWKS_PATH = "/jwks";
+    /** The OIDC discovery path, served beneath {@link #issuer()}. */
+    static final String DISCOVERY_PATH = "/.well-known/openid-configuration";
+    private static final String TOKEN_PATH = "/token";
     private static final String TRUST_STORE_PROPERTY = "javax.net.ssl.trustStore";
     private static final String TRUST_STORE_PASSWORD_PROPERTY = "javax.net.ssl.trustStorePassword";
     private static final String TRUST_STORE_TYPE_PROPERTY = "javax.net.ssl.trustStoreType";
@@ -111,16 +123,16 @@ final class SanMismatchedJwksServer implements AutoCloseable {
     private static final char[] STORE_PASSWORD = "san-mismatch-fixture".toCharArray();
 
     private final HttpsServer server;
-    private final String jwksUrl;
+    private final String issuer;
     private final boolean installedTrust;
     private final String previousTrustStore;
     private final String previousTrustStorePassword;
     private final String previousTrustStoreType;
 
-    private SanMismatchedJwksServer(HttpsServer server, String jwksUrl, boolean installedTrust,
+    private SanMismatchedJwksServer(HttpsServer server, boolean installedTrust,
             String previousTrustStore, String previousTrustStorePassword, String previousTrustStoreType) {
         this.server = server;
-        this.jwksUrl = jwksUrl;
+        this.issuer = baseUrlOf(server);
         this.installedTrust = installedTrust;
         this.previousTrustStore = previousTrustStore;
         this.previousTrustStorePassword = previousTrustStorePassword;
@@ -136,7 +148,7 @@ final class SanMismatchedJwksServer implements AutoCloseable {
      * @return the running fixture; close it to stop the listener and restore the trust store
      * @throws Exception when the certificate chain, the key material or the listener cannot be built
      */
-    static SanMismatchedJwksServer start(Path workDir, String jwksDocument) throws Exception {
+    public static SanMismatchedJwksServer start(Path workDir, String jwksDocument) throws Exception {
         HeldCertificate root = new HeldCertificate.Builder()
                 .certificateAuthority(0)
                 .commonName("API Sheriff SAN-mismatch test root")
@@ -153,7 +165,6 @@ final class SanMismatchedJwksServer implements AutoCloseable {
 
         Path trustStorePath = writeTrustStore(workDir, root.certificate());
         HttpsServer server = startListener(serverContext(root, leaf), jwksDocument);
-        String jwksUrl = "https://" + LoopbackHost.ADDRESS + ":" + server.getAddress().getPort() + JWKS_PATH;
 
         String previousTrustStore = System.getProperty(TRUST_STORE_PROPERTY);
         String previousTrustStorePassword = System.getProperty(TRUST_STORE_PASSWORD_PROPERTY);
@@ -162,7 +173,7 @@ final class SanMismatchedJwksServer implements AutoCloseable {
         System.setProperty(TRUST_STORE_PASSWORD_PROPERTY, new String(STORE_PASSWORD));
         System.setProperty(TRUST_STORE_TYPE_PROPERTY, PKCS12);
 
-        return new SanMismatchedJwksServer(server, jwksUrl, true, previousTrustStore,
+        return new SanMismatchedJwksServer(server, true, previousTrustStore,
                 previousTrustStorePassword, previousTrustStoreType);
     }
 
@@ -173,8 +184,9 @@ final class SanMismatchedJwksServer implements AutoCloseable {
      * <p>
      * The hostname is deliberately correct here, so hostname matching cannot be what refuses the dial.
      * The only remaining defect is that this server's root is never installed as a trust anchor, which
-     * makes a refusal under {@code jwks_verify_hostname: false} attributable to certificate-chain
-     * validation and nothing else. Without this leg, a test suite proving only that the relaxed dial
+     * makes a refusal under a relaxed hostname key ({@code jwks_verify_hostname: false} or
+     * {@code oidc_verify_hostname: false}) attributable to certificate-chain validation and nothing
+     * else. Without this leg, a test suite proving only that the relaxed dial
      * SUCCEEDS is equally consistent with the flag having disabled TLS verification wholesale.
      * <p>
      * It installs no trust properties and restores none, so it composes with a live {@link #start}
@@ -184,7 +196,7 @@ final class SanMismatchedJwksServer implements AutoCloseable {
      * @return the running fixture; closing it stops the listener and touches no system property
      * @throws Exception when the chain or the listener cannot be built
      */
-    static SanMismatchedJwksServer startUntrusted(String jwksDocument) throws Exception {
+    public static SanMismatchedJwksServer startUntrusted(String jwksDocument) throws Exception {
         HeldCertificate foreignRoot = new HeldCertificate.Builder()
                 .certificateAuthority(0)
                 .commonName("API Sheriff untrusted test root")
@@ -200,16 +212,25 @@ final class SanMismatchedJwksServer implements AutoCloseable {
                 .duration(1, TimeUnit.HOURS)
                 .build();
         HttpsServer server = startListener(serverContext(foreignRoot, leaf), jwksDocument);
-        String jwksUrl = "https://" + LoopbackHost.ADDRESS + ":" + server.getAddress().getPort() + JWKS_PATH;
-        return new SanMismatchedJwksServer(server, jwksUrl, false, null, null, null);
+        return new SanMismatchedJwksServer(server, false, null, null, null);
     }
 
     /**
      * @return the {@code https} URL an issuer's {@code jwks.url} must name to reach this server. Its
      *         host is {@link LoopbackHost#ADDRESS}, which the served certificate does not vouch for
      */
-    String jwksUrl() {
-        return jwksUrl;
+    public String jwksUrl() {
+        return issuer + JWKS_PATH;
+    }
+
+    /**
+     * @return the {@code https} issuer URL an {@code oidc.issuer} must name for discovery to reach this
+     *         server's {@value #DISCOVERY_PATH} document. It is also the {@code issuer} the served
+     *         document declares, so discovery's issuer check passes and a refusal can only come from
+     *         the TLS handshake
+     */
+    public String issuer() {
+        return issuer;
     }
 
     /**
@@ -218,7 +239,7 @@ final class SanMismatchedJwksServer implements AutoCloseable {
      *         issuer pointing here must allowlist it or the dial never reaches the TLS handshake at
      *         all — which would fail both legs for a reason unrelated to hostname verification
      */
-    static String dialledHost() {
+    public static String dialledHost() {
         return LoopbackHost.ADDRESS;
     }
 
@@ -285,22 +306,41 @@ final class SanMismatchedJwksServer implements AutoCloseable {
     /**
      * @param context      the server-side TLS context
      * @param jwksDocument the body every JWKS request is answered with
-     * @return the started listener, bound to {@link LoopbackHost#ADDRESS} on an ephemeral port
+     * @return the started listener, bound to {@link LoopbackHost#ADDRESS} on an ephemeral port, serving
+     *         the JWKS document and a discovery document naming this listener as its issuer
      * @throws Exception when the listener cannot be created
      */
     private static HttpsServer startListener(SSLContext context, String jwksDocument) throws Exception {
         HttpsServer server = HttpsServer.create(
                 new InetSocketAddress(InetAddress.getByName(LoopbackHost.ADDRESS), 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(context));
-        byte[] body = jwksDocument.getBytes(StandardCharsets.UTF_8);
-        server.createContext(JWKS_PATH, exchange -> {
+        serveJson(server, JWKS_PATH, jwksDocument);
+        String issuer = baseUrlOf(server);
+        serveJson(server, DISCOVERY_PATH, """
+                {"issuer":"%s","authorization_endpoint":"%s/authorize","token_endpoint":"%s%s",\
+                "jwks_uri":"%s%s","code_challenge_methods_supported":["S256"]}"""
+                .formatted(issuer, issuer, issuer, TOKEN_PATH, issuer, JWKS_PATH));
+        server.start();
+        return server;
+    }
+
+    private static void serveJson(HttpsServer server, String path, String document) {
+        byte[] body = document.getBytes(StandardCharsets.UTF_8);
+        server.createContext(path, exchange -> {
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);
             try (OutputStream out = exchange.getResponseBody()) {
                 out.write(body);
             }
         });
-        server.start();
-        return server;
+    }
+
+    /**
+     * @param server a listener already bound to its ephemeral port
+     * @return the {@code https} base URL the listener is dialled on — the loopback IP literal the
+     *         served certificate never names
+     */
+    private static String baseUrlOf(HttpsServer server) {
+        return "https://" + LoopbackHost.ADDRESS + ":" + server.getAddress().getPort();
     }
 }

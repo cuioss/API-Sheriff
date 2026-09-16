@@ -947,7 +947,7 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("upstream_verify_hostname: false reaches all three sites")
         void verificationOffReachesAllThreeSites() {
-            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null),
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null, true, null),
                     unconsultedTrustProfileResolver());
 
             assertAll("the relaxation reaches every constructed client",
@@ -963,7 +963,7 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("with no profile configured no trust options are set at any site")
         void noProfileLeavesTrustOptionsUnsetAtAllThreeSites() {
-            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null),
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null, true, null),
                     unconsultedTrustProfileResolver());
 
             assertAll("an unnamed profile leaves every client on the JVM default trust store",
@@ -978,7 +978,7 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("the default client differs from bare HttpClientOptions in verifyHost alone")
         void defaultClientDiffersFromBareOptionsInVerifyHostOnly() {
-            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null),
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null, true, null),
                     unconsultedTrustProfileResolver());
 
             HttpClientOptions restored =
@@ -996,7 +996,7 @@ class GatewayEdgeRouteTest {
         void configuredProfileReachesAllThreeSites() {
             TrustOptions anchors = new PemTrustOptions();
 
-            CapturingVertx capturing = bootWith(new EgressTlsConfig(true, true, PROFILE),
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(true, true, PROFILE, true, null),
                     EgressTrustProfiles.binding(PROFILE, anchors));
 
             assertAll("the resolved anchors reach every constructed client",
@@ -1019,7 +1019,7 @@ class GatewayEdgeRouteTest {
         @DisplayName("disabling upstream hostname verification WARNs at boot and never refuses it")
         void disabledHostnameVerificationWarnsAtBoot() {
             assertDoesNotThrow(() -> {
-                bootWith(new EgressTlsConfig(false, true, null), unconsultedTrustProfileResolver());
+                bootWith(new EgressTlsConfig(false, true, null, true, null), unconsultedTrustProfileResolver());
             }, "a relaxed-hostname document is a legitimate deployment and must still boot");
 
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
@@ -1048,7 +1048,7 @@ class GatewayEdgeRouteTest {
         @DisplayName("a named upstream_tls_profile WARNs at boot, naming the logical profile only")
         void namedTrustProfileWarnsAtBoot() {
             assertDoesNotThrow(() -> {
-                bootWith(new EgressTlsConfig(true, true, PROFILE),
+                bootWith(new EgressTlsConfig(true, true, PROFILE, true, null),
                         EgressTrustProfiles.binding(PROFILE, new PemTrustOptions()));
             }, "a named profile is a deliberate posture and must still boot");
 
@@ -1060,7 +1060,7 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("matched negative control: no named profile emits no trust-replacement WARN")
         void noNamedProfileEmitsNoWarn() {
-            bootWith(new EgressTlsConfig(true, true, null), unconsultedTrustProfileResolver());
+            bootWith(new EgressTlsConfig(true, true, null, true, null), unconsultedTrustProfileResolver());
 
             assertNoWarnContaining(
                     ConfigLogMessages.WARN.EGRESS_TRUST_PROFILE_IN_EFFECT.resolveIdentifierString(),

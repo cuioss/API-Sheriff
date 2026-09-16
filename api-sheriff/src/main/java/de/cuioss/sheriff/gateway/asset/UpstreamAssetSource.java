@@ -25,6 +25,7 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -35,6 +36,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
+import javax.net.ssl.SSLContext;
 
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -243,6 +245,15 @@ public final class UpstreamAssetSource implements AssetSource {
      * The redirect-{@code NEVER} policy is the SSRF control that keeps a hostile upstream
      * from bouncing the fetch to an internal address; the fixed-topology target supplied
      * by {@link ResolvedUpstream} keeps the host itself off the attacker's control.
+     * <p>
+     * <strong>TLS posture is explicit, not inherited.</strong> The client is built with
+     * {@code sslContext(SSLContext.getDefault())} — the JVM default trust store with the JDK's own
+     * hostname verification, which is exactly what the builder would use with no context set, so
+     * pinning it changes no behaviour. This asset-origin leg stays outside the {@code egress_tls}
+     * block (ADR-0040): no gateway key relaxes its hostname check or names a trust profile for it.
+     * The pin exists so the egress TLS posture fitness function ({@code EgressTlsPostureArchTest})
+     * sees a posture call at this construction site instead of an implicit library default that an
+     * upstream change could move.
      *
      * @param connectTimeout the connect timeout
      * @param readTimeout    the per-request read timeout
@@ -253,6 +264,7 @@ public final class UpstreamAssetSource implements AssetSource {
         Objects.requireNonNull(connectTimeout, "connectTimeout");
         Objects.requireNonNull(readTimeout, "readTimeout");
         HttpClient client = HttpClient.newBuilder()
+                .sslContext(defaultSslContext())
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .connectTimeout(connectTimeout)
                 .build();
@@ -286,6 +298,25 @@ public final class UpstreamAssetSource implements AssetSource {
             });
             return new UpstreamFetcher.Fetched(response.statusCode(), headers, body, truncated);
         };
+    }
+
+    /**
+     * Resolves the JVM default {@link SSLContext} the asset-origin client is pinned to — the same
+     * context {@link HttpClient.Builder} would fall back to when none is set, so pinning it changes
+     * no behaviour and only makes the posture visible at the construction site.
+     *
+     * @return the JVM default TLS context
+     * @throws IllegalStateException when the JVM offers no default TLS context — a construction-time
+     *                               failure, since a client that cannot negotiate TLS must not be
+     *                               built at all
+     */
+    private static SSLContext defaultSslContext() {
+        try {
+            return SSLContext.getDefault();
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException(
+                    "the JVM default TLS context is required for the asset-origin HTTP client", unavailable);
+        }
     }
 
     /**

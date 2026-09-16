@@ -27,15 +27,17 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
 /**
- * The single mapping seam between {@code gateway.yaml}'s logical
- * {@code token_validation.issuers[].jwks.tls_profile} name and the concrete trust material the
- * runtime holds.
+ * The single mapping seam between {@code gateway.yaml}'s logical identity-provider trust-profile
+ * names — the per-issuer {@code token_validation.issuers[].jwks.tls_profile} and the global
+ * {@code egress_tls.oidc_tls_profile} of the BFF OIDC back-channel — and the concrete trust material
+ * the runtime holds.
  * <p>
  * <strong>This class is the only place in API Sheriff that knows the mapping exists.</strong>
  * {@code gateway.yaml} is API Sheriff's own configuration language, so it names a trust profile
  * in its own vocabulary — {@code tls_profile: corporate-idp} — and says nothing about how that
- * name is bound. Every other collaborator, {@link TokenValidatorProducer} included, deals only in
- * that logical name and the resulting {@link SSLContext}. Confining the binding here is what makes
+ * name is bound. Every other collaborator, {@link TokenValidatorProducer} and
+ * {@code BffRuntimeProducer} included, deals only in that logical name and the resulting
+ * {@link SSLContext}. Confining the binding here is what makes
  * a user's {@code gateway.yaml} portable: the runtime underneath can change without invalidating
  * the operator's configuration, because only this class would have to follow.
  *
@@ -58,8 +60,9 @@ import jakarta.inject.Inject;
  *
  * {@code gateway.yaml} and its JSON schema never name the runtime. The startup error deliberately
  * does — an operator who names an unbound profile needs to be told exactly which knob to set, not
- * handed an abstraction. {@link #resolve(IssuerConfig, String)} therefore fails with a message
- * naming the concrete runtime key.
+ * handed an abstraction. {@link #resolve(IssuerConfig, String)} and
+ * {@link #resolveEgressProfile(String, String)} therefore fail with a message naming the concrete
+ * runtime key.
  *
  * <h2>Failure behaviour</h2>
  *
@@ -83,8 +86,12 @@ import jakarta.inject.Inject;
  * tokens against would be the attacker's. A named profile means <em>these anchors</em>; it never
  * means <em>no verification at all</em>.
  * <p>
- * An issuer that omits {@code tls_profile} never reaches this class: the caller skips resolution
- * entirely, so the JWKS client keeps the JVM default trust store with no behavioural change.
+ * An issuer that omits {@code tls_profile}, and an {@code egress_tls} block that omits
+ * {@code oidc_tls_profile}, never reach this class: the caller skips resolution entirely, so that
+ * client keeps the JVM default trust store with no behavioural change.
+ * <p>
+ * Both entry points share one private resolution core, so the refusals above apply identically to
+ * the JWKS back-channel and the BFF OIDC back-channel and cannot drift apart between them.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -117,25 +124,62 @@ public class JwksTrustProfileResolver {
      *                          {@link SSLContext}
      */
     public SSLContext resolve(IssuerConfig issuer, String tlsProfile) {
+        return resolveProfile("Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile + "'",
+                "JWKS client would accept any certificate, so a machine on the path to the IdP could "
+                        + "serve its own signing keys",
+                tlsProfile);
+    }
+
+    /**
+     * Resolves a logical trust-profile name declared under a global {@code egress_tls} key to the
+     * {@link SSLContext} the governed client uses to verify its peer's server certificate.
+     * <p>
+     * The leg-neutral counterpart of {@link #resolve(IssuerConfig, String)}: the BFF OIDC back-channel
+     * names its profile under {@code egress_tls.oidc_tls_profile} rather than per issuer, so the error
+     * context is the gateway key instead of an issuer. Both resolutions run through one private core,
+     * so the four fail-closed refusals — an unbound name, a {@code trust-all} profile (checked ahead of
+     * the anchor-free check), an anchor-free profile, and unloadable material — cannot drift apart
+     * between the legs.
+     *
+     * @param egressKey  the gateway key declaring the profile, for example
+     *                   {@code egress_tls.oidc_tls_profile}; named in every refusal message
+     * @param tlsProfile the logical profile name the key carries
+     * @return the SSL context carrying the profile's trust anchors, never {@code null}
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} under exactly the same four
+     *                          conditions as {@link #resolve(IssuerConfig, String)}
+     */
+    public SSLContext resolveEgressProfile(String egressKey, String tlsProfile) {
+        return resolveProfile(egressKey + " names '" + tlsProfile + "'",
+                "client dialling through it would accept any certificate, so a machine on the path to "
+                        + "the peer could impersonate it",
+                tlsProfile);
+    }
+
+    /**
+     * The single fail-closed resolution core both public entry points share.
+     *
+     * @param subject             the leading clause of every refusal, naming who declared which profile
+     * @param trustAllConsequence the leg's own statement of what a {@code trust-all} profile would expose,
+     *                            completing the sentence "the ... "
+     * @param tlsProfile          the logical profile name
+     * @return the SSL context carrying the profile's trust anchors
+     */
+    private SSLContext resolveProfile(String subject, String trustAllConsequence, String tlsProfile) {
         TlsConfiguration configuration = registry.get(tlsProfile)
                 .orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                        "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
-                                + "' but no such trust profile is configured — define it via "
+                        subject + " but no such trust profile is configured — define it via "
                                 + "quarkus.tls." + tlsProfile + ".trust-store.*"));
         // Checked BEFORE the anchor-free guard below: a trust-all bucket carries trust options, so
         // it would otherwise pass that guard and yield a context accepting any certificate.
         if (configuration.isTrustAll()) {
             throw new GatewayException(EventType.CONFIG_INVALID,
-                    "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
-                            + "' but that profile sets quarkus.tls." + tlsProfile + ".trust-all — the "
-                            + "JWKS client would accept any certificate, so a machine on the path to "
-                            + "the IdP could serve its own signing keys; bind the profile to real "
+                    subject + " but that profile sets quarkus.tls." + tlsProfile + ".trust-all — the "
+                            + trustAllConsequence + "; bind the profile to real "
                             + "anchors via quarkus.tls." + tlsProfile + ".trust-store.*");
         }
         if (configuration.getTrustStore() == null && configuration.getTrustStoreOptions() == null) {
             throw new GatewayException(EventType.CONFIG_INVALID,
-                    "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
-                            + "' but that profile carries no trust material — it would verify the "
+                    subject + " but that profile carries no trust material — it would verify the "
                             + "IdP against the JVM default trust store instead of the anchors the "
                             + "name promises; define it via quarkus.tls." + tlsProfile
                             + ".trust-store.*");
@@ -149,8 +193,7 @@ public class JwksTrustProfileResolver {
             // cui-rewrite:disable InvalidExceptionUsageRecipe
         } catch (Exception e) {
             throw new GatewayException(EventType.CONFIG_INVALID,
-                    "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
-                            + "' but its trust material could not be loaded: " + e.getMessage(), e);
+                    subject + " but its trust material could not be loaded: " + e.getMessage(), e);
         }
     }
 }

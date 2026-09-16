@@ -44,7 +44,7 @@ oidc:
   scopes: [openid, profile, orders.read]      # include every scope a route requires
   session:
     mode: cookie                              # sealed cookie, no store (this variant)
-    cookie_name: __Host-sheriff
+    cookie_name: __Host-sheriff               # optional; must stay a __Host- name -- see "Session cookie name"
     encryption_key: ${SHERIFF_SESSION_KEY}    # optional -- see "Key material" below
     max_cookie_size: 4019                     # seal-time VALUE budget; see "Cookie size budget"
     ttl_seconds: 3600                         # absolute lifetime from login
@@ -109,6 +109,34 @@ refused as "no session" and those users log in again -- so prefer to finish the 
 the re-login) before rolling this version out.
 ====
 
+== Session cookie name
+
+`session.cookie_name` is optional. Omit it and the session cookie is `+__Host-sheriff-session+`. If you
+declare a name, the gateway checks it at boot -- in this variant and in the server-session one alike --
+and *refuses to start* unless the name meets all three of these rules:
+
+. *It starts with `+__Host-+`, in exactly that case, followed by a name.* The prefix is not
+  decoration. A browser accepts a `+__Host-+` cookie only when it is `Secure`, scoped to `Path=/` and
+  carries no `Domain`, so the prefix is what turns those attributes into something the browser
+  *enforces* -- a subdomain cannot plant or shadow the cookie. `sheriff-session`, `+__host-sheriff+`
+  and `+__Secure-sheriff+` are all refused, and so is the bare prefix on its own.
+. *It is a valid cookie token.* The name is written verbatim into the `Set-Cookie` header, so it must
+  be a non-empty RFC 9110 token: no spaces, no control characters, no separators such as `;` or `=`.
+  Any of those would let the configured name rewrite the header the gateway emits.
+. *It is not one of the gateway's own cookies.* The login leg sets `+__Host-sheriff-binding+` and
+  logout sets `+__Host-sheriff-logout+`. A session cookie with either name would silently overwrite
+  that cookie in the browser, so both names are refused.
+
+A refused name fails the boot with one error at `/oidc/session/cookie_name` listing every rule the
+name broke, with the value escaped before it is printed. Nothing later in the gateway re-checks the
+name -- the BFF runtime uses it exactly as written -- which is why the check happens at boot rather
+than on the first login.
+
+If an older `gateway.yaml` of yours declares a name without the prefix, rename it to a `+__Host-+`
+name (or delete the line to take the default). Existing sessions under the old name are not carried
+over: browsers keep sending the old cookie, the gateway no longer reads it, and those users log in
+again.
+
 == Cookie size budget
 
 Because the session travels in the cookie, its sealed value has a size budget --
@@ -152,6 +180,12 @@ warns once at boot when you do (`ApiSheriff-124`). Treat that boot line as the l
 get: it fires precisely because raising the budget switches off the seal refusal described above,
 and what the refusal was protecting you from then happens in the browser instead, which reports
 nothing to anyone.
+
+*The session-cookie-name check changed nothing here.* The budget key was re-examined when the name
+check above was added, and it needed no further change: its range is still validated at boot in
+every session mode, `ApiSheriff-124` still derives its threshold from the name and TTL you actually
+configured, and the seal is still refused rather than truncated. The name check only narrows *which*
+names reach that derivation. A longer `+__Host-+` name still costs budget exactly as described above.
 
 [IMPORTANT]
 .Refresh is supported in cookie mode, with a measured and finite margin
@@ -251,11 +285,14 @@ retired format is never mis-parsed, and there is deliberately no acceptance path
 
 == Private-CA / self-signed IdP
 
-If your IdP presents a certificate from a *private CA* (or a self-signed cert), add that CA to the
-*JVM default truststore* -- the confidential-client engine uses it for outbound OIDC calls
-(discovery, token, refresh, logout), and the per-issuer `tls_profile` that validates JWKS does not
-cover those calls. See link:bff-session.adoc#_private_ca_self_signed_idp[the server-session guide]
-for the exact system properties; the requirement is identical in both variants.
+If your IdP presents a certificate from a *private CA*, name a trust profile for the gateway's
+back-channel to it -- discovery, the authorization-code exchange and refresh -- with
+`egress_tls.oidc_tls_profile`, and bind the profile's anchors in the deployment. The profile
+*replaces* the JVM default trust store on that one leg, so include a public root in it if the IdP
+still needs one. The per-issuer `jwks.tls_profile` is a separate key for the JWKS fetch; an IdP
+behind the same private CA needs both. Alternatively, add the CA to the JVM default truststore and
+name no profile. See link:bff-session.adoc#_private_ca_self_signed_idp[the server-session guide]
+for both routes; they are identical in both variants.
 
 == See also
 

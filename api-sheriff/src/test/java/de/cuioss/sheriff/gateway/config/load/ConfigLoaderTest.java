@@ -33,6 +33,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -51,6 +52,8 @@ import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -277,30 +280,69 @@ class ConfigLoaderTest {
         assertEquals(List.of(), issuer.jwks().allowedEgressHosts());
     }
 
-    @Test
-    void rejectsNonArrayAllowedEgressHosts() throws Exception {
-        // Arrange — a bare string is a plausible operator typo for a single host
-        writeConfig("gateway.yaml", """
-                version: 1
-                token_validation:
-                  issuers:
-                    - name: primary
-                      issuer: https://issuer.example.com
-                      jwks:
-                        source: http
-                        url: https://issuer.example.com/jwks
-                        allowed_egress_hosts: keycloak
-                """);
+    /**
+     * One case per egress key whose value has the wrong JSON type, each written the way an operator
+     * plausibly gets it wrong. Every case must be refused at boot rather than silently ignored: an
+     * ignored {@code allowed_egress_hosts} would drop the widening, an ignored {@code tls_profile} would
+     * leave the issuer on default trust while the operator believes a profile is in force, and a
+     * coerced {@code oidc_verify_hostname} would relax hostname verification from a document the
+     * operator believes disables nothing.
+     *
+     * @return (case description, {@code gateway.yaml} text, the key the refusing error pointer names)
+     */
+    static Stream<Arguments> wronglyTypedEgressKeys() {
+        return Stream.of(
+                Arguments.of("allowed_egress_hosts as a bare string - a plausible operator typo for a single host",
+                        """
+                                version: 1
+                                token_validation:
+                                  issuers:
+                                    - name: primary
+                                      issuer: https://issuer.example.com
+                                      jwks:
+                                        source: http
+                                        url: https://issuer.example.com/jwks
+                                        allowed_egress_hosts: keycloak
+                                """,
+                        "allowed_egress_hosts"),
+                Arguments.of("tls_profile as a list - a plausible operator confusion with allowed_egress_hosts",
+                        """
+                                version: 1
+                                token_validation:
+                                  issuers:
+                                    - name: primary
+                                      issuer: https://issuer.example.com
+                                      jwks:
+                                        source: http
+                                        url: https://issuer.example.com/jwks
+                                        tls_profile: ["corporate-idp"]
+                                """,
+                        "tls_profile"),
+                Arguments.of(
+                        "oidc_verify_hostname as a quoted \"no\" - a boolean spelling that must not be coerced to false",
+                        """
+                                version: 1
+                                egress_tls:
+                                  oidc_verify_hostname: "no"
+                                """,
+                        "oidc_verify_hostname"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("wronglyTypedEgressKeys")
+    void rejectsWronglyTypedEgressKey(String description, String gatewayYaml, String pointerKey) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", gatewayYaml);
 
         // Act
         ConfigLoader loader = loader(Map.of());
         ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
-        // Assert — the schema refuses it at boot rather than silently ignoring the widening
+        // Assert — the schema refuses it at boot, naming the offending key's own pointer
         assertTrue(exception.errors().stream()
-                        .anyMatch(error -> error.pointer().contains("allowed_egress_hosts")),
-                () -> "expected a schema violation for a non-array allowed_egress_hosts, got: "
-                        + exception.errors());
+                        .anyMatch(error -> error.pointer().contains(pointerKey)),
+                () -> "expected a schema violation at the " + pointerKey + " pointer for " + description
+                        + ", got: " + exception.errors());
     }
 
     @Test
@@ -350,33 +392,6 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void rejectsNonStringTlsProfile() throws Exception {
-        // Arrange — a list is a plausible operator confusion with allowed_egress_hosts
-        writeConfig("gateway.yaml", """
-                version: 1
-                token_validation:
-                  issuers:
-                    - name: primary
-                      issuer: https://issuer.example.com
-                      jwks:
-                        source: http
-                        url: https://issuer.example.com/jwks
-                        tls_profile: ["corporate-idp"]
-                """);
-
-        // Act
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        // Assert — refused at boot rather than silently ignored, which would leave the issuer on
-        // default trust while the operator believes a profile is in force
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> error.pointer().contains("tls_profile")),
-                () -> "expected a schema violation for a non-string tls_profile, got: "
-                        + exception.errors());
-    }
-
-    @Test
     void omittedEgressTlsBlockBindsNullAndResolvesToVerificationOn() throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");
 
@@ -385,13 +400,13 @@ class ConfigLoaderTest {
         assertAll("omitted egress_tls",
                 () -> assertNull(loaded.gateway().egressTls(),
                         "an omitted block binds to null so the documented defaults apply"),
-                () -> assertEquals(new EgressTlsConfig(true, true, null), EgressTlsConfig.defaults(),
-                        "the block an omitted egress_tls resolves to keeps both hostname-verification "
-                                + "flags on and names no trust profile"));
+                () -> assertEquals(new EgressTlsConfig(true, true, null, true, null), EgressTlsConfig.defaults(),
+                        "the block an omitted egress_tls resolves to keeps every hostname-verification "
+                                + "flag on and names no trust profile"));
     }
 
     @Test
-    void egressTlsBlockNamingOnlyTheTrustProfileKeepsBothFlagsTrue() throws Exception {
+    void egressTlsBlockNamingOnlyTheTrustProfileKeepsEveryFlagTrue() throws Exception {
         writeConfig("gateway.yaml", """
                 version: 1
                 egress_tls:
@@ -400,10 +415,46 @@ class ConfigLoaderTest {
 
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
-        assertEquals(new EgressTlsConfig(true, true, "corporate-up"), loaded.gateway().egressTls(),
-                "a present block that names no flag must leave both flags on — Jackson's own binding "
-                        + "would resolve an absent boolean to false and silently disable hostname "
-                        + "verification from a document that never mentions it");
+        assertEquals(new EgressTlsConfig(true, true, "corporate-up", true, null), loaded.gateway().egressTls(),
+                "a present block that names no flag must leave every flag on — the BFF back-channel's "
+                        + "oidc_verify_hostname included — because Jackson's own binding would resolve an "
+                        + "absent boolean to false and silently disable hostname verification from a "
+                        + "document that never mentions it");
+    }
+
+    @Test
+    void bindsOidcVerifyHostnameFalseAndOidcTlsProfile() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                egress_tls:
+                  oidc_verify_hostname: false
+                  oidc_tls_profile: corporate-idp
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Binding only: the pair parses and binds. That the pair is refused at boot, and that each key
+        // acts on a real dial, is BffRuntimeProducerTest.OidcBackChannelTls's subject (ADR-0040's
+        // parse-vs-act split).
+        assertEquals(new EgressTlsConfig(true, true, null, false, "corporate-idp"), loaded.gateway().egressTls(),
+                "both BFF back-channel keys bind, and neither disturbs the upstream or JWKS keys");
+    }
+
+    @Test
+    void absentOidcVerifyHostnameInsidePresentBlockResolvesTrue() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                egress_tls:
+                  oidc_tls_profile: corporate-idp
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertAll("a present block naming only the BFF trust profile",
+                () -> assertTrue(loaded.gateway().egressTls().oidcVerifyHostname(),
+                        "an absent oidc_verify_hostname resolves true, not to Jackson's primitive false"),
+                () -> assertEquals("corporate-idp", loaded.gateway().egressTls().oidcTlsProfile(),
+                        "the named profile binds verbatim"));
     }
 
     @Test
@@ -416,7 +467,7 @@ class ConfigLoaderTest {
 
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
-        assertEquals(new EgressTlsConfig(false, true, null), loaded.gateway().egressTls(),
+        assertEquals(new EgressTlsConfig(false, true, null, true, null), loaded.gateway().egressTls(),
                 "an explicit false binds false, and neither sibling key is disturbed by it");
     }
 
@@ -437,7 +488,7 @@ class ConfigLoaderTest {
         // outcome. Keeping the two apart is the point — a binding assertion that also claimed to
         // prove the reader would be exactly the conflation
         // doc/development/declared-limit-assertion-coverage.adoc warns about.
-        assertEquals(new EgressTlsConfig(true, false, null), loaded.gateway().egressTls(),
+        assertEquals(new EgressTlsConfig(true, false, null, true, null), loaded.gateway().egressTls(),
                 "the JWKS flag binds by the same rules as its upstream peer");
     }
 

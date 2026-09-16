@@ -107,6 +107,16 @@
           "type": "string",
           "minLength": 1,
           "description": "Logical name of the trust profile whose anchors verify terminated upstream certificates. It names a profile and NEVER carries trust material: the deployment supplies the anchors through quarkus.tls.<name>.trust-store.* (ADR-0011). A named-but-unbound profile, a trust-all profile, and a profile carrying no trust material are each refused at boot rather than silently falling back to default trust. A named profile REPLACES the client's anchors rather than adding to them, so a profile holding only a private CA stops trusting public authorities on the upstream leg. Omitted keeps the JVM default trust store."
+        },
+        "oidc_verify_hostname": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the BFF OIDC back-channel (discovery, the authorization-code exchange and refresh) verifies that the identity provider's certificate names the dialled host. Disabling it relaxes HOSTNAME MATCHING ONLY and never certificate-chain trust: an identity provider whose certificate does not chain to a trusted anchor is still refused. It governs that leg only — the JWKS back-channel is governed separately by jwks_verify_hostname and the proxy, gRPC and WebSocket egress clients by upstream_verify_hostname. It is MUTUALLY EXCLUSIVE with oidc_tls_profile: the relaxation applies only to the default-trust-store context the client derives itself, so this key set to false while oidc_tls_profile is named is refused at boot. Setting it to false logs ApiSheriff-125 once at startup. An omitted key resolves to true, not to false."
+        },
+        "oidc_tls_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Logical name of the trust profile whose anchors verify the identity provider's certificate on the BFF OIDC back-channel. It names a profile and NEVER carries trust material: the deployment supplies the anchors through quarkus.tls.<name>.trust-store.* (ADR-0011). A named-but-unbound profile, a trust-all profile, and a profile carrying no trust material are each refused at boot rather than silently falling back to default trust. A named profile REPLACES the JVM default trust store on that leg rather than adding to it, and logs ApiSheriff-126 once at startup. Naming it while oidc_verify_hostname is false is refused at boot. Omitted keeps the JVM default trust store."
         }
       }
     }
@@ -319,7 +329,10 @@
           "properties": {
             "mode": { "type": "string", "enum": ["cookie", "server"] },
             "store": { "type": "string", "enum": ["memory"] },
-            "cookie_name": { "type": "string" },
+            "cookie_name": {
+              "type": "string",
+              "description": "Name of the session cookie, in both session modes; defaults to __Host-sheriff-session when omitted. The name is written verbatim into Set-Cookie, so a declared value is REFUSED AT BOOT unless it starts with the case-sensitive __Host- prefix followed by a name (the prefix is what makes the browser enforce Secure, Path=/ and no Domain), is a non-empty RFC 9110 token (no whitespace, control characters or separators such as ';' or '='), and differs from the gateway-owned cookies __Host-sheriff-binding and __Host-sheriff-logout. The rule is stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no pattern keyword is declared."
+            },
             "encryption_key": { "type": "string" },
             "ttl_seconds": { "type": "integer" },
             "csrf": {

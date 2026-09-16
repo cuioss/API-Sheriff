@@ -1,0 +1,247 @@
+= ADR-0044: Trusted-proxy breadth is warned beyond one provisioned network and refused only at the whole address space
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A forwarded.trusted_proxies entry is refused at boot only when the ranges of one address family together cover the whole address space; any single entry spanning more than one operator-provisioned network — broader than an IPv4 /16 or an IPv6 /48 — boots with the ApiSheriff-102 WARN, and a /16 or /48 boots with no signal as a legible, chosen exposure rather than a safe one; a range supplied through an environment variable gets exactly the same treatment, because after placeholder substitution the validator cannot tell it from a literal and a source-blind stricter refusal would break legitimate pod-network trust while catching nothing the WARN and the trust-all refusal do not already surface.
+// tags: security, forwarded-headers, trusted-proxies, configuration-validation, boot-validation, secure-by-default, fail-closed, warn-not-refuse, accepted-exposure, environment-variables
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+`forwarded.trusted_proxies` answers one question: *which peers may tell this gateway who the client
+is?* Under link:0003-forwarded-headers.adoc[ADR-0003]'s trust model, a request whose immediate TCP
+peer lies inside a trusted range has its forwarded chain walked and believed; a request from
+anywhere else has its forwarded headers ignored. The list is therefore not a routing prefix and not an
+allow-list for traffic. It is a list of machines granted the right to assert client identity, and
+every host inside a trusted range that can reach the gateway directly can use that right to spoof
+the client address downstream decisions rely on.
+
+So the breadth of a range is the security property, and the validator already enforces two things
+about it before this decision is needed:
+
+* *A malformed entry is refused.* Every entry must parse as a CIDR in one of the two address
+  families.
+* *A range set that trusts everyone is refused.* When the parsed ranges of one family together
+  cover the whole address space, boot fails. The check merges the ranges rather than looking for a
+  single `0.0.0.0/0`, so complementary halves such as `0.0.0.0/1` plus `128.0.0.0/1` are caught the
+  same way.
+
+Between those two refusals sits every range an operator can actually get wrong, and that is where
+the decision lies. Three facts shape it.
+
+*First: the correct answer is itself a broad range.* Trusting a proxy tier is legitimately a
+network, not a host. A container bridge, a cloud VPC and an RFC 1918 site block are all ranges with
+tens of thousands of addresses, and each is a considered trust decision when it is the network the
+operator provisioned for the proxy tier. A guard that fires on a correct, routine configuration
+teaches operators to read past it, and the one time it matters it is background noise.
+
+*Second: the wrong answer is usually a block pasted in whole.* The realistic mistake is not
+`0.0.0.0/0`, which is refused, but `172.16.0.0/12` or `10.0.0.0/8` — an entire private allocation
+copied from a reference, trusting the host, every co-located container and every neighbouring
+network at once. A threshold placed at `/8` lets exactly those ranges boot without a word, which
+means the guard is silent for precisely the configurations it exists to catch.
+
+*Third: the value often arrives from the environment, where no review sees it.* A deployment
+supplies `trusted_proxies` through a `${VAR}` placeholder so the same `gateway.yaml` moves between
+environments with different proxy networks. Placeholder substitution happens before validation, so
+the rule receives the substituted value and nothing else. A range that reaches the gateway this way
+never passed through a reviewed change, and the boot-time signal is the only one it gets.
+
+== Decision
+
+*A `trusted_proxies` entry is refused only when the ranges of its family cover the whole address
+space. Any single entry spanning more than one operator-provisioned network — broader than an IPv4
+`/16` or an IPv6 `/48` — boots with the `ApiSheriff-102` warning. A range supplied through an
+environment variable is treated exactly like a literal one: the same warning, no second refusal
+threshold.*
+
+=== One principle behind both thresholds
+
+The two thresholds are not independent tuning constants. They encode one rule: *warn when a single
+entry spans more than one network an operator deliberately provisioned.*
+
+* *IPv4: warn below `/16`.* `/16` is the widest single IPv4 network in routine use — the largest VPC
+  a major cloud provider allocates, the shape of a container runtime's default bridge
+  (`172.17.0.0/16`), the RFC 1918 `192.168.0.0/16` block. The warning therefore starts one bit
+  broader, at `/15`, and catches `172.16.0.0/12` and `10.0.0.0/8`, the two blocks most often pasted
+  in whole.
+* *IPv6: warn below `/48`.* `/48` is the canonical IPv6 site allocation and the direct analogue of the
+  IPv4 case, with `/64` the standard single subnet inside it.
+
+Stating the principle rather than the numbers is what lets a reader check the thresholds against
+the networks they actually deploy, and what makes a future change to either constant a change to
+the principle rather than a quiet retune.
+
+=== The un-warned residual is chosen, not safe
+
+An IPv4 `/16` — 65,536 addresses — and an IPv6 `/48` boot with no signal at all. That is a real
+exposure: every host in such a range that can reach the gateway directly can spoof forwarded
+headers. It is left un-warned because it is a *legible* exposure an operator chose, a range whose
+size matches the network they provisioned and can be read off the configuration, not because it is
+harmless.
+
+The distinction matters for how the residual is documented. It is recorded wherever the threshold
+appears as an accepted exposure with a stated size, never as a safe default, so an operator who
+needs a tighter trust boundary knows they must write one rather than assuming the validator would
+have told them.
+
+=== Trust-all is the only breadth refusal
+
+The whole-address-space case is refused rather than warned, and the asymmetry is deliberate. Every
+narrower range, however broad, still has a legitimate reading: some deployment somewhere provisions
+that network for its proxy tier. A range set covering the entire family has none — it makes every
+client on the internet a trusted proxy, so forwarded headers become attacker-controlled input with
+no boundary at all. That is not a deployment that must merely be visible; it is a configuration
+with no coherent meaning, and it fails boot.
+
+=== An environment-sourced range keeps the warning and meets no stricter refusal
+
+The environment-variable path raises an obvious question: should a range nobody reviewed face a
+stricter rule than one committed to `gateway.yaml`? It does not, for two reasons that each suffice
+on their own.
+
+*The distinction is not expressible where the rule runs.* The validator sees the bound value after
+substitution. A range written literally and a range substituted from the environment arrive as the
+same string, and nothing in the bound configuration records which one it was. A refusal keyed to
+provenance would need provenance the rule never receives.
+
+*A source-blind stricter refusal breaks correct deployments and catches nothing new.* Refusing every
+range beyond some wider threshold, whatever its source, would refuse legitimate pod-network trust —
+an orchestrator's pod network is commonly a `10.0.0.0/8`, and trusting it is the correct
+configuration there. And every range such a refusal would stop already produces a signal: anything
+broader than one provisioned network carries the `ApiSheriff-102` warning, and the whole address
+space is refused outright. The stricter threshold would convert a visible, sometimes-legitimate
+posture into a boot failure without closing any gap the two existing mechanisms leave open.
+
+The residual applies to the environment path unchanged, and that is stated rather than implied: an
+environment-supplied IPv4 `/16` or IPv6 `/48` boots with no signal at all — the same chosen
+exposure, with no review behind it.
+
+=== The thresholds are proven by matched controls
+
+The threshold claim is held by a parameterised test rather than by the constants' javadoc. Each
+family carries a range past the boundary, which must warn, and a range exactly at it, which must
+not; the IPv4 set also carries a very broad `/4` that must warn and boot, so the far end of the
+band is never mistaken for the trust-all refusal. The warning is asserted by its identifier and the
+offending range, not by a phrase. Reverting either constant alone turns at least one row red, so
+the test fails when the principle moves rather than when a message is reworded.
+
+== Consequences
+
+=== Positive
+
+* The ranges an operator is realistically likely to get wrong — a whole private allocation pasted
+  in — produce a boot warning naming the range, including when the value came from an environment
+  no review saw.
+* The routine, correct configuration — one provisioned network — stays silent, so the warning keeps
+  its meaning when it does fire.
+* The only refusal is the one configuration with no legitimate reading, so no correct deployment
+  fails to boot on breadth alone.
+* The literal and environment paths behave identically, so moving a range between the two changes
+  nothing about how it is validated.
+* The thresholds rest on a stated principle and are held by controls on both sides of each boundary,
+  so drift is a visible, test-breaking change.
+
+=== Negative
+
+* *A `/16` or `/48` is trusted in full with no signal.* An operator who meant to trust one proxy
+  host and wrote the whole network gets no warning. This is the accepted residual, and its cost is
+  paid by exactly the deployments that least expect it.
+* *An environment-supplied range has one signal, and it is a log line.* A warning is visible only to
+  someone who reads the boot log. A deployment that ships an overly broad range through its
+  environment boots and serves traffic; the warning records the exposure, it does not stop it.
+* *The principle is a judgement about typical networks.* A deployment whose single provisioned
+  network is genuinely broader than `/16` receives a warning on a correct configuration and has no
+  way to acknowledge it short of narrowing the range.
+
+=== Risks
+
+* *The residual is read as a safe default.* An absent warning invites the reading "the validator
+  checked this and found nothing wrong". Mitigated by recording the `/16` and `/48` residual as an
+  accepted exposure wherever the threshold is documented — the validator's javadoc, the operator
+  configuration reference, the security threat model and here.
+* *The warning is trained into noise.* If the threshold is tightened until routine configurations
+  warn, operators learn to ignore it. Mitigated by anchoring the threshold to the widest single
+  provisioned network rather than to an abstract notion of "broad", and by the at-the-boundary
+  control rows that go red if a routine range starts warning.
+* *An environment-supplied range is assumed to have been reviewed.* The same `gateway.yaml` reads
+  identically whether its range is literal or substituted, so a reviewer approving the document can
+  believe they approved the trust boundary. Mitigated by stating in the validator's javadoc and the
+  operator documentation that the value may arrive from an environment variable no review sees, and
+  that the warning is then the only signal it gets.
+
+== Alternatives Considered
+
+=== Warn at anything broader than an IPv4 `/24` or an IPv6 `/64`
+
+Treat a trust list as a set of individual peers rather than networks, and warn as soon as an entry
+spans more than a single subnet.
+
+Rejected because it fires on the correct configuration. Trusting a provisioned proxy network — a
+VPC, a container bridge, a site block — is the routine case, and those are `/16`-shaped. A threshold
+at `/24` would warn on most deployments that are configured exactly right, and a warning that fires
+on correct configurations is the guard-trained-into-noise failure the principle exists to avoid. The
+argument that a trust list is not a routing prefix is sound and is the reason the threshold is
+anchored to provisioned networks at all; it does not make a single subnet the right anchor.
+
+=== Emit an unconditional INFO naming the effective address count
+
+Report every trusted range with its address count at boot, so the operator sees what the deployment
+actually trusts rather than inferring it from a prefix length.
+
+Rejected because it moves the judgement to every reader of every boot log. An unconditional line
+carries the same weight for a correct `/32` proxy host and a pasted `/8`, so the configuration that
+needs attention is no more visible than the one that does not. The warning already names the range
+and its prefix length for the cases that cross the principle, and adding an always-on line for the
+cases that do not dilutes it.
+
+=== A second, stricter refusal threshold
+
+Keep the warning and add a refusal at some wider prefix — for example anything broader than `/8` —
+either for every range or only for ranges supplied through the environment.
+
+Rejected on the grounds set out in the decision. The environment-only variant is not expressible:
+the rule receives the substituted value and cannot tell its source. The source-blind variant refuses
+legitimate pod-network trust while stopping no range that the warning and the trust-all refusal do
+not already surface. A second threshold would also create a band between the two constants in which
+a range both warns and boots, and a wider band beyond it in which the same kind of mistake fails the
+deployment — two different outcomes for one principle.
+
+The unifying principle across these alternatives: a breadth guard earns its place by staying silent
+on the configuration an operator should write and by speaking on the one they should not. Each
+rejected option either speaks on correct configurations or turns a visible, sometimes-legitimate
+posture into a refusal it cannot justify.
+
+== References
+
+* link:0003-forwarded-headers.adoc[ADR-0003] -- the mandatory trusted-proxy allowlist, the
+  immediate-TCP-peer gate and the never-trust-all rule this decision refines into a breadth posture
+* link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
+  -- the warn-never-refuse rule this decision shares for postures that are legitimate but must be
+  visible, and that ADR-0040 cites the broad-trusted-proxy warning as an instance of
+* link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]
+  -- the counterpart distinction between a legitimate deployment that must merely be visible and a
+  configuration with no coherent meaning, which is refused
+* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  -- the controls-on-both-sides discipline the threshold test follows
+* link:../configuration.adoc[Configuration reference] -- the `forwarded.trusted_proxies` field
+  contract, the threshold and its residual as operators see them
+* link:../security-threat-model.adoc[Security threat model] -- the forwarded-header spoofing entries
+  this decision's residual is recorded against
+* link:../LogMessages.adoc[Log messages] -- the `ApiSheriff-102` warning record

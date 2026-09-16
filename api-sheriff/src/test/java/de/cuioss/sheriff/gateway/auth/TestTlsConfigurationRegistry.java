@@ -36,11 +36,14 @@ import io.vertx.core.net.TrustOptions;
  * <p>
  * Hand-written rather than generated: mocking frameworks are not used in this project, and the
  * registry contract is small enough that a literal implementation is clearer than a stubbing DSL.
+ * <p>
+ * Public, with the unbound and the bound factories public, because the same seam is consulted by the
+ * BFF OIDC back-channel whose producer is tested from the {@code quarkus} package.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
+public final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
 
     private final Map<String, TlsConfiguration> byName = new HashMap<>();
     private final SSLContext profileContext;
@@ -53,7 +56,7 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
      * @return a registry that defines no profile at all — the shape a deployment has when the
      *         operator names a profile nobody bound
      */
-    static TestTlsConfigurationRegistry empty() {
+    public static TestTlsConfigurationRegistry empty() {
         return new TestTlsConfigurationRegistry();
     }
 
@@ -62,7 +65,7 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
      * @return a registry defining {@code name} against trust material and a usable SSL context —
      *         the shape a correctly bound deployment has
      */
-    static TestTlsConfigurationRegistry with(String name) {
+    public static TestTlsConfigurationRegistry with(String name) {
         return usable(name, trustStore(), null);
     }
 
@@ -138,7 +141,7 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
      *
      * @return the SSL context bound to the defined profile
      */
-    SSLContext profileContext() {
+    public SSLContext profileContext() {
         return profileContext;
     }
 

@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -26,10 +27,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -37,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -46,8 +52,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
+import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
+import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
@@ -57,12 +67,20 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.token.client.config.ClientConfiguration;
+import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
+import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
+import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
@@ -71,12 +89,18 @@ import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.function.Executable;
 
 /**
@@ -678,6 +702,196 @@ class BffRuntimeProducerTest {
         }
     }
 
+    /**
+     * The {@code egress_tls.oidc_verify_hostname} / {@code egress_tls.oidc_tls_profile} reader on the BFF
+     * OIDC back-channel, asserted <em>behaviourally</em> against a real TLS dial — the sibling of
+     * {@code TokenValidatorProducerTest.JwksVerifyHostname}.
+     * <p>
+     * <strong>Why a real server rather than a getter assertion.</strong> {@code isVerifyHostname()} on the
+     * built configuration would prove the value was <em>carried</em>, never that it <em>acts</em>. So
+     * discovery is dialled against {@link SanMismatchedJwksServer}, whose certificate chains to an
+     * installed anchor but names the wrong host. The configuration is always the one the producer
+     * builds through its {@code backChannelConfiguration} seam — the same call {@code build} makes — and
+     * never one constructed here.
+     * <p>
+     * <strong>The falsification check.</strong> Deleting the {@code .verifyHostname(...)} call from
+     * {@link BffRuntimeProducer#backChannelConfiguration} turns the relaxed leg of
+     * {@link #hostnameVerificationGatesDiscovery()} red: token-sheriff's own default verifies, so without
+     * the call the relaxed dial fails exactly like the strict one. Deleting the pre-builder collision
+     * refusal turns {@link #relaxedHostnameWithTlsProfileIsRefusedAtBoot()} red, because the failure then
+     * surfaces as the library's {@link IllegalArgumentException} rather than {@code CONFIG_INVALID}.
+     */
+    @Nested
+    @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+    @EnableTestLogger
+    @DisplayName("egress_tls.oidc_verify_hostname / oidc_tls_profile — the BFF OIDC back-channel posture")
+    class OidcBackChannelTls {
+
+        private static final String PROFILE = "corporate-idp";
+        private static final String EMPTY_JWKS = "{\"keys\":[]}";
+
+        private Path fixtureDir;
+        private SanMismatchedJwksServer server;
+
+        @BeforeAll
+        void startFixtureServer() throws Exception {
+            fixtureDir = Files.createTempDirectory("san-mismatched-oidc");
+            server = SanMismatchedJwksServer.start(fixtureDir, EMPTY_JWKS);
+        }
+
+        @AfterAll
+        void stopFixtureServer() throws IOException {
+            if (server != null) {
+                server.close();
+            }
+            if (fixtureDir != null) {
+                try (Stream<Path> entries = Files.walk(fixtureDir)) {
+                    entries.sorted(Comparator.reverseOrder()).forEach(BffRuntimeProducerTest::deleteQuietly);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the flag decides a real dial: verifying refuses the SAN-mismatched IdP, relaxed completes discovery")
+        void hostnameVerificationGatesDiscovery() {
+            DiscoveryResolver verifying = new DiscoveryResolver(backChannelFor(server, EgressTlsConfig.defaults()));
+            DiscoveryResolver relaxed = new DiscoveryResolver(backChannelFor(server, oidcHostname(false)));
+
+            assertThrows(TransportException.class, verifying::resolve,
+                    "with oidc_verify_hostname true discovery must fail against a certificate that does "
+                            + "not name the dialled host — chain trust succeeds, so nothing else is left to fail on");
+            ProviderMetadata metadata = assertDoesNotThrow(relaxed::resolve,
+                    "with oidc_verify_hostname false the same dial must complete — every other input is identical");
+            assertEquals(Optional.of(server.issuer()), metadata.getIssuer(),
+                    "the discovery document was fetched over the relaxed dial");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    ConfigLogMessages.WARN.OIDC_HOSTNAME_VERIFICATION_DISABLED.resolveIdentifierString());
+        }
+
+        @Test
+        @DisplayName("an omitted egress_tls block resolves to verification ON on the BFF back-channel")
+        void omittedBlockVerifiesHostname() {
+            DiscoveryResolver omitted = new DiscoveryResolver(backChannelFor(server, null));
+            DiscoveryResolver relaxed = new DiscoveryResolver(backChannelFor(server, oidcHostname(false)));
+
+            assertThrows(TransportException.class, omitted::resolve,
+                    "an absent egress_tls block must verify the hostname, not silently relax it");
+            assertDoesNotThrow(relaxed::resolve,
+                    "the control must reach the same server, or the refusal above proves nothing about the omitted block");
+        }
+
+        @Test
+        @DisplayName("with the flag false an UNTRUSTED IdP chain is still refused — the relaxation is not a TLS disable")
+        void relaxedHostnameStillRefusesAnUntrustedChain() throws Exception {
+            try (SanMismatchedJwksServer untrusted = SanMismatchedJwksServer.startUntrusted(EMPTY_JWKS)) {
+                DiscoveryResolver relaxed = new DiscoveryResolver(backChannelFor(untrusted, oidcHostname(false)));
+
+                assertThrows(TransportException.class, relaxed::resolve,
+                        "oidc_verify_hostname false must relax hostname matching ONLY — an identity provider "
+                                + "whose certificate names the dialled host but does not chain to a trusted "
+                                + "anchor must still be refused");
+            }
+        }
+
+        @Test
+        @DisplayName("oidc_verify_hostname false collides with a named oidc_tls_profile and is refused at boot")
+        void relaxedHostnameWithTlsProfileIsRefusedAtBoot() {
+            BffRuntimeProducer producer = producer(serverModeOidc(),
+                    new EgressTlsConfig(true, true, null, false, PROFILE), TestTlsConfigurationRegistry.with(PROFILE));
+
+            GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime);
+
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+            String message = thrown.getMessage();
+            assertAll("the refusal names both gateway keys and the profile, in the gateway's own vocabulary",
+                    () -> assertTrue(message.contains("egress_tls.oidc_tls_profile") && message.contains(PROFILE),
+                            "the refusal must name the profile key and the profile: " + message),
+                    () -> assertTrue(message.contains("egress_tls.oidc_verify_hostname"),
+                            "the refusal must name the hostname key that collided: " + message));
+        }
+
+        @Test
+        @DisplayName("the same false flag without a profile assembles cleanly (matched control)")
+        void relaxedHostnameWithoutTlsProfileAssembles() {
+            BffRuntimeProducer producer = producer(serverModeOidc(), oidcHostname(false),
+                    TestTlsConfigurationRegistry.with(PROFILE));
+
+            assertTrue(assertDoesNotThrow(producer::bffRuntime).isActive(),
+                    "oidc_verify_hostname false is a legitimate posture on its own; only the collision is refused");
+        }
+
+        @Test
+        @DisplayName("a named oidc_tls_profile supplies its anchors to the back-channel and is reported at boot")
+        void namedProfileIsAppliedAndReported() {
+            TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
+            OidcConfig oidc = serverModeOidc();
+
+            ClientConfiguration configuration = producer(oidc, new EgressTlsConfig(true, true, null, true, PROFILE),
+                    registry).backChannelConfiguration(oidc);
+
+            assertSame(registry.profileContext(), configuration.getSslContext(),
+                    "a named oidc_tls_profile must put exactly its own trust anchors on the back-channel");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    ConfigLogMessages.WARN.OIDC_TRUST_PROFILE_IN_EFFECT.resolveIdentifierString());
+        }
+
+        @Test
+        @DisplayName("an omitted oidc_tls_profile leaves the back-channel on the JVM default trust store (matched control)")
+        void omittedProfileKeepsDefaultTrust() {
+            OidcConfig oidc = serverModeOidc();
+
+            ClientConfiguration configuration = producer(oidc, EgressTlsConfig.defaults(),
+                    TestTlsConfigurationRegistry.empty()).backChannelConfiguration(oidc);
+
+            assertNull(configuration.getSslContext(),
+                    "without a profile no caller context is set, so the resolver — which would refuse the "
+                            + "empty registry — is never consulted");
+        }
+
+        @Test
+        @DisplayName("an unbound oidc_tls_profile fails the producer rather than falling back to default trust")
+        void unboundProfileFailsTheProducer() {
+            BffRuntimeProducer producer = producer(serverModeOidc(),
+                    new EgressTlsConfig(true, true, null, true, PROFILE), TestTlsConfigurationRegistry.empty());
+
+            GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime);
+
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+            assertTrue(thrown.getMessage().contains("egress_tls.oidc_tls_profile"),
+                    "the refusal must name the gateway key that declared the profile: " + thrown.getMessage());
+        }
+
+        private ClientConfiguration backChannelFor(SanMismatchedJwksServer target, @Nullable EgressTlsConfig egressTls) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer(target.issuer())
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .build();
+            return producer(oidc, egressTls, TestTlsConfigurationRegistry.empty()).backChannelConfiguration(oidc);
+        }
+
+        private static EgressTlsConfig oidcHostname(boolean verify) {
+            return new EgressTlsConfig(true, true, null, verify, null);
+        }
+    }
+
+    /**
+     * Deletes one entry of the SAN-mismatch fixture's temp tree, surfacing a failed cleanup rather than
+     * swallowing it.
+     *
+     * @param path the entry to delete
+     */
+    private static void deleteQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException("could not clean up the SAN-mismatch fixture at " + path, e);
+        }
+    }
+
     @Nested
     @DisplayName("Gateway-origin derivation (default-port normalization)")
     class OriginDerivation {
@@ -715,8 +929,14 @@ class BffRuntimeProducerTest {
     }
 
     private BffRuntimeProducer producer(@Nullable OidcConfig oidc) {
-        GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).build();
-        return new BffRuntimeProducer(gatewayConfig, new SingletonInstance<>(tokenValidator));
+        return producer(oidc, null, TestTlsConfigurationRegistry.empty());
+    }
+
+    private BffRuntimeProducer producer(@Nullable OidcConfig oidc, @Nullable EgressTlsConfig egressTls,
+            TestTlsConfigurationRegistry registry) {
+        GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
+        return new BffRuntimeProducer(gatewayConfig, new SingletonInstance<>(tokenValidator),
+                new JwksTrustProfileResolver(registry));
     }
 
     private static OidcConfig serverModeOidc() {
