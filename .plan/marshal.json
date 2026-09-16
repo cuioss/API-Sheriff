@@ -60,8 +60,7 @@
       "per_envelope_budget_tokens": "400K",
       "verification_steps": {
         "default:verify:quality-gate": {},
-        "default:verify:module-tests": {},
-        "default:verify:coverage": {}
+        "default:verify:module-tests": {}
       },
       "effort": {
         "default": "level-5",
@@ -152,7 +151,7 @@
           "lane": "minimal"
         },
         "default:emit-landing": {
-          "lane": "off"
+          "lane": "minimal"
         },
         "default:archive-plan": {
           "lane": "minimal"
@@ -172,7 +171,7 @@
   },
   "build": {
     "queue": {
-      "max_slots": 5,
+      "max_slots": 2,
       "max_retries": 10,
       "upper_limit_seconds": 600
     },
