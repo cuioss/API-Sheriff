@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.pipeline;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -65,23 +64,114 @@ public final class SecurityHeadersStage {
 
     private static final int NO_CONTENT = 204;
     private static final String WILDCARD_ORIGIN = "*";
-    private static final String STRICT_TRANSPORT_SECURITY = "Strict-Transport-Security";
-    private static final String CONTENT_TYPE_OPTIONS = "X-Content-Type-Options";
-    private static final String FRAME_OPTIONS = "X-Frame-Options";
-    private static final String CONTENT_SECURITY_POLICY = "Content-Security-Policy";
 
     /**
-     * The response security-header names this stage owns — and the only names stage 2a replaces.
+     * The gateway-owned response security headers — the single authoritative definition driving
+     * <em>both</em> halves of the stage-0 / stage-2a contract.
      * <p>
-     * This list and {@link #applyResponseHeaders} are the two halves of one contract: a header seeded
-     * there but missing here is never removed at stage 2a, so an anchored route keeps the GLOBAL value
-     * — the leak stage 2a exists to prevent. Adding a header means adding it to both. The coupling is
-     * guarded rather than merely asked for: {@code SecurityHeadersStageTest}'s
-     * {@code removesSecurityNamesWhenRouteHasNoBlock} asserts the surviving key set after a
-     * block-less stage 2a, so a name present in only one half survives the call and fails the build.
+     * {@code applyResponseHeaders} seeds by iterating these constants and {@code applyRouteHeaders}
+     * removes the names of the same constants, so the two halves cannot enumerate different sets:
+     * adding a header here seeds it and removes it in one edit, and there is no second list to keep
+     * in step. That structural coupling replaces the previous arrangement, where the seeding half
+     * spelled the four names inline while the removal half read a separate {@code List<String>} — a
+     * header added to the seeding half alone was never removed at stage 2a, so an anchored route kept
+     * the GLOBAL value of that header, which is precisely the leak stage 2a exists to prevent. A test
+     * asserting a surviving key set cannot close that gap on its own: it can only observe the headers
+     * its own fixture enables, so a newly seeded one escapes it.
+     * <p>
+     * Declaration order is emission order.
      */
-    private static final List<String> GATEWAY_OWNED_HEADERS =
-            List.of(STRICT_TRANSPORT_SECURITY, CONTENT_TYPE_OPTIONS, FRAME_OPTIONS, CONTENT_SECURITY_POLICY);
+    private enum OwnedHeader {
+
+        /** {@code Strict-Transport-Security}, rendered from the block's {@code hsts} settings. */
+        HSTS("Strict-Transport-Security") {
+            @Override
+            @Nullable String value(SecurityHeadersConfig headers) {
+                Hsts hsts = headers.hsts();
+                if (hsts == null) {
+                    return null;
+                }
+                Integer maxAge = hsts.maxAge();
+                StringBuilder rendered = new StringBuilder("max-age=").append(maxAge != null ? maxAge : 0);
+                if (Boolean.TRUE.equals(hsts.includeSubdomains())) {
+                    rendered.append("; includeSubDomains");
+                }
+                return rendered.toString();
+            }
+
+            @Override
+            HeaderMode mode(SecurityHeadersConfig headers) {
+                return headers.hstsMode();
+            }
+        },
+
+        /** {@code X-Content-Type-Options: nosniff}, emitted when the block enables it. */
+        CONTENT_TYPE_OPTIONS("X-Content-Type-Options") {
+            @Override
+            @Nullable String value(SecurityHeadersConfig headers) {
+                return Boolean.TRUE.equals(headers.contentTypeNosniff()) ? "nosniff" : null;
+            }
+
+            @Override
+            HeaderMode mode(SecurityHeadersConfig headers) {
+                return headers.contentTypeNosniffMode();
+            }
+        },
+
+        /** {@code X-Frame-Options: DENY}, emitted when the block enables it. */
+        FRAME_OPTIONS("X-Frame-Options") {
+            @Override
+            @Nullable String value(SecurityHeadersConfig headers) {
+                return Boolean.TRUE.equals(headers.frameDeny()) ? "DENY" : null;
+            }
+
+            @Override
+            HeaderMode mode(SecurityHeadersConfig headers) {
+                return headers.frameDenyMode();
+            }
+        },
+
+        /**
+         * {@code Content-Security-Policy}, served verbatim: a control character in the value is
+         * refused at schema load and again at boot by {@code ConfigValidator}, so no header can be
+         * injected through it.
+         */
+        CONTENT_SECURITY_POLICY("Content-Security-Policy") {
+            @Override
+            @Nullable String value(SecurityHeadersConfig headers) {
+                return headers.contentSecurityPolicy();
+            }
+
+            @Override
+            HeaderMode mode(SecurityHeadersConfig headers) {
+                return headers.contentSecurityPolicyMode();
+            }
+        };
+
+        private final String headerName;
+
+        OwnedHeader(String headerName) {
+            this.headerName = headerName;
+        }
+
+        /** @return the wire name of this response header */
+        String headerName() {
+            return headerName;
+        }
+
+        /**
+         * @param headers the block being applied
+         * @return the value this header resolves to under {@code headers}, or {@code null} when the
+         * block does not enable it (no header is emitted)
+         */
+        abstract @Nullable String value(SecurityHeadersConfig headers);
+
+        /**
+         * @param headers the block being applied
+         * @return the block's resolved precedence for this header relative to an origin header
+         */
+        abstract HeaderMode mode(SecurityHeadersConfig headers);
+    }
 
     private final @Nullable SecurityHeadersConfig config;
 
@@ -116,6 +206,10 @@ public final class SecurityHeadersStage {
      * {@code routeHeaders} enables are seeded — a wholesale replacement, never a merge. CORS headers
      * and non-security entries (for example {@code Allow} or {@code WWW-Authenticate}) are untouched,
      * and so is the short-circuit state.
+     * <p>
+     * The removed set and the seeded set are the same set by construction: both iterate the single
+     * {@code OwnedHeader} definition, so no header can be seeded at stage 0 without also being
+     * removed here.
      *
      * @param request      the in-flight request context, with a route already selected
      * @param routeHeaders the route's resolved {@code security_headers} block, {@code null} when neither
@@ -131,30 +225,20 @@ public final class SecurityHeadersStage {
     }
 
     private static boolean isGatewayOwned(String name) {
-        return GATEWAY_OWNED_HEADERS.stream().anyMatch(owned -> owned.equalsIgnoreCase(name));
+        for (OwnedHeader owned : OwnedHeader.values()) {
+            if (owned.headerName().equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void applyResponseHeaders(PipelineRequest request, SecurityHeadersConfig headers) {
-        Hsts hsts = headers.hsts();
-        if (hsts != null) {
-            Integer maxAge = hsts.maxAge();
-            StringBuilder value = new StringBuilder("max-age=").append(maxAge != null ? maxAge : 0);
-            if (Boolean.TRUE.equals(hsts.includeSubdomains())) {
-                value.append("; includeSubDomains");
+        for (OwnedHeader owned : OwnedHeader.values()) {
+            String value = owned.value(headers);
+            if (value != null) {
+                seed(request, owned.mode(headers), owned.headerName(), value);
             }
-            seed(request, headers.hstsMode(), STRICT_TRANSPORT_SECURITY, value.toString());
-        }
-        if (Boolean.TRUE.equals(headers.contentTypeNosniff())) {
-            seed(request, headers.contentTypeNosniffMode(), CONTENT_TYPE_OPTIONS, "nosniff");
-        }
-        if (Boolean.TRUE.equals(headers.frameDeny())) {
-            seed(request, headers.frameDenyMode(), FRAME_OPTIONS, "DENY");
-        }
-        String contentSecurityPolicy = headers.contentSecurityPolicy();
-        if (contentSecurityPolicy != null) {
-            // Served verbatim: a control character in the value is refused at schema load and again at
-            // boot by ConfigValidator, so no header can be injected through it.
-            seed(request, headers.contentSecurityPolicyMode(), CONTENT_SECURITY_POLICY, contentSecurityPolicy);
         }
     }
 

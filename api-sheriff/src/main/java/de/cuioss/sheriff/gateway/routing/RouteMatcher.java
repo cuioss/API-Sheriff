@@ -51,6 +51,7 @@ public final class RouteMatcher {
     private final Set<HttpMethod> matchMethods;
     private final @Nullable String host;
     private final List<HeaderMatcher> headers;
+    private final List<String> matchHeaderNames;
 
     private RouteMatcher(String matchKey, boolean exact, Set<HttpMethod> matchMethods, @Nullable String host,
             List<HeaderMatcher> headers) {
@@ -59,6 +60,7 @@ public final class RouteMatcher {
         this.matchMethods = matchMethods;
         this.host = host;
         this.headers = headers;
+        this.matchHeaderNames = headers.stream().map(HeaderMatcher::name).distinct().toList();
     }
 
     /**
@@ -94,6 +96,24 @@ public final class RouteMatcher {
      */
     public boolean isExact() {
         return exact;
+    }
+
+    /**
+     * Returns the request-header names this route's {@code match.headers} matchers read, in
+     * declaration order with duplicates collapsed. Empty when the route declares no header matcher.
+     * <p>
+     * A header matcher makes <em>route selection</em> depend on a request header, so a cacheable
+     * response served by such a route genuinely varies by that header. A shared cache keys a stored
+     * response on the method and the request URI, never on an arbitrary request header, so without a
+     * matching {@code Vary} it would replay one variant's answer to a request carrying a different
+     * one (CWE-524). Emitting the response side of that contract needs the names, and this is the
+     * only place they survive route compilation — {@link #matches} consumes the matchers themselves
+     * and reports a boolean. Computed once at boot; the request path only reads it.
+     *
+     * @return the declared matcher header names, never {@code null}
+     */
+    public List<String> matchHeaderNames() {
+        return matchHeaderNames;
     }
 
     /**

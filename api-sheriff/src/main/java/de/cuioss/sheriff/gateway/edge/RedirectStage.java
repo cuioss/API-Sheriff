@@ -40,7 +40,10 @@ import org.jspecify.annotations.Nullable;
  *       appended, joined with {@code ?} or, when {@code location} already carries a query, with
  *       {@code &};</li>
  *   <li>the answer is marked {@linkplain Answer#noStore() uncacheable} when the route is
- *       effectively authenticated or the request accumulated any {@code Set-Cookie}.</li>
+ *       effectively authenticated or the request accumulated any {@code Set-Cookie};</li>
+ *   <li>the answer carries the {@linkplain Answer#vary() Vary} names of the selected route's
+ *       {@code match.headers} matchers, so a shared cache keys the stored redirect on the request
+ *       headers that chose it.</li>
  * </ul>
  * The stage performs no URI policy of its own: the open-redirect review of {@code location} runs
  * once, at boot, in the configuration validator, so every value reaching this stage is already an
@@ -66,15 +69,20 @@ public final class RedirectStage {
      *                      authenticated half of the cacheability verdict
      * @param setCookies    the {@code Set-Cookie} values the pipeline accumulated for this
      *                      response, empty when none
-     * @return the status, {@code Location} value and cacheability verdict to answer with
+     * @param varyHeaderNames the request-header names the selected route's {@code match.headers}
+     *                      matchers read ({@code RouteMatcher.matchHeaderNames()}), empty when the
+     *                      route declares no header matcher
+     * @return the status, {@code Location} value, cacheability verdict and {@code Vary} names to
+     * answer with
      */
     public Answer answer(RedirectConfig redirect, @Nullable String rawQuery, AuthConfig effectiveAuth,
-            List<String> setCookies) {
+            List<String> setCookies, List<String> varyHeaderNames) {
         Objects.requireNonNull(redirect, "redirect");
         Objects.requireNonNull(effectiveAuth, "effectiveAuth");
         Objects.requireNonNull(setCookies, "setCookies");
+        Objects.requireNonNull(varyHeaderNames, "varyHeaderNames");
         return new Answer(redirect.status(), location(redirect, rawQuery),
-                requiresNoStore(effectiveAuth, setCookies));
+                requiresNoStore(effectiveAuth, setCookies), varyHeaderNames);
     }
 
     /**
@@ -133,14 +141,27 @@ public final class RedirectStage {
      * @param noStore  whether the answer must carry {@code Cache-Control: no-store} because the
      *                 route is effectively authenticated or the response carries a
      *                 {@code Set-Cookie}
+     * @param vary     the request-header names the edge must emit as {@code Vary}, empty when there
+     *                 are none. {@code match.headers} participates in route selection, so two
+     *                 redirect routes at the same address can differ only by a request header. A
+     *                 public redirect carrying no {@code Set-Cookie} is a normal cacheable response
+     *                 ({@code 301} and {@code 308} are heuristically cacheable under RFC 9111
+     *                 section 4.2.2) and a shared cache keys it on the method and URI alone, so
+     *                 without {@code Vary} it would answer a request carrying one header variant
+     *                 with the redirect chosen for another (CWE-524). The names are carried whenever
+     *                 the route declares header matchers, {@code noStore} or not: on a
+     *                 {@code no-store} answer the header is merely inert, and making the rule
+     *                 conditional would buy nothing while giving a reader a second case to reason
+     *                 about
      */
-    public record Answer(int status, String location, boolean noStore) {
+    public record Answer(int status, String location, boolean noStore, List<String> vary) {
 
         /**
-         * Canonical constructor requiring {@code location}.
+         * Canonical constructor requiring {@code location} and defensively copying {@code vary}.
          */
         public Answer {
             Objects.requireNonNull(location, "location");
+            vary = vary == null ? List.of() : List.copyOf(vary);
         }
     }
 }
