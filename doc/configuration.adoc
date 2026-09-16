@@ -206,9 +206,10 @@ egress_tls:                        # OUTBOUND-TLS policy for the legs the gatewa
                                    #   REPLACES the client's anchors rather than adding to them.
                                    #   Omit to keep the JVM default trust store
   oidc_verify_hostname: true       # default true. false relaxes HOSTNAME MATCHING ONLY on the BFF
-                                   #   OIDC back-channel (discovery, code exchange, refresh): an IdP
-                                   #   whose certificate does not chain to a trusted anchor is still
-                                   #   refused. Refused at boot together with oidc_tls_profile (ADR-0045)
+                                   #   OIDC back-channel (discovery, code exchange, refresh,
+                                   #   revocation): an IdP whose certificate does not chain to a
+                                   #   trusted anchor is still refused. Refused at boot together
+                                   #   with oidc_tls_profile (ADR-0045)
   oidc_tls_profile: corporate-idp  # OPTIONAL logical trust profile for the BFF OIDC back-channel.
                                    #   Names a profile, never material (ADR-0011). REPLACES the JVM
                                    #   default trust store on that leg. Omit to keep the JVM default
@@ -977,8 +978,8 @@ defaults below apply.
   link:#_upstream_trust_profiles[Trust profiles (`upstream_tls_profile`)] below.
 
 | `oidc_verify_hostname`
-| Whether the *BFF OIDC back-channel* -- discovery, the authorization-code exchange and refresh --
-  verifies that the identity provider's certificate names the host the gateway dialled. *Defaults to
+| Whether the *BFF OIDC back-channel* -- discovery, the authorization-code exchange, refresh and
+  refresh-token revocation -- verifies that the identity provider's certificate names the host the gateway dialled. *Defaults to
   `true`* -- an omitted key resolves to the secure value, never to the type default. Setting it to
   `false` relaxes *hostname matching only*, on that leg alone. It cannot be combined with
   `oidc_tls_profile`: the pair is *refused at boot*. See

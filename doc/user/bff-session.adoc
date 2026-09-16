@@ -159,7 +159,8 @@ window buys that back at the cost of exactly the detection signal rotation provi
 == Private-CA / self-signed IdP
 
 If your IdP presents a certificate from a *private CA* (or a self-signed cert), the gateway's own
-back-channel to it -- discovery, the authorization-code exchange and refresh -- has to trust that CA,
+back-channel to it -- discovery, the authorization-code exchange, refresh and refresh-token
+revocation -- has to trust that CA,
 or logins fail with a PKIX/TLS trust error even though JWKS validation succeeds. The per-issuer
 `jwks.tls_profile` does *not* cover this leg; it governs the JWKS fetch only. RP-initiated logout is
 not part of the back-channel: it hands the browser an `end_session_endpoint` redirect and opens no

@@ -141,7 +141,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
- * authorization-code exchange and refresh — is the sixth TLS-terminating outbound leg, and it is bound
+ * authorization-code exchange, refresh and refresh-token revocation — is the sixth TLS-terminating
+ * outbound leg, and it is bound
  * to the global {@code egress_tls} block through its own peer keys: {@code oidc_verify_hostname} is
  * passed to the builder's {@code verifyHostname} on every build, the {@code true} path included, so
  * the leg's effect never depends on token-sheriff's own default (ADR-0022); {@code oidc_tls_profile},

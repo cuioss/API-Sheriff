@@ -328,7 +328,8 @@ retired format is never mis-parsed, and there is deliberately no acceptance path
 == Private-CA / self-signed IdP
 
 If your IdP presents a certificate from a *private CA*, name a trust profile for the gateway's
-back-channel to it -- discovery, the authorization-code exchange and refresh -- with
+back-channel to it -- discovery, the authorization-code exchange, refresh and refresh-token
+revocation -- with
 `egress_tls.oidc_tls_profile`, and bind the profile's anchors in the deployment. The profile
 *replaces* the JVM default trust store on that one leg, so include a public root in it if the IdP
 still needs one. The per-issuer `jwks.tls_profile` is a separate key for the JWKS fetch; an IdP

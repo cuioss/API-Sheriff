@@ -737,7 +737,7 @@ has no TLS leg to act on either.
 *Residual risk (accepted) -- the BFF OIDC back-channel.* `egress_tls.oidc_verify_hostname: false` is
 the same class of operator-selectable relaxation on the sixth leg, and what it concedes is recorded
 on its own terms. It gives up *hostname matching on the back-channel the gateway uses for discovery,
-the authorization-code exchange and refresh*; chain trust is unaffected and an identity provider whose
+the authorization-code exchange, refresh and refresh-token revocation*; chain trust is unaffected and an identity provider whose
 certificate reaches no trusted anchor is still refused. What remains is serious in a different way
 from the JWKS leg: this connection *carries the client secret* and the authorization codes, and its
 responses are the discovery document and the token responses sessions are built from. An attacker who
