@@ -405,7 +405,7 @@ public final class ConfigLogMessages {
          */
         public static final LogRecord REDIRECT_EXTERNAL_TARGET_ALLOWED = LogRecordModel.builder()
                 .prefix(PREFIX)
-                .identifier(125)
+                .identifier(127)
                 .template("Route '%s' declares redirect.allow_external: true — its Location may send clients to another origin. Confirm the target is intended; remove allow_external to confine the redirect to a gateway path")
                 .build();
     }
