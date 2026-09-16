@@ -50,10 +50,13 @@ import jakarta.inject.Inject;
  * sets of outbound legs, and neither one moves the other:
  * <ul>
  *   <li>The runtime {@code javax.net.ssl.trustStore} system property governs every leg that holds a
- *       raw JDK {@code TrustManager} — the confidential-client OIDC engine among them, which performs
- *       its discovery, token, refresh and refresh-token revocation calls with the JVM default
- *       {@code TrustManager} alone and exposes no per-client TLS-trust seam. No per-client TLS pin
- *       is attempted on that leg. Logout is deliberately absent from that list: it builds an
+ *       raw JDK {@code TrustManager}. The confidential-client OIDC engine — its discovery, token,
+ *       refresh and refresh-token revocation calls — is among them only while no
+ *       {@code egress_tls.oidc_tls_profile} is named: a named profile is resolved to its own trust
+ *       anchors and handed to the engine's client configuration as the {@code SSLContext} every one of
+ *       those calls dials with, replacing the JVM default anchors on that leg (ADR-0045). With no
+ *       profile named, the leg verifies against the JVM default {@code TrustManager}, which this
+ *       property governs. Logout is deliberately absent from that list: it builds an
  *       {@code end_session_endpoint} redirect for the browser rather than dialling the IdP, and the
  *       logout flow's token-revocation seam is bound to a no-op in production wiring, so no outbound
  *       call is made for it to trust. The revocation a refresh failure triggers is a different,
@@ -118,8 +121,8 @@ public class DefaultTrustSourceAudit {
 
     private static final String ONLY_REGISTRY_TIER_MOVED =
             "The two tiers DIVERGE: only the registry-resolved legs were moved, and every leg holding "
-                    + "a raw TrustManager — the confidential-client OIDC engine among them — still "
-                    + "verifies against the platform bundle.";
+                    + "a raw TrustManager — the confidential-client OIDC engine among them unless "
+                    + "egress_tls.oidc_tls_profile is named — still verifies against the platform bundle.";
 
     private final TlsConfigurationRegistry registry;
 
