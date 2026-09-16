@@ -38,15 +38,18 @@ import lombok.Builder;
  * control characters, scheme and authority (and free of {@code #} when
  * {@code keepQuery} is set). With {@code allowExternal} it may additionally be an
  * absolute {@code http}/{@code https} URI with a non-empty host and no user-info;
- * opting in emits a boot warning. The value range of {@code status}
- * ({@code 301, 302, 303, 307, 308}) is owned by the endpoint schema.
+ * opting in emits a boot warning. {@code keepQuery} and {@code allowExternal} are
+ * refused <em>together</em>: the query is attacker-supplied, so carrying it onto a
+ * foreign origin is a disclosure no boot review can vet. The value range of
+ * {@code status} ({@code 301, 302, 303, 307, 308}) is owned by the endpoint schema.
  *
  * @param location      the {@code Location} value (mandatory)
  * @param status        the redirect status code; mandatory, since {@code 301} and
  *                      {@code 308} are cached by browsers and permanence must be an
  *                      explicit operator choice
  * @param keepQuery     whether the raw inbound query string is appended to
- *                      {@code location}
+ *                      {@code location}; same-origin only, so it cannot be combined
+ *                      with {@code allowExternal}
  * @param allowExternal whether {@code location} may target another origin
  * @author API Sheriff Team
  * @since 1.0

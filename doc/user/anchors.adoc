@@ -30,10 +30,26 @@ Semantics -- deliberately few rules:
   boot, and a route whose path falls
   inside an anchor namespace without declaring that anchor fails the boot. A route whose path
   lies outside every anchor namespace declares no anchor at all and is unaffected. No `anchors`
-  block => this section does not apply. `protocol: grpc` routes are exempt from both containment
-  directions -- a gRPC method path is service-rooted on a single opaque segment and can never
+  block => this section does not apply. `protocol: grpc` routes are exempt from every containment
+  direction -- a gRPC method path is service-rooted on a single opaque segment and can never
   nest inside a gateway path namespace on a segment boundary -- but still declare an anchor for
   the classification axes and the auth floor.
+* *Namespace coverage: nothing outside the anchor may serve the namespace.* The two directions
+  above judge a route by where its *own* match key sits, which leaves the opposite geometry --
+  a route sitting outside and *above* an anchor, whose `path_prefix` swallows the anchor's --
+  for this rule. A prefix route whose namespace strictly contains an anchor's `path_prefix`,
+  and which does not declare that anchor, fails the boot *unless* a route under the anchor
+  covers the namespace: a prefix route whose `path_prefix` is the anchor prefix itself. That
+  covering route wins every address in the namespace by longest prefix, so a broader route
+  alongside it is the ordinary topology, not a bypass. Without one, only the addresses the
+  anchor's own routes name are protected and every other address falls through to the broader
+  route -- served with *its* auth posture and *its* `security_headers`. The case this closes is
+  an anchor whose only member is an exact `match.path` route: `path: /admin` claims exactly
+  `/admin`, so `/admin/` and `/admin/x` would land on the enclosing route. See
+  link:endpoint-routes.adoc#_route_ordering[Route ordering] for the selection rules this follows
+  from. Exact routes are not judged here -- an exact route serves one address, which is the
+  previous rule's case -- and, like the other two directions, the rule is path-geometric: a
+  covering route narrowed by `match.host` or `match.methods` covers only what it matches.
 * *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers` and
   `allowed_methods`. Resolution follows one chain -- *gateway defaults -> anchor -> endpoint ->
   route* -- and every step *replaces the whole block, never merges* (the same rule as

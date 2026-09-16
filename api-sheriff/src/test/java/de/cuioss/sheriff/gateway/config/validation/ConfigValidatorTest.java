@@ -79,7 +79,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link ConfigValidator}: one negative case per enforced cross-cutting
- * rule (including the seven ADR-0007 anchor / effective-auth rules), the D5
+ * rule (including the ADR-0007 anchor / effective-auth rules, namespace coverage among them), the D5
  * boot-time hardening rules (real-CIDR {@code trusted_proxies} parsing with
  * full-space rejection and broad-prefix boot-WARN, and the same-prefix
  * route-disjointness rule moved here from {@code RouteTableBuilder}), the structural
@@ -214,6 +214,15 @@ class ConfigValidatorTest {
                 .id(id)
                 .anchor(anchorName)
                 .match(match(prefix, methods))
+                .build();
+    }
+
+    /** An exact ({@code match.path}) route — the AS-2 matcher form the coverage rule reasons about. */
+    private static RouteConfig exactRoute(String id, String path, @Nullable String anchorName) {
+        return RouteConfig.builder()
+                .id(id)
+                .anchor(anchorName)
+                .match(MatchConfig.builder().path(path).build())
                 .build();
     }
 
@@ -1226,7 +1235,7 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("The seven anchor / effective-auth rules (ADR-0007)")
+    @DisplayName("The anchor / effective-auth rules (ADR-0007)")
     class AnchorRules {
 
         @Test
@@ -1278,6 +1287,87 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertHasError(errors, "/endpoint/routes", "does not declare it");
+        }
+
+        // --- Rule 4b: the namespace-coverage mirror of rule 4 --------------------------------------
+        // Rules 3 and 4 judge a route by where its OWN match key sits, so a route sitting outside and
+        // ABOVE an anchor is unjudged by both. With AS-2 exact routes that gap is reachable: an exact
+        // route covers one address, so every other address in the namespace falls through to the
+        // broader route and is served with ITS auth posture. These four cases pin the rule and its
+        // coverage exception, with the covered case as the negative control.
+
+        @Test
+        @DisplayName("Rule 4b: Should reject a broader route swallowing a namespace whose only member is an exact route")
+        void shouldRejectBroaderRouteSwallowingExactOnlyAnchorNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    exactRoute("admin-entry", "/admin", "admin"));
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // /admin/ and /admin/x match no route belonging to the anchor and would be served by the
+            // unanchored catch-all with require: none — the anchor's bearer floor escaped.
+            assertHasError(errors, "/endpoint/routes",
+                    "route 'catch-all' path_prefix '/' contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
+        @Test
+        @DisplayName("Rule 4b: Should accept a broader route when a prefix route under the anchor covers the namespace")
+        void shouldAcceptBroaderRouteWhenAnchoredPrefixRouteCoversNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-app", "/admin", "admin"));
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // Longest-prefix selection gives every address under /admin to the anchored route, so the
+            // catch-all alongside it is the ordinary topology and not a bypass.
+            assertTrue(errors.isEmpty(),
+                    () -> "a covered anchor namespace must not refuse a broader sibling route, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 4b: Should reject when the anchored prefix route covers only part of the namespace")
+        void shouldRejectWhenAnchoredPrefixRouteCoversOnlyASubPath() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-users", "/admin/users", "admin"));
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // /admin/reports is inside the namespace but below no anchored route, so it still falls
+            // through: partial coverage is not coverage.
+            assertHasError(errors, "/endpoint/routes",
+                    "contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
+        @Test
+        @DisplayName("Rule 4b: Should not judge an exact route, which serves one address and never a namespace")
+        void shouldNotJudgeExactRouteAgainstTheCoverageRule() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-app", "/admin", "admin"));
+            EndpointConfig root = anchoredEndpoint("root-ep", "ROOT", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    exactRoute("root-entry", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, root),
+                    topologyWith("ADMIN", "ROOT"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "an exact route matches one address and can swallow no namespace, got: " + errors);
         }
 
         @Test
@@ -1475,6 +1565,20 @@ class ConfigValidatorTest {
             assertTrue(errors.isEmpty(),
                     () -> "a gRPC route inside a catch-all anchor namespace must not be rejected as a squatter, got: "
                             + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 4b exemption: a gRPC route whose prefix swallows an uncovered anchor namespace is accepted")
+        void shouldExemptGrpcRouteFromNamespaceCoverageRule() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    grpcRoute("grpc-echo", "/", null, null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "the gRPC exemption covers the coverage mirror too, not only rules 3 and 4, got: " + errors);
         }
 
         @Test

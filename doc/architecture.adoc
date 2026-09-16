@@ -797,7 +797,10 @@ is answered only then. Placing the answer after authentication is the secure def
 authenticated anchor an unauthenticated caller is challenged before the configured location is
 disclosed. The answer is written on the event loop with the status, the `Location`, the headers the
 earlier stages accumulated (the route's security headers, any `Set-Cookie`) and an empty body; the
-forward policy is not consumed and `REQUEST_FORWARDED` is not counted.
+forward policy is not consumed and `REQUEST_FORWARDED` is not counted. The stage additionally decides
+the answer's *cacheability*: an effectively authenticated route, or any accumulated `Set-Cookie`,
+forces `Cache-Control: no-store`, so no shared cache stores a `301`/`308` produced for one caller and
+replays it to another. A public cookie-less redirect stays cacheable.
 
 `RedirectStage` itself performs no URI policy: it writes the configured `location` verbatim --
 never prefixed with the application context path, with no request placeholder -- and appends the raw
@@ -805,7 +808,9 @@ query only when `keep_query` is set. The *open-redirect review* happens once, at
 configuration validator, which is why the request path can be policy-free: a `location` without the
 `allow_external` opt-in must be a single-slash gateway path free of backslashes, encoded slashes,
 dot-segments, whitespace and control characters; with the opt-in it may be an absolute `http`/`https`
-URI with a host and no user-info, and the boot logs `WARN ApiSheriff-125` naming the route. A redirect
+URI with a host and no user-info, and the boot logs `WARN ApiSheriff-125` naming the route. `keep_query`
+and `allow_external` cannot be declared together -- the review vets the configured target, never the
+request-supplied query, so the pair is refused rather than carried onto a foreign origin. A redirect
 is refused on every protocol but `http`, and together with an `asset` or `upstream` block. See
 link:security-threat-model.adoc#gw-13[GW-13] for the threat this review answers.
 
