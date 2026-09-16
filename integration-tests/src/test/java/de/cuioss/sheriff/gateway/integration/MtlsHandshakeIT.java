@@ -344,7 +344,7 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
 
     /** The recorded result of one handshake attempt, see {@link #attemptHandshake(SSLContext)}. */
     private record HandshakeOutcome(IOException failure, boolean listenerFired, boolean sessionValid,
-            String cipherSuite, ApplicationRead applicationRead) {
+    String cipherSuite, ApplicationRead applicationRead) {
     }
 
     /** How the application-data probe after a failed handshake ended. */

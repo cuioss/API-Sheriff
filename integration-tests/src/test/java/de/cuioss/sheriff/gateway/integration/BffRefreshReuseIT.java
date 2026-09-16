@@ -267,7 +267,7 @@ class BffRefreshReuseIT {
                         + "so A2's refresh must be refused. OBSERVED status " + successor.statusCode()
                         + " (Keycloak session " + keycloakSessionA1 + " after the replay: "
                         + sessionA1AfterReplay.map(present -> "PRESENT, clients " + present.get("clients"))
-                                .orElse("GONE")
+                        .orElse("GONE")
                         + "); a 200 means Keycloak now revokes only "
                         + "the replayed token, and this pin and the class javadoc must change together");
         assertTrue(successor.contentType().contains("application/problem+json"),

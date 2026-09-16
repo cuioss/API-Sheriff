@@ -32,6 +32,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import org.junit.jupiter.api.DisplayName;
@@ -67,7 +68,7 @@ class TokenClientDslJsonReflectionTest {
 
     @Test
     @DisplayName("Should register every generated DSL-JSON converter shipped in the client engine jar")
-    void shouldRegisterEveryEngineDslJsonConverter() throws IOException, URISyntaxException {
+    void shouldRegisterEveryEngineDslJsonConverter() throws Exception {
         // Arrange
         Set<String> registered = registeredTargetNames();
         Set<String> converters = engineConverterClassNames();
@@ -88,7 +89,7 @@ class TokenClientDslJsonReflectionTest {
 
     @Test
     @DisplayName("Should enumerate a non-empty converter set that includes the token error response converter")
-    void shouldEnumerateTheEngineConvertersRatherThanNothing() throws IOException, URISyntaxException {
+    void shouldEnumerateTheEngineConvertersRatherThanNothing() throws Exception {
         // Arrange / Act
         Set<String> converters = engineConverterClassNames();
 
