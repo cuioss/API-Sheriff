@@ -19,7 +19,7 @@ endpoint:
     # Until this route landed, the bearer-protected surface declared NO explicit
     # security_filter anywhere, so the interaction of the two gates — auth and the
     # inbound filter — was never exercised on a route carrying both. This route
-    # inherits `auth.require: bearer` from the 'secure' anchor (gateway.yaml:131-136)
+    # inherits `auth.require: bearer` from the 'secure' anchor (gateway.yaml:162-167)
     # and adds its own filter block, so a single request can violate one gate, the
     # other, or both. BearerSecurityFilterInteractionIT drives that full matrix and
     # asserts WHICH gate wins when a request violates both.
