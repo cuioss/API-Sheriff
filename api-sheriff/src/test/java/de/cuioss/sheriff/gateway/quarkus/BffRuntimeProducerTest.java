@@ -62,6 +62,7 @@ import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequest
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
@@ -423,15 +424,78 @@ class BffRuntimeProducerTest {
     }
 
     /**
+     * {@code oidc.session.refresh.on_failure} is proven to <em>act</em>: the key was declared on the
+     * config model and in the documentation while no main-code class read it. The assembled runtime is
+     * walked for the policy the stage actually holds, so deleting the key from the reject descriptor —
+     * or the producer no longer passing it — turns {@link #shouldHandDeclaredRejectToTheStage()} red; the
+     * omitted-key case is the matched control proving the walk sees the policy at all.
+     */
+    @Nested
+    @DisplayName("Refresh-failure policy (oidc.session.refresh.on_failure)")
+    class OnFailurePolicy {
+
+        @Test
+        @DisplayName("Should hand a declared on_failure: reject to the assembled session stage")
+        void shouldHandDeclaredRejectToTheStage() {
+            List<SessionAuthenticationStage.OnFailure> policies = reachableInstancesOf(
+                    producer(onFailureOidc("reject")).bffRuntime(), SessionAuthenticationStage.OnFailure.class);
+
+            assertEquals(List.of(SessionAuthenticationStage.OnFailure.REJECT), policies,
+                    "the declared reject must be the one policy the stage holds");
+        }
+
+        @Test
+        @DisplayName("Should default to reauthenticate when on_failure is omitted (matched control)")
+        void shouldDefaultToReauthenticate() {
+            List<SessionAuthenticationStage.OnFailure> policies = reachableInstancesOf(
+                    producer(onFailureOidc(null)).bffRuntime(), SessionAuthenticationStage.OnFailure.class);
+
+            assertEquals(List.of(SessionAuthenticationStage.OnFailure.REAUTHENTICATE), policies,
+                    "an omitted key resolves the documented default, and the walk can see the policy");
+        }
+
+        @Test
+        @DisplayName("Should resolve both declared spellings and the omitted key")
+        void shouldResolveDeclaredSpellings() {
+            assertAll("the two schema spellings and the omitted key",
+                    () -> assertEquals(SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
+                            BffRuntimeProducer.onFailurePolicy("reauthenticate")),
+                    () -> assertEquals(SessionAuthenticationStage.OnFailure.REJECT,
+                            BffRuntimeProducer.onFailurePolicy("reject")),
+                    () -> assertEquals(SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
+                            BffRuntimeProducer.onFailurePolicy(null)));
+        }
+
+        @Test
+        @DisplayName("Should refuse an unrecognised on_failure rather than silently defaulting")
+        void shouldRefuseUnrecognisedValue() {
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> BffRuntimeProducer.onFailurePolicy("ignore"));
+
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+            assertTrue(thrown.getMessage().contains("oidc.session.refresh.on_failure"),
+                    "the refusal must name the key: " + thrown.getMessage());
+        }
+
+        private OidcConfig onFailureOidc(@Nullable String onFailure) {
+            return refreshOidc(Boolean.TRUE, onFailure);
+        }
+    }
+
+    /**
      * Server-mode configuration whose {@code refresh} block declares {@code leeway_seconds} and the
      * supplied {@code enabled} value — {@code null} standing for the key being omitted, which is the
      * case that must resolve the default.
      */
     private static OidcConfig refreshOidc(@Nullable Boolean enabled) {
+        return refreshOidc(enabled, null);
+    }
+
+    private static OidcConfig refreshOidc(@Nullable Boolean enabled, @Nullable String onFailure) {
         OidcConfig.Session session = OidcConfig.Session.builder()
                 .mode("server")
                 .ttlSeconds(3600)
-                .refresh(OidcConfig.Refresh.builder().enabled(enabled).leewaySeconds(30).build())
+                .refresh(OidcConfig.Refresh.builder().enabled(enabled).leewaySeconds(30).onFailure(onFailure).build())
                 .build();
         return OidcConfig.builder()
                 .issuer(ISSUER)
@@ -457,8 +521,9 @@ class BffRuntimeProducerTest {
      * Two of the decisions below are security-relevant rather than cosmetic: dropping the refresh
      * token at login when refresh is off keeps a credential the gateway will never redeem out of the
      * session store (and out of the sealed browser cookie in cookie mode), and mapping a
-     * {@code FAILED} refresh to {@link Optional#empty()} is what stops the stage mediating the
-     * pre-refresh token of a session the engine just revoked.
+     * {@code FAILED} refresh to session-ended — while an {@code UNAVAILABLE} one fails only the
+     * request — is what stops the stage mediating the pre-refresh token of a destroyed session without
+     * clearing the cookie of one that is still live.
      */
     @Nested
     @DisplayName("Refresh seams — the decisions the assembly's lambdas carry")
@@ -512,15 +577,15 @@ class BffRuntimeProducerTest {
         void shouldYieldSessionUnchangedWhenRefreshDisabled() {
             SessionRecord live = session(token());
 
-            Optional<SessionBinding.BoundSession> bound =
+            SessionAuthenticationStage.RefreshResult result =
                     BffRuntimeProducer.sessionUnchanged().refreshIfNeeded(live, null, NOW);
 
-            assertTrue(bound.isPresent(),
-                    "turning refresh off is a policy choice — it must not make a live session unauthenticated");
+            SessionBinding.BoundSession bound = assertInstanceOf(SessionAuthenticationStage.RefreshResult.Mediate.class,
+                    result, "turning refresh off is a policy choice — it must not make a live session unauthenticated")
+                    .boundSession();
             assertAll("the gateway mediates the token it was issued until the absolute TTL expires",
-                    () -> assertSame(live, bound.orElseThrow().session(),
-                            "the resolved session is handed back verbatim"),
-                    () -> assertTrue(bound.orElseThrow().setCookieHeaders().isEmpty(),
+                    () -> assertSame(live, bound.session(), "the resolved session is handed back verbatim"),
+                    () -> assertTrue(bound.setCookieHeaders().isEmpty(),
                             "an unwired seam re-binds nothing, so it emits no Set-Cookie"));
         }
 
@@ -530,12 +595,11 @@ class BffRuntimeProducerTest {
             SessionRecord live = storedSession(token());
             AtomicInteger engineCalls = new AtomicInteger();
 
-            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer
                     .nearExpiryRefresh(coordinator(NOW.plusSeconds(600), engineCalls))
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
 
-            assertTrue(bound.isPresent());
-            assertSame(live, bound.orElseThrow().session());
+            assertSame(live, mediated(result).session());
             assertEquals(0, engineCalls.get(), "a token outside the leeway must not reach the engine");
         }
 
@@ -553,12 +617,11 @@ class BffRuntimeProducerTest {
             SessionRecord live = storedSession(null);
             AtomicInteger engineCalls = new AtomicInteger();
 
-            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer
                     .nearExpiryRefresh(coordinator(NOW, engineCalls))
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
 
-            assertTrue(bound.isPresent(), "a session with no refresh token is still authenticated");
-            assertSame(live, bound.orElseThrow().session());
+            assertSame(live, mediated(result).session(), "a session with no refresh token is still authenticated");
             assertEquals(0, engineCalls.get(),
                     "no refresh token means no refresh at all — silently, and regardless of expiry");
         }
@@ -570,18 +633,17 @@ class BffRuntimeProducerTest {
             AtomicInteger engineCalls = new AtomicInteger();
             TokenRefreshCoordinator coordinator = coordinator(NOW, engineCalls);
 
-            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer.nearExpiryRefresh(coordinator)
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(coordinator)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
 
-            assertTrue(bound.isPresent());
             assertEquals(1, engineCalls.get(), "a token inside the leeway drives exactly one engine refresh");
-            assertEquals(ROTATED_ACCESS_TOKEN, bound.orElseThrow().session().accessToken(),
+            assertEquals(ROTATED_ACCESS_TOKEN, mediated(result).session().accessToken(),
                     "the stage must mediate from the rotated token, never the pre-refresh one");
         }
 
         @Test
-        @DisplayName("Should signal unauthenticated when the refresh failed and the session was destroyed")
-        void shouldYieldEmptyOnRefreshFailure() {
+        @DisplayName("Should end the session when the refresh failed and the session was destroyed")
+        void shouldEndSessionOnRefreshFailure() {
             SessionRecord live = storedSession(token());
             TokenRefreshCoordinator rejecting = new TokenRefreshCoordinator(LEEWAY, sessionRecord -> NOW,
                     refreshToken -> {
@@ -589,12 +651,55 @@ class BffRuntimeProducerTest {
                     },
                     binding, NO_REVOCATION);
 
-            Optional<SessionBinding.BoundSession> bound = BffRuntimeProducer.nearExpiryRefresh(rejecting)
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(rejecting)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
 
-            assertTrue(bound.isEmpty(),
-                    "a FAILED outcome must reach the stage as empty so it re-drives the unauthenticated "
-                            + "negotiation, rather than mediating the token of a session just revoked");
+            assertInstanceOf(SessionAuthenticationStage.RefreshResult.SessionEnded.class, result,
+                    "a FAILED outcome must reach the stage as session-ended so it clears the cookie, rather "
+                            + "than mediating the token of a session just destroyed");
+        }
+
+        @Test
+        @DisplayName("Should mediate the still-valid token when a pre-redemption failure defers the refresh")
+        void shouldMediateOnDeferredRefresh() {
+            SessionRecord live = storedSession(token());
+            TokenRefreshCoordinator unreachable = new TokenRefreshCoordinator(LEEWAY,
+                    sessionRecord -> NOW.plusSeconds(30), refreshToken -> {
+                        throw new TransportException("Token endpoint unreachable");
+                    },
+                    binding, NO_REVOCATION);
+
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
+                    .refreshIfNeeded(live, cookieHeader(live), NOW);
+
+            assertEquals(live.accessToken(), mediated(result).session().accessToken(),
+                    "a DEFERRED outcome keeps mediating the access token that has not expired yet");
+        }
+
+        @Test
+        @DisplayName("Should fail only the request when a pre-redemption failure meets an expired access token")
+        void shouldFailRequestOnUnavailableRefresh() {
+            SessionRecord live = storedSession(token());
+            TokenRefreshCoordinator unreachable = new TokenRefreshCoordinator(LEEWAY, sessionRecord -> NOW,
+                    refreshToken -> {
+                        throw new TransportException("Token endpoint unreachable");
+                    },
+                    binding, NO_REVOCATION);
+
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
+                    .refreshIfNeeded(live, cookieHeader(live), NOW);
+
+            assertAll("UNAVAILABLE keeps the session and fails only this request",
+                    () -> assertInstanceOf(SessionAuthenticationStage.RefreshResult.RequestFailed.class, result,
+                            "an UNAVAILABLE outcome must not reach the stage as session-ended, which would clear "
+                                    + "the cookie of a session that is still live"),
+                    () -> assertTrue(binding.resolve(cookieHeader(live), NOW).isPresent(),
+                            "the session is still resolvable, so the next request can retry the refresh"));
+        }
+
+        private SessionBinding.BoundSession mediated(SessionAuthenticationStage.RefreshResult result) {
+            return assertInstanceOf(SessionAuthenticationStage.RefreshResult.Mediate.class, result,
+                    "the seam must mediate this outcome").boundSession();
         }
 
         private TokenRefreshCoordinator coordinator(Instant accessTokenExpiry, AtomicInteger engineCalls) {

@@ -584,10 +584,11 @@ class GatewayEdgeRouteBffWiringTest {
             }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1));
 
             SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
-                    (session, cookieHeader, instant) ->
-                            Optional.of(new SessionBinding.BoundSession(session, List.of())),
+                    (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
+                            new SessionBinding.BoundSession(session, List.of())),
                     (token, scopes) -> true,
                     (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
+                    SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                     Clock.systemUTC());
             StepUpCoordinator stepUp = new StepUpCoordinator(
                     (session, challenge, instant) -> Optional.empty(),
@@ -658,10 +659,11 @@ class GatewayEdgeRouteBffWiringTest {
         }, pendingStore, bindingCodec, ORIGIN);
 
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
-                (session, cookieHeader, instant) ->
-                        Optional.of(new SessionBinding.BoundSession(session, List.of())),
+                (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(session, List.of())),
                 (token, scopes) -> true,
                 (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
+                SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 Clock.systemUTC());
 
         CsrfDefence csrf = new CsrfDefence(Set.of(ORIGIN));

@@ -56,7 +56,6 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
-import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -88,6 +87,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import org.jspecify.annotations.Nullable;
 
 /**
  * CDI producer of the {@link BffRuntime} — the D16 edge wiring that makes the D1–D12 BFF
@@ -123,6 +123,16 @@ import jakarta.inject.Singleton;
  * stage's refresh seam degrades to the unwired binding — session unchanged, no cookies — so the
  * gateway mediates the token it was issued until the absolute session TTL expires, and no refresh
  * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
+ * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: a
+ * current, refreshed or deferred session is mediated; a failed refresh — the session was destroyed —
+ * clears the session cookie before the refresh-failure response; an unavailable refresh — the identity
+ * provider was unreachable and the access token has expired, but the session is kept — answers the
+ * refresh-failure response without clearing the cookie. That response is
+ * {@code oidc.session.refresh.on_failure}, resolved here and handed to the stage:
+ * {@code reauthenticate} (also when omitted) re-drives the login negotiation, {@code reject} answers
+ * {@code 401} for every request. A refresh token still live at the identity provider after a session
+ * ends on a refused redemption or a persist failure is revoked, best-effort, through the engine's
+ * RFC 7009 {@link RevocationClient} built from the same back-channel configuration.
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
@@ -166,6 +176,10 @@ public class BffRuntimeProducer {
     private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
     /** The RFC 7009 {@code token_type_hint} sent when a live refresh token is revoked. */
     private static final String REFRESH_TOKEN_TYPE_HINT = "refresh_token";
+    /** The {@code oidc.session.refresh.on_failure} spelling that re-drives login negotiation (the default). */
+    private static final String ON_FAILURE_REAUTHENTICATE = "reauthenticate";
+    /** The {@code oidc.session.refresh.on_failure} spelling that answers {@code 401} for every request. */
+    private static final String ON_FAILURE_REJECT = "reject";
 
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> tokenValidator;
@@ -260,6 +274,7 @@ public class BffRuntimeProducer {
                 refresh == null ? null : refresh.enabled(), DEFAULT_REFRESH_ENABLED);
         Duration refreshLeeway = Duration.ofSeconds(Objects.requireNonNullElse(
                 refresh == null ? null : refresh.leewaySeconds(), DEFAULT_REFRESH_LEEWAY_SECONDS));
+        SessionAuthenticationStage.OnFailure onFailure = onFailurePolicy(refresh == null ? null : refresh.onFailure());
         OidcConfig.Csrf csrf = session.csrf();
         List<String> declaredTrustedOrigins = csrf == null ? List.of() : csrf.trustedOrigins();
         Set<String> trustedOrigins = declaredTrustedOrigins.isEmpty()
@@ -341,6 +356,7 @@ public class BffRuntimeProducer {
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
+                onFailure,
                 clock);
 
         // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam; the upstream-challenge
@@ -466,12 +482,34 @@ public class BffRuntimeProducer {
     }
 
     /**
+     * Resolves {@code oidc.session.refresh.on_failure} to the stage's policy. An omitted key means
+     * {@code reauthenticate}. The schema admits only the two spellings, so any other value is refused
+     * rather than silently mapped onto a default.
+     *
+     * @param declared the declared {@code on_failure} value, {@code null} when omitted
+     * @return the resolved policy
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} for an unrecognised value
+     */
+    static SessionAuthenticationStage.OnFailure onFailurePolicy(@Nullable String declared) {
+        if (declared == null) {
+            return SessionAuthenticationStage.OnFailure.REAUTHENTICATE;
+        }
+        return switch (declared) {
+            case ON_FAILURE_REAUTHENTICATE -> SessionAuthenticationStage.OnFailure.REAUTHENTICATE;
+            case ON_FAILURE_REJECT -> SessionAuthenticationStage.OnFailure.REJECT;
+            default -> throw new GatewayException(EventType.CONFIG_INVALID,
+                    "oidc.session.refresh.on_failure '" + declared + "' is not recognised — use '"
+                            + ON_FAILURE_REAUTHENTICATE + "' or '" + ON_FAILURE_REJECT + "'");
+        };
+    }
+
+    /**
      * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
-     * seam: an outcome carrying no session ({@code FAILED}, or {@code UNAVAILABLE} after a
-     * pre-redemption failure with an expired access token) becomes {@link Optional#empty()} so the
-     * stage re-drives the unauthenticated negotiation instead of mediating a token that is revoked or
-     * expired; any other outcome yields the session to mediate from plus whatever {@code Set-Cookie}
-     * the re-bind produced.
+     * seam. {@code CURRENT}, {@code REFRESHED} and {@code DEFERRED} carry a session and are mediated
+     * with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} — the session was destroyed
+     * — ends the session so the stage clears the cookie; {@code UNAVAILABLE} — the session was kept
+     * but its access token has expired — fails only this request, so the cookie survives for the next
+     * attempt.
      * <p>
      * Extracted so the enabled and disabled bindings of the seam read as the two alternatives they
      * are, rather than one of them being a multi-statement lambda inline in the assembly.
@@ -482,11 +520,13 @@ public class BffRuntimeProducer {
     static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
         return (sessionRecord, cookieHeader, now) -> {
             TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
-            SessionRecord mediated = outcome.session();
-            if (mediated == null) {
-                return Optional.empty();
-            }
-            return Optional.of(new SessionBinding.BoundSession(mediated, outcome.setCookieHeaders()));
+            return switch (outcome.kind()) {
+                case CURRENT, REFRESHED, DEFERRED -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(Objects.requireNonNull(outcome.session(), "session"),
+                                outcome.setCookieHeaders()));
+                case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
+                case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
+            };
         };
     }
 
@@ -522,7 +562,7 @@ public class BffRuntimeProducer {
      */
     static SessionAuthenticationStage.TokenRefresh sessionUnchanged() {
         return (sessionRecord, cookieHeader, now) ->
-                Optional.of(new SessionBinding.BoundSession(sessionRecord, List.of()));
+                SessionAuthenticationStage.RefreshResult.mediate(new SessionBinding.BoundSession(sessionRecord, List.of()));
     }
 
     /**
