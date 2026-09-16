@@ -44,6 +44,7 @@ import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import com.networknt.schema.Error;
@@ -124,10 +125,16 @@ import org.junit.jupiter.api.Test;
  * discarding them — any sibling beside a {@code $ref} that carries schema rather than annotation.
  * {@code resolve} separately refuses a chained and a non-local {@code $ref}. {@code not} and
  * {@code propertyNames} are the two deliberate exemptions: neither can contribute a usable array key,
- * so both are walked past. One negative control per refusal injects the unmodelled shape into a copy
- * of the gateway schema and asserts the derivation refuses it naming that shape, and a further control
- * injects the two exemptions and asserts the derived inventory is unchanged, so the fail-closed walk
- * cannot quietly widen into a blanket refusal.
+ * so both are walked past. A {@code oneOf} is the one applicator refused <em>conditionally</em>: it is
+ * modelled — walked past — exactly when every branch carries nothing but {@code required} and
+ * annotation, because such a branch asserts <em>which</em> keys a document declares and can declare
+ * none of its own, and it is refused as before the moment a branch carries anything that could. That
+ * is the shape the endpoint schema uses to make {@code match.path_prefix} and {@code match.path}
+ * mutually exclusive. One negative control per refusal injects the unmodelled shape into a copy of the
+ * gateway schema and asserts the derivation refuses it naming that shape — including a {@code oneOf}
+ * whose branch declares a key — and two further controls inject the exemptions and the keyless
+ * {@code oneOf} and assert the derived inventory is unchanged, so neither the fail-closed walk can
+ * quietly widen into a blanket refusal nor the carve-out into a blanket exemption.
  * <p>
  * <strong>No vacuous pass.</strong> Every extraction is anchored on a named constant — a literal
  * sentence fragment for the prose surfaces, and a JSON pointer for the posture set, which the schema
@@ -351,7 +358,15 @@ class DocumentedSetsContractTest {
     private static final String APPLICATOR_THEN = "then";
     private static final String APPLICATOR_DEPENDENT_SCHEMAS = "dependentSchemas";
 
+    /**
+     * Where the shipped endpoint schema declares the {@code oneOf} the keyless carve-out exists for: the
+     * route matcher, whose two path forms are mutually exclusive. See {@link #KEYLESS_BRANCH_KEYWORDS}.
+     */
+    private static final String ONE_OF_CARVE_OUT_POINTER =
+            "/properties/endpoint/properties/routes/items/properties/match/" + APPLICATOR_ONE_OF;
+
     private static final String SCHEMA_REF = "$ref";
+    private static final String SCHEMA_REQUIRED = "required";
     private static final String SCHEMA_TYPE = "type";
     private static final String SCHEMA_ITEMS = "items";
     private static final String SCHEMA_PROPERTIES = "properties";
@@ -374,10 +389,29 @@ class DocumentedSetsContractTest {
      * not contain, and {@code propertyNames} constrains property names rather than their values — and
      * the shipped gateway schema declares both, so refusing them would refuse the schema this test
      * derives from. {@code notAndPropertyNamesAreWalkedPastRatherThanRefused} pins that exemption.
+     * <p>
+     * {@link #APPLICATOR_ONE_OF} is listed and refused like the rest, except where
+     * {@link #declaresNoKey(String, JsonNode)} proves the particular {@code oneOf} can declare no key at
+     * all; that carve-out is pinned from both sides by
+     * {@code combinatorInsideArrayItemsIsRefused} and {@code keylessOneOfIsWalkedPastRatherThanRefused}.
      */
     private static final List<String> UNMODELLED_APPLICATORS = List.of("allOf", "anyOf", APPLICATOR_ONE_OF,
             APPLICATOR_IF, APPLICATOR_THEN, "else", APPLICATOR_DEPENDENT_SCHEMAS, "prefixItems", "contains",
             "unevaluatedProperties", "unevaluatedItems", "$dynamicRef");
+
+    /**
+     * The keywords a {@code oneOf} branch may carry for the derivation to model the combinator by walking
+     * past it: {@code required} — an assertion over <em>which</em> keys a document declares — plus
+     * annotation. None of them is a subschema and none can declare a key, so a branch built from these
+     * alone contributes nothing to the inventory and descending into it would derive nothing.
+     * <p>
+     * The list is an allow-list rather than a deny-list, so it fails closed: a branch carrying any other
+     * keyword — a nested applicator, a {@code $ref}, a {@code type}, a {@code properties} — is one that
+     * could declare an array key, and {@code oneOf} is then refused exactly as every other unmodelled
+     * applicator is.
+     */
+    private static final Set<String> KEYLESS_BRANCH_KEYWORDS = Set.of(SCHEMA_REQUIRED, "description", "title",
+            "$comment", ERROR_MESSAGE_KEYWORD);
 
     /**
      * The keywords allowed to sit beside a {@code $ref}. Draft 2020-12 <em>applies</em> a {@code $ref}'s
@@ -839,6 +873,37 @@ class DocumentedSetsContractTest {
                         + " without deriving anything from them");
     }
 
+    @Test
+    @DisplayName("the fail-closed walk walks past a oneOf whose branches declare no key rather than refusing it")
+    void keylessOneOfIsWalkedPastRatherThanRefused() throws Exception {
+        // Arrange — the carve-out earns its place only while a shipped schema still writes that shape, so
+        // its presence is asserted before the behaviour that depends on it
+        assertTrue(schemaTree(ENDPOINT_SCHEMA_RESOURCE).at(ONE_OF_CARVE_OUT_POINTER).isArray(),
+                ENDPOINT_SCHEMA_RESOURCE + " no longer declares '" + APPLICATOR_ONE_OF + "' at "
+                        + ONE_OF_CARVE_OUT_POINTER + ", so the carve-out this guard protects is no longer"
+                        + " exercised by a shipped schema and should be reconsidered rather than kept untested");
+        // The injection goes into a definition the gateway schema reaches only through a $ref, so the
+        // carve-out is exercised on a node the walk resolved. Which keys the branches name is immaterial —
+        // a branch carrying nothing but 'required' declares none of its own whatever it names
+        JsonNode shipped = schemaTree(GATEWAY_SCHEMA_RESOURCE);
+        JsonNode injected = shipped.deepCopy();
+        ObjectNode definition = mutableAt(injected, INJECTED_APPLICATOR_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        definition.set(APPLICATOR_ONE_OF, keylessOneOf(definition, "profile", "max_body_bytes"));
+
+        // Act — the derivation throws on refusal, so completing at all is half of what is asserted here
+        Map<String, ItemKind> derived = deriveArrayKeys(injected, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE
+                + " with a keyless '" + APPLICATOR_ONE_OF + "' injected at " + INJECTED_APPLICATOR_POINTER);
+
+        // Assert
+        assertEquals(deriveArrayKeys(shipped, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE), derived,
+                "injecting a '" + APPLICATOR_ONE_OF + "' whose branches carry nothing but '" + SCHEMA_REQUIRED
+                        + "' changed the derived array-key inventory. Such a branch asserts which of the"
+                        + " surrounding object's keys a document declares and carries no subschema of its own, so"
+                        + " the walk must pass over it without refusing it and without deriving anything from it."
+                        + " The matching refusal — a '" + APPLICATOR_ONE_OF + "' whose branch does declare a key —"
+                        + " is pinned by combinatorInsideArrayItemsIsRefused");
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     /**
@@ -877,6 +942,25 @@ class DocumentedSetsContractTest {
         ObjectNode properties = factory.objectNode();
         properties.set(INJECTED_ARRAY_KEY, array);
         return properties;
+    }
+
+    /**
+     * A {@code oneOf} whose branches carry nothing but {@code required} — the shape the shipped endpoint
+     * schema writes to make two optional keys mutually exclusive, and the only combinator the derivation
+     * models rather than refuses.
+     *
+     * @param factory any node of the tree being mutated, used only as a node factory
+     * @param keys    the key names to require, one branch per name
+     * @return the {@code oneOf} branches
+     */
+    private static ArrayNode keylessOneOf(ObjectNode factory, String... keys) {
+        ArrayNode branches = factory.arrayNode();
+        for (String key : keys) {
+            ObjectNode branch = factory.objectNode();
+            branch.set(SCHEMA_REQUIRED, factory.arrayNode().add(key));
+            branches.add(branch);
+        }
+        return branches;
     }
 
     /**
@@ -1459,7 +1543,7 @@ class DocumentedSetsContractTest {
      */
     private static void assertModelledShape(JsonNode node, String name, String label) {
         for (String applicator : UNMODELLED_APPLICATORS) {
-            if (node.has(applicator)) {
+            if (node.has(applicator) && !declaresNoKey(applicator, node.get(applicator))) {
                 fail(label + ": '" + qualified(name, applicator) + "' uses " + applicator + ", which the array-key"
                         + " derivation does not model; extend DocumentedSetsContractTest before relying on it, or"
                         + " the inventory would silently miss any array key declared inside it");
@@ -1470,6 +1554,42 @@ class DocumentedSetsContractTest {
             fail(label + ": '" + name + "' declares a union type " + type + ", which the array-key derivation"
                     + " does not model; it could be an array the inventory silently misses");
         }
+    }
+
+    /**
+     * Whether an applicator's value provably declares no key, so the derivation models it by walking past
+     * it rather than refusing it.
+     * <p>
+     * Only {@link #APPLICATOR_ONE_OF} qualifies, and only when it is a non-empty array of non-empty
+     * objects built exclusively from {@link #KEYLESS_BRANCH_KEYWORDS}. Such a branch expresses a
+     * constraint over keys declared elsewhere — the mutual exclusion the endpoint schema writes over
+     * {@code match.path_prefix} and {@code match.path} — and carries no subschema of its own, so nothing
+     * inside it can reach the inventory and nothing is missed by not descending. Every other applicator,
+     * and every {@code oneOf} carrying a branch that could declare a key, is refused unchanged.
+     * <p>
+     * The narrowing is deliberately confined to {@code oneOf}: an empty subschema under {@code if},
+     * {@code then} or any other combinator would satisfy the same emptiness test while its sibling
+     * carried the keys, so those stay refused on sight.
+     *
+     * @param applicator the applicator keyword
+     * @param value      the keyword's value
+     * @return {@code true} only for a {@code oneOf} no branch of which can declare a key
+     */
+    private static boolean declaresNoKey(String applicator, JsonNode value) {
+        if (!APPLICATOR_ONE_OF.equals(applicator) || !value.isArray() || value.isEmpty()) {
+            return false;
+        }
+        for (JsonNode branch : value) {
+            if (!branch.isObject() || branch.isEmpty()) {
+                return false;
+            }
+            for (Map.Entry<String, JsonNode> keyword : branch.properties()) {
+                if (!KEYLESS_BRANCH_KEYWORDS.contains(keyword.getKey())) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /**
