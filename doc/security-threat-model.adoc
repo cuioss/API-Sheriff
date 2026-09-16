@@ -1125,7 +1125,11 @@ only the raw query is appended under `keep_query`. The configuration validator r
 * without the explicit `allow_external: true` opt-in, `location` must be a gateway path -- exactly one
   leading `/`, no backslash, no percent-encoded `/` or `\` (`%2F`, `%5C`, either case), no dot-segment
   (`.`, `..` or their `%2E` spellings), printable ASCII without whitespace or control characters (a
-  CR/LF would forge a response header), and no `#` together with `keep_query`;
+  CR/LF would forge a response header), and no `#` together with `keep_query`. The path is
+  additionally put through cui-http's `URL_PATH` validation pipeline, which adds the classes a
+  single-decoding spelling test cannot see: double encoding (`/%252F%252Fevil.example`), traversal
+  reached through it, null bytes, overlong and malformed UTF-8, unicode-normalising escapes, and a
+  1024-character length cap;
 * with the opt-in, it may additionally be an absolute `http`/`https` URI with a non-empty host and no
   user-info; every other scheme (`javascript:`, `data:`, ...) stays refused, and the opt-in is
   reported at boot by `WARN ApiSheriff-127`, naming the route and never the target;
@@ -1157,13 +1161,31 @@ a spelling dangerous that was not: an absolute URI binds its authority before it
 `/%5Cattacker.com` is read as `/\attacker.com` once decoded and therefore, per the same WHATWG
 backslash rule above, as `//attacker.com`. The rewrite therefore applies *the refusal set of the boot
 review* to the candidate path and to the computed mapping alike, relaying the header unchanged rather
-than mapping it: no leading `//`, no backslash, no percent-encoded `/` or `\` (`%2F`, `%5C`, either
-case), no dot-segment (`.`, `..` or their `%2E` spellings). The encoded-slash arm additionally closes
-a confinement hole the dot-segment test alone cannot see, since that test splits on the literal `/`:
-`/app1/a%2f..%2f..%2fadmin` is one segment to it and decodes outside the match key. The refusal is
-never a normalization -- the value is emitted to the browser, so confinement proved against a
-normalized string the browser never sees would bound nothing. The query and fragment are outside the
-refusal and carried verbatim: a separator after the `?` or `#` cannot form an authority.
+than mapping it: no leading `//`, no percent-encoded `/` or `\` (`%2F`, `%5C`, either case), no
+dot-segment (`.`, `..` or their `%2E` spellings), and nothing the cui-http pipeline refuses -- a
+literal backslash, double encoding, a null byte, a malformed escape, a path past the length cap. The
+encoded-slash arm additionally closes a confinement hole the dot-segment test alone cannot see, since
+that test splits on the literal `/`: `/app1/a%2f..%2f..%2fadmin` is one segment to it and decodes
+outside the match key. The refusal is never a normalization -- the value is emitted to the browser,
+so confinement proved against a normalized string the browser never sees would bound nothing. The
+query and fragment are outside the refusal and carried verbatim: a separator after the `?` or `#`
+cannot form an authority.
+
+*Control -- one refusal set, not two.* "The refusal set of the boot review" above is a shared
+implementation rather than a maintained agreement: both paths call
+`http.LocationPathReview.refusalReason`, so the boot review of a configured target and the per-request
+rewrite of an upstream one cannot drift apart. That class is also where the split between the library
+and this project's own tests is decided, and the split is empirical rather than stylistic. cui-http's
+`URL_PATH` pipeline is a *canonicalizer*: for the traversal family it throws only when the result
+would escape above the root, and otherwise returns a fixed value. It therefore *admits* -- by
+normalising them away -- `/%5Cattacker.com`, `/a/x%2fy`, `/%2f%2fattacker.com`, `/a/./b`, a `..` run
+that stays inside the root, and a leading `//`. Every one of those is a value this gateway must
+refuse rather than fix, because it is emitted verbatim and the client resolves the string it
+receives. The pipeline is consulted for whether it *threw*, never for the value it returns, and the
+spellings above keep their own tests. `LocationPathReviewTest.CuiHttpCoverageBoundary` asserts that
+boundary directly -- that the library admits each spelling and that the review refuses it anyway --
+so a future cui-http that starts refusing one turns the redundancy into a failing test instead of
+silent duplication.
 
 *Control -- the answer is not stored.* A redirect answer is an ordinary cacheable response, and `301`
 and `308` are cacheable by default under RFC 9111 §4.2.2 heuristic freshness. Because the redirect is
@@ -1179,14 +1201,18 @@ displace it.
 
 *Status:* COVERED. The review is boot-time configuration validation with a table-driven refusal
 corpus (`ConfigValidatorRedirectTest`: `//host`, `/\host`, `\\host`, `/%2F%2Fhost`, `/%5chost`,
-`/a/../b`, an external URI without the opt-in, `javascript:` and user-info with it, `#` with
+`/a/../b`, the double-encoded `%252F`/`%252e` spellings and an over-cap path, an external URI without
+the opt-in, `javascript:` and user-info with it, `#` with
 `keep_query`, the `keep_query` + `allow_external` pair, plus the accepted forms and each flag alone);
 `LocationRewriterTest` carries the same refusal corpus for the rewritten upstream `Location`
-(`/\host`, `/\\host`, `%5C`/`%5c`, `%2F`/`%2f`, a mixed spelling, and each of them on an absolute
+(`/\host`, `/\\host`, `%5C`/`%5c`, `%2F`/`%2f`, a mixed spelling, the double-encoded and malformed
+escapes, and each of them on an absolute
 upstream URI -- the form in which the mapping would otherwise *create* the cross-origin value --
 against the matched positive controls that must still map: an ordinary path, an absolute URI with an
 ordinary path, the neighbouring non-separator encodings `%5B`/`%5D`/`%2D`, and an encoded separator in
 the query or fragment);
+`LocationPathReviewTest` pins the shared review itself, including the cui-http coverage boundary
+described above;
 the native boot refusal of an external location without the
 opt-in is exercised by `verify-invalid-config-fails.sh`; `RedirectStageTest` pins the cacheability
 verdict on both its conditions and on the public control; `GatewayEdgePipelineTest` asserts the

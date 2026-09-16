@@ -23,6 +23,7 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.http.LocationPathReview;
 
 /**
  * The {@code upstream.rewrite_location} mapping (AS-11): maps an upstream {@code Location} response
@@ -51,32 +52,40 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
  *       empty path ({@code ?query}, {@code #fragment} or the empty value — RFC 3986 section 5.3
  *       resolves such a path against the current request path, not against the upstream root, so
  *       mapping it onto the match key would move the redirect), an unparseable value, a path outside
- *       the base path, a path carrying a {@code .} or {@code ..} segment in either its literal or its
- *       percent-encoded spelling, a path carrying an <em>ambiguous separator</em> — a literal
- *       {@code \} or a percent-encoded {@code /} or {@code \} ({@code %2f} / {@code %5c}, either
- *       case) — and any mapping that would itself start with {@code //} or carry an ambiguous
- *       separator, since emitting either would turn an upstream-internal path into another origin.
- *       An <em>absolute</em> same-origin URI with no path ({@code http://upstream:8080}) does name the
- *       origin root, so it alone still maps through {@code /}.</li>
+ *       the base path, and a path — or a computed mapping — that fails the
+ *       {@link LocationPathReview emitted-path review}.</li>
  * </ul>
  * <p>
- * The dot-segment refusal is a confinement rule rather than a tidiness one. The base-path test is
- * performed on the path as received, so {@code /svc/v1/../login} continues the base path
- * {@code /svc/v1} textually and would map onto {@code /api/../login} — which the browser resolves to
- * {@code /login}, outside the match key the mapping is supposed to confine the redirect to. Canonical
- * confinement cannot be proved for such a value without resolving it, so it is not mapped at all.
+ * <strong>The refusal set is not this class's own.</strong> Both the candidate path and the computed
+ * mapping are handed to {@link LocationPathReview#refusalReason(String)}, the single place the gateway
+ * decides which {@code Location} path is dangerous. That review refuses a scheme-relative {@code //}
+ * prefix, a percent-encoded {@code /} or {@code \}, a {@code .} or {@code ..} segment in either
+ * spelling, and everything the {@code cui-http} {@code URL_PATH} pipeline owns — double encoding,
+ * escaping traversal, illegal and control characters, null bytes and the length cap. The same review
+ * judges a <em>configured</em> redirect target at boot ({@code ConfigValidator}, AS-3 / GW-13), so the
+ * boot review and the runtime rewrite cannot disagree; read {@link LocationPathReview} for why each
+ * test exists and which of them the library can and cannot carry.
  * <p>
- * The ambiguous-separator refusal ({@code carriesAmbiguousSeparator}) is the same rule against a
- * second spelling of a separator, and it closes the one case where the mapping would <em>manufacture</em>
- * a cross-origin redirect out of a value that did not carry one: an absolute upstream URI binds its
- * authority before its path, so {@code https://upstream:8443/%5Cattacker.com} keeps the browser on the
- * upstream, while the gateway-relative mapping {@code /%5Cattacker.com} does not — a client or
- * intermediary that decodes before resolving reads {@code /\attacker.com}, and the WHATWG URL Standard
- * parses {@code \} as {@code /} in the special schemes, so the value names the foreign authority
- * {@code attacker.com}. The refusal set is the one
- * {@code ConfigValidator.gatewayPathRefusal} already applies to a <em>configured</em> redirect target
- * (AS-3, GW-13), so the boot review of a configured {@code Location} and the runtime rewrite of an
- * upstream one cannot disagree about which paths are dangerous.
+ * Two consequences of that review are specific to this class. <strong>Confinement</strong>: the
+ * base-path test is performed on the path as received, so {@code /svc/v1/../login} continues the base
+ * path {@code /svc/v1} textually and would map onto {@code /api/../login} — which the browser resolves
+ * to {@code /login}, outside the match key the mapping is supposed to confine the redirect to.
+ * <strong>Origin</strong>: the mapping is the one place a cross-origin redirect would be
+ * <em>manufactured</em> out of a value that did not carry one, because an absolute upstream URI binds
+ * its authority before its path. {@code https://upstream:8443/%5Cattacker.com} keeps the browser on
+ * the upstream; the gateway-relative mapping {@code /%5Cattacker.com} does not, since a client or
+ * intermediary that decodes before resolving reads {@code /\attacker.com} and the WHATWG URL Standard
+ * parses {@code \} as {@code /} in the special schemes.
+ * <p>
+ * The review is scoped to the <strong>path</strong>. The query and fragment are carried over verbatim
+ * and cannot form an authority — a relative reference's authority is decided before the {@code ?} —
+ * and refusing them would stop mapping the ordinary encoded-path query parameter an upstream redirect
+ * carries. An <em>absolute</em> same-origin URI with no path ({@code http://upstream:8080}) does name
+ * the origin root, so it alone still maps through {@code /}.
+ * <p>
+ * An upstream {@code Location} path longer than the review's 1024-character cap is relayed unchanged
+ * rather than mapped. That is the fail-safe direction: the browser follows the upstream's own value
+ * instead of a mapping whose confinement was never proved.
  * <p>
  * Immutable and therefore thread-safe; one instance serves every request on its route.
  *
@@ -90,13 +99,6 @@ public final class LocationRewriter {
     private static final int HTTP_DEFAULT_PORT = 80;
     private static final int HTTPS_DEFAULT_PORT = 443;
     private static final String SCHEME_RELATIVE = "//";
-    /** The percent-encoded spelling of {@code .}; matched case-insensitively, so {@code %2E} counts too. */
-    private static final String ENCODED_DOT = "%2e";
-    /** The percent-encoded spelling of {@code /}; matched case-insensitively, so {@code %2F} counts too. */
-    private static final String ENCODED_SLASH = "%2f";
-    /** The percent-encoded spelling of {@code \}; matched case-insensitively, so {@code %5C} counts too. */
-    private static final String ENCODED_BACKSLASH = "%5c";
-    private static final char BACKSLASH = '\\';
 
     private final String scheme;
     private final String host;
@@ -160,7 +162,7 @@ public final class LocationRewriter {
         } else if (!rawPath.startsWith("/")) {
             return location;
         }
-        if (carriesDotSegment(rawPath) || carriesAmbiguousSeparator(rawPath)) {
+        if (LocationPathReview.refusalReason(rawPath).isPresent()) {
             return location;
         }
         Optional<String> remainder = remainderBelowBasePath(rawPath);
@@ -171,7 +173,10 @@ public final class LocationRewriter {
         if (mapped.isEmpty()) {
             mapped = "/";
         }
-        if (mapped.startsWith(SCHEME_RELATIVE) || carriesAmbiguousSeparator(mapped)) {
+        // The mapping is reviewed on its own terms, not just the candidate it came from: the gateway
+        // prefix is the route's match key, which this class never parsed, so a mapping can carry a
+        // shape the candidate did not.
+        if (LocationPathReview.refusalReason(mapped).isPresent()) {
             return location;
         }
         if (exactMatch && !mapped.equals(matchKey)) {
@@ -216,89 +221,6 @@ public final class LocationRewriter {
             case HTTPS -> HTTPS_DEFAULT_PORT;
             default -> -1;
         };
-    }
-
-    /**
-     * Whether any segment of {@code rawPath} is a {@code .} or {@code ..} segment. The test runs on the
-     * raw (still percent-encoded) path and treats {@code %2e} / {@code %2E} as the dot it encodes, so
-     * an encoded traversal is caught on the same terms as a literal one — decoding the path first would
-     * mean mapping a value whose confinement was proved against a different string than the one the
-     * browser receives.
-     *
-     * @param rawPath the candidate's raw path
-     * @return {@code true} when the path carries a dot segment in either spelling
-     */
-    private static boolean carriesDotSegment(String rawPath) {
-        for (String segment : rawPath.split("/", -1)) {
-            if (isDotSegment(segment)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * @return {@code true} when {@code segment} consists of exactly one or two dots, each written
-     *         literally or as {@code %2e} in either case
-     */
-    private static boolean isDotSegment(String segment) {
-        int index = 0;
-        int dots = 0;
-        while (index < segment.length()) {
-            if (segment.charAt(index) == '.') {
-                index++;
-            } else if (segment.regionMatches(true, index, ENCODED_DOT, 0, ENCODED_DOT.length())) {
-                index += ENCODED_DOT.length();
-            } else {
-                return false;
-            }
-            dots++;
-        }
-        return dots == 1 || dots == 2;
-    }
-
-    /**
-     * Whether {@code value} carries a separator whose spelling a browser or an intermediary resolves
-     * differently than this mapping did: a literal {@code \}, or a percent-encoded {@code /} or
-     * {@code \} ({@code %2f} / {@code %5c}, matched case-insensitively so {@code %2F} and {@code %5C}
-     * count too).
-     * <p>
-     * Both halves of the set are load-bearing, for two different reasons:
-     * <ul>
-     *   <li>an encoded <strong>backslash</strong> can move the <em>origin</em>. {@code /%5Cattacker.com}
-     *       is a path on the gateway until something decodes it; decoded it is {@code /\attacker.com},
-     *       and the WHATWG URL Standard parses {@code \} as {@code /} in the special schemes, so the
-     *       browser follows {@code //attacker.com} to a foreign authority (CWE-601);</li>
-     *   <li>an encoded <strong>slash</strong> hides a traversal from {@link #carriesDotSegment}, which
-     *       splits on the literal {@code /} only: {@code /svc/v1/a%2f..%2f..%2fadmin} is a single
-     *       segment with no dot segment in it, yet decodes to {@code /svc/v1/a/../../admin} and leaves
-     *       the match key the mapping is supposed to confine the redirect to.</li>
-     * </ul>
-     * Refused rather than normalized, for the reason the dot-segment guard already records: the value
-     * is emitted to the browser, so confinement proved against a normalized string the browser never
-     * sees bounds nothing.
-     * <p>
-     * The test is scoped to the <em>path</em>, on the same footing as {@link #carriesDotSegment}. The
-     * query and fragment are carried over verbatim and cannot form an authority — a relative
-     * reference's authority is decided before the {@code ?}, so {@code ?next=%2Fhome} stays a query
-     * value on the gateway origin however it is later decoded — and refusing them would stop mapping
-     * the ordinary encoded-path query parameter an upstream redirect carries.
-     * <p>
-     * The literal-{@code \} arm never fires on a candidate path in practice: {@code \} is not a legal
-     * path character, so {@link URI} rejects such a value and {@link #rewrite} has already relayed it
-     * from the {@link URISyntaxException} catch. It is kept because the same test guards the
-     * <em>mapping</em>, whose gateway prefix comes from the route's match key rather than from the
-     * parsed upstream value.
-     *
-     * @param value the candidate's raw path, or the computed mapping
-     * @return {@code true} when {@code value} carries an ambiguous separator in any of its spellings
-     */
-    private static boolean carriesAmbiguousSeparator(String value) {
-        if (value.indexOf(BACKSLASH) >= 0) {
-            return true;
-        }
-        String lowered = value.toLowerCase(Locale.ROOT);
-        return lowered.contains(ENCODED_SLASH) || lowered.contains(ENCODED_BACKSLASH);
     }
 
     /**
