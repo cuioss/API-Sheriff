@@ -17,26 +17,39 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
 
 
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link RedirectStage}: the configured status passes through verbatim, the configured
- * {@code location} is written verbatim (never context-path-prefixed), and the raw query is appended
- * only under {@code keep_query}, joined with {@code ?} or {@code &} as the location requires.
+ * {@code location} is written verbatim (never context-path-prefixed), the raw query is appended
+ * only under {@code keep_query} joined with {@code ?} or {@code &} as the location requires, and the
+ * answer is marked uncacheable exactly when the route is effectively authenticated or the response
+ * carries a {@code Set-Cookie}.
  */
 @EnableGeneratorController
 @DisplayName("RedirectStage")
 class RedirectStageTest {
+
+    /** The posture of a public redirect route: no authentication requirement. */
+    private static final AuthConfig PUBLIC_AUTH = AuthConfig.builder().require(Require.NONE).build();
 
     private final RedirectStage stage = new RedirectStage();
 
@@ -48,8 +61,20 @@ class RedirectStageTest {
         return Generators.letterStrings(2, 8).next() + "=" + Generators.letterStrings(1, 8).next();
     }
 
+    private static String setCookie() {
+        return "sid=" + Generators.letterStrings(8, 24).next() + "; HttpOnly; Secure; SameSite=Lax";
+    }
+
     private static RedirectConfig redirect(String location, int status, boolean keepQuery) {
         return RedirectConfig.builder().location(location).status(status).keepQuery(keepQuery).build();
+    }
+
+    /**
+     * The status/location half of the contract, asserted against a public route with no accumulated
+     * cookie so the cacheability verdict never colours these cases.
+     */
+    private RedirectStage.Answer answer(RedirectConfig redirect, @Nullable String rawQuery) {
+        return stage.answer(redirect, rawQuery, PUBLIC_AUTH, List.of());
     }
 
     @ParameterizedTest(name = "status {0}")
@@ -58,7 +83,7 @@ class RedirectStageTest {
     void shouldPassStatusThroughVerbatim(int status) {
         String location = gatewayPath();
 
-        RedirectStage.Answer answer = stage.answer(redirect(location, status, false), null);
+        RedirectStage.Answer answer = answer(redirect(location, status, false), null);
 
         assertAll(
                 () -> assertEquals(status, answer.status(), "status should be the configured one"),
@@ -66,12 +91,21 @@ class RedirectStageTest {
     }
 
     @Test
-    @DisplayName("Should refuse a missing redirect action")
-    void shouldRefuseMissingRedirect() {
+    @DisplayName("Should refuse a missing redirect action, auth posture or Set-Cookie list")
+    void shouldRefuseMissingArguments() {
         String query = rawQuery();
+        RedirectConfig redirect = redirect(gatewayPath(), 302, false);
 
-        assertThrows(NullPointerException.class, () -> stage.answer(null, query),
-                "a null redirect action should be refused");
+        assertAll(
+                () -> assertThrows(NullPointerException.class,
+                        () -> stage.answer(null, query, PUBLIC_AUTH, List.of()),
+                        "a null redirect action should be refused"),
+                () -> assertThrows(NullPointerException.class,
+                        () -> stage.answer(redirect, query, null, List.of()),
+                        "a null effective auth posture should be refused"),
+                () -> assertThrows(NullPointerException.class,
+                        () -> stage.answer(redirect, query, PUBLIC_AUTH, null),
+                        "a null Set-Cookie list should be refused"));
     }
 
     @Nested
@@ -83,7 +117,7 @@ class RedirectStageTest {
         void shouldDropQueryWhenKeepQueryOff() {
             String location = gatewayPath();
 
-            RedirectStage.Answer answer = stage.answer(redirect(location, 302, false), rawQuery());
+            RedirectStage.Answer answer = answer(redirect(location, 302, false), rawQuery());
 
             assertEquals(location, answer.location(), "the query should not be appended without keep_query");
         }
@@ -94,7 +128,7 @@ class RedirectStageTest {
             String location = gatewayPath();
             String query = rawQuery();
 
-            RedirectStage.Answer answer = stage.answer(redirect(location, 307, true), query);
+            RedirectStage.Answer answer = answer(redirect(location, 307, true), query);
 
             assertEquals(location + "?" + query, answer.location(), "the raw query should follow a '?'");
         }
@@ -105,7 +139,7 @@ class RedirectStageTest {
             String location = gatewayPath() + "?" + rawQuery();
             String query = rawQuery();
 
-            RedirectStage.Answer answer = stage.answer(redirect(location, 308, true), query);
+            RedirectStage.Answer answer = answer(redirect(location, 308, true), query);
 
             assertEquals(location + "&" + query, answer.location(), "the raw query should follow a '&'");
         }
@@ -117,8 +151,8 @@ class RedirectStageTest {
             String openParameter = gatewayPath() + "?" + rawQuery() + "&";
             String query = rawQuery();
 
-            RedirectStage.Answer afterQuestionMark = stage.answer(redirect(bareQuery, 303, true), query);
-            RedirectStage.Answer afterAmpersand = stage.answer(redirect(openParameter, 303, true), query);
+            RedirectStage.Answer afterQuestionMark = answer(redirect(bareQuery, 303, true), query);
+            RedirectStage.Answer afterAmpersand = answer(redirect(openParameter, 303, true), query);
 
             assertAll(
                     () -> assertEquals(bareQuery + query, afterQuestionMark.location(),
@@ -132,12 +166,69 @@ class RedirectStageTest {
         void shouldLeaveLocationWithoutRequestQuery() {
             String location = gatewayPath();
 
-            RedirectStage.Answer absent = stage.answer(redirect(location, 301, true), null);
-            RedirectStage.Answer empty = stage.answer(redirect(location, 301, true), "");
+            RedirectStage.Answer absent = answer(redirect(location, 301, true), null);
+            RedirectStage.Answer empty = answer(redirect(location, 301, true), "");
 
             assertAll(
                     () -> assertEquals(location, absent.location(), "an absent query should add nothing"),
                     () -> assertEquals(location, empty.location(), "an empty query should add no bare '?'"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Cacheability of the answer (CWE-524 / CWE-525)")
+    class Cacheability {
+
+        @Test
+        @DisplayName("Should leave a public redirect with no Set-Cookie cacheable")
+        void shouldLeavePublicCookielessAnswerCacheable() {
+            RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 308, false), null,
+                    PUBLIC_AUTH, List.of());
+
+            assertFalse(answer.noStore(),
+                    "a public redirect carrying no cookie is ordinary cacheable configuration");
+        }
+
+        @ParameterizedTest(name = "require {0}")
+        @EnumSource(value = Require.class, names = {"BEARER", "SESSION"})
+        @DisplayName("Should force no-store on every authenticated posture, cookie or not")
+        void shouldForceNoStoreOnAuthenticatedRoute(Require require) {
+            AuthConfig authenticated = AuthConfig.builder().require(require).build();
+
+            RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 301, false), null,
+                    authenticated, List.of());
+
+            assertTrue(answer.noStore(),
+                    "an authenticated redirect answer must never be written to a shared cache");
+        }
+
+        @Test
+        @DisplayName("Should force no-store on a public route once the response carries a Set-Cookie")
+        void shouldForceNoStoreOnAccumulatedSetCookie() {
+            RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 301, false), null,
+                    PUBLIC_AUTH, List.of(setCookie()));
+
+            assertTrue(answer.noStore(),
+                    "a cached redirect would replay one client's session cookie to the next");
+        }
+
+        @ParameterizedTest(name = "status {0}")
+        @ValueSource(ints = {301, 302, 303, 307, 308})
+        @DisplayName("Should decide cacheability from the posture alone, never from the status")
+        void shouldDecideIndependentlyOfStatus(int status) {
+            AuthConfig authenticated = AuthConfig.builder().require(Require.BEARER).build();
+
+            RedirectStage.Answer authenticatedAnswer =
+                    stage.answer(redirect(gatewayPath(), status, false), null, authenticated, List.of());
+            RedirectStage.Answer publicAnswer =
+                    stage.answer(redirect(gatewayPath(), status, false), null, PUBLIC_AUTH, List.of());
+
+            assertAll(
+                    () -> assertTrue(authenticatedAnswer.noStore(),
+                            "the non-heuristically-cacheable statuses are governed too: a status is a"
+                                    + " client hint, not a cache guarantee"),
+                    () -> assertFalse(publicAnswer.noStore(),
+                            "and a public cookieless answer stays cacheable at every status"));
         }
     }
 }

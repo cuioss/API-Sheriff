@@ -91,7 +91,9 @@ import org.jspecify.annotations.Nullable;
  * them.
  * <p>
  * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
- * existence, route/namespace membership agreement, the non-weakenable auth floor,
+ * existence, route/namespace membership agreement, anchor-namespace coverage (no route
+ * outside an anchor may swallow the anchor's namespace unless a route under the anchor
+ * covers it), the non-weakenable auth floor,
  * the per-route auth resolvability (every route must resolve an auth posture from
  * its own {@code auth}, its endpoint, or a declared anchor), and the anchor-aware
  * effective-auth completeness check — all collect into the same shared
@@ -120,9 +122,10 @@ import org.jspecify.annotations.Nullable;
  * an unrestricted string; this rule is the single enforcing authority.
  * <p>
  * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
- * upstream, asset or redirect, and reviews a redirect's {@code location} for open-redirect
+ * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect
  * spellings at boot — a redirect is written verbatim at request time, so this review is the only
- * place its target is ever judged.
+ * place its target is ever judged — and refuses {@code keep_query} together with
+ * {@code allow_external}, the pair that would hand the inbound query to a foreign origin.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -736,9 +739,12 @@ public final class ConfigValidator {
      * {@code match.path}) lies inside its
      * declared anchor's namespace; (4) every enabled route whose path lies inside
      * any anchor namespace declares exactly that anchor — an undeclared squatter
-     * fails the boot (ADR-0007).
+     * fails the boot (ADR-0007); (4b) no enabled <em>prefix</em> route whose namespace strictly
+     * contains an anchor's {@code path_prefix} serves that anchor's namespace, unless the anchor
+     * covers it with a prefix route of its own — the mirror of rule (4), see
+     * {@link #checkRouteContainsUncoveredAnchor}.
      * <p>
-     * {@code protocol: grpc} routes are exempt from both containment rules. A gRPC
+     * {@code protocol: grpc} routes are exempt from all three containment rules. A gRPC
      * method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
      * service segment is a single opaque path segment (dots, no slashes), so it is
      * structurally never nested under a gateway path namespace on a segment boundary
@@ -755,17 +761,20 @@ public final class ConfigValidator {
         if (gateway.anchors().isEmpty()) {
             return;
         }
+        Set<String> coveredAnchors = anchorsCoveredByOwnPrefixRoute(gateway, endpoints);
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 if (effectiveProtocol(route) == Protocol.GRPC) {
                     // gRPC routes ride a service-rooted single-segment path that no gateway path
-                    // namespace can contain on a segment boundary — exempt from containment (rules 3 & 4).
+                    // namespace can contain on a segment boundary — exempt from containment
+                    // (rules 3, 4 and 4b).
                     continue;
                 }
                 String declaredName = declaredAnchorName(endpoint, route);
                 String routeMatchKey = route.match().matchKey();
                 checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routeMatchKey, errors);
                 checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routeMatchKey, errors);
+                checkRouteContainsUncoveredAnchor(gateway, endpoint, route, declaredName, coveredAnchors, errors);
             }
         }
     }
@@ -799,6 +808,84 @@ public final class ConfigValidator {
                                 .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
             }
         }
+    }
+
+    /**
+     * Rule (4b): the namespace-coverage mirror of rule (4). A <em>prefix</em> route whose namespace
+     * strictly contains an anchor's {@code path_prefix}, and which does not resolve that anchor,
+     * fails the boot unless the anchor's own namespace is covered by a prefix route that does
+     * resolve it.
+     * <p>
+     * Rules (3) and (4) are <em>declaration</em>-scoped: they judge a route by where its own match
+     * key sits. That leaves the opposite geometry unjudged — a route sitting <em>outside</em> and
+     * <em>above</em> an anchor, whose namespace swallows the anchor's. Selection then decides what
+     * is actually served: for an address inside the anchor namespace, an exact route wins outright
+     * and the longest matching prefix wins among the rest. So with an exact {@code path: /admin}
+     * route as the anchor's only member, {@code /admin/} and {@code /admin/x} match no route
+     * belonging to the anchor and fall through to the broader route — served with <em>its</em> auth
+     * posture and <em>its</em> {@code security_headers} block, with the anchor's floor escaped for
+     * every address in the namespace but the one exact string (CWE-284).
+     * <p>
+     * The coverage exception is what keeps the ordinary topology legal, and it is exact rather than
+     * approximate. Rule (3) confines an anchored route's match key to the anchor's namespace, so
+     * the broadest prefix a member can declare is the anchor prefix itself. When such a route
+     * exists, every address in the namespace matches it at the anchor prefix's full length, while
+     * any containing route matches at a strictly shorter one — so longest-prefix selection always
+     * picks the member, and rule (4) has already refused every exact route outside the anchor whose
+     * path lies inside it. The namespace is then genuinely closed and a broader route alongside it
+     * is not a bypass.
+     * <p>
+     * Only prefix routes are judged here: an exact route covers exactly one address, and an exact
+     * route whose address lies inside an anchor namespace is rule (4)'s case, not this one. Like
+     * rules (3) and (4), this rule is path-geometric — it does not reason about {@code match.host}
+     * or {@code match.methods}, so a covering route narrowed by either still leaves the complement
+     * of that narrowing to the containing route (recorded as a residual risk under GW-01 in the
+     * threat model).
+     */
+    private static void checkRouteContainsUncoveredAnchor(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route, @Nullable String declaredName, Set<String> coveredAnchors, List<ConfigError> errors) {
+        if (route.match().isExact()) {
+            return;
+        }
+        String routePrefix = route.match().matchKey();
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            if (!anchor.name().equals(declaredName)
+                    && strictlyContains(routePrefix, anchor.pathPrefix())
+                    && !coveredAnchors.contains(anchor.name())) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        ("route '%s' path_prefix '%s' contains anchor '%s' namespace '%s' without declaring it, and "
+                                + "no route under that anchor covers the namespace; declare a route with "
+                                + "path_prefix '%s' under anchor '%s', or narrow this route so it stays outside "
+                                + "the namespace")
+                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix(),
+                                        anchor.pathPrefix(), anchor.name())));
+            }
+        }
+    }
+
+    /**
+     * The names of the anchors whose whole namespace is served by a prefix route resolving that
+     * anchor — a route whose normalized {@code match.path_prefix} equals the normalized anchor
+     * {@code path_prefix}. Computed once per validation pass and consumed by
+     * {@link #checkRouteContainsUncoveredAnchor}.
+     */
+    private static Set<String> anchorsCoveredByOwnPrefixRoute(GatewayConfig gateway,
+            List<EndpointConfig> endpoints) {
+        Set<String> covered = new HashSet<>();
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                if (route.match().isExact()) {
+                    continue;
+                }
+                String declaredName = declaredAnchorName(endpoint, route);
+                AnchorConfig anchor = declaredName == null ? null : gateway.anchors().get(declaredName);
+                if (anchor != null && RouteTableBuilder.normalizePrefix(route.match().matchKey())
+                        .equals(RouteTableBuilder.normalizePrefix(anchor.pathPrefix()))) {
+                    covered.add(anchor.name());
+                }
+            }
+        }
+        return covered;
     }
 
     /**
@@ -1128,6 +1215,17 @@ public final class ConfigValidator {
      * </ul>
      * Refusal messages echo the value through {@link #renderForMessage}, so a hostile value cannot
      * forge boot log lines (CWE-117).
+     * <p>
+     * <strong>Query hand-off.</strong> {@code keep_query} together with {@code allow_external} is
+     * refused as a pair. Each is defensible alone — {@code keep_query} carries the inbound query
+     * across a <em>same-origin</em> move, {@code allow_external} points a fixed, reviewed target at
+     * another origin — but together they opt every inbound query parameter out of the gateway
+     * origin: a request to {@code /go?code=...&state=...} produces a {@code Location} that plants
+     * those values in the third party's access log, {@code Referer} chain and page analytics
+     * (CWE-201 / CWE-598). Unlike the target itself, the query is <em>attacker-supplied</em>, so no
+     * boot review can vet it; the pair is therefore refused rather than warned about, and an
+     * operator who wants one of the two drops the other. The refusal names the route and the two
+     * keys, never the location.
      */
     private static void validateRedirectAction(EndpointConfig endpoint, RouteConfig route, RedirectConfig redirect,
             List<ConfigError> errors) {
@@ -1136,6 +1234,14 @@ public final class ConfigValidator {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' declares a redirect terminal action but its protocol is '%s'; a redirect is answered over http only"
                             .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
+        }
+        if (redirect.keepQuery() && redirect.allowExternal()) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    ("route '%s' declares both keep_query and allow_external; that hands the inbound query "
+                            + "string to a foreign origin, where it lands in the target's access log and Referer "
+                            + "chain — drop keep_query to confine the query to this gateway, or drop "
+                            + "allow_external to keep the redirect same-origin")
+                            .formatted(route.id())));
         }
         redirectLocationRefusal(redirect).ifPresent(reason -> errors.add(
                 new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
@@ -2045,6 +2151,21 @@ public final class ConfigValidator {
             return true;
         }
         return child.equals(owner) || child.startsWith(owner + "/");
+    }
+
+    /**
+     * Whether {@code candidate} lies <em>strictly</em> within the {@code container} namespace: the
+     * containment of {@link #prefixContains} minus the equal-namespace case, so a route declared at
+     * an anchor's own prefix does not count as containing it.
+     *
+     * @param container the owning prefix
+     * @param candidate the prefix tested for strict containment
+     * @return {@code true} when {@code candidate} is inside, and not equal to, {@code container}
+     */
+    private static boolean strictlyContains(String container, String candidate) {
+        return prefixContains(container, candidate)
+                && !RouteTableBuilder.normalizePrefix(container)
+                        .equals(RouteTableBuilder.normalizePrefix(candidate));
     }
 
     private static String endpointFile(EndpointConfig endpoint) {

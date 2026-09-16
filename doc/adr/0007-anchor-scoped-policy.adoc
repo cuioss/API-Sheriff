@@ -81,6 +81,18 @@ Three lessons condense out:
   every route whose path falls inside *any* anchor's namespace must declare that anchor.
   A mismatch (declared anchor vs. actual path) or an undeclared squatter fails the boot.
   When no `anchors` block is configured, nothing changes.
+* *Namespace coverage at boot (the mirror of the squatter rule).* The two directions above are
+  *declaration*-scoped: they judge a route by where its own match key sits, so a route sitting
+  outside and *above* an anchor is judged by neither, while request-time selection still lets it
+  serve addresses inside the namespace. A prefix route whose namespace *strictly contains* an
+  anchor's `path_prefix`, and which does not declare that anchor, therefore also fails the boot --
+  unless a prefix route declared at the anchor's own `path_prefix` covers the namespace, in which
+  case longest-prefix selection gives every address inside it to that member and the broader route
+  is not a bypass. The rule became load-bearing with exact (`match.path`) routes: an anchor whose
+  only member is `path: /admin` claims exactly one address, leaving `/admin/` and `/admin/x` to the
+  enclosing route and its weaker posture. Exact routes are not judged by it (an exact route serves
+  one address, which is the squatter rule's case), and `protocol: grpc` routes are exempt for the
+  same geometric reason as below.
 * *gRPC routes are exempt from the namespace-containment geometry.* A `protocol: grpc`
   route rides the service-rooted `/{package}.{Service}/{Method}` path, whose service
   component (e.g. `de.cuioss.sheriff.api.integration.grpc.Echo`) is a *single opaque path
@@ -89,7 +101,8 @@ Three lessons condense out:
   service path and cannot be told to prepend a gateway namespace prefix -- so neither the
   containment check (route inside its declared anchor) nor the squatter check (undeclared
   route inside any anchor namespace) can ever be satisfied for a bare gRPC service path.
-  Both containment checks are therefore skipped for `protocol: grpc` routes. Only the
+  All three containment checks -- including the coverage mirror above -- are therefore
+  skipped for `protocol: grpc` routes. Only the
   path-prefix *geometry* is exempt: a gRPC route still *declares* an anchor for its ADR-0013
   type/access classification and its auth floor, and every other anchor rule --
   declared-anchor existence, pairwise-disjoint anchor prefixes, the non-weakenable auth

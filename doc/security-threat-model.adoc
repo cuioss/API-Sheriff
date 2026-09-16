@@ -327,6 +327,29 @@ canonical path preserves; the integration suite asserts both spellings of one ad
 real pre-route floor, the slash-less one answered by an exact redirect route and the slash form
 falling through to the enclosing prefix route.
 
+*And the enclosing route is bound to the same anchor.* That fall-through is the intended behaviour
+only while the route it falls through to carries the same posture. The ADR-0007 rules that pair
+routes with anchors are *declaration*-scoped -- they judge a route by where its own match key sits --
+so a route sitting outside and *above* an anchor was judged by none of them, while selection still
+let it answer addresses inside the namespace. With exact routes that gap is reachable: an anchor
+whose only member is `path: /admin` claims exactly one address, and `/admin/` and `/admin/x` land on
+whatever encloses it -- served with *its* auth posture and *its* `security_headers` block, which is
+the router-vs-enforcement desync of this entry expressed in configuration rather than in parsing. The
+boot now closes it with the mirror rule: a prefix route whose namespace strictly contains an anchor's
+`path_prefix` without declaring that anchor fails the boot, unless a prefix route declared at the
+anchor's own `path_prefix` covers the namespace -- in which case longest-prefix selection gives that
+member every address inside it. So no address in an anchor namespace is served by a route outside the
+anchor.
+
+*Residual risk (accepted) -- a host- or method-narrowed covering route.* Like the two rules it
+mirrors, the coverage rule is path-geometric: it does not read `match.host` or `match.methods`. A
+covering route that declares either covers only what it matches, so the complement -- another host, or
+a verb the covering route omits -- still reaches the enclosing route. It is accepted because teaching
+one of the three anchor-containment rules to reason about match dimensions the other two ignore would
+make the model inconsistent for a case that predates exact routes; it is bounded by the covering
+route being visible in the endpoint file, and by the enclosing route still having to satisfy every
+other anchor rule.
+
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the
 normalized path, and anchor prefixes are normalized before the disjointness check -- but the
 *invariant* is not stated explicitly anywhere, nor is the divergence tested. The assertion
@@ -336,7 +359,10 @@ below is the outstanding hardening item (see Gaps).
 matrix-param variant of a protected path: the request is either rejected at B2 or is
 routed, authorized, and forwarded against the *same* canonical path -- never authorized as
 public and dispatched to a protected upstream. Upstream request-count = 0 on every bypass
-attempt.
+attempt. A configuration whose anchor namespace is left uncovered while a broader route encloses it
+fails the boot, and the same configuration with a prefix route at the anchor prefix boots
+(`ConfigValidatorTest.AnchorRules`, rule 4b -- including the partial-coverage case, where an anchored
+route on a sub-path only is not coverage).
 
 [#gw-02]
 === GW-02 -- HTTP request smuggling / desync
@@ -1084,16 +1110,41 @@ only the raw query is appended under `keep_query`. The configuration validator r
   reported at boot by `WARN ApiSheriff-125`, naming the route and never the target;
 * refusal messages echo the value through the injection-safe renderer (CWE-117, see <<gw-12>>).
 
+*Control -- the query is same-origin only.* The review above establishes that the *target* is a value
+the operator wrote down. It establishes nothing about the *query*, which arrives with the request and
+is therefore attacker-supplied. `keep_query` together with `allow_external` would opt every inbound
+parameter out of the gateway origin: a request to `/go?code=...&state=...` produces a `Location` that
+plants those values in the third party's access log, `Referer` chain and page analytics
+(CWE-201 / CWE-598). The pair is refused at boot rather than warned about -- a warning cannot be
+acted on per request, and there is no reviewable value to judge. Each flag alone is unaffected: a
+gateway path may keep the query, and a fixed external target may be declared without it.
+
 Two further properties bound what a redirect route discloses: the redirect is answered only *after*
 authentication, so under an authenticated anchor an anonymous caller is challenged before any
 `Location` is revealed; and the action is refused on every protocol but `http`, and together with an
 `upstream` or `asset` block, so no configuration reaches it silently.
 
+*Control -- the answer is not stored.* A redirect answer is an ordinary cacheable response, and `301`
+and `308` are cacheable by default under RFC 9111 §4.2.2 heuristic freshness. Because the redirect is
+answered after authentication, a `Set-Cookie` an earlier stage produced -- a re-sealed or rotated
+cookie-mode session -- rides on it, so a shared cache between the client and the gateway could store
+one client's session cookie and replay it to another (CWE-524 / CWE-525). The gateway therefore emits
+`Cache-Control: no-store` on a redirect answer whenever the route's effective auth requires
+authentication *or* any `Set-Cookie` is accumulated -- the same governance the asset terminal action
+already applies to `AccessLevel.AUTHENTICATED` content. A public, cookie-less redirect stays
+cacheable, which is what a settled `301`/`308` move is for. The header is not a `security_headers`
+key, so `header_modes` does not reach it, and it is written after the stage headers so none can
+displace it.
+
 *Status:* COVERED. The review is boot-time configuration validation with a table-driven refusal
 corpus (`ConfigValidatorRedirectTest`: `//host`, `/\host`, `\\host`, `/%2F%2Fhost`, `/%5chost`,
 `/a/../b`, an external URI without the opt-in, `javascript:` and user-info with it, `#` with
-`keep_query`, plus the accepted forms); the native boot refusal of an external location without the
-opt-in is exercised by `verify-invalid-config-fails.sh`; and `RoutingAndResponseHeadersIT` asserts the
+`keep_query`, the `keep_query` + `allow_external` pair, plus the accepted forms and each flag alone);
+the native boot refusal of an external location without the
+opt-in is exercised by `verify-invalid-config-fails.sh`; `RedirectStageTest` pins the cacheability
+verdict on both its conditions and on the public control; `GatewayEdgePipelineTest` asserts the
+`no-store` on an authenticated redirect and its absence on a public one over a live server; and
+`RoutingAndResponseHeadersIT` asserts the
 served redirect against the native image, including the query kept under `keep_query` and no upstream
 contact.
 
@@ -1101,14 +1152,17 @@ contact.
 and with it the ability to point clients at another origin. The review proves the target is a
 well-formed `http`/`https` URI; it cannot prove the operator meant that host. The exposure is bounded
 by it being an explicit per-route opt-in, visible in the endpoint file and announced at every boot by
-`ApiSheriff-125`, and by the target still being fixed configuration an attacker cannot influence
-through the request.
+`ApiSheriff-125`, and by the target -- and now the whole `Location`, since the query hand-off is
+refused -- being fixed configuration an attacker cannot influence through the request.
 
 *Assertion.* Every refused spelling above fails the boot with the value escaped in the message; a
-gateway path and, under the opt-in, a well-formed `http`/`https` URI boot; a redirect answer carries
+gateway path and, under the opt-in, a well-formed `http`/`https` URI boot; `keep_query` together with
+`allow_external` fails the boot naming both keys and never the target, while either flag alone boots;
+a redirect answer carries
 exactly the configured status and `Location` (the raw query appended only under `keep_query`) and
-causes no upstream request; an unauthenticated request to a redirect route under an authenticated
-anchor is challenged and receives no `Location`.
+causes no upstream request; an authenticated or cookie-bearing redirect answer carries
+`Cache-Control: no-store` and a public cookie-less one does not; an unauthenticated request to a
+redirect route under an authenticated anchor is challenged and receives no `Location`.
 
 [#gw-14]
 === GW-14 -- Response security-header floor weakened (origin precedence, anchor replacement)
@@ -1139,6 +1193,14 @@ inherited.
   operator documentation states the consequence at every place the key is described: a header the
   anchor block omits is absent under that anchor. Responses before route selection keep the global
   block, so no pre-route rejection loses it.
+
+A third mechanism is closed at the boundary rather than here: because the anchor block is resolved
+*per selected route*, an address inside an anchor namespace that a route *outside* the anchor answers
+carries that route's block, not the anchor's -- the header floor escaped by routing rather than by
+precedence or by replacement. The anchor-namespace coverage rule (<<gw-01>>) refuses that
+configuration at boot, so an anchor's namespace is served only by routes that resolve the anchor and
+"a routed response carries exactly its anchor block" holds for every address in the namespace, not
+only for the addresses the anchor's routes happen to name.
 
 `content_security_policy` values are refused at boot when blank or carrying a CR, LF or other control
 character, on every block, so the header cannot become an injection vector (<<gw-03>>).
