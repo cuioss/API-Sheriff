@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.config;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -106,10 +107,27 @@ import org.junit.jupiter.api.Test;
  * references a shared definition names its keys from that property, so {@code auth} reached from an
  * anchor and from a route is the one key the document names once; each definition is counted once,
  * and one definition reached under two different names fails rather than guessing which name the
- * document should use. Schema shapes the walk does not model — a chained {@code $ref}, a non-local
- * reference, a union {@code type}, a combinator — fail rather than silently deriving a smaller set.
- * A negative control injects an array key into a copy of the gateway schema and proves the derivation
- * reaches it through the {@code $ref} and that the documented set no longer matches.
+ * document should use. A negative control injects an array key into a copy of the gateway schema and
+ * proves the derivation reaches it through the {@code $ref} and that the documented set no longer
+ * matches.
+ * <p>
+ * <strong>The walk fails closed on shapes it does not model.</strong> A derivation that silently
+ * skips what it cannot read produces a smaller inventory that a document written against the larger
+ * one still matches, so the walk validates a node at every point it <em>visits</em> one — the
+ * derivation root, the node a key declares (ahead of the {@code $ref} branch), the definition a
+ * {@code $ref} resolves to, and an array's {@code items} (ahead of classification) — rather than only
+ * where it enumerates children. Refused there are: an applicator carrying a subschema the walk does
+ * not descend into ({@code allOf}, {@code anyOf}, {@code oneOf}, {@code if}/{@code then}/{@code else},
+ * {@code dependentSchemas}, {@code prefixItems}, {@code contains}, {@code unevaluatedProperties},
+ * {@code unevaluatedItems}, {@code $dynamicRef}); a union {@code type}; {@code items} written as a
+ * Draft-07 tuple array; and — because Draft 2020-12 applies a {@code $ref}'s siblings rather than
+ * discarding them — any sibling beside a {@code $ref} that carries schema rather than annotation.
+ * {@code resolve} separately refuses a chained and a non-local {@code $ref}. {@code not} and
+ * {@code propertyNames} are the two deliberate exemptions: neither can contribute a usable array key,
+ * so both are walked past. One negative control per refusal injects the unmodelled shape into a copy
+ * of the gateway schema and asserts the derivation refuses it naming that shape, and a further control
+ * injects the two exemptions and asserts the derived inventory is unchanged, so the fail-closed walk
+ * cannot quietly widen into a blanket refusal.
  * <p>
  * <strong>No vacuous pass.</strong> Every extraction is anchored on a named constant — a literal
  * sentence fragment for the prose surfaces, and a JSON pointer for the posture set, which the schema
@@ -289,6 +307,50 @@ class DocumentedSetsContractTest {
     /** The key name the derivation must produce for {@link #INJECTED_ARRAY_KEY}. */
     private static final String INJECTED_ARRAY_NAME = "security_filter." + INJECTED_ARRAY_KEY;
 
+    /**
+     * A shipped {@code $ref} node the {@code $ref}-sibling control injects schema beside. It is a
+     * property of the document root, so the walk reaches it on every derivation.
+     */
+    private static final String REF_SIBLING_POINTER = "/properties/allowed_methods";
+
+    /**
+     * The shared definition the applicator and exemption controls mutate. The gateway schema reaches
+     * it only through a {@code $ref}, so injecting there also proves the validation runs on a node the
+     * walk resolved rather than only on nodes written inline.
+     */
+    private static final String INJECTED_APPLICATOR_POINTER = "/$defs/securityFilter";
+
+    /**
+     * The shipped string-item array whose {@code items} the items-validation control mutates. Its
+     * {@code items} is written inline, so the control replaces a node the walk classifies directly.
+     */
+    private static final String INJECTED_ITEMS_PARENT_POINTER = "/properties/tls/properties/alpn";
+
+    /** Where the shipped gateway schema declares {@code not}; see {@link #EXEMPT_NOT}. */
+    private static final String NOT_EXEMPTION_POINTER = "/properties/management/properties/port/not";
+
+    /** Where the shipped gateway schema declares {@code propertyNames}; see {@link #EXEMPT_PROPERTY_NAMES}. */
+    private static final String PROPERTY_NAMES_EXEMPTION_POINTER =
+            "/properties/asset_defaults/properties/content_types/propertyNames";
+
+    /**
+     * Names what a document may <em>not</em> contain, so nothing beneath it is a usable key. It is
+     * therefore walked past rather than refused — see {@link #UNMODELLED_APPLICATORS}.
+     */
+    private static final String EXEMPT_NOT = "not";
+
+    /**
+     * Constrains property <em>names</em> rather than their values, so nothing beneath it can be an
+     * array-typed value. It is therefore walked past rather than refused — see
+     * {@link #UNMODELLED_APPLICATORS}.
+     */
+    private static final String EXEMPT_PROPERTY_NAMES = "propertyNames";
+
+    private static final String APPLICATOR_ONE_OF = "oneOf";
+    private static final String APPLICATOR_IF = "if";
+    private static final String APPLICATOR_THEN = "then";
+    private static final String APPLICATOR_DEPENDENT_SCHEMAS = "dependentSchemas";
+
     private static final String SCHEMA_REF = "$ref";
     private static final String SCHEMA_TYPE = "type";
     private static final String SCHEMA_ITEMS = "items";
@@ -303,10 +365,28 @@ class DocumentedSetsContractTest {
     private static final String ANY_KEY = "*";
 
     /**
-     * Combinators the derivation does not model. Each could introduce an array key the walk would not
-     * see, so a schema that starts using one fails the derivation rather than under-reporting.
+     * Applicators the derivation does not model. Each carries a subschema that could introduce an array
+     * key the walk would not see, so a schema that starts using one fails the derivation rather than
+     * under-reporting.
+     * <p>
+     * {@link #EXEMPT_NOT} and {@link #EXEMPT_PROPERTY_NAMES} are schema-bearing too and are deliberately
+     * absent: neither can contribute a <em>usable</em> array key — {@code not} names what a document may
+     * not contain, and {@code propertyNames} constrains property names rather than their values — and
+     * the shipped gateway schema declares both, so refusing them would refuse the schema this test
+     * derives from. {@code notAndPropertyNamesAreWalkedPastRatherThanRefused} pins that exemption.
      */
-    private static final List<String> UNMODELLED_COMBINATORS = List.of("allOf", "anyOf", "oneOf");
+    private static final List<String> UNMODELLED_APPLICATORS = List.of("allOf", "anyOf", APPLICATOR_ONE_OF,
+            APPLICATOR_IF, APPLICATOR_THEN, "else", APPLICATOR_DEPENDENT_SCHEMAS, "prefixItems", "contains",
+            "unevaluatedProperties", "unevaluatedItems", "$dynamicRef");
+
+    /**
+     * The keywords allowed to sit beside a {@code $ref}. Draft 2020-12 <em>applies</em> a {@code $ref}'s
+     * siblings rather than discarding them the way Draft-07 did, while the derivation follows the
+     * reference alone — so a sibling carrying schema would declare keys the walk never reads. These
+     * carry annotation only, and the shipped schemas use no other.
+     */
+    private static final Set<String> ANNOTATIONS_BESIDE_REF = Set.of(SCHEMA_REF, "description", "title",
+            "default", "deprecated", "examples", "readOnly", "writeOnly", "$comment", ERROR_MESSAGE_KEYWORD);
 
     private static final Pattern BACKTICKED = Pattern.compile("`([^`]+)`");
 
@@ -639,7 +719,202 @@ class DocumentedSetsContractTest {
                         + " the schema, so the stated-count assertion cannot detect schema drift");
     }
 
+    @Test
+    @DisplayName("the array-key derivation refuses a schema-bearing sibling beside a $ref")
+    void schemaBearingSiblingBesideARefIsRefused() throws Exception {
+        // Arrange — Draft 2020-12 applies a $ref's siblings rather than discarding them, so a sibling
+        // carrying schema declares keys a walk that follows only the reference would never see
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode referencing = mutableAt(injected, REF_SIBLING_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        assertTrue(referencing.has(SCHEMA_REF), GATEWAY_SCHEMA_RESOURCE + ": " + REF_SIBLING_POINTER
+                + " no longer declares a " + SCHEMA_REF + ", so this control would place its sibling beside"
+                + " nothing and would stop exercising the path it was written for");
+        referencing.set(SCHEMA_PROPERTIES, stringArrayProperties(referencing));
+
+        // Act + Assert
+        assertDerivationRefuses(injected, GATEWAY_SCHEMA_RESOURCE + " with '" + SCHEMA_PROPERTIES
+                + "' placed beside the " + SCHEMA_REF + " at " + REF_SIBLING_POINTER, "beside a " + SCHEMA_REF);
+    }
+
+    @Test
+    @DisplayName("the array-key derivation refuses a conditional applicator")
+    void conditionalApplicatorIsRefused() throws Exception {
+        // Arrange — 'if'/'then' carries a subschema that can declare an array key, and sits outside the
+        // three combinators the derivation started out refusing
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode conditional = mutableAt(injected, INJECTED_APPLICATOR_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        conditional.set(APPLICATOR_IF, conditional.objectNode());
+        conditional.set(APPLICATOR_THEN, conditional.objectNode()
+                .set(SCHEMA_PROPERTIES, stringArrayProperties(conditional)));
+
+        // Act + Assert
+        assertDerivationRefuses(injected, GATEWAY_SCHEMA_RESOURCE + " with '" + APPLICATOR_IF + "'/'"
+                + APPLICATOR_THEN + "' injected at " + INJECTED_APPLICATOR_POINTER, "uses " + APPLICATOR_IF);
+    }
+
+    @Test
+    @DisplayName("the array-key derivation refuses dependentSchemas")
+    void dependentSchemasApplicatorIsRefused() throws Exception {
+        // Arrange — the same gap in a second shape: a subschema applied when a sibling key is present
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode dependent = mutableAt(injected, INJECTED_APPLICATOR_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        dependent.set(APPLICATOR_DEPENDENT_SCHEMAS, dependent.objectNode()
+                .set(INJECTED_ARRAY_KEY, dependent.objectNode()
+                        .set(SCHEMA_PROPERTIES, stringArrayProperties(dependent))));
+
+        // Act + Assert
+        assertDerivationRefuses(injected, GATEWAY_SCHEMA_RESOURCE + " with '" + APPLICATOR_DEPENDENT_SCHEMAS
+                + "' injected at " + INJECTED_APPLICATOR_POINTER, "uses " + APPLICATOR_DEPENDENT_SCHEMAS);
+    }
+
+    @Test
+    @DisplayName("the array-key derivation refuses a combinator inside an array's items")
+    void combinatorInsideArrayItemsIsRefused() throws Exception {
+        // Arrange — an items node reaches the classifier directly, so a combinator there was never seen
+        // by the check that refuses one anywhere else
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode items = mutableItems(injected);
+        items.set(APPLICATOR_ONE_OF, items.arrayNode()
+                .add(items.objectNode().set(SCHEMA_PROPERTIES, stringArrayProperties(items))));
+
+        // Act + Assert
+        assertDerivationRefuses(injected, itemsControlLabel(APPLICATOR_ONE_OF), "uses " + APPLICATOR_ONE_OF);
+    }
+
+    @Test
+    @DisplayName("the array-key derivation refuses a union type inside an array's items")
+    void unionTypeInsideArrayItemsIsRefused() throws Exception {
+        // Arrange — the union check guarded the node that declares the array, never the items it
+        // declares, so a union there classified as 'neither strings nor objects' and left both lists
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode items = mutableItems(injected);
+        items.set(SCHEMA_TYPE, items.arrayNode().add(TYPE_STRING).add(TYPE_OBJECT));
+
+        // Act + Assert
+        assertDerivationRefuses(injected, itemsControlLabel("a union " + SCHEMA_TYPE), "declares a union type");
+    }
+
+    @Test
+    @DisplayName("the array-key derivation refuses items written as a tuple array")
+    void tupleArrayItemsAreRefused() throws Exception {
+        // Arrange — the Draft-07 tuple spelling is not a schema object, so every position it declares
+        // went unread while the array itself was still counted
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode parent = mutableAt(injected, INJECTED_ITEMS_PARENT_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        parent.set(SCHEMA_ITEMS, parent.arrayNode().add(parent.objectNode().put(SCHEMA_TYPE, TYPE_STRING)));
+
+        // Act + Assert
+        assertDerivationRefuses(injected, itemsControlLabel("a tuple"), "as a tuple array");
+    }
+
+    @Test
+    @DisplayName("the fail-closed walk still walks past 'not' and 'propertyNames' rather than refusing them")
+    void notAndPropertyNamesAreWalkedPastRatherThanRefused() throws Exception {
+        // Arrange — the two exemptions earn their place only while the shipped schema still uses them,
+        // so their presence is asserted before the behaviour that depends on it
+        JsonNode shipped = schemaTree(GATEWAY_SCHEMA_RESOURCE);
+        assertTrue(shipped.at(NOT_EXEMPTION_POINTER).isObject(), GATEWAY_SCHEMA_RESOURCE + " no longer declares '"
+                + EXEMPT_NOT + "' at " + NOT_EXEMPTION_POINTER + ", so the exemption this guard protects is no"
+                + " longer exercised by the shipped schema and should be reconsidered rather than kept untested");
+        assertTrue(shipped.at(PROPERTY_NAMES_EXEMPTION_POINTER).isObject(), GATEWAY_SCHEMA_RESOURCE + " no longer"
+                + " declares '" + EXEMPT_PROPERTY_NAMES + "' at " + PROPERTY_NAMES_EXEMPTION_POINTER + ", so the"
+                + " exemption this guard protects is no longer exercised by the shipped schema and should be"
+                + " reconsidered rather than kept untested");
+        JsonNode injected = shipped.deepCopy();
+        ObjectNode definition = mutableAt(injected, INJECTED_APPLICATOR_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        definition.set(EXEMPT_NOT, definition.objectNode());
+        definition.set(EXEMPT_PROPERTY_NAMES, definition.objectNode().put(SCHEMA_TYPE, TYPE_STRING));
+
+        // Act — the derivation throws on refusal, so completing at all is half of what is asserted here
+        Map<String, ItemKind> derived = deriveArrayKeys(injected, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE
+                + " with '" + EXEMPT_NOT + "' and '" + EXEMPT_PROPERTY_NAMES + "' injected at "
+                + INJECTED_APPLICATOR_POINTER);
+
+        // Assert
+        assertEquals(deriveArrayKeys(shipped, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE), derived,
+                "injecting '" + EXEMPT_NOT + "' and '" + EXEMPT_PROPERTY_NAMES + "' changed the derived array-key"
+                        + " inventory. Neither can contribute a usable key — '" + EXEMPT_NOT + "' names what a"
+                        + " document may not contain and '" + EXEMPT_PROPERTY_NAMES + "' constrains property names"
+                        + " rather than their values — so the walk must pass over both without refusing them and"
+                        + " without deriving anything from them");
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
+
+    /**
+     * Drives a deliberately unmodelled schema through the array-key derivation and asserts it is
+     * refused <em>for the reason under test</em>, not merely that something failed.
+     * <p>
+     * Every control below injects a shape that the pre-fix walk derived from silently — a smaller
+     * inventory, still matching a document written against it. Asserting the refusal message names the
+     * construct is what keeps each control bound to its own gap: an unrelated failure elsewhere in the
+     * walk would otherwise keep all of them green after they had stopped proving anything.
+     *
+     * @param injected         the mutated schema
+     * @param label            how the mutated schema is named in every failure message
+     * @param expectedFragment a fragment the refusal message must carry
+     */
+    private static void assertDerivationRefuses(JsonNode injected, String label, String expectedFragment) {
+        AssertionError refusal = assertThrows(AssertionError.class,
+                () -> deriveArrayKeys(injected, GATEWAY_ARRAY_ROOT, label),
+                "the array-key derivation accepted " + label + " instead of refusing it, so a schema using that"
+                        + " shape would derive a smaller inventory that the documented set still matches");
+        assertTrue(refusal.getMessage() != null && refusal.getMessage().contains(expectedFragment),
+                "the derivation refused " + label + ", but not for the reason under test: its message carries no \""
+                        + expectedFragment + "\". Observed: " + refusal.getMessage());
+    }
+
+    /**
+     * A {@code properties} object declaring one string-item array key, so an injected shape carries a
+     * key the derivation would have to report if it walked into it.
+     *
+     * @param factory any node of the tree being mutated, used only as a node factory
+     * @return the {@code properties} object
+     */
+    private static ObjectNode stringArrayProperties(ObjectNode factory) {
+        ObjectNode array = factory.objectNode().put(SCHEMA_TYPE, TYPE_ARRAY);
+        array.set(SCHEMA_ITEMS, factory.objectNode().put(SCHEMA_TYPE, TYPE_STRING));
+        ObjectNode properties = factory.objectNode();
+        properties.set(INJECTED_ARRAY_KEY, array);
+        return properties;
+    }
+
+    /**
+     * The mutable node a control injects into, failing when the pointer no longer resolves rather than
+     * mutating nothing and passing.
+     *
+     * @param schema  the schema copy being mutated
+     * @param pointer the JSON pointer of the node to mutate
+     * @param label   the schema label used in the failure message
+     * @return the node at that pointer
+     */
+    private static ObjectNode mutableAt(JsonNode schema, String pointer, String label) {
+        return schema.at(pointer) instanceof ObjectNode node ? node
+                : fail(label + ": nothing resolves at " + pointer + ", so the control that mutates it has nothing"
+                + " to inject into. Update the pointer to a node the schema still declares.");
+    }
+
+    /**
+     * The {@code items} node of {@link #INJECTED_ITEMS_PARENT_POINTER} in a schema copy.
+     *
+     * @param schema the schema copy being mutated
+     * @return the items node
+     */
+    private static ObjectNode mutableItems(JsonNode schema) {
+        return mutableAt(schema, INJECTED_ITEMS_PARENT_POINTER + "/" + SCHEMA_ITEMS, GATEWAY_SCHEMA_RESOURCE);
+    }
+
+    /**
+     * How one items-validation control names its mutated schema in failure messages.
+     *
+     * @param shape what was injected into the items node
+     * @return the label
+     */
+    private static String itemsControlLabel(String shape) {
+        return GATEWAY_SCHEMA_RESOURCE + " with " + shape + " injected into the " + SCHEMA_ITEMS + " of "
+                + INJECTED_ITEMS_PARENT_POINTER;
+    }
+
 
     /**
      * Asserts a documented extension enumeration against {@link AssetResponseEnvelope} — the set it
@@ -1055,6 +1330,7 @@ class DocumentedSetsContractTest {
             return fail(label + ": nothing resolves at the derivation root '" + startPointer + "', so the"
                     + " array-key inventory cannot be derived from it");
         }
+        assertModelledShape(start, "", label);
         Map<String, ItemKind> keys = new TreeMap<>();
         walkChildren(schema, start, "", keys, new HashMap<>(), label);
         if (keys.isEmpty()) {
@@ -1068,6 +1344,10 @@ class DocumentedSetsContractTest {
      * Walks the keys an object schema declares: its {@code properties}, its {@code patternProperties}
      * and an object-valued {@code additionalProperties}. Keys not fixed by the schema are named
      * {@link #ANY_KEY}.
+     * <p>
+     * The node reaching here has already been through {@link #assertModelledShape(JsonNode, String, String)}
+     * — at the derivation root, on entry to {@link #walkNode}, or as a validated {@code items} node — so
+     * this method walks a shape the derivation is known to model and adds no check of its own.
      *
      * @param schema   the whole schema
      * @param node     the object schema node
@@ -1078,13 +1358,6 @@ class DocumentedSetsContractTest {
      */
     private static void walkChildren(JsonNode schema, JsonNode node, String name, Map<String, ItemKind> keys,
             Map<String, String> followed, String label) {
-        for (String combinator : UNMODELLED_COMBINATORS) {
-            if (node.has(combinator)) {
-                fail(label + ": '" + qualified(name, combinator) + "' uses " + combinator + ", which the array-key"
-                        + " derivation does not model; extend DocumentedSetsContractTest before relying on it, or"
-                        + " the inventory would silently miss any array key declared inside it");
-            }
-        }
         for (Map.Entry<String, JsonNode> property : node.path(SCHEMA_PROPERTIES).properties()) {
             walkKey(schema, property.getValue(), property.getKey(), qualified(name, property.getKey()), keys,
                     followed, label);
@@ -1102,6 +1375,10 @@ class DocumentedSetsContractTest {
      * Walks one declared key. A key that references a shared definition names its descendants from the
      * key itself rather than from its full path, so a definition reached from several places yields one
      * set of names; the definition is walked once, and reaching it again under a different name fails.
+     * <p>
+     * The key's own node is validated <em>before</em> the {@code $ref} branch, so a shape the derivation
+     * does not model is refused whether it is written inline or beside a reference — the walk never
+     * reaches a node it has not first agreed it understands.
      *
      * @param schema    the whole schema
      * @param node      the key's schema node
@@ -1113,10 +1390,12 @@ class DocumentedSetsContractTest {
      */
     private static void walkKey(JsonNode schema, JsonNode node, String key, String qualified,
             Map<String, ItemKind> keys, Map<String, String> followed, String label) {
+        assertModelledShape(node, qualified, label);
         if (!node.has(SCHEMA_REF)) {
             walkNode(schema, node, qualified, keys, followed, label);
             return;
         }
+        assertRefSiblingsCarryNoSchema(node, qualified, label);
         String pointer = node.get(SCHEMA_REF).asText();
         String previous = followed.putIfAbsent(pointer, key);
         if (previous == null) {
@@ -1131,6 +1410,11 @@ class DocumentedSetsContractTest {
     /**
      * Records a node when it is array-typed — descending into object items with a {@code []} suffix —
      * and otherwise walks its children.
+     * <p>
+     * The node is validated on entry, and an array's {@code items} is validated before it is classified:
+     * a shape the derivation does not model is refused ahead of the array branch rather than reaching
+     * {@link #kindOf(JsonNode)}, where it would classify as {@link ItemKind#OTHER} and quietly leave both
+     * documented lists.
      *
      * @param schema   the whole schema
      * @param node     the (already resolved) schema node
@@ -1141,19 +1425,17 @@ class DocumentedSetsContractTest {
      */
     private static void walkNode(JsonNode schema, JsonNode node, String name, Map<String, ItemKind> keys,
             Map<String, String> followed, String label) {
-        JsonNode type = node.path(SCHEMA_TYPE);
-        if (type.isArray()) {
-            fail(label + ": '" + name + "' declares a union type " + type + ", which the array-key derivation"
-                    + " does not model; it could be an array the inventory silently misses");
-        }
-        if (!TYPE_ARRAY.equals(type.asText())) {
+        assertModelledShape(node, name, label);
+        if (!TYPE_ARRAY.equals(node.path(SCHEMA_TYPE).asText())) {
             walkChildren(schema, node, name, keys, followed, label);
             return;
         }
         JsonNode items = node.path(SCHEMA_ITEMS);
-        if (items.has(SCHEMA_REF)) {
+        if (items.isObject() && items.has(SCHEMA_REF)) {
+            assertRefSiblingsCarryNoSchema(items, qualified(name, SCHEMA_ITEMS), label);
             items = resolve(schema, items.get(SCHEMA_REF).asText(), label);
         }
+        assertModelledItems(items, name, label);
         ItemKind kind = kindOf(items);
         if (keys.put(name, kind) != null) {
             fail(label + ": two array-typed nodes derive the same key name '" + name + "' without sharing a"
@@ -1165,7 +1447,79 @@ class DocumentedSetsContractTest {
     }
 
     /**
-     * Classifies an array's (already resolved) items node.
+     * Refuses a schema node whose shape the derivation does not model, before the walk acts on it.
+     * <p>
+     * This runs at every point the walk <em>visits</em> a node — the derivation root, the node a key
+     * declares (ahead of the {@code $ref} branch), the definition a {@code $ref} resolves to, and an
+     * array's {@code items} (ahead of classification). Checking only where children are enumerated is
+     * what let a shape slip through: a node whose keys are never enumerated was never inspected.
+     *
+     * @param node  the schema node about to be walked
+     * @param name  the node's key name, empty at the derivation root
+     * @param label the schema label used in every failure message
+     */
+    private static void assertModelledShape(JsonNode node, String name, String label) {
+        for (String applicator : UNMODELLED_APPLICATORS) {
+            if (node.has(applicator)) {
+                fail(label + ": '" + qualified(name, applicator) + "' uses " + applicator + ", which the array-key"
+                        + " derivation does not model; extend DocumentedSetsContractTest before relying on it, or"
+                        + " the inventory would silently miss any array key declared inside it");
+            }
+        }
+        JsonNode type = node.path(SCHEMA_TYPE);
+        if (type.isArray()) {
+            fail(label + ": '" + name + "' declares a union type " + type + ", which the array-key derivation"
+                    + " does not model; it could be an array the inventory silently misses");
+        }
+    }
+
+    /**
+     * Refuses a {@code $ref} that carries a schema-bearing sibling.
+     * <p>
+     * Draft 2020-12 applies a {@code $ref}'s siblings rather than discarding them, while this derivation
+     * follows the reference alone — so any sibling beyond {@link #ANNOTATIONS_BESIDE_REF} declares schema
+     * the walk would never read.
+     *
+     * @param node  the referencing node
+     * @param name  the node's key name
+     * @param label the schema label used in every failure message
+     */
+    private static void assertRefSiblingsCarryNoSchema(JsonNode node, String name, String label) {
+        for (Map.Entry<String, JsonNode> sibling : node.properties()) {
+            if (!ANNOTATIONS_BESIDE_REF.contains(sibling.getKey())) {
+                fail(label + ": '" + name + "' places '" + sibling.getKey() + "' beside a " + SCHEMA_REF
+                        + ". Draft 2020-12 applies a " + SCHEMA_REF + "'s siblings rather than discarding them,"
+                        + " and the array-key derivation follows only the reference, so any array key that"
+                        + " sibling declares would be missed");
+            }
+        }
+    }
+
+    /**
+     * Refuses an array's (already resolved) {@code items} when it is not a schema object the derivation
+     * models, and validates it like any other visited node when it is.
+     * <p>
+     * A {@code items} written as a tuple array is the Draft-07 spelling: each position carries its own
+     * schema, and none of them is read here. An {@code items} that is missing or boolean constrains
+     * nothing and names no key, so it stays {@link ItemKind#OTHER} rather than failing.
+     *
+     * @param items the items node
+     * @param name  the array node's key name
+     * @param label the schema label used in every failure message
+     */
+    private static void assertModelledItems(JsonNode items, String name, String label) {
+        if (items.isArray()) {
+            fail(label + ": '" + name + "' declares its items as a tuple array, which the array-key derivation"
+                    + " does not model; each position carries its own schema, so an array key declared in one"
+                    + " of them would be missed");
+        }
+        if (items.isObject()) {
+            assertModelledShape(items, qualified(name, SCHEMA_ITEMS), label);
+        }
+    }
+
+    /**
+     * Classifies an array's (already resolved and validated) items node.
      *
      * @param items the items node, missing when the array declares none
      * @return what the items are
