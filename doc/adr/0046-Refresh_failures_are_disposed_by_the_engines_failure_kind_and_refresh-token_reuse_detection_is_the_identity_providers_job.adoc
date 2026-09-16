@@ -1,0 +1,247 @@
+= ADR-0046: Refresh failures are disposed by the engine's failure kind and refresh-token reuse detection is the identity provider's job
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A refused BFF token refresh is disposed by what the identity provider did to the presented refresh token, as the engine classifies the exchange, through a default-free switch over the failure kind — PRE_REDEMPTION keeps the session with a fixed five-second back-off and revokes nothing, CREDENTIAL_REJECTED ends it, REDEEMED ends it and revokes the one live refresh token the gateway can name, and a persist failure ends it and revokes the rotated token — while oidc.session.refresh.on_failure decides only how the failing request is answered; refresh-token reuse detection is not built in the gateway or the engine, because a confidential client only sees the tokens it presents and a stateless instance cannot share a token family, so the control is strict refresh-token rotation at the identity provider, shipped on in the integration and compose-sample realms and pinned against Keycloak's observed verdict (successor grant revoked, user session survives), with the residual that without it neither side detects reuse and the cost that a cross-instance duplicate refresh ends the session.
+// tags: bff, oidc, refresh-token, session, reuse-detection, token-rotation, failure-classification, fail-closed, identity-provider, revocation, operator-control
+// affects: api-sheriff, integration-tests, deployment
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+A BFF session holds a refresh token, and when the mediated access token nears expiry the gateway
+redeems it through the confidential-client engine and persists the rotated tokens through the
+`SessionBinding` seam of
+link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018].
+That redemption can fail, and the failures are not one thing. What the gateway may safely do next
+depends entirely on what the identity provider did with the presented token:
+
+* *The provider never processed the grant* -- a connection or DNS failure, a `5xx`, a `4xx` it did
+  not attribute to the credential. The presented refresh token is still valid. Destroying the
+  session turns every provider blip into a mass logout.
+* *The provider rejected the credential* -- `invalid_grant`. The token is unusable, and keeping the
+  session keeps serving a grant the provider has withdrawn.
+* *The provider redeemed the grant, but the gateway refused the response.* The presented token is
+  spent, and a successor may now be live at the provider that no session holds.
+* *The redemption succeeded, but the rotated session could not be persisted.* Same position: the
+  presented token is spent and the returned one is orphaned.
+
+A single destroy-on-every-failure rule treats the first case as the second and leaves the live
+tokens of the last two unrevoked. The engine already classifies a refused refresh into exactly these
+kinds (`RefreshFlow.classify`: `PRE_REDEMPTION`, `CREDENTIAL_REJECTED`, `REDEEMED`), so the choice
+point is not whether the distinction can be drawn but whether the gateway acts on it.
+
+A second question sits beside the first. RFC 9700 §4.14 asks for refresh-token rotation *with reuse
+detection*: a replayed, already-rotated refresh token revokes the grant. That detection has to live
+somewhere, and the obvious places -- a token family in the gateway, or one in the engine -- run into
+a structural fact about this gateway: a confidential client only ever sees the refresh tokens it
+presents itself, and the stateless cookie variant runs instances that share nothing. In cookie mode
+the replay is also genuinely reachable: an older sealed cookie still unseals after a refresh, so a
+copied cookie makes the gateway present a spent refresh token.
+
+Finally, `oidc.session.refresh.on_failure` was declared, parsed and documented, but read by nothing,
+so the documented `reject` posture did not exist.
+
+== Decision
+
+*A refused refresh is disposed by the engine's failure kind, through a default-free switch, and the
+session's fate follows from the kind -- not from configuration. `on_failure` decides only how a
+request left without a token is answered. Refresh-token reuse detection is the identity provider's
+job: the shipped control is strict refresh-token rotation at the provider, and the gateway builds no
+token family.*
+
+=== The per-kind dispositions
+
+`TokenRefreshCoordinator` switches over the classified kind with no `default` branch, so a new kind
+added by the engine fails compilation rather than inheriting a disposition.
+
+[cols="2,2,2,2", options="header"]
+|===
+| Kind | Session | Revoked (best-effort) | Record
+
+| `PRE_REDEMPTION`
+| Kept. Mediated with the current access token while it is valid; once expired, the request fails
+  without the session ending. The next attempt waits out a fixed five-second back-off.
+| Nothing -- the presented token is still valid.
+| `ApiSheriff-127`
+
+| `CREDENTIAL_REJECTED`
+| Ended.
+| Nothing -- nothing was redeemed.
+| `ApiSheriff-111` `credential-rejected`
+
+| `REDEEMED`
+| Ended.
+| The one live refresh token the gateway can name: the successor when rotated, the presented token
+  when not rotated, none when rotation is unknown.
+| `ApiSheriff-111` `redeemed-response-refused`
+
+| Persist failure
+| Ended.
+| The refresh token the exchange returned.
+| `ApiSheriff-111` `persist-failure`
+|===
+
+Revocation goes through the engine's RFC 7009 `RevocationClient`, built from the same postured
+back-channel client configuration the refresh uses. It is best-effort: a failed revocation is
+recorded at `DEBUG` and never changes the disposition, because destroying the local session is what
+ends the session. Every session-ending disposition clears the session cookie on the response.
+
+The back-off is fixed rather than exponential, bounded in the number of sessions it tracks, read and
+written under the per-session single-flight, and per instance. It bounds both the engine calls and
+the `ApiSheriff-127` records to one per session per window during a provider outage.
+
+=== `on_failure` answers the request; it does not decide the session
+
+The coordinator's outcome reaches `SessionAuthenticationStage` as a sealed result with three
+members: *mediate*, *session ended* (clear the cookie, then respond) and *request failed* (respond
+without clearing the cookie, because the session is still live). The stage answers both failure
+members through the resolved `on_failure` policy: `reauthenticate` -- the default, also when the key
+is omitted -- re-drives the login negotiation for navigations and answers `401` problem+json
+otherwise; `reject` answers `401` problem+json for every request. An unrecognised value is refused at
+boot with `CONFIG_INVALID`, because an operator who wrote `reject` and got `reauthenticate` would
+never find out.
+
+=== Reuse detection is the identity provider's (option D)
+
+The gateway builds no `RefreshTokenFamily`, no `TokenLifecycleManager` and no shared family store,
+and the engine is not asked to. A confidential client cannot tell a replayed refresh token from a
+fresh one without remembering every token it ever issued a request with, and a stateless instance
+cannot remember what a sibling instance did. The party that *can* recognise a replay is the one that
+minted the token.
+
+The shipped control is therefore *strict refresh-token rotation at the identity provider* -- on
+Keycloak, `revokeRefreshToken: true` with `refreshTokenMaxReuse: 0`. It is enabled in both the
+integration realm and the compose-sample realm. The provider refuses a replayed token with
+`invalid_grant`; the engine classifies that as `CREDENTIAL_REJECTED`; the gateway ends the session.
+No gateway code is specific to replay: the replay path *is* the credential-rejected path.
+
+=== Keycloak's verdict is observed and pinned, not assumed
+
+`BffRefreshReuseIT` records what Keycloak actually does on a detected replay and asserts it, so a
+provider upgrade that changes the verdict turns the suite red rather than silently changing what an
+operator can rely on:
+
+* *The successor grant is revoked too.* After a replayed pre-refresh cookie is refused, the
+  legitimate successor cookie's own refresh is refused as well, answered `401` with a clearing
+  cookie and its own `credential-rejected` record. A replay burns the grant, not only the replayed
+  copy.
+* *The Keycloak user session survives.* The session the login created still exists after the
+  replay, with the client attached. The revocation is scoped to the refresh grant, not a logout of
+  the whole SSO session.
+
+The same suite proves the two adjacent claims: deleting one Keycloak session ends exactly the
+server-mode gateway session behind it while a sibling session of the same user keeps refreshing,
+and deleting the session behind a sealed cookie ends that cookie session on its next refresh.
+
+== Consequences
+
+=== Positive
+
+* A provider outage no longer logs every user out: sessions survive pre-redemption failures and
+  retry on a bounded schedule.
+* A spent-but-orphaned refresh token is revoked where the gateway can name it, instead of staying
+  live at the provider with no session holding it.
+* `on_failure: reject` exists, and a misspelling fails boot.
+* Reuse detection is available in every session mode, including across stateless instances, at no
+  gateway-side state -- and a cookie-mode replay, the one case where it is reachable through the
+  gateway, is rejected end to end.
+* The documented behaviour is asserted against a live provider, including the parts of it the
+  gateway does not control.
+
+=== Negative
+
+* *Strict rotation makes a duplicate refresh fatal to the session.* Each instance single-flights
+  refreshes per session, but two instances refreshing one session -- in cookie mode, two parallel
+  requests with the same cookie landing on different instances inside the refresh window -- present
+  the same token twice, and the second ends the session. The residual effect is a rare forced
+  re-login. A provider-side reuse count or grace window buys it back at the price of the detection.
+* *The control lives outside the gateway.* Without strict rotation at the provider there is no
+  reuse detection on either side: the provider refreshes a replayed token and a copied cookie becomes
+  a working session. The gateway cannot see the provider's setting and cannot warn about its absence.
+* *The back-off is per instance.* With several stateless instances a provider outage costs one
+  attempt per session per instance per window, not per session.
+
+=== Risks
+
+* *An operator skips the provider setting.* Mitigated by stating it as an explicit operator step in
+  both BFF operator guides, in the configuration reference and in the compose sample, together with
+  the residual, and by shipping it on in both project realms so a copied realm carries it.
+* *A provider answers a replay differently.* A provider that refused a replay with a `4xx` other than
+  `invalid_grant` could be classified `PRE_REDEMPTION`, keeping the session and retrying. The
+  pinned verdict covers Keycloak only; other providers are the operator's to verify.
+* *A future gateway- or engine-side family would surface in the wrong kind.* A family check raised
+  inside the engine arrives as a `ClientProtocolException`, which classifies as `PRE_REDEMPTION` --
+  the session would be kept and retried. Any such mechanism therefore belongs in Token-Sheriff with a
+  classification of its own, not as a gateway wrapper around the engine.
+
+== Alternatives Considered
+
+=== A. Keep destroy-on-every-failure
+
+One rule for every failure, and `on_failure` left as documentation.
+
+Rejected because it conflates a provider blip with a withdrawn credential, logging users out during
+outages, and because it leaves the spent-but-live tokens of the redeemed and persist-failure cases
+unrevoked. The engine's classification already exists; ignoring it discards information the safe
+disposition depends on.
+
+=== B. A gateway-side in-memory token family
+
+Track each session's refresh-token lineage in the gateway and revoke the family on a superseded
+token.
+
+Rejected because the gateway only sees tokens it presents, so a token stolen and redeemed directly at
+the provider never passes through the family, and because stateless instances cannot share it: a
+cookie replayed against a sibling instance is invisible to the instance that rotated it. It would
+cover the one path strict rotation already covers, less completely, at the cost of per-session state
+in a variant that exists to have none.
+
+=== C. A shared family store for the stateless variant
+
+Back the family with a store every instance reads.
+
+Rejected because it reintroduces the external dependency the cookie variant exists to avoid, and it
+still sees only gateway-presented tokens. The provider already holds the authoritative lineage.
+
+=== D. Strict rotation at the identity provider (chosen)
+
+As decided above. The one place that sees every redemption of a refresh token is the provider that
+minted it, and every mainstream provider offers rotation with reuse detection. The gateway's part is
+to dispose the provider's refusal correctly and to prove, against a real provider, that it does.
+
+The unifying principle across these alternatives: a control belongs to the party that holds the
+state it needs. The gateway holds the session, so it owns what happens to the session; the provider
+holds the refresh-token lineage, so it owns reuse detection.
+
+== References
+
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+  -- the `SessionBinding` seam the rotated session is persisted and destroyed through
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]
+  -- the postured back-channel client configuration the refresh and the revocation are built from
+* link:../configuration.adoc#_refresh_failure_dispositions[Configuration reference -- refresh
+  failures] -- the per-kind table and `session.refresh.on_failure`
+* link:../security-threat-model.adoc[Security threat model] -- BFF-08, refresh-token rotation and
+  reuse detection
+* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, cookie-based] -- the concurrent-refresh race
+* link:../user/bff-session.adoc[Server-session BFF operator guide] and
+  link:../user/bff-cookie.adoc[Cookie BFF operator guide] -- the strict-rotation operator step
+* link:../LogMessages.adoc[Log messages] -- the `ApiSheriff-111` and `ApiSheriff-127` records
+</content>
+</invoke>
