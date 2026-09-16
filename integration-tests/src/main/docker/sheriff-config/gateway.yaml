@@ -102,10 +102,8 @@ tls:
 asset_defaults:
   content_types:
     webmanifest: application/manifest+json
-# The global response security headers plus the global CORS policy (mirrored into the
-# passthrough-empty and refresh overlays, which are kept byte-identical to this document apart from
-# their one differing key; the egress-verify overlays carry none). The global block is seeded onto
-# every response, and once a route is selected
+# The global response security headers plus the global CORS policy (also in the passthrough-empty
+# and refresh overlays; no other carries them). The block is seeded onto every response, and once a route is selected
 # its anchor's block — when the anchor declares one — replaces it WHOLESALE (ADR-0007 Amendment A1).
 # RoutingAndResponseHeadersIT asserts both sides against this descriptor: /assets/* (the
 # 'assets-public' anchor declares no block) and a pre-route 404 carry this block, while /proxy/* carries
