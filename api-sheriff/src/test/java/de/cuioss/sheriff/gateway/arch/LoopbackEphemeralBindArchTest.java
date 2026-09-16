@@ -36,6 +36,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
@@ -46,6 +47,7 @@ import com.tngtech.archunit.core.domain.AccessTarget.MethodCallTarget;
 import com.tngtech.archunit.core.domain.JavaAccess;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaConstructorCall;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -111,13 +113,21 @@ import org.junit.jupiter.api.Test;
  * code unit of {@code TlsEdgeProducerTest} and its {@code @Nested} classes is guarded like any other
  * fixture, so a new bare bind added anywhere else in that class fails the rule. The four are:
  * <ul>
- * <li>the three collision holders — {@code PassthroughConfigured#failsWhenThePublicPortIsHeld},
- * {@code PassthroughUnconfigured#noFrontListenerWhenPassthroughEmpty} and
- * {@code PassthroughUnconfigured#skipsUnresolvedAlias} — which occupy a port precisely so that
+ * <li>the three collision holders — {@code PassthroughConfigured#failsWhenThePublicPortIsHeld()},
+ * {@code PassthroughUnconfigured#noFrontListenerWhenPassthroughEmpty()} and
+ * {@code PassthroughUnconfigured#skipsUnresolvedAlias()} — which occupy a port precisely so that
  * production's <em>wildcard</em> bind is refused;</li>
- * <li>{@code isFreeForWildcardBind}, the re-probe that tests a candidate port against the bind scope
- * production will use.</li>
+ * <li>{@code isFreeForWildcardBind(int)}, the re-probe that tests a candidate port against the bind
+ * scope production will use.</li>
  * </ul>
+ * <p>
+ * <strong>Each entry is keyed by signature, not by name.</strong> {@link #codeUnitOf(JavaAccess)}
+ * renders a site as {@code owner#method(parameterTypes)}, so the four keys above carry their empty
+ * or {@code (int)} parameter lists and every overload is a key of its own. A name-only key would
+ * make "per site" untrue in one specific way: the bare bind could be <em>moved</em> into a same-named
+ * overload of an exempt method and stay exempt, with the exact-set control still seeing four strings
+ * and the count still at four, so a wildcard bind would sit in a code unit nobody justified. No such
+ * overload exists among the four today; keying on the signature is what keeps it that way.
  * <p>
  * <strong>Why the carve-out cannot be removed entirely.</strong> Production's front listener binds
  * the Vert.x wildcard default host. A holder narrowed to loopback leaves the wildcard free, so the
@@ -131,8 +141,9 @@ import org.junit.jupiter.api.Test;
  * site and in the {@code freePort()} Javadoc.
  * <p>
  * {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} pins the list and the count:
- * a stale entry, a new unexempted wildcard site in that class, and a second bare bind inside one of
- * the four exempt code units all fail it, so the exemption cannot rot or widen silently in any
+ * a stale entry, a new unexempted wildcard site in that class, a second bare bind inside one of the
+ * four exempt code units, and — since the key carries the signature — a bind moved into a same-named
+ * overload of an exempt method all fail it, so the exemption cannot rot or widen silently in any
  * direction.
  * <p>
  * This is a plain JUnit 5 test (no ArchUnit {@code @AnalyzeClasses} runner) so it runs in both
@@ -153,16 +164,23 @@ class LoopbackEphemeralBindArchTest {
     private static final String TLS_EDGE_PRODUCER_TEST = "de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest";
 
     /**
-     * The four code units, as {@code owner#method}, whose bare {@link ServerSocket#ServerSocket(int)}
-     * construction is permitted. Nothing else is exempt: not the rest of their classes, and not a bare
-     * {@code listen(int)} in these same code units. The reason each must stay wildcard-bound is in the
-     * class Javadoc ("Carve-out 2") and at each site.
+     * The four code units, as {@code owner#method(parameterTypes)}, whose bare
+     * {@link ServerSocket#ServerSocket(int)} construction is permitted. Nothing else is exempt: not
+     * the rest of their classes, not a bare {@code listen(int)} in these same code units, and — because
+     * the key carries the signature — not a same-named overload of any of the four. The reason each
+     * must stay wildcard-bound is in the class Javadoc ("Carve-out 2") and at each site.
+     * <p>
+     * These strings are compared against {@link #codeUnitOf(JavaAccess)}'s rendering verbatim, so the
+     * parameter lists here must be exactly what ArchUnit's {@code JavaClass#getName()} produces for the
+     * origin's raw parameter types. {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()}
+     * is what proves the two sides still agree: a spelling that drifts exempts nothing, and the main
+     * rule then reports all four sites.
      */
     private static final Set<String> WILDCARD_SITE_EXEMPTIONS = Set.of(
-            TLS_EDGE_PRODUCER_TEST + "$PassthroughConfigured#failsWhenThePublicPortIsHeld",
-            TLS_EDGE_PRODUCER_TEST + "$PassthroughUnconfigured#noFrontListenerWhenPassthroughEmpty",
-            TLS_EDGE_PRODUCER_TEST + "$PassthroughUnconfigured#skipsUnresolvedAlias",
-            TLS_EDGE_PRODUCER_TEST + "#isFreeForWildcardBind");
+            TLS_EDGE_PRODUCER_TEST + "$PassthroughConfigured#failsWhenThePublicPortIsHeld()",
+            TLS_EDGE_PRODUCER_TEST + "$PassthroughUnconfigured#noFrontListenerWhenPassthroughEmpty()",
+            TLS_EDGE_PRODUCER_TEST + "$PassthroughUnconfigured#skipsUnresolvedAlias()",
+            TLS_EDGE_PRODUCER_TEST + "#isFreeForWildcardBind(int)");
 
     /**
      * Production's deliberate wildcard binder, which this guard must never select. It binds through
@@ -353,8 +371,9 @@ class LoopbackEphemeralBindArchTest {
      * so {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} can read back which
      * code units violated and how many offending calls each made.
      *
-     * @param exemptSites the {@code owner#method} code units whose bare {@code ServerSocket(int)}
-     *                    construction is skipped; a bare {@code listen(int)} is reported regardless
+     * @param exemptSites the {@code owner#method(parameterTypes)} code units whose bare
+     *                    {@code ServerSocket(int)} construction is skipped; a bare {@code listen(int)}
+     *                    is reported regardless
      * @return the condition both the main rule and every control are checked against
      */
     private static ArchCondition<JavaClass> notBindABareEphemeralWildcard(Set<String> exemptSites) {
@@ -381,14 +400,35 @@ class LoopbackEphemeralBindArchTest {
     }
 
     /**
-     * The code unit a call originates from, in the {@code owner#method} form
+     * The code unit a call originates from, in the {@code owner#method(parameterTypes)} form
      * {@link #WILDCARD_SITE_EXEMPTIONS} uses.
      *
+     * <p><strong>The parameter types are part of the key, not decoration.</strong>
+     * {@code JavaCodeUnit#getName()} is name-granular, so every overload of a method collapses onto
+     * one key. That is enough to defeat the carve-out documented as per-<em>site</em>: moving the
+     * bare {@code ServerSocket(int)} out of an exempt method and into a same-named overload of it
+     * leaves the main rule exempting the new overload, the exact-set control seeing the same four
+     * strings, and the per-code-unit count still at four — a bare wildcard bind living in a code
+     * unit whose justification was never written. Rendering the origin's own raw parameter types
+     * makes each overload its own key, so the move is a new, unexempted site. Reported by
+     * CodeRabbit on PR #308.
+     *
+     * <p>The types come from the origin code unit itself rather than from a hand-assembled shape,
+     * so {@link #WILDCARD_SITE_EXEMPTIONS} has one rendering to match rather than a convention to
+     * guess at. A primitive renders as {@code int}, a reference type by its fully-qualified name —
+     * which is what ArchUnit's own {@code JavaClass#getName()} returns, and what
+     * {@link MatchedControls#wildcardExemptionsAreExactlyTheBareBindSites()} proves the two sides
+     * agree on.
+     *
      * @param call a call found in an imported class
-     * @return the originating code unit's owner class name and method name
+     * @return the originating code unit's owner class name, method name and parameter types
      */
     private static String codeUnitOf(JavaAccess<?> call) {
-        return call.getOrigin().getOwner().getName() + "#" + call.getOrigin().getName();
+        JavaCodeUnit origin = call.getOrigin();
+        String parameterTypes = origin.getRawParameterTypes().stream()
+                .map(JavaClass::getName)
+                .collect(Collectors.joining(", "));
+        return origin.getOwner().getName() + "#" + origin.getName() + "(" + parameterTypes + ")";
     }
 
     private static ConditionEvent violation(JavaAccess<?> call, String spelling, String replacement) {
@@ -1118,6 +1158,14 @@ class LoopbackEphemeralBindArchTest {
          * {@link #WILDCARD_SITE_EXEMPTIONS}{@code .size()}. Together the two assertions hold each
          * exempt code unit to exactly one bare bind: the set proves which code units bind, the count
          * proves none of them binds twice.
+         * <p>
+         * <strong>"Code unit" here means a signature, not a name.</strong> Both assertions compare
+         * {@link #codeUnitOf(JavaAccess)} renderings, which carry the origin's parameter types, so a
+         * bare bind moved into a same-named overload of an exempt method is a key neither side has
+         * seen: it is absent from the exemptions and present in the violations, and the set
+         * comparison fails. Under a name-only key that move would have been invisible to both
+         * assertions and to the main rule at once — the gap CodeRabbit reported on PR #308 — and the
+         * claim above would have held only for the name, not for the site.
          */
         @Test
         @DisplayName("The wildcard exemptions are exactly the bare bind sites in TlsEdgeProducerTest, one bind each (exact-set control)")
