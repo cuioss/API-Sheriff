@@ -378,12 +378,12 @@ public final class TokenRefreshCoordinator {
     private Admission admit(String sessionId, Instant now) {
         Instant own = retryNotBefore.get(sessionId);
         if (own != null) {
-            return now.isBefore(own) ? Admission.BACKING_OFF : Admission.ADMITTED;
+            return now.isBefore(own) ? Admission.BACKING_OFF : Admission.PROCEED;
         }
         while (true) {
             Instant window = overflowNotBefore.get();
             if (Instant.MIN.equals(window)) {
-                return Admission.ADMITTED;
+                return Admission.PROCEED;
             }
             if (now.isBefore(window)) {
                 return Admission.BACKING_OFF;
@@ -567,7 +567,7 @@ public final class TokenRefreshCoordinator {
      */
     private record Admission(boolean admitted, @Nullable Instant probeClaim) {
 
-        static final Admission ADMITTED = new Admission(true, null);
+        static final Admission PROCEED = new Admission(true, null);
         static final Admission BACKING_OFF = new Admission(false, null);
 
         static Admission probe(Instant claim) {
