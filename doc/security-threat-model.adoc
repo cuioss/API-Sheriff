@@ -1266,8 +1266,15 @@ detection signal rotation exists to provide -- an operator decision, never a gat
 
 * *Server mode:* COVERED (IdP strict rotation). The refresh token never leaves the server-side
   store, so a gateway-side replay is unreachable from the browser; the attack that remains is a
-  token stolen from elsewhere and redeemed directly at the provider, which strict rotation detects.
-  The path by which an IdP-side revocation reaches a server-mode gateway session is the next
+  token stolen from elsewhere and redeemed directly at the provider. Strict rotation detects *reuse*,
+  not that first redemption, so detection is bounded by the gateway's refresh cadence rather than
+  immediate. If the attacker redeems first, the provider issues the attacker a successor and nothing
+  is detected until the gateway presents its now-spent token on the session's next refresh; the
+  provider then refuses it, the gateway ends the session as `credential-rejected`, and on Keycloak
+  the successor grant is revoked too -- the attacker holds a working grant up to that gateway
+  refresh. If the gateway refreshes first, the attacker's later presentation of the spent token is
+  the detected reuse, the provider revokes the successor, and the gateway session ends on its next
+  refresh. The path by which an IdP-side revocation reaches a server-mode gateway session is that next
   refresh, which ends it as `credential-rejected` (`BffRefreshReuseIT`, targeted grant revocation
   ending exactly one of two sessions).
 * *Cookie mode:* COVERED (IdP strict rotation), with the duplicate-refresh residual accepted. A

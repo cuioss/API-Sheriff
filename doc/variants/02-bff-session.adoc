@@ -191,9 +191,11 @@ link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table].
 and cannot recognise a replayed refresh token; in this variant the refresh token never leaves the
 server-side store, so a replay through the gateway is not reachable in the first place. A refresh
 token stolen elsewhere is caught by *strict refresh-token rotation at the provider* (on Keycloak
-`revokeRefreshToken: true`, `refreshTokenMaxReuse: 0`), and the provider's revocation reaches the
-gateway session on its next refresh, which then ends as a credential rejection. Without that
-setting neither side detects reuse (ADR-0046).
+`revokeRefreshToken: true`, `refreshTokenMaxReuse: 0`) once it is *reused*, not on its first
+redemption: if the attacker redeems it first, the reuse is detected only when the gateway presents
+its now-spent copy on the session's next refresh, so the attacker holds a working grant until then.
+The provider's refusal and revocation reach the gateway session on that next refresh, which then ends
+as a credential rejection. Without that setting neither side detects reuse (ADR-0046).
 
 == Step-Up Authentication (RFC 9470)
 

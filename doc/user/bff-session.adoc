@@ -124,11 +124,23 @@ turn it on there for the client's realm or tenant:
   ship with exactly this.
 * *Other providers:* refresh-token rotation with reuse detection and no reuse grace window.
 
-With it on, a refresh token stolen from anywhere and redeemed at the provider is detected, and the
-provider revokes the grant; the gateway session behind it then ends on its next refresh, recorded as
-`ApiSheriff-111` with reason `credential-rejected`. On Keycloak a detected replay revokes the
-successor token as well, so the legitimate session ends too, while the Keycloak user session
-survives. *Without it, neither side detects reuse* -- the provider simply refreshes a replayed token.
+*What strict rotation detects is reuse* -- a second presentation of a refresh token that was already
+redeemed. It cannot recognise the first redemption of a live stolen token, so the order of the two
+redemptions decides when the theft surfaces:
+
+* *The attacker redeems the stolen token first.* The provider treats it as a normal rotation and
+  issues the attacker a successor; nothing is detected yet. The gateway's copy is now spent, and the
+  reuse is detected only when the gateway presents it on the session's next refresh: the provider
+  refuses it, the gateway ends the session (`ApiSheriff-111`, reason `credential-rejected`), and on
+  Keycloak the successor grant is revoked as well, cutting the attacker off too. Until that gateway
+  refresh the attacker holds a working grant -- the window is bounded by the gateway's refresh cadence,
+  not closed immediately.
+* *The gateway refreshes first.* The attacker's later presentation of the now-spent token is the
+  detected reuse; the provider revokes the successor grant, and the gateway session ends on its next
+  refresh as `credential-rejected`.
+
+Either way the Keycloak user session survives: the revocation is scoped to the refresh grant.
+*Without it, neither side detects reuse* -- the provider simply refreshes a replayed token.
 
 *The trade.* With no reuse permitted, a duplicate refresh of one token ends the session. In this
 variant the gateway single-flights refreshes per session, and a single-node or sticky deployment
