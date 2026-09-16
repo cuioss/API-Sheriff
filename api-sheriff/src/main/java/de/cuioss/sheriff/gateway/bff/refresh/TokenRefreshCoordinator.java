@@ -562,9 +562,8 @@ public final class TokenRefreshCoordinator {
     }
 
     /**
-     * What {@link #performRefresh} decided: the outcome to publish and, for a session that ended after a
-     * redemption, the one refresh token still live at the identity provider, revoked only after the
-     * outcome has been published. {@link #toString()} never renders the token.
+     * Whether a refresh was admitted, carrying the overflow-probe claim (or its absence) from
+     * {@code admit()} to {@code releaseProbe()}. Holds no token.
      */
     private record Admission(boolean admitted, @Nullable Instant probeClaim) {
 
@@ -576,6 +575,11 @@ public final class TokenRefreshCoordinator {
         }
     }
 
+    /**
+     * What {@link #performRefresh} decided: the outcome to publish and, for a session that ended after a
+     * redemption, the one refresh token still live at the identity provider, revoked only after the
+     * outcome has been published. {@link #toString()} never renders the token.
+     */
     private record Disposition(RefreshOutcome outcome, @Nullable String liveRefreshToken) {
 
         static Disposition of(RefreshOutcome outcome) {
