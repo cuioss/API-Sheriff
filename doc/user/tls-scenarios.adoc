@@ -49,6 +49,10 @@ documentation section it was copied from instead.
 
 | Dial an upstream or an IdP whose certificate does not name the address you dial
 | <<_scenario_relax_hostname_verification>>
+
+| Reach the BFF's identity provider (discovery, code exchange, refresh) through a private CA or a
+  name its certificate does not carry
+| <<_scenario_bff_oidc_back_channel>>
 |===
 
 The scenarios compose: a typical production gateway is <<_scenario_terminate_at_gateway>> plus
@@ -442,8 +446,9 @@ see <<_scenario_relax_hostname_verification>>.
   to an environment spelling is in
   link:environment-variable-overrides.adoc#_env_encoding_rule[Deriving the variable name].
 * When the provider sits on a private address, its host named in `allowed_egress_hosts`.
-* For the BFF back-channel, a store the JVM default trust manager can use. It *replaces* the platform
-  bundle, so build it to keep the public roots you still need -- see
+* For the BFF back-channel, either a trust profile of its own -- `egress_tls.oidc_tls_profile`, see
+  <<_scenario_bff_oidc_back_channel>> -- or a store the JVM default trust manager can use. The default
+  store *replaces* the platform bundle, so build it to keep the public roots you still need -- see
   link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES
   the platform bundle].
 
@@ -482,9 +487,11 @@ environment:
   - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
 ----
 
-*Deployment, BFF back-channel leg* -- `token-sheriff-client` exposes no per-client trust seam
-(https://github.com/cuioss/token-sheriff/issues/597[token-sheriff-client#597]), so the JVM default
-trust store is the only lever. On the native image it has to arrive as command-line `-D` arguments.
+*Deployment, BFF back-channel leg* -- two levers reach this leg. A named
+`egress_tls.oidc_tls_profile` keeps the provider's CA off every other leg and is described in
+<<_scenario_bff_oidc_back_channel>>. The integration stack uses the other one, the JVM default trust
+store, which reaches every leg that names no profile of its own; on the native image it has to arrive
+as command-line `-D` arguments.
 
 [source,yaml]
 .integration-tests/docker-compose.yml (api-sheriff service)
@@ -615,7 +622,8 @@ Two levers exist, and both *replace* the anchors they govern rather than adding 
   -- including the asset-origin fetch, which the profile does not reach.
 
 Pick the profile when only proxied upstreams use the corporate CA. Pick the default trust store when an
-asset origin or the BFF back-channel does too. Do not name a profile holding only the corporate CA
+asset origin does too. The BFF back-channel to the identity provider has a profile key of its own
+(<<_scenario_bff_oidc_back_channel>>), and the default store reaches it only when that key is omitted. Do not name a profile holding only the corporate CA
 while a proxied upstream still needs a public CA (see
 link:../configuration.adoc#_upstream_trust_profile_replaces[A named profile replaces the client's
 anchors]).
@@ -701,6 +709,11 @@ names is always the better answer. Both keys are gateway-wide: there is no per-r
 override (see link:../configuration.adoc#_egress_tls_hostname_scope[What disabling hostname
 verification does and does not do]).
 
+The two keys below cover proxied upstreams and the JWKS fetch. The BFF's own back-channel to the
+identity provider -- discovery, the code exchange and refresh -- is a separate leg with a separate key,
+`egress_tls.oidc_verify_hostname`, and relaxing the JWKS leg does not relax it. It is covered next,
+in <<_scenario_bff_oidc_back_channel>>.
+
 === Preconditions
 
 * A peer whose certificate chains to an anchor the gateway already trusts on that leg.
@@ -743,3 +756,94 @@ egress_tls:
   profile is per issuer, so this refuses every such issuer, not only the one you meant to relax.
 * *An upstream whose chain is not trusted.* The egress client still refuses the handshake, and
   `UpstreamFailureMapper` answers the request `502`.
+
+[[_scenario_bff_oidc_back_channel]]
+== Reach the BFF identity provider: relax its hostname check or name its trust
+
+=== Goal
+
+A gateway running a BFF variant dials its identity provider for discovery, the authorization-code
+exchange and refresh. That leg carries the client secret and the authorization codes, and it has two
+keys of its own in `egress_tls`
+(link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]),
+each answering a different problem:
+
+* `egress_tls.oidc_verify_hostname: false` -- the provider is reached through a name its certificate
+  does not carry. It turns off hostname matching on this leg only; the chain is still verified, so it
+  does not admit a self-signed or untrusted provider. The default is `true`.
+* `egress_tls.oidc_tls_profile` -- the provider presents a certificate from a private CA. The named
+  profile *replaces* the JVM default trust store on discovery, the code exchange and refresh: public
+  certificate authorities stop being trusted for the provider unless the profile carries them too. It
+  is the same replacement semantic `ApiSheriff-119` states for `upstream_tls_profile`, applied to this
+  leg.
+
+Pick exactly one. The pair -- `oidc_verify_hostname: false` together with a named `oidc_tls_profile`
+-- is refused at boot. A provider that needs both a private CA and a relaxed name check has no
+supported combination: fix the certificate's names, or put the CA into the JVM default trust store and
+omit the profile (see
+link:../configuration.adoc#_oidc_profile_collision[The relaxation and a profile are refused together]).
+
+Neither key reaches the JWKS fetch. The same provider's signing keys keep their own per-issuer
+`jwks.tls_profile` (<<_scenario_private_ca_idp>>) and `jwks_verify_hostname`
+(<<_scenario_relax_hostname_verification>>), so a deployment that relaxes or re-anchors both legs sets
+both. A bearer-only gateway builds no identity-provider client, and on it both keys are inert.
+
+=== Preconditions
+
+* An active BFF: an `oidc` block and at least one `require: session` route.
+* For the hostname relaxation: a provider whose certificate chains to an anchor the gateway already
+  trusts on this leg, and no `oidc_tls_profile` named.
+* For the trust profile: a PKCS12 trust store holding the provider's CA -- plus any public root the leg
+  still needs -- a logical profile name for it, and `oidc_verify_hostname` left at its default.
+
+=== Configuration
+
+No shipped descriptor sets either key: the default posture is the shipped one. Both blocks are copied
+from link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel], and a
+deployment uses one of them, not both.
+
+*Policy* -- the hostname relaxation.
+
+[source,yaml]
+.doc/configuration.adoc (The BFF OIDC back-channel)
+----
+egress_tls:
+  oidc_verify_hostname: false
+----
+
+*Policy* -- the trust profile, by logical name only.
+
+[source,yaml]
+.doc/configuration.adoc (The BFF OIDC back-channel)
+----
+egress_tls:
+  oidc_tls_profile: corporate-idp   # logical name only; anchors supplied by the deployment
+----
+
+*Deployment* -- the relaxation needs none. The profile is bound like every other trust profile,
+through `+quarkus.tls.<name>.trust-store.*+`, copied from
+link:bff-session.adoc#_private_ca_self_signed_idp[the server-session operator guide].
+
+[source,properties]
+.doc/user/bff-session.adoc (Private-CA / self-signed IdP)
+----
+quarkus.tls.corporate-idp.trust-store.p12.path=/etc/sheriff/corporate-ca.p12
+quarkus.tls.corporate-idp.trust-store.p12.password=${TRUSTSTORE_PASSWORD}
+----
+
+=== Failure mode
+
+* *Every boot with `oidc_verify_hostname: false`.* The BFF runtime logs `WARN ApiSheriff-125` once,
+  stating the scope: this leg only, chain trust untouched. That is the expected record.
+* *Every boot with a named `oidc_tls_profile`.* The BFF runtime logs `WARN ApiSheriff-126` once with
+  the logical profile name, restating that its anchors replace the JVM default trust store on this
+  leg. That is the expected record.
+* *Both keys set.* The boot fails with a configuration error naming `egress_tls.oidc_verify_hostname`
+  and `egress_tls.oidc_tls_profile`, before the identity-provider client is built.
+* *The profile is not bound, carries no anchors, sets `trust-all`, or its material cannot be loaded.*
+  The boot fails, naming `egress_tls.oidc_tls_profile`. It never falls back to default trust.
+* *Login stops working against a publicly trusted provider after you name a profile.* The profile
+  replaced the public roots on this leg, so discovery and the code exchange fail PKIX and login answers
+  `500`; add the roots to the profile's store, or omit the profile.
+* *Tokens validate but login fails.* The JWKS leg and this leg are configured separately: a
+  `jwks.tls_profile` or `jwks_verify_hostname` does not reach discovery, the code exchange or refresh.
