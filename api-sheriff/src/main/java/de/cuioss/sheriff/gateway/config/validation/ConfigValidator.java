@@ -2165,7 +2165,7 @@ public final class ConfigValidator {
     private static boolean strictlyContains(String container, String candidate) {
         return prefixContains(container, candidate)
                 && !RouteTableBuilder.normalizePrefix(container)
-                        .equals(RouteTableBuilder.normalizePrefix(candidate));
+                .equals(RouteTableBuilder.normalizePrefix(candidate));
     }
 
     private static String endpointFile(EndpointConfig endpoint) {
