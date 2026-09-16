@@ -56,7 +56,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the {@link ConfigValidator} redirect rules (ADR-0014 Amendment A1): the open-redirect
- * review of {@code location} with and without {@code allow_external}, terminal-action exclusivity,
+ * review of {@code location} with and without {@code allow_external}, the refusal of
+ * {@code keep_query} together with {@code allow_external}, terminal-action exclusivity,
  * the http-only protocol restriction, the anchor matrix admitting a redirect under every anchor type,
  * and the boot WARN emitted when a route opts into an external target.
  * <p>
@@ -203,12 +204,44 @@ class ConfigValidatorRedirectTest {
             String https = "https://" + externalHost() + "/landing?from=gateway";
             String http = "http://" + externalHost() + ":8080/";
 
-            List<ConfigError> httpsErrors = validate(redirectRoute(routeId(), redirect(https, true, true)).build());
+            List<ConfigError> httpsErrors = validate(redirectRoute(routeId(), redirect(https, false, true)).build());
             List<ConfigError> httpErrors = validate(redirectRoute(routeId(), redirect(http, false, true)).build());
 
             assertAll(
                     () -> assertTrue(httpsErrors.isEmpty(), () -> "https target should be admitted: " + httpsErrors),
                     () -> assertTrue(httpErrors.isEmpty(), () -> "http target should be admitted: " + httpErrors));
+        }
+
+        @Test
+        @DisplayName("Should refuse keep_query together with allow_external, naming both keys and never the location")
+        void shouldRefuseQueryHandOffToForeignOrigin() {
+            String id = routeId();
+            String location = "https://" + externalHost() + "/cb";
+
+            List<ConfigError> errors = validate(redirectRoute(id, redirect(location, true, true)).build());
+
+            // The location itself is a reviewed, fixed value; the QUERY is attacker-supplied, so the
+            // pair is what leaks (?code=...&state=... would land in the partner's access log).
+            assertAll(
+                    () -> assertRefused(errors,
+                            "route '%s' declares both keep_query and allow_external".formatted(id)),
+                    () -> assertTrue(errors.stream().noneMatch(error -> error.message().contains(location)),
+                            () -> "the pair refusal names the route and the keys, never the target: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should admit either flag on its own — only the combination is refused")
+        void shouldAdmitEitherFlagAlone() {
+            List<ConfigError> keepQueryOnly =
+                    validate(redirectRoute(routeId(), redirect("/moved", true, false)).build());
+            List<ConfigError> allowExternalOnly = validate(
+                    redirectRoute(routeId(), redirect("https://" + externalHost() + "/cb", false, true)).build());
+
+            assertAll(
+                    () -> assertTrue(keepQueryOnly.isEmpty(),
+                            () -> "keep_query alone keeps the query same-origin: " + keepQueryOnly),
+                    () -> assertTrue(allowExternalOnly.isEmpty(),
+                            () -> "allow_external alone carries no request data: " + allowExternalOnly));
         }
 
         @ParameterizedTest(name = "refuses {0}")

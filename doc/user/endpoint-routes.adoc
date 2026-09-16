@@ -355,8 +355,9 @@ routes:
     redirect:
       location: /KIDICAP.Gateway/app/K.Beispiel/ # written verbatim into Location
       status: 308                                # mandatory: 301 | 302 | 303 | 307 | 308
-      keep_query: true                           # default false: append the raw query
-      # allow_external: false                    # default false: see "External targets"
+      keep_query: true                           # default false: append the raw query (same-origin only)
+      # allow_external: false                    # default false, and never with keep_query: see
+      #                                          # "External targets"
   - id: k-beispiel-app                            # the slash form and everything below it
     match:
       path_prefix: /KIDICAP.Gateway/app/K.Beispiel
@@ -405,6 +406,13 @@ copied: there are no request placeholders, and without `keep_query` the query is
 containing `#` cannot be combined with `keep_query` (a query appended after a fragment never reaches
 the server) and fails the boot.
 
+`keep_query` is *same-origin only*: declaring it together with `allow_external` fails the boot. The
+query is the one part of a redirect the caller controls, so carrying it to another origin puts
+whatever the caller sent -- `?code=`, `?access_token=`, a session-ish identifier -- into the target's
+access log, `Referer` chain and page analytics, and no boot review can vet a value that does not exist
+until the request arrives. Keep whichever of the two the route actually needs and drop the other; a
+gateway path with `keep_query` and a fixed external target without it are both fine.
+
 *The context path.* `location` is written into `Location` *verbatim*. It is a raw gateway path written
 the same way `match.path_prefix` is written, and the gateway never prefixes it with the application
 context path (see link:context-path.adoc[The Context Path]).
@@ -418,6 +426,20 @@ entry redirect declares `auth: { require: none }` like any other public route. T
 carries the route's resolved security headers (see link:anchors.adoc#_anchors[Anchors]) and any
 `Set-Cookie` an earlier stage produced; the route's `forward` block is not consulted, because nothing is
 forwarded.
+
+*Caching of the answer.* A redirect is a normal cacheable response -- `301` and `308` are stored by
+browsers and by any shared cache on the path, indefinitely if nothing says otherwise. The gateway
+therefore adds `Cache-Control: no-store` to a redirect answer whenever either of two things holds:
+
+* the route's *effective auth* requires authentication (`bearer` or `session`) -- the answer was
+  produced for one caller's credentials, so a shared cache must not replay it to another; or
+* the answer carries any *`Set-Cookie`* -- the redirect is answered after authentication, so a
+  re-sealed or rotated session cookie can ride on it, and a cached copy would hand that cookie to the
+  next client.
+
+A public redirect that sets no cookie is left cacheable, which is the point of using `301`/`308` for a
+settled move. Nothing is configurable here: it is a fixed property of the answer, not a
+`security_headers` key, so `header_modes` does not reach it.
 
 *Where a redirect is allowed.* A `redirect` block is admitted under every anchor type -- `proxy`,
 `bff` and `asset` -- and on unanchored routes, since it serves nothing an anchor type governs. It is
@@ -459,6 +481,11 @@ scheme stays refused. Opting in is legitimate -- a moved site, a hand-off to ano
 it is never silent: the boot logs `WARN ApiSheriff-125` naming the route id (never the target), see
 link:../LogMessages.adoc[Log Messages]. A refused `location` fails the boot with a message that echoes
 the value in escaped form, so a hostile value cannot forge log lines.
+
+`allow_external` cannot be combined with `keep_query`; the boot refuses the pair, naming the route and
+the two keys and never the target. The review above proves the *target* is a well-formed foreign
+origin the operator wrote down -- it says nothing about the *query*, which arrives with the request.
+See `keep_query` above for what the combination would disclose.
 
 [[_route_ordering]]
 === Route ordering

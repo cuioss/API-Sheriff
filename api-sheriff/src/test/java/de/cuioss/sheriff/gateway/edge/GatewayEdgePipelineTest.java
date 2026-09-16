@@ -58,6 +58,7 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -105,6 +106,7 @@ class GatewayEdgePipelineTest {
     private static final String FRAME_OPTIONS = "X-Frame-Options";
     private static final String NOSNIFF = "X-Content-Type-Options";
     private static final String CSP = "Content-Security-Policy";
+    private static final String CACHE_CONTROL = "Cache-Control";
     /** The status the stub upstream refuses every WebSocket upgrade with. */
     private static final int UPGRADE_REFUSED_STATUS = 403;
     /** The gRPC status a trailers-only rejection of a missing bearer token carries. */
@@ -126,6 +128,8 @@ class GatewayEdgePipelineTest {
     private HttpServer frontServer;
     private HttpClient client;
     private int frontPort;
+    /** A bearer token the fixture's validator accepts, so a {@code require: bearer} route can be reached. */
+    private String validBearerToken;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -152,8 +156,14 @@ class GatewayEdgePipelineTest {
         int upstreamPort = upstreamServer.actualPort();
         Files.writeString(assetDirectory.resolve(ASSET_FILE), "<html><body>asset</body></html>");
 
+        // The holder is retained rather than inlined: the raw token it carries is what lets a
+        // require:bearer route be reached, and it must come from the SAME holder whose issuer config
+        // the validator trusts. Assigns the field main introduced — a local would shadow it and leave
+        // the field null for every test that reads it.
+        TestTokenHolder tokenHolder = TestTokenGenerators.accessTokens().next();
+        validBearerToken = tokenHolder.getRawToken();
         tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+                .issuerConfig(tokenHolder.getIssuerConfig()).build();
 
         routeTable = new RouteTable(List.of(
                 route("secure", "/secure", Require.BEARER, upstreamPort, HttpMethod.GET),
@@ -427,8 +437,28 @@ class GatewayEdgePipelineTest {
                 "the configured location is written verbatim with the kept raw query");
         assertEquals(ORIGIN, response.headers().get("Access-Control-Allow-Origin"),
                 "the stage-0 headers accumulated on the request ride on the redirect");
+        assertNull(response.headers().get(CACHE_CONTROL),
+                "a public redirect carrying no cookie stays ordinary cacheable configuration");
         assertTrue(response.body().isEmpty(), "a redirect answer carries no body: " + response.body());
         assertEquals(0, upstreamHits.get(), "a redirect route must never contact the upstream");
+    }
+
+    @Test
+    @DisplayName("serves an authenticated redirect answer no-store so no shared cache stores and replays it")
+    void answersAuthenticatedRedirectRouteUncacheable() throws Exception {
+        // The /secure-moved route answers 308 — cacheable by default under RFC 9111 heuristic
+        // freshness — and is reached only with a valid bearer, so its answer is one caller's.
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure-moved/old-page",
+                Map.of("Authorization", "Bearer " + validBearerToken), null);
+
+        assertAll("an authenticated redirect answer is served but never stored",
+                () -> assertEquals(REDIRECT_STATUS, response.status(),
+                        "the authenticated caller receives the configured redirect"),
+                () -> assertEquals(REDIRECT_LOCATION, response.headers().get("Location"),
+                        "the configured location is disclosed to the authenticated caller"),
+                () -> assertEquals("no-store", response.headers().get(CACHE_CONTROL),
+                        "an authenticated redirect must carry Cache-Control: no-store"),
+                () -> assertEquals(0, upstreamHits.get(), "a redirect route must never contact the upstream"));
     }
 
     @Test

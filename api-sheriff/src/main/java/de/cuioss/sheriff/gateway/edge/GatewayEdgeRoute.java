@@ -153,10 +153,11 @@ import org.jspecify.annotations.Nullable;
  *   <li>stage 6 / 7 — the route's terminal action: streamed upstream dispatch (byte-capped) and the
  *       streamed response relay for a proxy route, the buffered governed asset response for an
  *       asset route, or — for a redirect route — the {@link RedirectStage} answer (configured
- *       status, {@code Location}, the accumulated stage headers, empty body) written without
- *       consuming the forward policy or contacting any upstream. A redirect is answered only after
- *       stage 4, so an unauthenticated request under an authenticated anchor is challenged before
- *       the location is disclosed.</li>
+ *       status, {@code Location}, the accumulated stage headers, {@code Cache-Control: no-store}
+ *       when the route is authenticated or the answer carries a {@code Set-Cookie}, empty body)
+ *       written without consuming the forward policy or contacting any upstream. A redirect is
+ *       answered only after stage 4, so an unauthenticated request under an authenticated anchor is
+ *       challenged before the location is disclosed.</li>
  * </ol>
  * A {@link GatewayException} at any stage is rendered as an RFC 9457 {@code application/problem+json}
  * response carrying the failing event's status and problem type, never leaking internal detail. On
@@ -184,6 +185,10 @@ public class GatewayEdgeRoute {
     private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
     private static final String COOKIE_HEADER = "Cookie";
     private static final String LOCATION_HEADER = "Location";
+    /** The {@code Cache-Control} response header the redirect terminal action governs. */
+    private static final String CACHE_CONTROL_HEADER = "Cache-Control";
+    /** The {@code Cache-Control} value forced on an authenticated or cookie-bearing redirect answer. */
+    private static final String NO_STORE = "no-store";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final String CONNECTION_HEADER = "Connection";
     private static final String CONNECTION_CLOSE = "close";
@@ -807,7 +812,8 @@ public class GatewayEdgeRoute {
             // contacted, so REQUEST_FORWARDED is deliberately not incremented.
             RedirectConfig redirect = route.getRedirect();
             if (redirect != null) {
-                writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query()));
+                writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query(),
+                        route.getEffectiveAuth(), request.responseSetCookies()));
                 return;
             }
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
@@ -1143,8 +1149,15 @@ public class GatewayEdgeRoute {
 
     /**
      * Writes a redirect route's terminal answer on the event loop: the configured status, the
-     * accumulated stage headers and {@code Set-Cookie} lines, then the {@code Location} — written
-     * last so no stage header can displace it — and an empty body.
+     * accumulated stage headers and {@code Set-Cookie} lines, the gateway-owned
+     * {@code Cache-Control: no-store} when the answer is {@linkplain RedirectStage.Answer#noStore()
+     * uncacheable}, then the {@code Location} — written last so no stage header can displace it —
+     * and an empty body.
+     * <p>
+     * Both gateway-owned headers are written <em>after</em> the stage headers, so neither can be
+     * displaced by an accumulated value of the same name. {@code Cache-Control} is not a
+     * gateway-owned security header, so it carries no {@code header_modes} entry and the
+     * set/default precedence does not apply to it.
      */
     private void writeRedirect(RoutingContext ctx, PipelineRequest request, RedirectStage.Answer answer) {
         Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
@@ -1157,6 +1170,9 @@ public class GatewayEdgeRoute {
             response.setStatusCode(answer.status());
             stageHeaders.forEach(response::putHeader);
             applyStageSetCookies(response, stageSetCookies);
+            if (answer.noStore()) {
+                response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
+            }
             response.putHeader(LOCATION_HEADER, answer.location());
             response.end();
         });

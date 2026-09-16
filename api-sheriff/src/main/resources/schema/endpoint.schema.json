@@ -243,12 +243,12 @@
                   "keep_query": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Whether the raw inbound query string is appended to location (joined with ? or &). Defaults to false."
+                    "description": "Whether the raw inbound query string is appended to location (joined with ? or &). Defaults to false. Same-origin only: combining it with allow_external fails the boot, because the inbound query is attacker-supplied and would be handed to the foreign origin."
                   },
                   "allow_external": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Whether location may be an absolute http/https URI on another origin. Defaults to false; opting in emits a boot warning."
+                    "description": "Whether location may be an absolute http/https URI on another origin. Defaults to false; opting in emits a boot warning and cannot be combined with keep_query."
                   }
                 }
               },
