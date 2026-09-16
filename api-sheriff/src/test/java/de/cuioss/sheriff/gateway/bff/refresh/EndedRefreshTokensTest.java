@@ -104,7 +104,7 @@ class EndedRefreshTokensTest {
 
             marker.markEnded(overflow, LIFETIME, NOW);
 
-            assertAll("a full store degrades to one identity-provider call rather than failing open",
+            assertAll("a full store costs one identity-provider call per replayed request, never failing open",
                     () -> assertFalse(marker.isEnded(overflow, NOW), "the overflowing token is not recorded"),
                     () -> assertTrue(marker.isEnded("live-0", NOW), "no live marker was evicted"),
                     () -> assertEquals(EndedRefreshTokens.MAX_ENTRIES, marker.size()));

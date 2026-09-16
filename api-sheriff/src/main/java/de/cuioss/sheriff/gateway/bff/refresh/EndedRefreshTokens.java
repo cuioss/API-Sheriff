@@ -53,8 +53,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * memory or in any log. A marker expires at the session's absolute lifetime. The store is in memory,
  * per instance and bounded by {@link #MAX_ENTRIES}: it does not survive a restart, a sibling instance
  * still makes one identity-provider call before it marks the token itself, and when the bound is full a
- * token is simply not recorded, so a later replay degrades to one identity-provider call rather than
- * failing open.
+ * token is simply not recorded, so while the store stays full every later replay of that token makes one
+ * identity-provider call per replayed request — the provider refuses each one, and the store never fails
+ * open.
  * <p>
  * <strong>Mode.</strong> Only cookie mode binds {@link #bounded()}; server mode binds {@link #inert()},
  * because {@code destroy} already removes the server-side session there.
@@ -177,7 +178,8 @@ public sealed interface EndedRefreshTokens permits EndedRefreshTokens.Inert, End
                 ended.put(key, expiresAt);
                 return;
             }
-            // Never evict a live marker: a replay of this token degrades to one identity-provider call.
+            // Never evict a live marker: while the store stays full, every replay of this token makes one
+            // identity-provider call per replayed request.
             LOGGER.debug("Ended refresh-token marker store is full — token not recorded");
         }
 
