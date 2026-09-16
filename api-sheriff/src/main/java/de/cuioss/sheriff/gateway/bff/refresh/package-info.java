@@ -34,6 +34,10 @@
  *       rotation), a refused redeemed response, or a failure to persist the rotated session destroys
  *       it, revoking a refresh token that is still live where one is known, so the caller treats the
  *       request as unauthenticated.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens} is the coordinator's bounded,
+ *       per-instance, in-memory marker of refresh tokens whose session it ended, keyed on a salted digest
+ *       of the token, so a replayed cookie-mode refresh token of an ended session is refused locally
+ *       instead of reaching the identity provider again; it is inert in server mode.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator} parses an upstream
  *       {@code insufficient_user_authentication} challenge, attempts silent satisfaction, and
  *       otherwise re-drives the auth-code flow with the challenge's elevated {@code acr_values} /

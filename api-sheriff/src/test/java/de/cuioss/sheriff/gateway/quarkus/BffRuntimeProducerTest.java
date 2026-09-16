@@ -51,6 +51,7 @@ import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -66,6 +67,7 @@ import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
+import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -444,6 +446,61 @@ class BffRuntimeProducerTest {
     }
 
     /**
+     * The ended-refresh-token marker is selected by session mode: cookie mode binds the bounded marker
+     * that refuses a replayed ended token locally, server mode the inert one. The selection is asserted
+     * through what each marker does, and the assembled runtime is walked to prove the selected marker is
+     * the one the coordinator actually holds.
+     */
+    @Nested
+    @DisplayName("Ended refresh-token marker by session mode")
+    class EndedRefreshTokenMarker {
+
+        private static final Instant NOW = Instant.parse("2026-07-25T10:00:00Z");
+
+        @Test
+        @DisplayName("Should bind a marker that remembers an ended token in cookie mode")
+        void shouldBindBoundedMarkerInCookieMode() {
+            EndedRefreshTokens marker = BffRuntimeProducer.endedRefreshTokens(sessionOf(cookieModeOidc()));
+            String refreshToken = token();
+
+            marker.markEnded(refreshToken, NOW.plusSeconds(3600), NOW);
+
+            assertTrue(marker.isEnded(refreshToken, NOW), "cookie mode must refuse a replayed ended token locally");
+        }
+
+        @Test
+        @DisplayName("Should bind a marker that remembers nothing in server mode")
+        void shouldBindInertMarkerInServerMode() {
+            EndedRefreshTokens marker = BffRuntimeProducer.endedRefreshTokens(sessionOf(serverModeOidc()));
+            String refreshToken = token();
+
+            marker.markEnded(refreshToken, NOW.plusSeconds(3600), NOW);
+
+            assertFalse(marker.isEnded(refreshToken, NOW),
+                    "server mode destroys the stored session, so the marker must stay inert");
+        }
+
+        @Test
+        @DisplayName("Should hand the mode's marker to the assembled refresh coordinator")
+        void shouldWireMarkerIntoAssembledCoordinator() {
+            List<EndedRefreshTokens> cookieMarkers =
+                    reachableInstancesOf(producer(cookieModeOidc()).bffRuntime(), EndedRefreshTokens.class);
+            List<EndedRefreshTokens> serverMarkers =
+                    reachableInstancesOf(producer(serverModeOidc()).bffRuntime(), EndedRefreshTokens.class);
+
+            assertAll("each mode's coordinator holds exactly its own marker",
+                    () -> assertEquals(1, cookieMarkers.size(), "cookie mode assembles one marker"),
+                    () -> assertInstanceOf(EndedRefreshTokens.Bounded.class, cookieMarkers.getFirst()),
+                    () -> assertEquals(List.of(EndedRefreshTokens.inert()), serverMarkers,
+                            "server mode assembles the inert marker"));
+        }
+
+        private static OidcConfig.Session sessionOf(OidcConfig oidc) {
+            return Objects.requireNonNull(oidc.session(), "session");
+        }
+    }
+
+    /**
      * {@code oidc.session.refresh.on_failure} is proven to <em>act</em>: the key was declared on the
      * config model and in the documentation while no main-code class read it. The assembled runtime is
      * walked for the policy the stage actually holds, so deleting the key from the reject descriptor —
@@ -743,7 +800,7 @@ class BffRuntimeProducerTest {
                     refreshToken -> {
                         throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
                     },
-                    binding, NO_REVOCATION, Runnable::run);
+                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(rejecting)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -761,7 +818,7 @@ class BffRuntimeProducerTest {
                     sessionRecord -> NOW.plusSeconds(30), refreshToken -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
-                    binding, NO_REVOCATION, Runnable::run);
+                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -778,7 +835,7 @@ class BffRuntimeProducerTest {
                     refreshToken -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
-                    binding, NO_REVOCATION, Runnable::run);
+                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -802,7 +859,7 @@ class BffRuntimeProducerTest {
                         engineCalls.incrementAndGet();
                         return rotation();
                     },
-                    binding, NO_REVOCATION, Runnable::run);
+                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
         }
 
         private SessionRecord storedSession(@Nullable String refreshToken) {

@@ -43,6 +43,7 @@ import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
@@ -354,7 +355,8 @@ public class BffRuntimeProducer {
                 sessionBinding,
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
                         clientAuthentication),
-                virtualThreadExecutor))
+                virtualThreadExecutor,
+                endedRefreshTokens(session)))
                 : sessionUnchanged();
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
@@ -539,6 +541,20 @@ public class BffRuntimeProducer {
                 case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
             };
         };
+    }
+
+    /**
+     * Selects the coordinator's ended-refresh-token marker by session mode. Cookie mode binds the bounded
+     * in-memory marker, because {@code destroy} holds nothing server-side there and a retained sealed
+     * cookie would otherwise drive a fresh refresh grant on every near-expiry request; server mode binds
+     * the inert one, because {@code destroy} already removes the session from the store.
+     *
+     * @param session the resolved {@code oidc.session} block
+     * @return {@link EndedRefreshTokens#bounded()} in cookie mode, {@link EndedRefreshTokens#inert()}
+     *         otherwise
+     */
+    static EndedRefreshTokens endedRefreshTokens(OidcConfig.Session session) {
+        return session.isCookieMode() ? EndedRefreshTokens.bounded() : EndedRefreshTokens.inert();
     }
 
     /**

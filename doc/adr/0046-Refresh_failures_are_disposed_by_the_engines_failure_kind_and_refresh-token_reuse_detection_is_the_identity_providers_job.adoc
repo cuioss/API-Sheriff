@@ -52,7 +52,9 @@ somewhere, and the obvious places -- a token family in the gateway, or one in th
 a structural fact about this gateway: a confidential client only ever sees the refresh tokens it
 presents itself, and the stateless cookie variant runs instances that share nothing. In cookie mode
 the replay is also genuinely reachable: an older sealed cookie still unseals after a refresh, so a
-copied cookie makes the gateway present a spent refresh token.
+copied cookie makes the gateway present a spent refresh token. And because ending a cookie-mode session
+destroys nothing server-side, a client that keeps presenting the cookie of a session the gateway has
+already ended would make the gateway present that token again on every near-expiry request.
 
 Finally, `oidc.session.refresh.on_failure` was declared, parsed and documented, but read by nothing,
 so the documented `reject` posture did not exist.
@@ -144,7 +146,27 @@ The shipped control is therefore *strict refresh-token rotation at the identity 
 Keycloak, `revokeRefreshToken: true` with `refreshTokenMaxReuse: 0`. It is enabled in both the
 integration realm and the compose-sample realm. The provider refuses a replayed token with
 `invalid_grant`; the engine classifies that as `CREDENTIAL_REJECTED`; the gateway ends the session.
-No gateway code is specific to replay: the replay path *is* the credential-rejected path.
+No gateway code decides whether a token is a replay: the replay path *is* the credential-rejected path.
+
+=== An ended cookie-mode token is refused locally (amplification guard)
+
+Detection stays the provider's, but the gateway does not re-ask a question it has already had
+answered. In cookie mode the ended session's sealed cookie still unseals, so without a guard every
+near-expiry request carrying it would drive another refresh grant to the provider and another
+`ApiSheriff-111` warning until the absolute TTL. When `TokenRefreshCoordinator` ends a session as
+`credential-rejected`, `redeemed-response-refused` or `persist-failure`, it marks the *presented*
+refresh token in `EndedRefreshTokens` -- a salted, non-reversible SHA-256 digest keyed with a
+per-instance random salt, never the token or the cookie -- until the session's absolute lifetime.
+A later request presenting a marked token is disposed as session-ended (cookie cleared, `on_failure`
+negotiated) with no engine call, no revocation and only a `DEBUG` line.
+
+The key is the token, not the session: every cookie of one cookie-mode session derives the same
+session identity, so a session-keyed marker would refuse the legitimate successor cookie as well. With
+the token as key the exact ended cookie is refused locally, while a successor still reaches the
+provider once, is refused there, and is then marked. The marker is bounded, in memory and per
+instance, is not set by RP logout, and is inert in server mode, where destroying the stored session
+already ends every copy. It is a negative cache of tokens the gateway has itself seen ended -- not a
+token family: it recognises no replay the provider has not already refused.
 
 === Keycloak's verdict is observed and pinned, not assumed
 
@@ -178,6 +200,8 @@ and deleting the session behind a sealed cookie ends that cookie session on its 
   gateway, is rejected end to end.
 * The documented behaviour is asserted against a live provider, including the parts of it the
   gateway does not control.
+* A retained ended cookie no longer amplifies into one provider call and one warning per near-expiry
+  request: the instance that ended the session refuses its token locally.
 
 === Negative
 
@@ -189,6 +213,9 @@ and deleting the session behind a sealed cookie ends that cookie session on its 
 * *The control lives outside the gateway.* Without strict rotation at the provider there is no
   reuse detection on either side: the provider refreshes a replayed token and a copied cookie becomes
   a working session. The gateway cannot see the provider's setting and cannot warn about its absence.
+* *The ended-token guard is partial by construction.* It is per instance (each other instance makes
+  one provider call before marking the token), in memory (a restart forgets every marker), and
+  bounded (a full store records nothing, so replays degrade to one provider call per request).
 * *The back-off is per instance.* With several stateless instances a provider outage costs one
   attempt per session per instance per window, not per session -- or, on an instance whose bounded
   back-off map is saturated, one attempt per overflow window for its untracked sessions together.

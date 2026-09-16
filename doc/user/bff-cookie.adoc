@@ -252,6 +252,12 @@ while the Keycloak user session survives -- a replay costs the attacker and the 
 *Without strict rotation, neither side detects reuse*: the provider refreshes the replayed token and
 the copied cookie becomes a working session.
 
+Once the gateway has ended a session this way, it remembers the refresh token that session presented
+(as a salted digest, in memory, until the session's absolute lifetime), so further requests with that
+same cookie are refused locally -- cookie cleared, no call to your IdP, no further `ApiSheriff-111`.
+That memory is per instance and does not survive a restart, so another instance, or the same one after
+a restart, asks the IdP once more before it remembers the token too.
+
 *The trade you accept.* Strict rotation cannot tell a replay from a benign duplicate. Each instance
 single-flights refreshes per session, but two parallel requests carrying the same cookie that land on
 *different* instances inside the refresh window both present the same refresh token, and the second

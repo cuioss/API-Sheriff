@@ -82,6 +82,16 @@ import org.jspecify.annotations.Nullable;
  * or a refused dispatch is recorded at {@code DEBUG} and never changes the disposition, because the local
  * session destruction is what ends the session.
  * <p>
+ * <strong>An ended refresh token is refused locally.</strong> Every session-ending disposition also marks
+ * the presented refresh token in {@link EndedRefreshTokens} until the session's absolute lifetime. A later
+ * request presenting a marked token — in cookie mode, a retained or replayed sealed cookie, which
+ * {@code destroy} cannot invalidate — takes the session-ended disposition ({@code FAILED}, so the stage
+ * clears the cookie and negotiates {@code on_failure}) with no engine call, no revocation and no
+ * {@code ApiSheriff-111}, only a {@code DEBUG} line carrying neither token nor session id. The check
+ * runs after near-expiry is re-confirmed and before the back-off. The marker is keyed on the token, not
+ * the session, so a successor cookie still reaches the identity provider once; it is bounded, in memory
+ * and per instance, and inert in server mode, where {@code destroy} already removes the session.
+ * <p>
  * <strong>Refresh-token reuse detection is the identity provider's job.</strong> A confidential client
  * only ever sees the refresh tokens it presents itself and keeps no token family across stateless
  * instances, so the gateway cannot recognise a replayed refresh token. An identity provider enforcing
@@ -166,6 +176,7 @@ public final class TokenRefreshCoordinator {
     private final SessionBinding sessionBinding;
     private final RefreshTokenRevocation refreshTokenRevocation;
     private final Executor revocationExecutor;
+    private final EndedRefreshTokens endedRefreshTokens;
     private final Semaphore revocationPermits = new Semaphore(MAX_CONCURRENT_REVOCATIONS);
     private final ConcurrentMap<String, CompletableFuture<RefreshOutcome>> inFlight = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Instant> retryNotBefore = new ConcurrentHashMap<>();
@@ -192,16 +203,21 @@ public final class TokenRefreshCoordinator {
      * @param revocationExecutor     the executor a revocation is dispatched on, off the request path,
      *                               after the session-ended outcome has been published (the session
      *                               runtime binds the Quarkus-managed virtual-thread executor)
+     * @param endedRefreshTokens     the marker of refresh tokens whose session this coordinator ended —
+     *                               {@link EndedRefreshTokens#bounded()} in cookie mode,
+     *                               {@link EndedRefreshTokens#inert()} in server mode
      */
     public TokenRefreshCoordinator(Duration leeway, AccessTokenExpiry accessTokenExpiry,
             RefreshExchange refreshExchange, SessionBinding sessionBinding,
-            RefreshTokenRevocation refreshTokenRevocation, Executor revocationExecutor) {
+            RefreshTokenRevocation refreshTokenRevocation, Executor revocationExecutor,
+            EndedRefreshTokens endedRefreshTokens) {
         this.leeway = Objects.requireNonNull(leeway, "leeway");
         this.accessTokenExpiry = Objects.requireNonNull(accessTokenExpiry, "accessTokenExpiry");
         this.refreshExchange = Objects.requireNonNull(refreshExchange, "refreshExchange");
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.refreshTokenRevocation = Objects.requireNonNull(refreshTokenRevocation, "refreshTokenRevocation");
         this.revocationExecutor = Objects.requireNonNull(revocationExecutor, "revocationExecutor");
+        this.endedRefreshTokens = Objects.requireNonNull(endedRefreshTokens, "endedRefreshTokens");
     }
 
     /**
@@ -265,6 +281,14 @@ public final class TokenRefreshCoordinator {
             // A coalesced leader already rotated this session — share the current token, no engine call.
             return Disposition.of(RefreshOutcome.current(latest));
         }
+        if (endedRefreshTokens.isEnded(presentedRefreshToken, now)) {
+            // A replay of a refresh token whose session this instance already ended (cookie mode keeps no
+            // server-side session to destroy): refuse it locally — no engine call, no revocation, no WARN.
+            retryNotBefore.remove(sessionId);
+            sessionBinding.destroy(latest);
+            LOGGER.debug("Refresh refused locally: the presented refresh token belongs to an already-ended session");
+            return Disposition.of(RefreshOutcome.failed());
+        }
         if (backingOff(sessionId, now)) {
             // A pre-redemption failure is still backing off — no engine call, same disposition.
             return Disposition.of(keptSession(latest, now));
@@ -290,7 +314,8 @@ public final class TokenRefreshCoordinator {
             LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
             return Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
         } catch (RuntimeException persistFailure) {
-            return endSession(sessionId, latest, persistFailure, REASON_PERSIST_FAILURE, rotation.refreshToken());
+            return endSession(new SessionEnd(sessionId, latest, presentedRefreshToken, now), persistFailure,
+                    REASON_PERSIST_FAILURE, rotation.refreshToken());
         }
     }
 
@@ -300,9 +325,10 @@ public final class TokenRefreshCoordinator {
         // A switch expression, not a statement: javac rejects it the moment the engine adds a fourth kind.
         return switch (classification.kind()) {
             case PRE_REDEMPTION -> Disposition.of(backOff(sessionId, latest, refreshFailure, now));
-            case CREDENTIAL_REJECTED -> endSession(sessionId, latest, refreshFailure,
-                    REASON_CREDENTIAL_REJECTED, null);
-            case REDEEMED -> endSession(sessionId, latest, refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
+            case CREDENTIAL_REJECTED -> endSession(new SessionEnd(sessionId, latest, presentedRefreshToken, now),
+                    refreshFailure, REASON_CREDENTIAL_REJECTED, null);
+            case REDEEMED -> endSession(new SessionEnd(sessionId, latest, presentedRefreshToken, now),
+                    refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
                     liveRefreshToken(Objects.requireNonNull(classification.redemption(), "redemption"),
                             presentedRefreshToken));
         };
@@ -360,13 +386,15 @@ public final class TokenRefreshCoordinator {
 
     /**
      * The synchronous, disposition-defining half of a session end: the back-off entry is dropped, the
-     * session destroyed and {@code ApiSheriff-111} recorded. The live refresh token is only handed back;
-     * {@link #refresh} revokes it after the outcome has been published to the coalesced waiters.
+     * session destroyed, the presented refresh token marked ended until the session's absolute lifetime,
+     * and {@code ApiSheriff-111} recorded. The live refresh token is only handed back; {@link #refresh}
+     * revokes it after the outcome has been published to the coalesced waiters.
      */
-    private Disposition endSession(String sessionId, SessionRecord latest, RuntimeException failure,
-            String reason, @Nullable String liveRefreshToken) {
-        retryNotBefore.remove(sessionId);
-        sessionBinding.destroy(latest);
+    private Disposition endSession(SessionEnd end, RuntimeException failure, String reason,
+            @Nullable String liveRefreshToken) {
+        retryNotBefore.remove(end.sessionId());
+        sessionBinding.destroy(end.latest());
+        endedRefreshTokens.markEnded(end.presentedRefreshToken(), end.latest().expiresAt(), end.now());
         // Bounded, non-sensitive reason only — never the presented refresh token or session id.
         LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
         return new Disposition(RefreshOutcome.failed(), liveRefreshToken);
@@ -466,6 +494,18 @@ public final class TokenRefreshCoordinator {
                 .authTime(previous.authTime())
                 .sessionNonce(previous.sessionNonce())
                 .build();
+    }
+
+    /**
+     * The session a session-ending disposition acts on: its single-flight key, the re-resolved record, the
+     * refresh token it presented and the reference instant. {@link #toString()} never renders the token.
+     */
+    private record SessionEnd(String sessionId, SessionRecord latest, String presentedRefreshToken, Instant now) {
+
+        @Override
+        public String toString() {
+            return "SessionEnd[now=" + now + "]";
+        }
     }
 
     /**

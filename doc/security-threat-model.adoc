@@ -1280,7 +1280,18 @@ detection signal rotation exists to provide -- an operator decision, never a gat
 * *Cookie mode:* COVERED (IdP strict rotation), with the duplicate-refresh residual accepted. A
   replay *is* reachable -- an attacker holding a copied pre-refresh cookie makes the gateway present
   the spent refresh token -- and the provider rejects it, ending that session and, on Keycloak, the
-  successor's (`BffRefreshReuseIT`, cookie-mode replay and IdP-revoked cookie session).
+  successor's (`BffRefreshReuseIT`, cookie-mode replay and IdP-revoked cookie session). Because a
+  cookie-mode session end destroys nothing server-side, a retained or replayed ended cookie would
+  otherwise re-drive a refresh grant and a `WARN ApiSheriff-111` on every near-expiry request until
+  the absolute TTL -- amplification and log flooding, not an authentication bypass. The refresh
+  coordinator therefore marks the presented refresh token (a per-instance salted digest, never the
+  token or cookie) when it ends a session as `credential-rejected`, `redeemed-response-refused` or
+  `persist-failure`, until the session's absolute lifetime, and refuses a marked token locally with
+  no IdP call, no revocation and no warning. Keyed on the token, a successor cookie still reaches the
+  provider once. *Residual:* the marker is per instance (each other instance makes one IdP call before
+  marking), in memory (a restart forgets it, one IdP call again), bounded (a full store records
+  nothing, so replays degrade to one IdP call per request), not set by RP logout, and unused in
+  server mode.
 
 *Assertion.* A replayed pre-refresh cookie is answered `401` with a clearing cookie and a
 `credential-rejected` record; Keycloak's successor revocation and surviving user session are pinned;

@@ -150,6 +150,27 @@ stops a *real* replay of a copied pre-refresh cookie (ADR-0046). Cross-instance 
 cannot be fully prevented without shared state; with reuse tolerance left off, the residual
 effect is a rare forced re-login.
 
+*A retained ended cookie is refused locally (amplification guard).* Ending a cookie-mode session
+destroys nothing server-side -- only the clearing `Set-Cookie` ends it -- so a client that keeps or
+replays the sealed cookie would otherwise drive a fresh refresh grant to the IdP, and a
+`WARN ApiSheriff-111`, on every near-expiry request until the absolute TTL. When the refresh
+coordinator ends a session as `credential-rejected`, `redeemed-response-refused` or `persist-failure`,
+it therefore marks the presented refresh token -- as a salted, non-reversible digest, never the token
+or the cookie -- until the session's absolute lifetime. A later request presenting that token takes
+the session-ended disposition (cleared cookie, `on_failure`) with no IdP call, no revocation and no
+warning record. The marker is keyed on the refresh token, not the session, so a *successor* cookie of
+the same session still reaches the IdP once, is refused there, and is then marked itself. It is a
+bounded negative cache of ended tokens, not a token family: reuse detection stays the IdP's. Its
+residuals are stated plainly:
+
+* *Per instance.* Each other instance still makes one IdP call for the replayed token before it marks
+  the token itself.
+* *In memory.* A restart forgets every marker, so the next replay costs one IdP call again.
+* *Bounded.* The store holds a fixed number of markers; when it is full of unexpired ones, a token is
+  not recorded and its replays degrade to one IdP call per request, as without the guard.
+* *Refresh-ended sessions only.* RP-initiated logout does not set it, and server mode does not use it,
+  because destroying the stored session already ends every copy of the cookie there.
+
 == Logout
 
 Gateway-triggered logout works as in the

@@ -178,7 +178,8 @@ class TokenRefreshCoordinatorTest {
     }
 
     private TokenRefreshCoordinator coordinator(Instant accessExpiry, RefreshExchange exchange) {
-        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT);
+        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT,
+                EndedRefreshTokens.inert());
     }
 
     private SessionRecord storedSession() {
@@ -437,7 +438,7 @@ class TokenRefreshCoordinatorTest {
             return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, presented -> {
                 calls.incrementAndGet();
                 throw OUTAGE;
-            }, saturationBinding, revoked::add, DIRECT);
+            }, saturationBinding, revoked::add, DIRECT, EndedRefreshTokens.inert());
         }
 
         private SessionRecord stored(String sessionId) {
@@ -649,7 +650,7 @@ class TokenRefreshCoordinatorTest {
             storedSession();
             SessionBinding persistFailing = new PersistFailingBinding(binding);
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
-                    rt -> rotation(), persistFailing, revoked::add, DIRECT);
+                    rt -> rotation(), persistFailing, revoked::add, DIRECT, EndedRefreshTokens.inert());
 
             RefreshOutcome outcome = coordinator.refresh(session(CURRENT_REFRESH), COOKIE_HEADER, NOW);
 
@@ -673,7 +674,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
                     throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
                             RefreshRedemption.rotated(ROTATED_REFRESH))),
-                    binding, failingRevocation, DIRECT);
+                    binding, failingRevocation, DIRECT, EndedRefreshTokens.inert());
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
@@ -840,7 +841,7 @@ class TokenRefreshCoordinatorTest {
                 TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
                         throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
                                 RefreshRedemption.rotated(ROTATED_REFRESH))),
-                        binding, failingRevocation, executor);
+                        binding, failingRevocation, executor, EndedRefreshTokens.inert());
 
                 RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
                 boolean revocationAttempted = attempted.await(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
@@ -871,7 +872,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
                     throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
                             RefreshRedemption.rotated(ROTATED_REFRESH))),
-                    wideBinding, revoked::add, parked::add);
+                    wideBinding, revoked::add, parked::add, EndedRefreshTokens.inert());
 
             for (int i = 0; i <= TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS; i++) {
                 endSession(coordinator, wideStore, "ending-" + i);
@@ -936,7 +937,7 @@ class TokenRefreshCoordinatorTest {
                     exchangeEntered.countDown();
                     awaitRelease(proceed);
                     return exchange.get();
-                }, sessionBinding, blockingRevocation, revocations);
+                }, sessionBinding, blockingRevocation, revocations, EndedRefreshTokens.inert());
 
                 Future<RefreshOutcome> leader = requests.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
                 Awaits.connect(exchangeEntered, "the leader entered the engine refresh");
@@ -1015,7 +1016,111 @@ class TokenRefreshCoordinatorTest {
         }
 
         private TokenRefreshCoordinator cookieCoordinator(RefreshExchange exchange) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, cookieBinding, revoked::add, DIRECT);
+            return cookieCoordinator(exchange, cookieBinding, EndedRefreshTokens.inert());
+        }
+
+        private TokenRefreshCoordinator cookieCoordinator(RefreshExchange exchange, SessionBinding sessionBinding,
+                EndedRefreshTokens marker) {
+            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, sessionBinding, revoked::add, DIRECT,
+                    marker);
+        }
+
+        @Test
+        @DisplayName("Should mark the presented refresh token ended on each of the three session-ending dispositions")
+        void shouldMarkPresentedTokenOnEverySessionEnd() {
+            EndedRefreshTokens credentialRejectedMarker = EndedRefreshTokens.bounded();
+            EndedRefreshTokens redeemedMarker = EndedRefreshTokens.bounded();
+            EndedRefreshTokens persistFailureMarker = EndedRefreshTokens.bounded();
+
+            RefreshOutcome credentialRejected = cookieCoordinator(throwing(credentialRejected()), cookieBinding,
+                    credentialRejectedMarker).refresh(cookieSession, sealedCookieHeader, NOW);
+            RefreshOutcome redeemed = cookieCoordinator(throwing(new RedeemedScopeRefusalException(
+                    "granted a broader scope than requested", RefreshRedemption.rotated(ROTATED_REFRESH))),
+                    cookieBinding, redeemedMarker).refresh(cookieSession, sealedCookieHeader, NOW);
+            RefreshOutcome persistFailure = cookieCoordinator(rt -> rotation(), new PersistFailingBinding(cookieBinding),
+                    persistFailureMarker).refresh(cookieSession, sealedCookieHeader, NOW);
+
+            assertAll("every session-ending path marks the token the ended session presented",
+                    () -> assertTrue(credentialRejected.isFailure()),
+                    () -> assertTrue(credentialRejectedMarker.isEnded(CURRENT_REFRESH, NOW), "credential-rejected"),
+                    () -> assertTrue(redeemed.isFailure()),
+                    () -> assertTrue(redeemedMarker.isEnded(CURRENT_REFRESH, NOW), "redeemed-response-refused"),
+                    () -> assertTrue(persistFailure.isFailure()),
+                    () -> assertTrue(persistFailureMarker.isEnded(CURRENT_REFRESH, NOW), "persist-failure"),
+                    () -> assertFalse(redeemedMarker.isEnded(ROTATED_REFRESH, NOW),
+                            "only the presented token is marked, never the revoked successor"));
+        }
+
+        @Test
+        @DisplayName("Should refuse a replayed ended cookie locally with no engine call, no revocation and no ApiSheriff-111")
+        void shouldRefuseReplayedEndedTokenLocally() {
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = cookieCoordinator(presented -> {
+                calls.incrementAndGet();
+                throw new RedeemedScopeRefusalException("granted a broader scope than requested",
+                        RefreshRedemption.rotated(ROTATED_REFRESH));
+            }, cookieBinding, EndedRefreshTokens.bounded());
+            RefreshOutcome ended = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+            int revokedAfterEnd = revoked.size();
+            TestLoggerFactory.getTestHandler().clearRecords();
+
+            RefreshOutcome replayed = coordinator.refresh(cookieSession, sealedCookieHeader, NOW.plusSeconds(1));
+
+            assertAll("the replay takes the session-ended disposition without reaching the identity provider",
+                    () -> assertTrue(ended.isFailure()),
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, replayed.kind(),
+                            "the stage still clears the cookie and negotiates on_failure"),
+                    () -> assertEquals(1, calls.get(), "the replayed ended token makes no engine exchange"),
+                    () -> assertEquals(1, revokedAfterEnd, "the original session end revoked its successor once"),
+                    () -> assertEquals(revokedAfterEnd, revoked.size(), "the replay revokes nothing"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should let a successor cookie of the same session reach the identity provider once, then mark it")
+        void shouldNotRefuseSuccessorWithDifferentRefreshToken() {
+            AtomicInteger calls = new AtomicInteger();
+            EndedRefreshTokens marker = EndedRefreshTokens.bounded();
+            TokenRefreshCoordinator coordinator = cookieCoordinator(presented -> {
+                if (calls.incrementAndGet() == 1) {
+                    return rotation();
+                }
+                throw credentialRejected();
+            }, cookieBinding, marker);
+            RefreshOutcome rotated = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+            String successorSetCookie = rotated.setCookieHeaders().getFirst();
+            String successorCookieHeader = successorSetCookie.substring(0, successorSetCookie.indexOf(';'));
+            SessionRecord successor = cookieBinding.resolve(successorCookieHeader, NOW).orElseThrow();
+            RefreshOutcome replayOfOriginal = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+            int callsBeforeSuccessor = calls.get();
+
+            RefreshOutcome successorOutcome = coordinator.refresh(successor, successorCookieHeader, NOW);
+
+            assertAll("the marker is keyed on the token generation, not the shared session identity",
+                    () -> assertEquals(cookieSession.sessionId(), successor.sessionId(),
+                            "precondition: both cookies derive the same session identity"),
+                    () -> assertTrue(replayOfOriginal.isFailure(), "the IdP refused the replayed original"),
+                    () -> assertTrue(marker.isEnded(CURRENT_REFRESH, NOW)),
+                    () -> assertEquals(callsBeforeSuccessor + 1, calls.get(),
+                            "the successor's different refresh token is not marked and reaches the exchange"),
+                    () -> assertTrue(successorOutcome.isFailure(), "the IdP refuses the successor too"),
+                    () -> assertTrue(marker.isEnded(ROTATED_REFRESH, NOW), "and the successor is then marked itself"));
+        }
+
+        @Test
+        @DisplayName("Should let a replay reach the exchange as before when the inert server-mode marker is bound")
+        void shouldReachExchangeWithInertMarker() {
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = cookieCoordinator(presented -> {
+                calls.incrementAndGet();
+                throw credentialRejected();
+            });
+
+            coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+            RefreshOutcome replayed = coordinator.refresh(cookieSession, sealedCookieHeader, NOW.plusSeconds(1));
+
+            assertTrue(replayed.isFailure());
+            assertEquals(2, calls.get(), "the inert marker refuses nothing locally");
         }
 
         @Test
@@ -1173,15 +1278,18 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should reject a missing revocation seam or revocation executor")
+        @DisplayName("Should reject a missing revocation seam, revocation executor or ended-token marker")
         void shouldRejectMissingRevocationSeam() {
             RefreshExchange exchange = rt -> rotation();
             RefreshTokenRevocation revocation = revoked::add;
+            EndedRefreshTokens marker = EndedRefreshTokens.inert();
 
             assertThrows(NullPointerException.class,
-                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, null, DIRECT));
+                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, null, DIRECT, marker));
             assertThrows(NullPointerException.class,
-                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revocation, null));
+                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revocation, null, marker));
+            assertThrows(NullPointerException.class,
+                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revocation, DIRECT, null));
         }
 
         @Test
