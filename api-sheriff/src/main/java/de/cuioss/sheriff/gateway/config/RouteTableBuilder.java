@@ -383,8 +383,10 @@ public final class RouteTableBuilder {
      * path. A route that declares a non-blank {@code upstream.path} <em>appends</em> it to the
      * alias-derived base path (ADR-0004 Amendment A2): the two are joined on exactly one
      * {@code /}, so the effective base path is
-     * {@code stripTrailingSlash(alias base path) + "/" + stripLeadingSlash(upstream.path)} — no
-     * doubled and no missing slash, whichever side the operator wrote one on. The forward URI is
+     * {@code stripTrailingSlashes(alias base path) + "/" + stripLeadingSlashes(upstream.path)} — no
+     * doubled and no missing slash, whichever side the operator wrote one on. Both helpers remove
+     * <em>repeated</em> slashes at the seam, so an alias ending {@code /anything//} joined with
+     * {@code //graphql} still yields {@code /anything/graphql}. The forward URI is
      * then reconstructed as {@code stripTrailingSlash(effective base path) + remainder-after-match-key}
      * by {@link de.cuioss.sheriff.gateway.edge.DispatchStage#upstreamRequestUri}.
      * <p>

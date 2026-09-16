@@ -34,12 +34,14 @@ import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -346,20 +348,51 @@ class ConfigValidatorRedirectTest {
     @DisplayName("Anchor matrix")
     class AnchorMatrix {
 
+        /**
+         * Validates {@code route} under a {@code site} anchor of {@code type}, built so the ADR-0013
+         * access→auth matrix admits the <em>anchor</em> — otherwise a {@code bff} case would fail on
+         * the matrix rather than on the redirect rule under test, and the matrix rules are covered by
+         * {@code ConfigValidatorTest}, not here.
+         * <p>
+         * The discriminator is the validator's own rule — {@code type: bff} implies
+         * {@code access: authenticated} with a backed non-{@code none} floor — rather than a list of
+         * the types that need one. A {@code bff} anchor therefore gets a bearer floor, the
+         * {@code token_validation} issuer that backs it, and an endpoint that does not weaken the
+         * floor; every other type stays {@code access: public} with no auth block. A new
+         * {@link AnchorType} constant lands in the public arm and fails loudly here if that is wrong,
+         * instead of silently skipping the matrix.
+         */
         private List<ConfigError> validateAnchored(AnchorType type, RouteConfig route) {
+            boolean authenticated = type == AnchorType.BFF;
             AnchorConfig anchor = AnchorConfig.builder()
                     .name("site")
                     .pathPrefix("/site")
                     .type(type)
-                    .access(AccessLevel.PUBLIC)
+                    .access(authenticated ? AccessLevel.AUTHENTICATED : AccessLevel.PUBLIC)
+                    .auth(authenticated ? new AuthConfig(Require.BEARER, List.of()) : null)
                     .build();
-            GatewayConfig gateway = GatewayConfig.builder().version(1).anchors(Map.of("site", anchor)).build();
-            return validator.validate(gateway, List.of(endpoint("site", route)), new ResolvedTopology(Map.of()));
+            GatewayConfig gateway = GatewayConfig.builder()
+                    .version(1)
+                    .anchors(Map.of("site", anchor))
+                    .tokenValidation(authenticated ? new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("idp").issuer("https://idp.example/").build())) : null)
+                    .build();
+            EndpointConfig anchoredEndpoint = EndpointConfig.builder()
+                    .id("redirects")
+                    .enabled(true)
+                    .anchor("site")
+                    .auth(new AuthConfig(authenticated ? Require.BEARER : Require.NONE, List.of()))
+                    .routes(List.of(route))
+                    .build();
+            return validator.validate(gateway, List.of(anchoredEndpoint), new ResolvedTopology(Map.of()));
         }
 
+        // Derived from AnchorType.values(), not listed: AnchorType declares PROXY, BFF and ASSET, and
+        // a redirect is admitted under all three. Naming only two of them let a validator regression
+        // that rejects a redirect under a valid BFF anchor pass this test unobserved.
         @ParameterizedTest(name = "admits a redirect under a {0} anchor")
-        @EnumSource(value = AnchorType.class, names = {"ASSET", "PROXY"})
-        @DisplayName("Should admit a redirect route under every anchor type it can be anchored to")
+        @EnumSource(AnchorType.class)
+        @DisplayName("Should admit a redirect route under every anchor type")
         void shouldAdmitRedirectUnderAnchor(AnchorType type) {
             RouteConfig route = RouteConfig.builder()
                     .id(routeId())

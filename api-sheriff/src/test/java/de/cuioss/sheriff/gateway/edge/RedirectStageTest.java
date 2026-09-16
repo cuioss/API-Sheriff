@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 
 
@@ -40,9 +41,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link RedirectStage}: the configured status passes through verbatim, the configured
  * {@code location} is written verbatim (never context-path-prefixed), the raw query is appended
- * only under {@code keep_query} joined with {@code ?} or {@code &} as the location requires, and the
+ * only under {@code keep_query} joined with {@code ?} or {@code &} as the location requires, the
  * answer is marked uncacheable exactly when the route is effectively authenticated or the response
- * carries a {@code Set-Cookie}.
+ * carries a {@code Set-Cookie}, and it carries the selected route's {@code match.headers} names as
+ * its {@code Vary} set.
  */
 @EnableGeneratorController
 @DisplayName("RedirectStage")
@@ -74,7 +76,7 @@ class RedirectStageTest {
      * cookie so the cacheability verdict never colours these cases.
      */
     private RedirectStage.Answer answer(RedirectConfig redirect, @Nullable String rawQuery) {
-        return stage.answer(redirect, rawQuery, PUBLIC_AUTH, List.of());
+        return stage.answer(redirect, rawQuery, PUBLIC_AUTH, List.of(), List.of());
     }
 
     @ParameterizedTest(name = "status {0}")
@@ -91,21 +93,24 @@ class RedirectStageTest {
     }
 
     @Test
-    @DisplayName("Should refuse a missing redirect action, auth posture or Set-Cookie list")
+    @DisplayName("Should refuse a missing redirect action, auth posture, Set-Cookie list or Vary name list")
     void shouldRefuseMissingArguments() {
         String query = rawQuery();
         RedirectConfig redirect = redirect(gatewayPath(), 302, false);
 
         assertAll(
                 () -> assertThrows(NullPointerException.class,
-                        () -> stage.answer(null, query, PUBLIC_AUTH, List.of()),
+                        () -> stage.answer(null, query, PUBLIC_AUTH, List.of(), List.of()),
                         "a null redirect action should be refused"),
                 () -> assertThrows(NullPointerException.class,
-                        () -> stage.answer(redirect, query, null, List.of()),
+                        () -> stage.answer(redirect, query, null, List.of(), List.of()),
                         "a null effective auth posture should be refused"),
                 () -> assertThrows(NullPointerException.class,
-                        () -> stage.answer(redirect, query, PUBLIC_AUTH, null),
-                        "a null Set-Cookie list should be refused"));
+                        () -> stage.answer(redirect, query, PUBLIC_AUTH, null, List.of()),
+                        "a null Set-Cookie list should be refused"),
+                () -> assertThrows(NullPointerException.class,
+                        () -> stage.answer(redirect, query, PUBLIC_AUTH, List.of(), null),
+                        "a null Vary name list should be refused"));
     }
 
     @Nested
@@ -183,7 +188,7 @@ class RedirectStageTest {
         @DisplayName("Should leave a public redirect with no Set-Cookie cacheable")
         void shouldLeavePublicCookielessAnswerCacheable() {
             RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 308, false), null,
-                    PUBLIC_AUTH, List.of());
+                    PUBLIC_AUTH, List.of(), List.of());
 
             assertFalse(answer.noStore(),
                     "a public redirect carrying no cookie is ordinary cacheable configuration");
@@ -199,7 +204,7 @@ class RedirectStageTest {
             AuthConfig authenticated = AuthConfig.builder().require(require).build();
 
             RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 301, false), null,
-                    authenticated, List.of());
+                    authenticated, List.of(), List.of());
 
             assertTrue(answer.noStore(),
                     "an authenticated redirect answer must never be written to a shared cache");
@@ -209,7 +214,7 @@ class RedirectStageTest {
         @DisplayName("Should force no-store on a public route once the response carries a Set-Cookie")
         void shouldForceNoStoreOnAccumulatedSetCookie() {
             RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 301, false), null,
-                    PUBLIC_AUTH, List.of(setCookie()));
+                    PUBLIC_AUTH, List.of(setCookie()), List.of());
 
             assertTrue(answer.noStore(),
                     "a cached redirect would replay one client's session cookie to the next");
@@ -221,10 +226,10 @@ class RedirectStageTest {
         void shouldDecideIndependentlyOfStatus(int status) {
             AuthConfig authenticated = AuthConfig.builder().require(Require.BEARER).build();
 
-            RedirectStage.Answer authenticatedAnswer =
-                    stage.answer(redirect(gatewayPath(), status, false), null, authenticated, List.of());
-            RedirectStage.Answer publicAnswer =
-                    stage.answer(redirect(gatewayPath(), status, false), null, PUBLIC_AUTH, List.of());
+            RedirectStage.Answer authenticatedAnswer = stage.answer(redirect(gatewayPath(), status, false), null,
+                    authenticated, List.of(), List.of());
+            RedirectStage.Answer publicAnswer = stage.answer(redirect(gatewayPath(), status, false), null,
+                    PUBLIC_AUTH, List.of(), List.of());
 
             assertAll(
                     () -> assertTrue(authenticatedAnswer.noStore(),
@@ -232,6 +237,65 @@ class RedirectStageTest {
                                     + " client hint, not a cache guarantee"),
                     () -> assertFalse(publicAnswer.noStore(),
                             "and a public cookieless answer stays cacheable at every status"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Vary for header-selected redirects (CWE-524)")
+    class Vary {
+
+        @Test
+        @DisplayName("Should carry no Vary name for a route that declares no header matcher")
+        void shouldCarryNoVaryWithoutHeaderMatchers() {
+            RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 308, false), null,
+                    PUBLIC_AUTH, List.of(), List.of());
+
+            assertTrue(answer.vary().isEmpty(),
+                    "a redirect selected on the path alone varies by nothing a cache does not already key on");
+        }
+
+        @Test
+        @DisplayName("Should carry the route's matcher header names so a shared cache keys on them")
+        void shouldCarryMatcherHeaderNames() {
+            List<String> matcherNames = List.of("X-Variant", "Accept-Language");
+
+            RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 301, false), null,
+                    PUBLIC_AUTH, List.of(), matcherNames);
+
+            assertAll(
+                    () -> assertEquals(matcherNames, answer.vary(),
+                            "every header that chose the route must be declared as varying"),
+                    () -> assertFalse(answer.noStore(),
+                            "the answer stays cacheable — Vary is what makes that safe, not no-store"));
+        }
+
+        // The header matchers are what make the answer variant-dependent, so the names ride on the
+        // answer whatever the cacheability verdict says: on a no-store answer the header is inert,
+        // and a conditional rule would be a second case with no behavioural difference.
+        @ParameterizedTest(name = "require {0}")
+        @EnumSource(Require.class)
+        @DisplayName("Should carry the Vary names under every auth posture, cacheable or not")
+        void shouldCarryVaryIndependentlyOfCacheability(Require require) {
+            AuthConfig auth = AuthConfig.builder().require(require).build();
+
+            RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 302, false), null,
+                    auth, List.of(), List.of("X-Variant"));
+
+            assertEquals(List.of("X-Variant"), answer.vary(),
+                    "the Vary names describe route selection, not the cacheability verdict");
+        }
+
+        @Test
+        @DisplayName("Should defensively copy the Vary names it was handed")
+        void shouldDefensivelyCopyVaryNames() {
+            List<String> mutable = new ArrayList<>(List.of("X-Variant"));
+
+            RedirectStage.Answer answer = stage.answer(redirect(gatewayPath(), 307, false), null,
+                    PUBLIC_AUTH, List.of(), mutable);
+            mutable.add("X-Injected");
+
+            assertEquals(List.of("X-Variant"), answer.vary(),
+                    "a later mutation of the caller's list must not reach the computed answer");
         }
     }
 }
