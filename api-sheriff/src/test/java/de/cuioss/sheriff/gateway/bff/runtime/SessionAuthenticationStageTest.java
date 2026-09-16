@@ -236,8 +236,8 @@ class SessionAuthenticationStageTest {
         }
 
         @Test
-        @DisplayName("emits BOTH the clearing cookie and the login-challenge cookie when a refresh fails on an HTML navigation")
-        void retainsBothCookiesOnFailedRefreshNavigation() {
+        @DisplayName("emits BOTH the clearing cookie and the login-challenge cookie when a refresh failure ends the session on an HTML navigation")
+        void retainsBothCookiesWhenRefreshFailureEndsSessionOnNavigation() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
             SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), scopesGranted(), redirectLogin());
             PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
