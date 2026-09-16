@@ -86,7 +86,8 @@ public final class SecurityHeadersStage {
         /** {@code Strict-Transport-Security}, rendered from the block's {@code hsts} settings. */
         HSTS("Strict-Transport-Security") {
             @Override
-            @Nullable String value(SecurityHeadersConfig headers) {
+            @Nullable
+            String value(SecurityHeadersConfig headers) {
                 Hsts hsts = headers.hsts();
                 if (hsts == null) {
                     return null;
@@ -108,7 +109,8 @@ public final class SecurityHeadersStage {
         /** {@code X-Content-Type-Options: nosniff}, emitted when the block enables it. */
         CONTENT_TYPE_OPTIONS("X-Content-Type-Options") {
             @Override
-            @Nullable String value(SecurityHeadersConfig headers) {
+            @Nullable
+            String value(SecurityHeadersConfig headers) {
                 return Boolean.TRUE.equals(headers.contentTypeNosniff()) ? "nosniff" : null;
             }
 
@@ -121,7 +123,8 @@ public final class SecurityHeadersStage {
         /** {@code X-Frame-Options: DENY}, emitted when the block enables it. */
         FRAME_OPTIONS("X-Frame-Options") {
             @Override
-            @Nullable String value(SecurityHeadersConfig headers) {
+            @Nullable
+            String value(SecurityHeadersConfig headers) {
                 return Boolean.TRUE.equals(headers.frameDeny()) ? "DENY" : null;
             }
 
@@ -138,7 +141,8 @@ public final class SecurityHeadersStage {
          */
         CONTENT_SECURITY_POLICY("Content-Security-Policy") {
             @Override
-            @Nullable String value(SecurityHeadersConfig headers) {
+            @Nullable
+            String value(SecurityHeadersConfig headers) {
                 return headers.contentSecurityPolicy();
             }
 
