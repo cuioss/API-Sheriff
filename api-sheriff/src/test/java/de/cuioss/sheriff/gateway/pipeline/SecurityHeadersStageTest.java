@@ -17,11 +17,13 @@ package de.cuioss.sheriff.gateway.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -336,20 +338,58 @@ class SecurityHeadersStageTest {
                             "the global frame_deny does not survive a route block that omits it"));
         }
 
+        /**
+         * The seeding half of the stage and its owning half are two lists that must name the same
+         * headers: {@code applyResponseHeaders} decides what stage 0 puts on the response, and the set
+         * behind {@code isGatewayOwned} decides what stage 2a takes off again. A header added to the
+         * first but not the second keeps its GLOBAL value on an anchored route, which is exactly the
+         * leak stage 2a exists to prevent.
+         * <p>
+         * So this guard asserts the SURVIVING KEY SET rather than the four names one by one. Naming
+         * them here would be a third copy of a list the stage already holds twice, and a copy cannot
+         * observe a fifth header added to only one of the two halves — it would keep passing while the
+         * leak shipped. Comparing the whole key set derives both halves from the code under test: any
+         * header stage 0 seeds and stage 2a does not own survives the call and fails here, whatever it
+         * is called.
+         * <p>
+         * Both maps are asserted because a {@code default}-mode header lands in the default-map, so a
+         * guard reading only the set-map would miss half the surface. The block below therefore splits
+         * the four headers across both modes, and the precondition checks both maps were actually
+         * populated — an assertion that passes because nothing was seeded proves nothing.
+         */
         @Test
-        @DisplayName("removes every gateway-owned name when the route resolves no block at all")
+        @DisplayName("removes every gateway-owned name when the route resolves no block at all — whatever stage 0 seeded")
         void removesSecurityNamesWhenRouteHasNoBlock() {
+            // Arrange
+            SecurityHeadersConfig everyHeaderBothModes = SecurityHeadersConfig.builder()
+                    .hsts(new Hsts(31536000, true))
+                    .contentTypeNosniff(true)
+                    .frameDeny(true)
+                    .contentSecurityPolicy(GLOBAL_POLICY)
+                    .headerModes(HeaderModes.builder()
+                            .contentTypeNosniff(HeaderMode.DEFAULT)
+                            .contentSecurityPolicy(HeaderMode.DEFAULT)
+                            .build())
+                    .cors(Cors.builder().enabled(Boolean.TRUE)
+                            .allowedOrigins(List.of("https://ok.example")).build())
+                    .build();
             PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
-            SecurityHeadersStage stage = new SecurityHeadersStage(global);
+            SecurityHeadersStage stage = new SecurityHeadersStage(everyHeaderBothModes);
             stage.process(request);
+            assertAll("precondition: stage 0 populated both maps, so the assertion below is not vacuous",
+                    () -> assertFalse(request.responseHeaders().isEmpty()),
+                    () -> assertFalse(request.responseDefaultHeaders().isEmpty()));
 
+            // Act
             stage.applyRouteHeaders(request, null);
 
-            assertAll("a null route block leaves no gateway-owned security header behind",
-                    () -> assertNull(request.responseHeaders().get(HSTS)),
-                    () -> assertNull(request.responseHeaders().get(NOSNIFF)),
-                    () -> assertNull(request.responseHeaders().get(FRAME_OPTIONS)),
-                    () -> assertNull(request.responseHeaders().get(CSP)),
+            // Assert
+            assertAll("a null route block leaves nothing behind but the CORS header stage 2a never touches",
+                    () -> assertEquals(Set.of(ACAO), request.responseHeaders().keySet(),
+                            "every gateway-owned name stage 0 seeded into the set-map is gone, and only"
+                                    + " the CORS header remains"),
+                    () -> assertTrue(request.responseDefaultHeaders().isEmpty(),
+                            "the default-map carried two gateway-owned names and must be emptied too"),
                     () -> assertEquals("https://ok.example", request.responseHeaders().get(ACAO)));
         }
 

@@ -170,10 +170,14 @@ public final class RouteRuntimeAssembler {
                 runtime.upstream(resolvedUpstream)
                         .httpClient(client)
                         .resilienceGuard(guard);
-                // Built once here, from the effective upstream (alias base + upstream.path) and the
-                // match key, so the relay applies a ready mapping and derives nothing per request.
+                // Built once here, from the effective upstream (alias base + upstream.path), the match
+                // key and the matcher's exactness, so the relay applies a ready mapping and derives
+                // nothing per request. Exactness is part of the mapping rule, not a detail of matching:
+                // an exact route routes its match key and nothing below it, so the rewriter must not
+                // emit a mapping the route's own matcher would reject.
                 if (route.rewriteLocation()) {
-                    runtime.locationRewriter(new LocationRewriter(resolvedUpstream, route.matchKey()));
+                    runtime.locationRewriter(new LocationRewriter(resolvedUpstream, route.matchKey(),
+                            route.match().isExact()));
                 }
             }
 

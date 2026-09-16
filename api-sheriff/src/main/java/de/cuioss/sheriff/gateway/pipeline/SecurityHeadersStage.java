@@ -70,7 +70,16 @@ public final class SecurityHeadersStage {
     private static final String FRAME_OPTIONS = "X-Frame-Options";
     private static final String CONTENT_SECURITY_POLICY = "Content-Security-Policy";
 
-    /** The response security-header names this stage owns — and the only names stage 2a replaces. */
+    /**
+     * The response security-header names this stage owns — and the only names stage 2a replaces.
+     * <p>
+     * This list and {@link #applyResponseHeaders} are the two halves of one contract: a header seeded
+     * there but missing here is never removed at stage 2a, so an anchored route keeps the GLOBAL value
+     * — the leak stage 2a exists to prevent. Adding a header means adding it to both. The coupling is
+     * guarded rather than merely asked for: {@code SecurityHeadersStageTest}'s
+     * {@code removesSecurityNamesWhenRouteHasNoBlock} asserts the surviving key set after a
+     * block-less stage 2a, so a name present in only one half survives the call and fails the build.
+     */
     private static final List<String> GATEWAY_OWNED_HEADERS =
             List.of(STRICT_TRANSPORT_SECURITY, CONTENT_TYPE_OPTIONS, FRAME_OPTIONS, CONTENT_SECURITY_POLICY);
 
