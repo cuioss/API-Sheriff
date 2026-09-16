@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -83,6 +84,7 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.tools.logging.CuiLogger;
+import io.quarkus.virtual.threads.VirtualThreads;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
@@ -132,7 +134,9 @@ import org.jspecify.annotations.Nullable;
  * {@code reauthenticate} (also when omitted) re-drives the login negotiation, {@code reject} answers
  * {@code 401} for every request. A refresh token still live at the identity provider after a session
  * ends on a refused redemption or a persist failure is revoked, best-effort, through the engine's
- * RFC 7009 {@link RevocationClient} built from the same back-channel configuration.
+ * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
+ * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
+ * failing request never waits for the revocation endpoint.
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
@@ -185,6 +189,7 @@ public class BffRuntimeProducer {
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> tokenValidator;
     private final JwksTrustProfileResolver trustProfileResolver;
+    private final ExecutorService virtualThreadExecutor;
     /**
      * The resolved global {@code egress_tls} block, read once here for the same reason
      * {@code TokenValidatorProducer} resolves its own key once (ADR-0040): the keys are gateway-global
@@ -195,21 +200,25 @@ public class BffRuntimeProducer {
     private final EgressTlsConfig egressTls;
 
     /**
-     * @param gatewayConfig        the bound global gateway document carrying the {@code oidc} block and
-     *                             the global {@code egress_tls} block
-     * @param tokenValidator       a lazy handle to the gateway's shared offline validator, resolved
-     *                             only on the active BFF path in either session mode (a bearer-only
-     *                             gateway never triggers it)
-     * @param trustProfileResolver the single seam mapping a logical {@code egress_tls.oidc_tls_profile}
-     *                             name to concrete trust anchors, consulted only on the active path and
-     *                             only when a profile is named
+     * @param gatewayConfig         the bound global gateway document carrying the {@code oidc} block and
+     *                              the global {@code egress_tls} block
+     * @param tokenValidator        a lazy handle to the gateway's shared offline validator, resolved
+     *                              only on the active BFF path in either session mode (a bearer-only
+     *                              gateway never triggers it)
+     * @param trustProfileResolver  the single seam mapping a logical {@code egress_tls.oidc_tls_profile}
+     *                              name to concrete trust anchors, consulted only on the active path and
+     *                              only when a profile is named
+     * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor a best-effort refresh-token
+     *                              revocation is dispatched on, off the request path
      */
     public BffRuntimeProducer(GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
-            JwksTrustProfileResolver trustProfileResolver) {
+            JwksTrustProfileResolver trustProfileResolver,
+            @VirtualThreads ExecutorService virtualThreadExecutor) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
         this.trustProfileResolver = Objects.requireNonNull(trustProfileResolver, "trustProfileResolver");
+        this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
         EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
         this.egressTls = declaredEgressTls == null ? EgressTlsConfig.defaults() : declaredEgressTls;
     }
@@ -344,7 +353,8 @@ public class BffRuntimeProducer {
                 refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
                 sessionBinding,
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
-                        clientAuthentication)))
+                        clientAuthentication),
+                virtualThreadExecutor))
                 : sessionUnchanged();
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.

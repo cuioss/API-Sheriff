@@ -23,6 +23,9 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 
@@ -71,8 +74,13 @@ import org.jspecify.annotations.Nullable;
  *       token the exchange returned is revoked. The outcome is {@link RefreshOutcome.Kind#FAILED FAILED}
  *       with reason {@code persist-failure}.</li>
  * </ul>
- * Every session-ending disposition records {@code ApiSheriff-111}. Revocation is best-effort: a failure is recorded at {@code DEBUG} and never changes the disposition,
- * because the local session destruction is what ends the session.
+ * Every session-ending disposition records {@code ApiSheriff-111}. The session-ended outcome is published
+ * to the failing request and every coalesced waiter <em>first</em>; the revocation is dispatched only
+ * afterwards, off the request path, so a slow or hanging revocation endpoint delays the revocation and
+ * nothing else. At most {@link #MAX_CONCURRENT_REVOCATIONS} revocations are in flight at once; beyond
+ * that bound a revocation is skipped and recorded at {@code DEBUG}. Revocation is best-effort: a failure
+ * or a refused dispatch is recorded at {@code DEBUG} and never changes the disposition, because the local
+ * session destruction is what ends the session.
  * <p>
  * <strong>Refresh-token reuse detection is the identity provider's job.</strong> A confidential client
  * only ever sees the refresh tokens it presents itself and keeps no token family across stateless
@@ -136,6 +144,13 @@ public final class TokenRefreshCoordinator {
      */
     static final int MAX_BACKOFF_ENTRIES = 10_000;
 
+    /**
+     * The upper bound on best-effort revocations in flight at once. A session-ending disposition that
+     * finds the bound saturated skips its revocation and records that at {@code DEBUG}, so a slow or
+     * hanging revocation endpoint can hold at most this many dispatched tasks. Not configurable.
+     */
+    static final int MAX_CONCURRENT_REVOCATIONS = 64;
+
     /** The bounded reason recorded when the identity provider rejected the presented refresh token. */
     static final String REASON_CREDENTIAL_REJECTED = "credential-rejected";
 
@@ -150,6 +165,8 @@ public final class TokenRefreshCoordinator {
     private final RefreshExchange refreshExchange;
     private final SessionBinding sessionBinding;
     private final RefreshTokenRevocation refreshTokenRevocation;
+    private final Executor revocationExecutor;
+    private final Semaphore revocationPermits = new Semaphore(MAX_CONCURRENT_REVOCATIONS);
     private final ConcurrentMap<String, CompletableFuture<RefreshOutcome>> inFlight = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Instant> retryNotBefore = new ConcurrentHashMap<>();
     /**
@@ -172,15 +189,19 @@ public final class TokenRefreshCoordinator {
      *                               through and an ended session is destroyed through
      * @param refreshTokenRevocation the best-effort RFC 7009 revocation seam a live refresh token is
      *                               revoked through when its session ends after a redemption
+     * @param revocationExecutor     the executor a revocation is dispatched on, off the request path,
+     *                               after the session-ended outcome has been published (the session
+     *                               runtime binds the Quarkus-managed virtual-thread executor)
      */
     public TokenRefreshCoordinator(Duration leeway, AccessTokenExpiry accessTokenExpiry,
             RefreshExchange refreshExchange, SessionBinding sessionBinding,
-            RefreshTokenRevocation refreshTokenRevocation) {
+            RefreshTokenRevocation refreshTokenRevocation, Executor revocationExecutor) {
         this.leeway = Objects.requireNonNull(leeway, "leeway");
         this.accessTokenExpiry = Objects.requireNonNull(accessTokenExpiry, "accessTokenExpiry");
         this.refreshExchange = Objects.requireNonNull(refreshExchange, "refreshExchange");
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.refreshTokenRevocation = Objects.requireNonNull(refreshTokenRevocation, "refreshTokenRevocation");
+        this.revocationExecutor = Objects.requireNonNull(revocationExecutor, "revocationExecutor");
     }
 
     /**
@@ -212,10 +233,11 @@ public final class TokenRefreshCoordinator {
             // A concurrent request already leads the refresh for this session — share its result.
             return existing.join();
         }
+        Disposition disposition;
         try {
-            RefreshOutcome outcome = performRefresh(sessionId, cookieHeader, now);
-            leader.complete(outcome);
-            return outcome;
+            disposition = performRefresh(sessionId, cookieHeader, now);
+            // Publish the outcome to every coalesced waiter before any revocation is issued.
+            leader.complete(disposition.outcome());
         } finally {
             // Guarantee coalesced waiters never hang: a no-op when the leader already completed
             // above, but a deterministic FAILED when performRefresh threw before completing it (the
@@ -223,24 +245,29 @@ public final class TokenRefreshCoordinator {
             leader.complete(RefreshOutcome.failed());
             inFlight.remove(sessionId, leader);
         }
+        String liveRefreshToken = disposition.liveRefreshToken();
+        if (liveRefreshToken != null) {
+            dispatchRevocation(liveRefreshToken);
+        }
+        return disposition.outcome();
     }
 
-    private RefreshOutcome performRefresh(String sessionId, @Nullable String cookieHeader, Instant now) {
+    private Disposition performRefresh(String sessionId, @Nullable String cookieHeader, Instant now) {
         Optional<SessionRecord> resolved = sessionBinding.resolve(cookieHeader, now);
         if (resolved.isEmpty()) {
             // Destroyed or expired between the near-expiry check and acquiring the lead — unauthenticated.
             retryNotBefore.remove(sessionId);
-            return RefreshOutcome.failed();
+            return Disposition.of(RefreshOutcome.failed());
         }
         SessionRecord latest = resolved.get();
         String presentedRefreshToken = latest.refreshToken();
         if (presentedRefreshToken == null || !nearExpiry(latest, now)) {
             // A coalesced leader already rotated this session — share the current token, no engine call.
-            return RefreshOutcome.current(latest);
+            return Disposition.of(RefreshOutcome.current(latest));
         }
         if (backingOff(sessionId, now)) {
             // A pre-redemption failure is still backing off — no engine call, same disposition.
-            return keptSession(latest, now);
+            return Disposition.of(keptSession(latest, now));
         }
         RotationResult rotation;
         // The engine and the seam binding also raise IllegalStateException / IllegalArgumentException
@@ -261,18 +288,18 @@ public final class TokenRefreshCoordinator {
             SessionBinding.BoundSession bound = sessionBinding.persist(rotated, now);
             retryNotBefore.remove(sessionId);
             LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
-            return RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders());
+            return Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
         } catch (RuntimeException persistFailure) {
             return endSession(sessionId, latest, persistFailure, REASON_PERSIST_FAILURE, rotation.refreshToken());
         }
     }
 
-    private RefreshOutcome disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
+    private Disposition disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
             RuntimeException refreshFailure, Instant now) {
         RefreshFailureClassification classification = RefreshFlow.classify(refreshFailure);
         // A switch expression, not a statement: javac rejects it the moment the engine adds a fourth kind.
         return switch (classification.kind()) {
-            case PRE_REDEMPTION -> backOff(sessionId, latest, refreshFailure, now);
+            case PRE_REDEMPTION -> Disposition.of(backOff(sessionId, latest, refreshFailure, now));
             case CREDENTIAL_REJECTED -> endSession(sessionId, latest, refreshFailure,
                     REASON_CREDENTIAL_REJECTED, null);
             case REDEEMED -> endSession(sessionId, latest, refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
@@ -331,16 +358,18 @@ public final class TokenRefreshCoordinator {
         return RefreshOutcome.unavailable();
     }
 
-    private RefreshOutcome endSession(String sessionId, SessionRecord latest, RuntimeException failure,
+    /**
+     * The synchronous, disposition-defining half of a session end: the back-off entry is dropped, the
+     * session destroyed and {@code ApiSheriff-111} recorded. The live refresh token is only handed back;
+     * {@link #refresh} revokes it after the outcome has been published to the coalesced waiters.
+     */
+    private Disposition endSession(String sessionId, SessionRecord latest, RuntimeException failure,
             String reason, @Nullable String liveRefreshToken) {
         retryNotBefore.remove(sessionId);
         sessionBinding.destroy(latest);
-        if (liveRefreshToken != null) {
-            revokeBestEffort(liveRefreshToken);
-        }
         // Bounded, non-sensitive reason only — never the presented refresh token or session id.
         LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
-        return RefreshOutcome.failed();
+        return new Disposition(RefreshOutcome.failed(), liveRefreshToken);
     }
 
     /**
@@ -358,6 +387,42 @@ public final class TokenRefreshCoordinator {
         }
         LOGGER.debug("Refresh rotation unknown after a refused redemption — no live refresh token to revoke");
         return null;
+    }
+
+    /**
+     * Hands a live refresh token to the revocation executor, off the request path. At most
+     * {@link #MAX_CONCURRENT_REVOCATIONS} revocations are in flight at once; beyond that the revocation is
+     * skipped and recorded at {@code DEBUG}, consistent with best-effort. A refused dispatch is swallowed
+     * the same way. Neither record carries the refresh token or the session id.
+     */
+    private void dispatchRevocation(String refreshToken) {
+        if (!revocationPermits.tryAcquire()) {
+            LOGGER.debug("Best-effort refresh token revocation skipped — %s revocations already in flight",
+                    MAX_CONCURRENT_REVOCATIONS);
+            return;
+        }
+        // Executor#execute may refuse the task (RejectedExecutionException) or a misbehaving executor may
+        // raise anything else; either way the revocation is simply not issued.
+        // The permit is released exactly once, whether the task ran, was refused, or both.
+        AtomicBoolean released = new AtomicBoolean();
+        Runnable releasePermit = () -> {
+            if (released.compareAndSet(false, true)) {
+                revocationPermits.release();
+            }
+        };
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            revocationExecutor.execute(() -> {
+                try {
+                    revokeBestEffort(refreshToken);
+                } finally {
+                    releasePermit.run();
+                }
+            });
+        } catch (RuntimeException dispatchFailure) {
+            releasePermit.run();
+            LOGGER.debug(dispatchFailure, "Best-effort refresh token revocation could not be dispatched");
+        }
     }
 
     private void revokeBestEffort(String refreshToken) {
@@ -401,6 +466,23 @@ public final class TokenRefreshCoordinator {
                 .authTime(previous.authTime())
                 .sessionNonce(previous.sessionNonce())
                 .build();
+    }
+
+    /**
+     * What {@link #performRefresh} decided: the outcome to publish and, for a session that ended after a
+     * redemption, the one refresh token still live at the identity provider, revoked only after the
+     * outcome has been published. {@link #toString()} never renders the token.
+     */
+    private record Disposition(RefreshOutcome outcome, @Nullable String liveRefreshToken) {
+
+        static Disposition of(RefreshOutcome outcome) {
+            return new Disposition(outcome, null);
+        }
+
+        @Override
+        public String toString() {
+            return "Disposition[outcome=" + outcome.kind() + ", revocation=" + (liveRefreshToken != null) + "]";
+        }
     }
 
     /**

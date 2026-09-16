@@ -102,6 +102,14 @@ back-channel client configuration the refresh uses. It is best-effort: a failed 
 recorded at `DEBUG` and never changes the disposition, because destroying the local session is what
 ends the session. Every session-ending disposition clears the session cookie on the response.
 
+The revocation is ordered *after* the disposition. The session is destroyed and `ApiSheriff-111`
+recorded synchronously; the session-ended outcome is then published to the failing request and to
+every request coalesced on the same session's single-flight; only afterwards is the revocation
+dispatched, off the request path, on the virtual-thread executor. A slow or hanging revocation
+endpoint therefore delays the revocation and nothing else. Concurrent revocations are bounded by a
+fixed limit; when it is saturated the revocation is skipped and recorded at `DEBUG`, and a refused
+dispatch is swallowed the same way -- both consistent with best-effort.
+
 The back-off is fixed rather than exponential, bounded in the number of sessions it tracks, read and
 written under the per-session single-flight, and per instance. While the tracked sessions stay below
 that bound it limits both the engine calls and the `ApiSheriff-127` records to one per session per

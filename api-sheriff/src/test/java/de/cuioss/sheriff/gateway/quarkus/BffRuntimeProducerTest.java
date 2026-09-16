@@ -53,6 +53,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
@@ -130,6 +132,12 @@ class BffRuntimeProducerTest {
      * built with, so the two must be distinguishable by construction.
      */
     private static final String ROTATED_ACCESS_TOKEN = "rotated-access-token";
+
+    /**
+     * Stands in for the Quarkus-managed virtual-thread executor the producer hands the refresh coordinator.
+     * No assembly test here reaches a revocation, so nothing is ever submitted to it.
+     */
+    private static final ExecutorService REVOCATION_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     /** The bundled gateway schema, read off the classpath so the contract sees the shipped copy. */
     private static final String GATEWAY_SCHEMA_RESOURCE = "/schema/gateway.schema.json";
@@ -735,7 +743,7 @@ class BffRuntimeProducerTest {
                     refreshToken -> {
                         throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
                     },
-                    binding, NO_REVOCATION);
+                    binding, NO_REVOCATION, Runnable::run);
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(rejecting)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -753,7 +761,7 @@ class BffRuntimeProducerTest {
                     sessionRecord -> NOW.plusSeconds(30), refreshToken -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
-                    binding, NO_REVOCATION);
+                    binding, NO_REVOCATION, Runnable::run);
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -770,7 +778,7 @@ class BffRuntimeProducerTest {
                     refreshToken -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
-                    binding, NO_REVOCATION);
+                    binding, NO_REVOCATION, Runnable::run);
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -794,7 +802,7 @@ class BffRuntimeProducerTest {
                         engineCalls.incrementAndGet();
                         return rotation();
                     },
-                    binding, NO_REVOCATION);
+                    binding, NO_REVOCATION, Runnable::run);
         }
 
         private SessionRecord storedSession(@Nullable String refreshToken) {
@@ -1130,7 +1138,7 @@ class BffRuntimeProducerTest {
             TestTlsConfigurationRegistry registry) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
         return new BffRuntimeProducer(gatewayConfig, new SingletonInstance<>(tokenValidator),
-                new JwksTrustProfileResolver(registry));
+                new JwksTrustProfileResolver(registry), REVOCATION_EXECUTOR);
     }
 
     private static OidcConfig serverModeOidc() {

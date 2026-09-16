@@ -33,11 +33,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -108,6 +111,13 @@ class TokenRefreshCoordinatorTest {
 
     private static final String COOKIE_HEADER = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID;
 
+    /**
+     * Runs a dispatched revocation on the dispatching thread, so every test that only asserts WHICH token
+     * was revoked observes it synchronously. The ordering tests in {@link RevocationOrdering} bind a real
+     * asynchronous executor instead.
+     */
+    private static final Executor DIRECT = Runnable::run;
+
     private static final String REFRESH_FAILED_ID = BffLogMessages.WARN.SESSION_REFRESH_FAILED.resolveIdentifierString();
     private static final String REFRESH_DEFERRED_ID =
             BffLogMessages.WARN.SESSION_REFRESH_DEFERRED.resolveIdentifierString();
@@ -168,7 +178,7 @@ class TokenRefreshCoordinatorTest {
     }
 
     private TokenRefreshCoordinator coordinator(Instant accessExpiry, RefreshExchange exchange) {
-        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add);
+        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT);
     }
 
     private SessionRecord storedSession() {
@@ -427,7 +437,7 @@ class TokenRefreshCoordinatorTest {
             return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, presented -> {
                 calls.incrementAndGet();
                 throw OUTAGE;
-            }, saturationBinding, revoked::add);
+            }, saturationBinding, revoked::add, DIRECT);
         }
 
         private SessionRecord stored(String sessionId) {
@@ -639,7 +649,7 @@ class TokenRefreshCoordinatorTest {
             storedSession();
             SessionBinding persistFailing = new PersistFailingBinding(binding);
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
-                    rt -> rotation(), persistFailing, revoked::add);
+                    rt -> rotation(), persistFailing, revoked::add, DIRECT);
 
             RefreshOutcome outcome = coordinator.refresh(session(CURRENT_REFRESH), COOKIE_HEADER, NOW);
 
@@ -663,7 +673,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
                     throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
                             RefreshRedemption.rotated(ROTATED_REFRESH))),
-                    binding, failingRevocation);
+                    binding, failingRevocation, DIRECT);
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
@@ -782,6 +792,199 @@ class TokenRefreshCoordinatorTest {
     private record CoalescedRun(RefreshOutcome leader, RefreshOutcome follower, int calls) {
     }
 
+    /**
+     * The session-ended outcome is published before the best-effort revocation, and the revocation runs
+     * off the request path. Every wait here is bounded, so against a coordinator that revokes inline the
+     * tests fail on a timeout rather than hang.
+     */
+    @Nested
+    @DisplayName("Revocation ordering — outcome first, revocation off the request path")
+    class RevocationOrdering {
+
+        private static final long OUTCOME_WAIT_SECONDS = 5;
+        private static final long REVOCATION_BLOCK_SECONDS = 30;
+
+        @Test
+        @DisplayName("Should publish FAILED to the leader and a coalesced waiter while a refused redemption's revocation is still blocked")
+        void shouldPublishRedeemedOutcomeBeforeRevocation() throws Exception {
+            storedSession();
+
+            BlockedRevocationRun run = runWithBlockedRevocation(binding, () -> {
+                throw new RedeemedScopeRefusalException("granted a broader scope than requested",
+                        RefreshRedemption.rotated(ROTATED_REFRESH));
+            });
+
+            assertBlockedRevocationRun(run);
+        }
+
+        @Test
+        @DisplayName("Should publish FAILED to the leader and a coalesced waiter while a persist failure's revocation is still blocked")
+        void shouldPublishPersistFailureOutcomeBeforeRevocation() throws Exception {
+            storedSession();
+
+            BlockedRevocationRun run = runWithBlockedRevocation(new PersistFailingBinding(binding), TokenRefreshCoordinatorTest::rotation);
+
+            assertBlockedRevocationRun(run);
+        }
+
+        @Test
+        @DisplayName("Should keep the FAILED disposition and record nothing above DEBUG when the dispatched revocation throws")
+        void shouldSwallowFailingDispatchedRevocation() throws Exception {
+            SessionRecord live = storedSession();
+            CountDownLatch attempted = new CountDownLatch(1);
+            RefreshTokenRevocation failingRevocation = token -> {
+                attempted.countDown();
+                throw new TransportException("Revocation endpoint returned unexpected HTTP status 500");
+            };
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                        throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
+                                RefreshRedemption.rotated(ROTATED_REFRESH))),
+                        binding, failingRevocation, executor);
+
+                RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+                boolean revocationAttempted = attempted.await(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
+                executor.shutdown();
+                boolean drained = executor.awaitTermination(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
+
+                assertAll("a failing revocation is best-effort and invisible above DEBUG",
+                        () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                        () -> assertTrue(revocationAttempted, "the revocation was dispatched and attempted"),
+                        () -> assertTrue(drained, "the dispatched revocation finished"),
+                        () -> assertFalse(sessionResolvable(NOW)),
+                        () -> assertTrue(TestLoggerFactory.getTestHandler().resolveLogMessages(TestLogLevel.ERROR)
+                                .isEmpty(), "a failing revocation records no ERROR"),
+                        () -> assertTrue(TestLoggerFactory.getTestHandler().resolveLogMessages(TestLogLevel.WARN)
+                                .stream().allMatch(entry -> String.valueOf(entry.getMessage()).contains(REFRESH_FAILED_ID)),
+                                "the only WARN is the session end's own ApiSheriff-111"));
+            }
+        }
+
+        @Test
+        @DisplayName("Should skip a revocation at DEBUG once the in-flight bound is saturated, and dispatch again once a permit is released")
+        void shouldSkipRevocationBeyondInFlightBound() {
+            TestLogLevel.DEBUG.addLogger(TokenRefreshCoordinator.class);
+            InMemorySessionStore wideStore = new InMemorySessionStore(TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS + 8);
+            SessionBinding wideBinding = new ServerSessionBinding(wideStore,
+                    new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
+            List<Runnable> parked = new CopyOnWriteArrayList<>();
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
+                            RefreshRedemption.rotated(ROTATED_REFRESH))),
+                    wideBinding, revoked::add, parked::add);
+
+            for (int i = 0; i <= TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS; i++) {
+                endSession(coordinator, wideStore, "ending-" + i);
+            }
+            int parkedAtBound = parked.size();
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG, "revocation skipped");
+            parked.forEach(Runnable::run);
+            int revokedAfterDrain = revoked.size();
+            endSession(coordinator, wideStore, "after-drain");
+
+            assertAll("the fixed bound acts and its permits are returned",
+                    () -> assertEquals(TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS, parkedAtBound,
+                            "one ending beyond the bound is not dispatched"),
+                    () -> assertEquals(TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS, revokedAfterDrain),
+                    () -> assertEquals(TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS + 1, parked.size(),
+                            "a finished revocation returns its permit, so the next ending is dispatched again"));
+        }
+
+        private void endSession(TokenRefreshCoordinator coordinator, InMemorySessionStore target, String sessionId) {
+            SessionRecord live = SessionRecord.builder()
+                    .sessionId(sessionId)
+                    .accessToken("access-" + sessionId)
+                    .refreshToken("refresh-" + sessionId)
+                    .idToken("id-" + sessionId)
+                    .sub("sub-" + sessionId)
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .build();
+            target.create(live, NOW);
+            assertEquals(RefreshOutcome.Kind.FAILED,
+                    coordinator.refresh(live, SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId, NOW).kind());
+        }
+
+        /**
+         * Runs one leader and one coalesced waiter on the stored session against {@code sessionBinding}.
+         * The leader's exchange blocks until the waiter has been submitted, then yields {@code exchange};
+         * the revocation that follows blocks until this method has observed both outcomes.
+         */
+        private BlockedRevocationRun runWithBlockedRevocation(SessionBinding sessionBinding,
+                Supplier<RotationResult> exchange) throws Exception {
+            CountDownLatch exchangeEntered = new CountDownLatch(1);
+            CountDownLatch proceed = new CountDownLatch(1);
+            CountDownLatch revocationEntered = new CountDownLatch(1);
+            CountDownLatch releaseRevocation = new CountDownLatch(1);
+            CountDownLatch revocationDone = new CountDownLatch(1);
+            RefreshTokenRevocation blockingRevocation = token -> {
+                revocationEntered.countDown();
+                try {
+                    if (releaseRevocation.await(REVOCATION_BLOCK_SECONDS, TimeUnit.SECONDS)) {
+                        revoked.add(token);
+                    }
+                } catch (InterruptedException _) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    revocationDone.countDown();
+                }
+            };
+            ExecutorService requests = Executors.newFixedThreadPool(2);
+            ExecutorService revocations = Executors.newVirtualThreadPerTaskExecutor();
+            try {
+                SessionRecord live = session(CURRENT_REFRESH);
+                TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, rt -> {
+                    exchangeEntered.countDown();
+                    awaitRelease(proceed);
+                    return exchange.get();
+                }, sessionBinding, blockingRevocation, revocations);
+
+                Future<RefreshOutcome> leader = requests.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
+                Awaits.connect(exchangeEntered, "the leader entered the engine refresh");
+                Future<RefreshOutcome> waiter = requests.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
+                // Best-effort ordering, as in SingleFlight: no observable hook for the waiter reaching the join.
+                Thread.sleep(100); // NOSONAR java:S2925 - no observable hook for the waiter reaching the in-flight join
+                proceed.countDown();
+
+                RefreshOutcome leaderOutcome = leader.get(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
+                RefreshOutcome waiterOutcome = waiter.get(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
+                boolean revocationStarted = revocationEntered.await(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
+                boolean stillBlocked = revocationDone.getCount() == 1;
+                releaseRevocation.countDown();
+                boolean revocationFinished = revocationDone.await(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
+                return new BlockedRevocationRun(leaderOutcome, waiterOutcome, revocationStarted, stillBlocked,
+                        revocationFinished);
+            } finally {
+                releaseRevocation.countDown();
+                requests.shutdownNow();
+                revocations.shutdownNow();
+            }
+        }
+
+        private void assertBlockedRevocationRun(BlockedRevocationRun run) {
+            assertAll("the outcome is published before the revocation, which runs off the request path",
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, run.leader(),
+                            "the failing request returned FAILED while its revocation was blocked"),
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, run.waiter(),
+                            "the coalesced waiter observed FAILED while the revocation was blocked"),
+                    () -> assertTrue(run.revocationStarted(), "the revocation was dispatched"),
+                    () -> assertTrue(run.stillBlockedWhenObserved(),
+                            "both outcomes were observed while the revocation had not returned"),
+                    () -> assertTrue(run.revocationFinished(), "the released revocation completed"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "the revocation was invoked with the one live refresh token"),
+                    () -> assertFalse(sessionResolvable(NOW), "the session was ended"));
+        }
+    }
+
+    private record BlockedRevocationRun(RefreshOutcome.Kind leader, RefreshOutcome.Kind waiter,
+            boolean revocationStarted, boolean stillBlockedWhenObserved, boolean revocationFinished) {
+
+        BlockedRevocationRun(RefreshOutcome leader, RefreshOutcome waiter, boolean revocationStarted,
+                boolean stillBlockedWhenObserved, boolean revocationFinished) {
+            this(leader.kind(), waiter.kind(), revocationStarted, stillBlockedWhenObserved, revocationFinished);
+        }
+    }
+
     @Nested
     @DisplayName("Cookie-mode refresh (stateless binding)")
     class CookieMode {
@@ -812,7 +1015,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         private TokenRefreshCoordinator cookieCoordinator(RefreshExchange exchange) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, cookieBinding, revoked::add);
+            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, cookieBinding, revoked::add, DIRECT);
         }
 
         @Test
@@ -970,12 +1173,15 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should reject a missing revocation seam")
+        @DisplayName("Should reject a missing revocation seam or revocation executor")
         void shouldRejectMissingRevocationSeam() {
             RefreshExchange exchange = rt -> rotation();
+            RefreshTokenRevocation revocation = revoked::add;
 
             assertThrows(NullPointerException.class,
-                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, null));
+                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, null, DIRECT));
+            assertThrows(NullPointerException.class,
+                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revocation, null));
         }
 
         @Test
