@@ -657,7 +657,10 @@ upstream `Location` through it: a path-absolute value, or an absolute URI on the
 scheme, host and effective port, whose path lies inside the effective upstream base path (alias base
 path + `upstream.path`) on a segment boundary, is mapped onto the route's match key as a
 gateway-relative path with query and fragment kept. Every other value -- a foreign origin, a
-scheme-relative `//host`, an unparseable value, a path outside the base path -- is relayed unchanged.
+scheme-relative `//host`, an unparseable value, a path outside the base path, and a path carrying a
+dot segment or an ambiguous separator (a backslash, or a percent-encoded `/` or `\`) in either case
+spelling -- is relayed unchanged; the last two refusals are the boot review's own set, applied to the
+candidate path and to the computed mapping alike (see link:security-threat-model.adoc#gw-13[GW-13]).
 The trailer-carrying gRPC relay never rewrites, since gRPC carries no redirect.
 
 === Downstream Client
