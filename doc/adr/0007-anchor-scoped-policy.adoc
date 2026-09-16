@@ -91,9 +91,11 @@ Three lessons condense out:
   is not a bypass. The rule became load-bearing with exact (`match.path`) routes: an anchor whose
   only member is `path: /admin` claims exactly one address, leaving `/admin/` and `/admin/x` to the
   enclosing route and its weaker posture. Exact routes are not judged by it (an exact route serves
-  one address, which is the squatter rule's case), and `protocol: grpc` routes are exempt for the
-  same geometric reason as below.
-* *gRPC routes are exempt from the namespace-containment geometry.* A `protocol: grpc`
+  one address, which is the squatter rule's case). `protocol: grpc` routes *are* judged by it --
+  the exemption below is scoped to the two declaration-scoped directions and does not reach this
+  one.
+* *gRPC routes are exempt from the two declaration-scoped containment directions -- and from those
+  two only.* A `protocol: grpc`
   route rides the service-rooted `/{package}.{Service}/{Method}` path, whose service
   component (e.g. `de.cuioss.sheriff.api.integration.grpc.Echo`) is a *single opaque path
   segment* -- dots, no slashes. No non-root anchor `path_prefix` can contain such a path on
@@ -101,9 +103,19 @@ Three lessons condense out:
   service path and cannot be told to prepend a gateway namespace prefix -- so neither the
   containment check (route inside its declared anchor) nor the squatter check (undeclared
   route inside any anchor namespace) can ever be satisfied for a bare gRPC service path.
-  All three containment checks -- including the coverage mirror above -- are therefore
-  skipped for `protocol: grpc` routes. Only the
-  path-prefix *geometry* is exempt: a gRPC route still *declares* an anchor for its ADR-0013
+  Those two are therefore skipped for `protocol: grpc` routes.
+  The *coverage mirror* is not, and the difference is the direction each rule reads. The two
+  skipped directions judge a route by where its own match key sits, which is exactly what the
+  service-rooted path argument is about; the coverage rule judges what the route's `path_prefix`
+  *contains*, and nothing constrains a gRPC route's declared match key to a bare service path.
+  Route selection is protocol-blind -- the route table looks a request path up on the path alone
+  and the matcher carries no protocol dimension -- so a gRPC route declaring a broad `path_prefix`
+  answers plain HTTP requests inside a swallowed anchor namespace with *its* auth posture and
+  *its* `security_headers` block. Exempting it there would reopen the exact bypass the coverage
+  rule was added to close, so the coverage rule applies to `grpc` routes exactly as it does to
+  `http` and `websocket` ones.
+  Only the path-prefix *geometry* of the two declaration-scoped directions is exempt: a gRPC route
+  still *declares* an anchor for its ADR-0013
   type/access classification and its auth floor, and every other anchor rule --
   declared-anchor existence, pairwise-disjoint anchor prefixes, the non-weakenable auth
   floor, and the ADR-0013 access→auth matrix -- stays enforced for gRPC routes unchanged.
