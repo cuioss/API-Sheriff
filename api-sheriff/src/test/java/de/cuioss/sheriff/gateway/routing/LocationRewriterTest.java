@@ -36,7 +36,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class LocationRewriterTest {
 
     private static final ResolvedUpstream UPSTREAM = new ResolvedUpstream("https", "backend", 8443, "/svc/v1");
-    private static final LocationRewriter REWRITER = new LocationRewriter(UPSTREAM, "/api");
+    private static final LocationRewriter REWRITER = new LocationRewriter(UPSTREAM, "/api", false);
 
     @Nested
     @DisplayName("base-path match")
@@ -63,18 +63,131 @@ class LocationRewriterTest {
         @Test
         @DisplayName("ignores trailing slashes on the base path and the match key")
         void ignoresTrailingSlashesOnBaseAndMatchKey() {
-            var rewriter = new LocationRewriter(new ResolvedUpstream("https", "backend", 8443, "/svc/v1/"), "/api/");
+            var rewriter = new LocationRewriter(new ResolvedUpstream("https", "backend", 8443, "/svc/v1/"), "/api/",
+                    false);
 
             assertEquals("/api/x", rewriter.rewrite("https://backend:8443/svc/v1/x"));
             assertEquals("/api", rewriter.rewrite("/svc/v1"));
         }
+    }
+
+    /**
+     * An exact route's {@link RouteMatcher} admits the match key by string equality and routes nothing
+     * below it, so a mapping that is not equal to the match key names a path the gateway does not serve.
+     * Both arms are asserted together: the mapping onto the match key itself must still happen, and the
+     * mapping below it must not — a fix that simply disabled rewriting on exact routes would satisfy
+     * only the second.
+     */
+    @Nested
+    @DisplayName("exact-route match key")
+    class ExactMatchKey {
+
+        private final LocationRewriter rewriter = new LocationRewriter(UPSTREAM, "/login", true);
 
         @Test
-        @DisplayName("maps onto an exact-path match key")
+        @DisplayName("maps a Location at the base path onto the exact match key")
         void mapsOntoExactPathMatchKey() {
-            var rewriter = new LocationRewriter(UPSTREAM, "/login");
-
             assertEquals("/login", rewriter.rewrite("https://backend:8443/svc/v1"));
+            assertEquals("/login", rewriter.rewrite("/svc/v1"));
+        }
+
+        @Test
+        @DisplayName("keeps the query and fragment on the mapping onto the exact match key")
+        void keepsQueryAndFragmentOnExactMapping() {
+            assertEquals("/login?next=%2Fhome#top", rewriter.rewrite("/svc/v1?next=%2Fhome#top"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "https://backend:8443/svc/v1/child",
+                "/svc/v1/child",
+                "/svc/v1/",
+                "/svc/v1/child/grandchild"})
+        @DisplayName("relays a Location below the base path unchanged rather than mapping it onto an unroutable path")
+        void relaysBelowExactMatchKeyUnchanged(String location) {
+            assertEquals(location, rewriter.rewrite(location),
+                    "an exact route matches its match key by equality, so a mapping below it would send"
+                            + " the browser to a path this gateway answers with 404");
+        }
+
+        @Test
+        @DisplayName("a prefix route with the same match key still maps the whole subtree")
+        void prefixRouteWithTheSameMatchKeyStillMapsBelowIt() {
+            var prefixRewriter = new LocationRewriter(UPSTREAM, "/login", false);
+
+            assertEquals("/login/child", prefixRewriter.rewrite("/svc/v1/child"),
+                    "the refusal above must be driven by the matcher's exactness, not by the match-key"
+                            + " value — a prefix matcher admits the subtree and the mapping stands");
+        }
+
+        @Test
+        @DisplayName("honours a trailing slash on the exact match key")
+        void honoursTrailingSlashOnExactMatchKey() {
+            var slashRewriter = new LocationRewriter(UPSTREAM, "/login/", true);
+
+            assertEquals("/svc/v1", slashRewriter.rewrite("/svc/v1"),
+                    "an exact matcher treats a trailing slash as significant, so the mapping '/login'"
+                            + " would not be routed by the very route that produced it");
+        }
+
+        @Test
+        @DisplayName("maps onto a root exact match key")
+        void mapsOntoRootExactMatchKey() {
+            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", true);
+
+            assertEquals("/", rootRewriter.rewrite("http://backend:8080/"));
+            assertEquals("http://backend:8080/login", rootRewriter.rewrite("http://backend:8080/login"),
+                    "the exact match key '/' only routes '/', so a deeper path must be relayed unchanged");
+        }
+    }
+
+    /**
+     * The base-path test runs on the path as received, so a {@code ..} segment inside it continues the
+     * base path textually while the browser resolves the mapping outside the match key. Confinement
+     * cannot be proved for such a value without resolving it, so it is not mapped at all.
+     */
+    @Nested
+    @DisplayName("dot segments")
+    class DotSegments {
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "/svc/v1/../login",
+                "https://backend:8443/svc/v1/../login",
+                "/svc/v1/a/../../login",
+                "/svc/v1/%2e%2e/login",
+                "/svc/v1/%2E%2E/login",
+                "/svc/v1/.%2e/login",
+                "/svc/v1/./items",
+                "/svc/v1/%2e/items",
+                "/svc/v1/..",
+                "/svc/v1/items/.."})
+        @DisplayName("relays a path carrying a literal or percent-encoded dot segment unchanged")
+        void relaysDotSegmentPathsUnchanged(String location) {
+            assertEquals(location, REWRITER.rewrite(location),
+                    "the mapping would carry the dot segment through to the browser, which resolves it"
+                            + " outside the match key the rewrite is supposed to confine the redirect to");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "/svc/v1/...",
+                "/svc/v1/..a",
+                "/svc/v1/a..",
+                "/svc/v1/.hidden",
+                "/svc/v1/%2ea"})
+        @DisplayName("still maps a segment that merely contains dots but is not a dot segment")
+        void mapsPathsWhoseSegmentsMerelyContainDots(String location) {
+            assertEquals("/api" + location.substring("/svc/v1".length()), REWRITER.rewrite(location),
+                    "only '.' and '..' are dot segments; refusing every segment containing a dot would"
+                            + " stop mapping ordinary paths");
+        }
+
+        @Test
+        @DisplayName("ignores dots in the query and fragment")
+        void ignoresDotsInQueryAndFragment() {
+            assertEquals("/api/items?next=/../x#..", REWRITER.rewrite("/svc/v1/items?next=/../x#.."),
+                    "only the path decides confinement; the query and fragment are carried verbatim");
         }
     }
 
@@ -100,7 +213,7 @@ class LocationRewriterTest {
     class EmptyBasePath {
 
         private final LocationRewriter rewriter =
-                new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/app/");
+                new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/app/", false);
 
         @ParameterizedTest(name = "{0} -> {1}")
         @CsvSource({
@@ -116,7 +229,7 @@ class LocationRewriterTest {
         @Test
         @DisplayName("keeps the path as-is under a root match key")
         void keepsPathUnderRootMatchKey() {
-            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/");
+            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", false);
 
             assertEquals("/login", rootRewriter.rewrite("http://backend:8080/login"));
             assertEquals("/", rootRewriter.rewrite("http://backend:8080/"));
@@ -125,7 +238,7 @@ class LocationRewriterTest {
         @Test
         @DisplayName("never emits a scheme-relative mapping")
         void neverEmitsSchemeRelativeMapping() {
-            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/");
+            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", false);
             String location = "http://backend:8080//evil.example/steal";
 
             assertEquals(location, rootRewriter.rewrite(location),
@@ -203,7 +316,8 @@ class LocationRewriterTest {
         @ValueSource(strings = {"https://backend/svc/v1/x", "https://backend:443/svc/v1/x"})
         @DisplayName("resolves an omitted https port to 443")
         void resolvesHttpsDefaultPort(String location) {
-            var rewriter = new LocationRewriter(new ResolvedUpstream("https", "backend", 443, "/svc/v1"), "/api");
+            var rewriter = new LocationRewriter(new ResolvedUpstream("https", "backend", 443, "/svc/v1"), "/api",
+                    false);
 
             assertEquals("/api/x", rewriter.rewrite(location));
         }
@@ -212,7 +326,8 @@ class LocationRewriterTest {
         @ValueSource(strings = {"http://backend/svc/v1/x", "http://backend:80/svc/v1/x"})
         @DisplayName("resolves an omitted http port to 80")
         void resolvesHttpDefaultPort(String location) {
-            var rewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 80, "/svc/v1"), "/api");
+            var rewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 80, "/svc/v1"), "/api",
+                    false);
 
             assertEquals("/api/x", rewriter.rewrite(location));
         }
@@ -220,7 +335,8 @@ class LocationRewriterTest {
         @Test
         @DisplayName("does not treat a default port as equal to a non-default upstream port")
         void defaultPortDoesNotMatchNonDefaultUpstreamPort() {
-            var rewriter = new LocationRewriter(new ResolvedUpstream("https", "backend", 8443, "/svc/v1"), "/api");
+            var rewriter = new LocationRewriter(new ResolvedUpstream("https", "backend", 8443, "/svc/v1"), "/api",
+                    false);
             String location = "https://backend/svc/v1/x";
 
             assertEquals(location, rewriter.rewrite(location));
@@ -234,8 +350,8 @@ class LocationRewriterTest {
         @Test
         @DisplayName("rejects null arguments")
         void rejectsNullArguments() {
-            assertThrows(NullPointerException.class, () -> new LocationRewriter(null, "/api"));
-            assertThrows(NullPointerException.class, () -> new LocationRewriter(UPSTREAM, null));
+            assertThrows(NullPointerException.class, () -> new LocationRewriter(null, "/api", false));
+            assertThrows(NullPointerException.class, () -> new LocationRewriter(UPSTREAM, null, false));
             assertThrows(NullPointerException.class, () -> REWRITER.rewrite(null));
         }
     }
