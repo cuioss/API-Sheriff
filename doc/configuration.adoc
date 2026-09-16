@@ -59,7 +59,9 @@ Configuration is three kinds of artifact:
 | `endpoints/*.yaml`
 | *One file per endpoint* -- a service / host / app, or a logical group. Each file declares the
   routes for that endpoint and, when at least one route proxies, binds to one `base_url` *alias*
-  (an endpoint of asset and redirect routes only needs none). These files are
+  (an endpoint of asset and redirect routes only needs none, and a *disabled* endpoint needs none
+  either -- the requirement is checked for enabled endpoints only, see
+  link:#_endpoint_identity[`enabled`]). These files are
   *environment-independent* in their backend leg -- they never contain a real *upstream* host.
   (An inbound `match.host` matcher names the gateway's own public vhost and is
   environment-specific; write it as a `${VAR}` placeholder.)
@@ -89,7 +91,9 @@ subdirectories, are ignored.
 
 * `gateway.yaml`, every file under `endpoints/`, and `topology.properties` are read once at
   startup.
-* Each declared `base_url` alias is *resolved* against the topology (an explicit in-file
+* Each `base_url` alias declared by an *enabled* endpoint is *resolved* against the topology (a
+  disabled endpoint takes no part in resolution, so its alias may stay unresolved -- see
+  link:#_endpoint_identity[`enabled`]; an explicit in-file
   `${VAR}` placeholder lets an environment value win over the placeholder's default, see
   link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology]); the resolved URL is *decomposed once* into
   `{scheme, host, port, base-path}` (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
@@ -474,8 +478,11 @@ enablement fields:
 
 The endpoint's other fields are documented under their own headings: `base_url`
 (link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004];
-*mandatory exactly when the endpoint carries a proxy route* -- a route declaring neither `asset` nor
-`redirect` -- and omitted by an endpoint of asset and redirect routes only, see
+*mandatory exactly when an enabled endpoint carries a proxy route* -- a route declaring neither
+`asset` nor `redirect` -- and omitted by an endpoint of asset and redirect routes only. A *disabled*
+endpoint is exempt on both counts: the validator is handed only the enabled endpoints, so such an
+endpoint may omit `base_url` while carrying proxy routes, and may name an alias the topology does not
+resolve. See
 link:user/endpoint-routes.adoc#_base_url_only_with_proxy_routes[`base_url` is mandatory only with a
 proxy route]), `anchor`
 (link:user/anchors.adoc#_anchors[Anchors] -- the normative reference for both the gateway `anchors` block and

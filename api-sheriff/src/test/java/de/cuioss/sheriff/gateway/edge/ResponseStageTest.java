@@ -129,7 +129,7 @@ class ResponseStageTest {
     class LocationRewrite {
 
         private final LocationRewriter rewriter =
-                new LocationRewriter(new ResolvedUpstream("https", "backend", 8443, "/svc/v1"), "/api");
+                new LocationRewriter(new ResolvedUpstream("https", "backend", 8443, "/svc/v1"), "/api", false);
 
         @ParameterizedTest
         @ValueSource(strings = {"Location", "location", "LOCATION"})

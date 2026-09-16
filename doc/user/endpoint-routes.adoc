@@ -197,8 +197,17 @@ mounted behind `/api/orders` -- sends the browser off the gateway namespace, and
   `upstream.path`) or continues it on a segment boundary is rewritten to the route's match key plus
   the remainder, emitted as a *gateway-relative* path, so the browser stays on the gateway origin.
   Query and fragment are kept verbatim.
+* On an *exact* route (`match.path`) the rewrite only happens when the mapping is *equal to* the match
+  key. An exact route answers one address and nothing below it (see <<_route_ordering>>), so a mapping
+  below the match key would name a path this gateway answers with `404`; such a candidate is relayed
+  unchanged instead. A prefix route is unaffected -- it serves the whole subtree, so every mapping
+  under its match key is routable.
 * Everything else is relayed *unchanged*: a foreign origin, a scheme-relative `//host` value, an
-  unparseable value, and a path outside the effective base path.
+  unparseable value, a path outside the effective base path, and a path carrying a `.` or `..`
+  segment in either its literal or its percent-encoded spelling (`/app1/orders/../login`,
+  `/app1/orders/%2e%2e/login`). The base-path test is made on the path as received, so a dot segment
+  would survive into the mapping and the browser would resolve it *outside* the match key -- the same
+  reason a `redirect` target may not carry one (see <<_redirect_external_targets>>).
 
 With the alias `APP1=https://app1.internal:8443/app1` and `upstream.path: /orders` on
 `path_prefix: /api/orders`, the effective base path is `/app1/orders`: an upstream
@@ -215,12 +224,16 @@ neither protocol carries a redirect the gateway could rewrite.
 A route that declares neither an `asset` nor a `redirect` block is a *proxy route*: it reaches the
 endpoint's upstream. An endpoint must declare `base_url` *exactly when* it carries at least one proxy
 route; an endpoint made only of asset and redirect routes omits it. The rule is enforced at boot, not
-by the schema:
+by the schema, and only over *enabled* endpoints -- validation and topology resolution are both
+handed the enabled set, so a disabled endpoint is outside both bullets below (see
+link:../configuration.adoc#_endpoint_identity[`enabled`]):
 
-* an endpoint with a proxy route and no `base_url` fails the boot
+* an *enabled* endpoint with a proxy route and no `base_url` fails the boot
   (`endpoint '<id>' declares proxy route(s) but no base_url`);
-* a `base_url` that *is* declared must resolve in the topology even when no route uses it -- a
-  declared alias is never silently ignored.
+* a `base_url` that *is* declared by an *enabled* endpoint must resolve in the topology even when no
+  route uses it -- a declared alias is never silently ignored. A disabled endpoint may keep a
+  `base_url` naming an alias the environment does not define, which is what lets a config set ship an
+  endpoint whose backend is absent here and switch it off.
 
 [[_terminal_actions]]
 === Terminal actions
