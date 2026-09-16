@@ -592,30 +592,48 @@ public final class ConfigValidator {
      * </ul>
      */
     private static void validateRouteDisjointness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        List<RouteWithOwner> routes = flattenRoutes(endpoints);
+        for (int i = 0; i < routes.size(); i++) {
+            for (int j = i + 1; j < routes.size(); j++) {
+                checkRoutePairDisjoint(routes.get(i), routes.get(j), errors);
+            }
+        }
+    }
+
+    /**
+     * @return every enabled-or-not route across every endpoint, each paired with the endpoint that
+     *         declares it — the flat population the pairwise disjointness check iterates
+     */
+    private static List<RouteWithOwner> flattenRoutes(List<EndpointConfig> endpoints) {
         List<RouteWithOwner> routes = new ArrayList<>();
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 routes.add(new RouteWithOwner(endpoint, route));
             }
         }
-        for (int i = 0; i < routes.size(); i++) {
-            for (int j = i + 1; j < routes.size(); j++) {
-                RouteWithOwner first = routes.get(i);
-                RouteWithOwner second = routes.get(j);
-                MatchConfig firstMatch = first.route().match();
-                MatchConfig secondMatch = second.route().match();
-                if (firstMatch.isExact() != secondMatch.isExact()) {
-                    continue;
-                }
-                String firstKey = disjointnessKey(firstMatch);
-                if (firstKey.equals(disjointnessKey(secondMatch)) && overlaps(firstMatch, secondMatch)) {
-                    String kind = firstMatch.isExact() ? "path" : "prefix";
-                    errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
-                            "routes '%s' and '%s' share %s '%s' and are not disjoint".formatted(
-                                    first.route().id(), second.route().id(), kind, firstKey)));
-                }
-            }
+        return routes;
+    }
+
+    /**
+     * Records a disjointness violation for one route pair, or returns having found none. The three
+     * refusals are applied in the order the rule states them: two routes of different match forms
+     * never collide, two routes with different collision keys never collide, and two routes a host,
+     * method or header matcher tells apart never collide.
+     */
+    private static void checkRoutePairDisjoint(RouteWithOwner first, RouteWithOwner second, List<ConfigError> errors) {
+        MatchConfig firstMatch = first.route().match();
+        MatchConfig secondMatch = second.route().match();
+        if (firstMatch.isExact() != secondMatch.isExact()) {
+            return;
         }
+        String firstKey = disjointnessKey(firstMatch);
+        if (!firstKey.equals(disjointnessKey(secondMatch)) || !overlaps(firstMatch, secondMatch)) {
+            return;
+        }
+        String kind = firstMatch.isExact() ? "path" : "prefix";
+        errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
+                "routes '%s' and '%s' share %s '%s' and are not disjoint".formatted(
+                        first.route().id(), second.route().id(), kind, firstKey)));
     }
 
     /**

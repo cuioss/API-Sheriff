@@ -132,7 +132,7 @@ public final class RouteMatcher {
         if (exact) {
             return false;
         }
-        return matchKey.endsWith("/") ? path.startsWith(matchKey) : path.startsWith(matchKey + "/");
+        return path.startsWith(matchKey.endsWith("/") ? matchKey : matchKey + "/");
     }
 
     /**

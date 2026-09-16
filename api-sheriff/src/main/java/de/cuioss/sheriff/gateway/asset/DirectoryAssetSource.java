@@ -164,38 +164,14 @@ public final class DirectoryAssetSource implements AssetSource {
      *                             (mandatory; empty when unconfigured). Resolved once at
      *                             boot and read-only thereafter — no per-request lookup
      *                             and no shared mutable state.
-     * @throws IllegalArgumentException when {@code maxBytes} is negative or exceeds
-     *                                  {@link #MAX_ENFORCEABLE_BYTES}, or when {@code index} or
-     *                                  {@code fallback} is not a single file-name segment
-     */
-    public DirectoryAssetSource(Path root, AccessLevel access, @Nullable String index, @Nullable String fallback,
-            PathConfinement confinement, long maxBytes, Map<String, String> operatorContentTypes) {
-        this(root, access, index, fallback, confinement, maxBytes, operatorContentTypes, new SecureWalkOpener());
-    }
-
-    /**
-     * Creates a source with an explicit {@link Opener} — the seam that materializes the asset.
-     * <p>
-     * Package-visible for tests: the production {@link SecureWalkOpener} reports a stat and a read
-     * that always agree, which leaves the post-read cap check unreachable. Injecting an opener whose
-     * stat sits at or under the cap while its read yields more bytes is what exercises that check.
-     *
-     * @param root                 the configured directory root (mandatory)
-     * @param access               the serving route's effective access level (mandatory)
-     * @param index                the directory index file name, or {@code null} when unconfigured
-     * @param fallback             the root-level fallback file name, or {@code null} when unconfigured
-     * @param confinement          the shared path confinement (mandatory)
-     * @param maxBytes             the maximum served-file size in bytes
-     * @param operatorContentTypes the boot-resolved add-only content-type additions (mandatory)
-     * @param opener               the stat-and-read seam (mandatory)
      * @throws IllegalArgumentException when {@code maxBytes} is negative, or exceeds
      *                                  {@link #MAX_ENFORCEABLE_BYTES} — a cap this source could not
      *                                  hold the bytes for, and so could only honour by serving a
      *                                  prefix as a complete response — or when {@code index} or
      *                                  {@code fallback} is not a single file-name segment
      */
-    DirectoryAssetSource(Path root, AccessLevel access, @Nullable String index, @Nullable String fallback,
-            PathConfinement confinement, long maxBytes, Map<String, String> operatorContentTypes, Opener opener) {
+    public DirectoryAssetSource(Path root, AccessLevel access, @Nullable String index, @Nullable String fallback,
+            PathConfinement confinement, long maxBytes, Map<String, String> operatorContentTypes) {
         this.root = Objects.requireNonNull(root, "root").toAbsolutePath().normalize();
         this.access = Objects.requireNonNull(access, "access");
         this.index = requireFileName(index, "index");
@@ -209,7 +185,39 @@ public final class DirectoryAssetSource implements AssetSource {
         this.maxBytes = maxBytes;
         this.operatorContentTypes = Map.copyOf(
                 Objects.requireNonNull(operatorContentTypes, "operatorContentTypes"));
+        this.opener = new SecureWalkOpener();
+    }
+
+    /**
+     * Copies {@code template} with the {@link Opener} seam substituted; every other field is carried
+     * over already-validated, so no argument check repeats here.
+     */
+    private DirectoryAssetSource(DirectoryAssetSource template, Opener opener) {
+        this.root = template.root;
+        this.access = template.access;
+        this.index = template.index;
+        this.fallback = template.fallback;
+        this.confinement = template.confinement;
+        this.maxBytes = template.maxBytes;
+        this.operatorContentTypes = template.operatorContentTypes;
         this.opener = Objects.requireNonNull(opener, "opener");
+    }
+
+    /**
+     * Returns a copy of this source that materializes its assets through {@code opener} instead of
+     * the production {@link SecureWalkOpener}.
+     * <p>
+     * Package-visible for tests: the production {@link SecureWalkOpener} reports a stat and a read
+     * that always agree, which leaves the post-read cap check unreachable. Injecting an opener whose
+     * stat sits at or under the cap while its read yields more bytes is what exercises that check.
+     * The seam is a wither rather than a constructor parameter so that a test-only injection point
+     * never widens the constructor every production caller has to read.
+     *
+     * @param opener the stat-and-read seam (mandatory)
+     * @return a source identical to this one except for the seam it reads through
+     */
+    DirectoryAssetSource withOpener(Opener opener) {
+        return new DirectoryAssetSource(this, opener);
     }
 
     /**
