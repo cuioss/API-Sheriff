@@ -195,9 +195,10 @@ class LocationRewriterTest {
      * A backslash and a percent-encoded {@code /} or {@code \} are separators the mapping does not see
      * but the browser -- or an intermediary that decodes first -- does. The encoded backslash can move
      * the <em>origin</em>, and the encoded slash hides a traversal from the dot-segment guard, which
-     * splits on the literal {@code /} only. The refusal set mirrors
-     * {@code ConfigValidator.gatewayPathRefusal}, which already applies it to a configured redirect
-     * target (AS-3 / GW-13).
+     * splits on the literal {@code /} only. The refusal set is not mirrored but shared: both this
+     * mapping and {@code ConfigValidator}'s boot review of a configured redirect target call
+     * {@code http.LocationPathReview} (AS-3 / GW-13). The cases stay here because they pin the
+     * <em>rewriter's</em> behaviour — which value is relayed rather than mapped — not the review's.
      */
     @Nested
     @DisplayName("ambiguous separators")
@@ -261,9 +262,11 @@ class LocationRewriterTest {
         /**
          * A literal backslash is refused too, but by an earlier gate: {@code \} is not a legal path
          * character, so {@link java.net.URI} rejects the value and {@code rewrite} relays it from its
-         * parse-failure branch before the separator guard is reached. Pinned here because the refusal is
-         * what this class is about, wherever it is decided -- and because a laxer parser would hand these
-         * values to the guard, which refuses them on its own terms.
+         * parse-failure branch before the review is reached. Pinned here because the refusal is what
+         * this class is about, wherever it is decided -- and because a laxer parser would hand these
+         * values to the review, which refuses them on its own terms: the {@code cui-http} pipeline
+         * reports a literal backslash as {@code INVALID_CHARACTER}, which is why the review carries no
+         * backslash test of its own.
          */
         @ParameterizedTest
         @ValueSource(strings = {
@@ -325,6 +328,43 @@ class LocationRewriterTest {
             assertEquals(expected, REWRITER.rewrite(location),
                     "only the path decides confinement and the origin; the query and fragment are carried"
                             + " verbatim and cannot form an authority");
+        }
+    }
+
+    /**
+     * The class the substring tests this rewriter used to carry could not see, now refused because the
+     * candidate path is handed to {@code LocationPathReview} and through it to the {@code cui-http}
+     * {@code URL_PATH} pipeline. {@code %252f} is not the {@code %2f} an encoded-separator substring
+     * test looks for, and {@code %252e} is not the {@code %2e} a dot-segment test recognizes, so every
+     * value below used to map.
+     */
+    @Nested
+    @DisplayName("double encoding")
+    class DoubleEncoding {
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "/svc/v1/%252f..%252fadmin",
+                "https://backend:8443/svc/v1/%252F..%252Fadmin",
+                "/svc/v1/%252e%252e/login",
+                "/svc/v1/a%252fb",
+                "/svc/v1/a%00b",
+                "/svc/v1/a%c0%afb"})
+        @DisplayName("relays a path carrying a double-encoded or malformed escape unchanged")
+        void relaysDoubleEncodedPathsUnchanged(String location) {
+            assertEquals(location, REWRITER.rewrite(location),
+                    "a single-decoding substring test cannot see these spellings; the cui-http pipeline"
+                            + " refuses them, so the mapping is not made");
+        }
+
+        @Test
+        @DisplayName("relays a path above the review's length cap unchanged rather than mapping it")
+        void relaysOverlongPathUnchanged() {
+            String location = "/svc/v1/" + "a".repeat(1024);
+
+            assertEquals(location, REWRITER.rewrite(location),
+                    "the review refuses a path past its cap, and an unmapped relay is the fail-safe"
+                            + " direction — the browser follows the upstream's own value");
         }
     }
 

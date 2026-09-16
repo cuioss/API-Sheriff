@@ -194,6 +194,42 @@ class ConfigValidatorRedirectTest {
 
             assertTrue(errors.isEmpty(), () -> "gateway path '" + location + "' should be admitted, got: " + errors);
         }
+
+        /**
+         * The class the substring tests this review used to carry could not see, now refused because
+         * the path portion is handed to {@code LocationPathReview} and through it to the
+         * {@code cui-http} {@code URL_PATH} pipeline. {@code %252f} is not the {@code %2f} the
+         * encoded-separator test looks for and {@code %252e} is not the {@code %2e} the dot-segment
+         * test recognizes, so every value below used to be admitted at boot.
+         */
+        @ParameterizedTest(name = "refuses {0}")
+        @ValueSource(strings = {
+                "/%252F%252Fevil.example",
+                "/%252f%252fevil.example",
+                "/a/%252f..%252fadmin",
+                "/a/%252e%252e/b",
+                "/a%00b",
+                "/a%c0%afb"
+        })
+        @DisplayName("Should refuse a double-encoded or malformed escape the single-decoding tests miss")
+        void shouldRefuseDoubleEncodedSpellings(String location) {
+            String id = routeId();
+
+            List<ConfigError> errors = validate(redirectRoute(id, redirect(location, false, false)).build());
+
+            assertRefused(errors, "route '%s' redirect location".formatted(id));
+        }
+
+        @Test
+        @DisplayName("Should refuse a gateway path above the review's length cap")
+        void shouldRefuseOverlongGatewayPath() {
+            String id = routeId();
+
+            List<ConfigError> errors =
+                    validate(redirectRoute(id, redirect("/" + "a".repeat(1024), false, false)).build());
+
+            assertRefused(errors, "route '%s' redirect location".formatted(id));
+        }
     }
 
     @Nested
