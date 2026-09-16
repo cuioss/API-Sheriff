@@ -733,25 +733,25 @@ public final class ConfigValidator {
                     continue;
                 }
                 String declaredName = declaredAnchorName(endpoint, route);
-                String routePrefix = route.match().matchKey();
-                checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routePrefix, errors);
-                checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routePrefix, errors);
+                String routeMatchKey = route.match().matchKey();
+                checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routeMatchKey, errors);
+                checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routeMatchKey, errors);
             }
         }
     }
 
     /**
-     * Rule (3): an enabled route's {@code match.path_prefix} must lie inside its declared anchor's
-     * namespace (ADR-0007). A no-op when the route declares no anchor, or its declared anchor name
-     * is not a defined anchor.
+     * Rule (3): an enabled route's match key ({@code match.path_prefix}, or the exact
+     * {@code match.path}) must lie inside its declared anchor's namespace (ADR-0007). A no-op when
+     * the route declares no anchor, or its declared anchor name is not a defined anchor.
      */
     private static void checkRouteInsideDeclaredAnchorNamespace(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable String declaredName, String routePrefix, List<ConfigError> errors) {
+            RouteConfig route, @Nullable String declaredName, String routeMatchKey, List<ConfigError> errors) {
         AnchorConfig anchor = declaredName == null ? null : gateway.anchors().get(declaredName);
-        if (anchor != null && !prefixContains(anchor.pathPrefix(), routePrefix)) {
+        if (anchor != null && !prefixContains(anchor.pathPrefix(), routeMatchKey)) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
-                            .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+                            .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
         }
     }
 
@@ -760,13 +760,13 @@ public final class ConfigValidator {
      * that anchor — an undeclared squatter fails the boot (ADR-0007).
      */
     private static void checkRouteDeclaresContainingAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable String declaredName, String routePrefix, List<ConfigError> errors) {
+            RouteConfig route, @Nullable String declaredName, String routeMatchKey, List<ConfigError> errors) {
         for (AnchorConfig anchor : gateway.anchors().values()) {
-            if (prefixContains(anchor.pathPrefix(), routePrefix)
+            if (prefixContains(anchor.pathPrefix(), routeMatchKey)
                     && !anchor.name().equals(declaredName)) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                         "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
-                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+                                .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
             }
         }
     }
