@@ -599,7 +599,7 @@ class TokenRefreshCoordinatorTest {
                     () -> assertTrue(outcomes.stream().allMatch(o -> o.kind() == RefreshOutcome.Kind.DEFERRED),
                             "every contender keeps its session with a still-valid access token: " + outcomes),
                     () -> assertTrue(contenders.stream().allMatch(
-                            c -> saturationStore.resolve(c.sessionId(), windowElapsed).isPresent()),
+                                    c -> saturationStore.resolve(c.sessionId(), windowElapsed).isPresent()),
                             "no contender's session was ended"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
         }
