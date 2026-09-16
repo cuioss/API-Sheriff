@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
@@ -44,6 +45,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -55,6 +57,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
@@ -125,6 +130,13 @@ class BffRuntimeProducerTest {
      * built with, so the two must be distinguishable by construction.
      */
     private static final String ROTATED_ACCESS_TOKEN = "rotated-access-token";
+
+    /** The bundled gateway schema, read off the classpath so the contract sees the shipped copy. */
+    private static final String GATEWAY_SCHEMA_RESOURCE = "/schema/gateway.schema.json";
+
+    /** JSON pointer to the {@code oidc.session.refresh.on_failure} enum array in the bundled gateway schema. */
+    private static final String ON_FAILURE_ENUM_POINTER =
+            "/properties/oidc/properties/session/properties/refresh/properties/on_failure/enum";
 
     private final TokenValidator tokenValidator = TokenValidator.builder()
             .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
@@ -475,6 +487,80 @@ class BffRuntimeProducerTest {
             assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
             assertTrue(thrown.getMessage().contains("oidc.session.refresh.on_failure"),
                     "the refusal must name the key: " + thrown.getMessage());
+        }
+
+        /**
+         * The schema and the runtime mapping each declare the {@code on_failure} spellings, and nothing
+         * but this contract ties the two: a schema-admitted value the mapping refuses would fail boot on a
+         * document validation accepted, and a mapped value the schema rejects would be unreachable. The
+         * enum is read structurally through {@link #ON_FAILURE_ENUM_POINTER} off the bundled classpath
+         * copy, the way {@code DocumentedSetsContractTest} binds the {@code Require} posture set.
+         */
+        @Test
+        @DisplayName("Should resolve every on_failure value the bundled schema admits onto exactly the stage's policies")
+        void shouldBindSchemaEnumToRuntimePolicy() {
+            JsonNode declared = bundledOnFailureEnum();
+
+            assertOnFailureEnumBound(declared, GATEWAY_SCHEMA_RESOURCE);
+        }
+
+        /**
+         * The negative control for {@link #shouldBindSchemaEnumToRuntimePolicy()}: a copy of the shipped
+         * enum carrying a value the mapping does not know must be refused by the same assertion, so the
+         * resolution half cannot pass vacuously; and a copy missing one spelling must be refused by the
+         * policy-coverage half.
+         */
+        @Test
+        @DisplayName("Should refuse a schema enum that admits an unmapped value or omits a mapped one (negative control)")
+        void shouldRefuseDriftedSchemaEnum() {
+            ArrayNode widened = bundledOnFailureEnum().deepCopy();
+            widened.add("ignore");
+            ArrayNode narrowed = bundledOnFailureEnum().deepCopy();
+            narrowed.remove(narrowed.size() - 1);
+
+            assertAll("both directions of drift are detected",
+                    () -> assertThrows(AssertionError.class,
+                            () -> assertOnFailureEnumBound(widened, "a widened copy of " + GATEWAY_SCHEMA_RESOURCE),
+                            "a schema value the runtime mapping refuses must fail the contract"),
+                    () -> assertThrows(AssertionError.class,
+                            () -> assertOnFailureEnumBound(narrowed, "a narrowed copy of " + GATEWAY_SCHEMA_RESOURCE),
+                            "a runtime policy the schema no longer admits must fail the contract"));
+        }
+
+        private static ArrayNode bundledOnFailureEnum() {
+            JsonNode schema;
+            try (InputStream in = BffRuntimeProducerTest.class.getResourceAsStream(GATEWAY_SCHEMA_RESOURCE)) {
+                assertNotNull(in, "the bundled schema " + GATEWAY_SCHEMA_RESOURCE + " is not on the test classpath");
+                schema = new ObjectMapper().readTree(in);
+            } catch (IOException e) {
+                throw new UncheckedIOException("cannot read the bundled schema " + GATEWAY_SCHEMA_RESOURCE, e);
+            }
+            return assertInstanceOf(ArrayNode.class, schema.at(ON_FAILURE_ENUM_POINTER), GATEWAY_SCHEMA_RESOURCE
+                    + ": nothing array-valued resolves at " + ON_FAILURE_ENUM_POINTER + ", so the on_failure"
+                    + " schema-to-policy contract has nothing to bind. Update ON_FAILURE_ENUM_POINTER to where the"
+                    + " schema now declares the enum");
+        }
+
+        private static void assertOnFailureEnumBound(JsonNode declared, String label) {
+            assertFalse(declared.isEmpty(), label + ": " + ON_FAILURE_ENUM_POINTER + " resolved to an empty array,"
+                    + " so the contract would pass vacuously");
+            Set<SessionAuthenticationStage.OnFailure> resolved = EnumSet.noneOf(SessionAuthenticationStage.OnFailure.class);
+            for (JsonNode value : declared) {
+                String spelling = value.asText();
+                resolved.add(assertDoesNotThrow(() -> BffRuntimeProducer.onFailurePolicy(spelling),
+                        label + " admits on_failure '" + spelling + "' at " + ON_FAILURE_ENUM_POINTER
+                                + ", but BffRuntimeProducer.onFailurePolicy refuses it — a document the schema"
+                                + " validates would fail boot"));
+            }
+            assertEquals(EnumSet.allOf(SessionAuthenticationStage.OnFailure.class), resolved,
+                    label + " at " + ON_FAILURE_ENUM_POINTER + " does not resolve onto every"
+                            + " SessionAuthenticationStage.OnFailure constant through BffRuntimeProducer.onFailurePolicy"
+                            + " — a runtime policy the schema does not admit is unreachable configuration");
+            assertEquals(SessionAuthenticationStage.OnFailure.values().length, declared.size(),
+                    label + " at " + ON_FAILURE_ENUM_POINTER + " declares " + declared.size() + " entries for "
+                            + SessionAuthenticationStage.OnFailure.values().length
+                            + " SessionAuthenticationStage.OnFailure constants — a duplicate or an extra spelling"
+                            + " a set comparison cannot see");
         }
 
         private OidcConfig onFailureOidc(@Nullable String onFailure) {
