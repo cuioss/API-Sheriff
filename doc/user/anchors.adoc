@@ -41,9 +41,11 @@ Semantics -- deliberately few rules:
   a route sitting outside and *above* an anchor, whose `path_prefix` swallows the anchor's --
   for this rule. A prefix route whose namespace strictly contains an anchor's `path_prefix`,
   and which does not declare that anchor, fails the boot *unless* a route under the anchor
-  covers the namespace: a prefix route whose `path_prefix` is the anchor prefix itself. That
-  covering route wins every address in the namespace by longest prefix, so a broader route
-  alongside it is the ordinary topology, not a bypass. Without one, only the addresses the
+  covers the namespace: a prefix route whose `path_prefix` is the anchor prefix itself. By longest
+  prefix that covering route wins every address in the namespace *it also matches* -- every address
+  outright when it declares no further `match` dimension -- so a broader route alongside it is the
+  ordinary topology, not a bypass. Where it does declare one, the complement is the residual spelled
+  out at the end of this bullet. Without one, only the addresses the
   anchor's own routes name are protected and every other address falls through to the broader
   route -- served with *its* auth posture and *its* `security_headers`. The case this closes is
   an anchor whose only member is an exact `match.path` route: `path: /admin` claims exactly
