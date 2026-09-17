@@ -593,6 +593,8 @@ class TokenRefreshCoordinatorTest {
             }
 
             assertAll("the untracked sessions together make one attempt for the elapsed overflow window",
+                    () -> assertFalse(holdExpired.get(),
+                            "non-claiming contenders must return before the probe is released"),
                     () -> assertEquals(callsAfterOverflow + 1, calls.get(),
                             "exactly one contender claims the probe and reaches the engine (probe hold expired: "
                                     + holdExpired.get() + ")"),
@@ -700,6 +702,8 @@ class TokenRefreshCoordinatorTest {
                     othersReturned);
 
             assertAll("no overflow window was open, yet the untracked sessions together make one attempt",
+                    () -> assertFalse(holdExpired.get(),
+                            "non-claiming contenders must return before the probe is released"),
                     () -> assertEquals(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + 1, calls.get(),
                             "exactly one contender claims the first window and reaches the engine (probe hold expired: "
                                     + holdExpired.get() + ")"),
@@ -740,6 +744,8 @@ class TokenRefreshCoordinatorTest {
                     new CountDownLatch(0));
 
             assertAll("expired saturating windows no longer throttle anyone",
+                    () -> assertFalse(holdExpired.get(),
+                            "all healthy contenders must enter without serialisation"),
                     () -> assertEquals(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + PROBE_CONTENDERS, calls.get(),
                             "every contender reached the engine at once (entry hold expired: " + holdExpired.get()
                                     + ")"),
