@@ -49,9 +49,47 @@ class RouteRuntimeTest {
         void shouldMatchPrefixOnlyOnSegmentBoundaries() {
             var matcher = RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").build());
 
-            assertTrue(matcher.matchesPrefix("/api"), "Exact prefix matches");
-            assertTrue(matcher.matchesPrefix("/api/users"), "Child path matches");
-            assertFalse(matcher.matchesPrefix("/apiary"), "Non-boundary continuation does not match");
+            assertTrue(matcher.matchesPath("/api"), "Exact prefix matches");
+            assertTrue(matcher.matchesPath("/api/users"), "Child path matches");
+            assertFalse(matcher.matchesPath("/apiary"), "Non-boundary continuation does not match");
+            assertFalse(matcher.isExact(), "A path_prefix matcher is not an exact matcher");
+            assertEquals("/api", matcher.matchKey(), "The prefix is the match key");
+        }
+
+        @Test
+        @DisplayName("Should match an exact path by un-normalized string equality only")
+        void shouldMatchExactPathByEqualityOnly() {
+            var matcher = RouteMatcher.from(MatchConfig.builder().path("/a").build());
+
+            assertTrue(matcher.matchesPath("/a"), "The exact address matches");
+            assertFalse(matcher.matchesPath("/a/"), "A trailing-slash variant is a distinct address");
+            assertFalse(matcher.matchesPath("/a/b"), "A child path does not match an exact route");
+            assertFalse(matcher.matchesPath("/ab"), "A leading-substring continuation does not match");
+            assertTrue(matcher.isExact(), "A path matcher is an exact matcher");
+            assertEquals("/a", matcher.matchKey(), "The exact path is the match key");
+        }
+
+        @Test
+        @DisplayName("Should keep a trailing slash significant for an exact path that declares one")
+        void shouldKeepTrailingSlashSignificantForExactPath() {
+            var matcher = RouteMatcher.from(MatchConfig.builder().path("/a/").build());
+
+            assertTrue(matcher.matchesPath("/a/"), "The declared trailing-slash address matches");
+            assertFalse(matcher.matchesPath("/a"), "The slash-less variant is a distinct address");
+            assertFalse(matcher.matchesPath("/a/b"), "A child path does not match, even below a slash");
+        }
+
+        @Test
+        @DisplayName("Should apply the method, host and header matchers on top of an exact path")
+        void shouldApplyAllMatchersToExactPath() {
+            var matcher = RouteMatcher.from(MatchConfig.builder()
+                    .path("/login")
+                    .methods(List.of(HttpMethod.POST))
+                    .build());
+
+            assertTrue(matcher.matches("/login", HttpMethod.POST, null, Map.of()), "Path and method hold");
+            assertFalse(matcher.matches("/login", HttpMethod.GET, null, Map.of()), "Wrong method fails");
+            assertFalse(matcher.matches("/login/x", HttpMethod.POST, null, Map.of()), "A child path fails");
         }
 
         @Test

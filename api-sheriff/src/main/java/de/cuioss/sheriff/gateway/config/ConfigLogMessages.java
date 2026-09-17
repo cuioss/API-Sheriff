@@ -389,6 +389,26 @@ public final class ConfigLogMessages {
                 .identifier(124)
                 .template("The effective oidc.session.max_cookie_size is %s bytes — declared, or the shipped default when the key is omitted — which the gateway emits as a Set-Cookie header of at least %s bytes once the cookie name and attributes are counted, above the ~4096 bytes RFC 6265 6.1 guarantees a browser will keep per cookie, a budget that governs the whole header rather than the sealed value alone. In cookie mode the session IS the cookie, so a session sealing into that headroom is accepted by the gateway and then dropped SILENTLY by the browser — no error surfaces on either side and the user simply stays anonymous, which the gateway cannot detect. Raising this budget moves the failure into the browser rather than removing it. Restore the browser-safe posture by setting oidc.session.max_cookie_size to %s bytes or below in gateway.yaml, or by shortening session.cookie_name or session.ttl_seconds — those two are what widen the per-header overhead this threshold subtracts, so a gateway running either off the default has less room for the value than the default budget assumes")
                 .build();
+
+        /**
+         * A {@code redirect} route opted into {@code allow_external: true} at boot, so its
+         * {@code Location} may send clients to another origin.
+         * <p>
+         * An external redirect is a legitimate posture — a moved site, a hand-off to an identity
+         * provider — so it is reported and never refused, provided the location passed the boot
+         * open-redirect review (an absolute {@code http}/{@code https} URI with a non-empty host
+         * and no user-info). What must not happen is a gateway silently pointing clients at another
+         * origin, which is exactly the shape an open redirect takes.
+         * <p>
+         * The template names the route id only. It never carries the location value: the target is
+         * operator configuration an attacker reading the log has no business learning, and the id
+         * is enough for the operator to find it.
+         */
+        public static final LogRecord REDIRECT_EXTERNAL_TARGET_ALLOWED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(128)
+                .template("Route '%s' declares redirect.allow_external: true — its Location may send clients to another origin. Confirm the target is intended; remove allow_external to confine the redirect to a gateway path")
+                .build();
     }
 
     /**

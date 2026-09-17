@@ -17,6 +17,12 @@
 # deny-by-default lives at the URL layer, where a request matching no route reaches no
 # upstream at all. Each route below states which mode it resolves and why, because the
 # mode is selected by what the YAML does NOT say and is therefore invisible otherwise.
+#
+# UPSTREAM PATHS — upstream.path APPENDS to the alias base path (ADR-0004 Amendment A2):
+# forward URI = alias base path + upstream.path + remainder-after-match-key. The UPSTREAM alias
+# already carries go-httpbin's /anything echo base, so a route declaring upstream.path: /graphql
+# reaches /anything/graphql — each route names only its own path segment, never the /anything
+# base the alias owns.
 endpoint:
   id: httpbin
   enabled: true
@@ -42,6 +48,22 @@ endpoint:
         headers_allow: ["Content-Type", "X-Sheriff-Allowed"]
         query_allow: ["probe", "page", "size", "req"]
 
+    # --- AS-3: an exact route inside the /proxy prefix route's namespace -----
+    # match.path is an EXACT, un-normalized comparison, and exact routes are selected before prefix
+    # routes: /proxy/redirect-entry (no trailing slash) is answered here with a 308 at the gateway,
+    # while /proxy/redirect-entry/ — the Location it points at — is a different address that falls
+    # through to the httpbin-proxy prefix route above and echoes. RoutingAndResponseHeadersIT asserts
+    # both sides of that same-address split. keep_query carries the raw inbound query onto the
+    # Location. No upstream block: a redirect route resolves exactly one terminal action and never
+    # contacts an upstream. The location is a same-origin gateway path, so allow_external stays off.
+    - id: httpbin-redirect-entry
+      match:
+        path: /proxy/redirect-entry
+      redirect:
+        location: /proxy/redirect-entry/
+        status: 308
+        keep_query: true
+
     # --- The profile: minimal partial-disable route (ADR-0024) ---------------
     # Rides the SAME public, effectively-unauthenticated 'api' anchor and the endpoint's
     # require: none posture, so the boot refusal (minimal on an effectively-authenticated or
@@ -57,7 +79,7 @@ endpoint:
       match:
         path_prefix: /proxy/minimal-mode
       upstream:
-        path: /anything/minimal-mode
+        path: /minimal-mode
       security_filter:
         profile: minimal
         # A deliberately small cap so a modest test body trips it: the cap is enforced under
@@ -96,7 +118,7 @@ endpoint:
         path_prefix: /graphql
         methods: ["POST"]
       upstream:
-        path: /anything/graphql
+        path: /graphql
       forward:
         headers_allow: []
 
@@ -108,7 +130,7 @@ endpoint:
         path_prefix: /upload/small
         methods: ["POST"]
       upstream:
-        path: /anything/upload-small
+        path: /upload-small
       forward:
         headers_allow: []
 
@@ -118,7 +140,7 @@ endpoint:
         path_prefix: /upload/large
         methods: ["POST"]
       upstream:
-        path: /anything/upload-large
+        path: /upload-large
       forward:
         headers_allow: []
 
@@ -141,7 +163,7 @@ endpoint:
       match:
         path_prefix: /proxy/deny-list
       upstream:
-        path: /anything/deny-list
+        path: /deny-list
       forward:
         headers_deny: ["Accept-Language", "X-Sheriff-Denied"]
 
@@ -156,4 +178,4 @@ endpoint:
       match:
         path_prefix: /proxy/forward-all
       upstream:
-        path: /anything/forward-all
+        path: /forward-all

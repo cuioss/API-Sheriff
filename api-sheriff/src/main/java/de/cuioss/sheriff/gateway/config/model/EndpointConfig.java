@@ -28,6 +28,14 @@ import org.jspecify.annotations.Nullable;
  * {@code id} is mandatory and unique across all endpoint files (a duplicate
  * fails the boot). {@code enabled} defaults to {@code true}; a disabled endpoint
  * is inert (its routes are not merged and its alias need not resolve).
+ * {@code baseUrl} is conditionally mandatory: an endpoint must declare it when at
+ * least one of its routes is a proxy route
+ * ({@link RouteConfig#isProxyRoute()}); an endpoint serving only {@code asset} and/or
+ * {@code redirect} routes may omit it. Only the <em>obligation</em> is conditional —
+ * declaring an alias is never refused for want of a proxy route, and a declared alias
+ * must resolve in the topology whether or not a proxy route uses it. Absence is
+ * modelled as {@code null} and the conditional rule is enforced by the configuration
+ * validator, not the record.
  * {@code anchor}, when present, is the default anchor membership for this
  * endpoint's routes (ADR-0007); a route may override it. {@code auth} is the
  * default auth posture for the routes; it is optional — an anchored endpoint whose
@@ -41,7 +49,8 @@ import org.jspecify.annotations.Nullable;
  *
  * @param id               the unique endpoint id (mandatory)
  * @param enabled          whether the endpoint is active
- * @param baseUrl          the topology alias (mandatory)
+ * @param baseUrl          the topology alias, {@code null} when the endpoint declares
+ *                         none (permitted only without proxy routes)
  * @param anchor           the default anchor membership, {@code null} when the endpoint
  *                         declares none
  * @param auth             the default auth posture for the routes, {@code null} when the
@@ -59,7 +68,7 @@ import org.jspecify.annotations.Nullable;
 public record EndpointConfig(
 String id,
 boolean enabled,
-String baseUrl,
+@Nullable String baseUrl,
 @Nullable String anchor,
 @Nullable AuthConfig auth,
 List<HttpMethod> allowedMethods,
@@ -67,12 +76,11 @@ List<HttpMethod> allowedMethods,
 List<RouteConfig> routes) {
 
     /**
-     * Canonical constructor requiring the mandatory fields and defensively copying
-     * the collections.
+     * Canonical constructor requiring {@code id} and defensively copying the
+     * collections.
      */
     public EndpointConfig {
         Objects.requireNonNull(id, "id");
-        Objects.requireNonNull(baseUrl, "baseUrl");
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
         routes = routes == null ? List.of() : List.copyOf(routes);
     }

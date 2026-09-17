@@ -16,10 +16,12 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -84,6 +86,84 @@ class DirectoryAssetServingIT extends BaseIntegrationTest {
                 .post("/assets/static/app.css")
                 .then()
                 .statusCode(405);
+    }
+
+    @Nested
+    @DisplayName("AS-12 — asset.index and asset.fallback on the /assets/spa route")
+    class IndexAndFallback {
+
+        /** A marker only the mounted assets/index.html carries. */
+        private static final String SPA_SHELL_MARKER = "api-sheriff-spa-shell";
+
+        @Test
+        @DisplayName("a directory address serves the configured index")
+        void directoryAddressServesIndex() {
+            var response = given()
+                    .when()
+                    .get("/assets/spa/")
+                    .then()
+                    .statusCode(200)
+                    .extract();
+
+            assertAll("the index is served through the governed envelope",
+                    () -> assertTrue(response.contentType().contains("text/html"),
+                            "the content type follows the served index file's name"),
+                    () -> assertTrue(response.asString().contains(SPA_SHELL_MARKER),
+                            "the body is the mounted index.html"));
+        }
+
+        @Test
+        @DisplayName("an unknown extensionless path serves the root-level fallback")
+        void unknownExtensionlessPathServesFallback() {
+            var response = given()
+                    .when()
+                    .get("/assets/spa/deep/link")
+                    .then()
+                    .statusCode(200)
+                    .extract();
+
+            assertTrue(response.asString().contains(SPA_SHELL_MARKER),
+                    "a client-side route with no file behind it is answered with the SPA shell");
+        }
+
+        @Test
+        @DisplayName("an unknown path with an extension stays 404 — the fallback never masks a missing asset")
+        void unknownPathWithExtensionIsNotFound() {
+            given()
+                    .when()
+                    .get("/assets/spa/missing.js")
+                    .then()
+                    .statusCode(404);
+        }
+
+        @Test
+        @DisplayName("a traversal attempt is refused 400 before it can reach index or fallback")
+        void traversalIsRefusedBeforeTheAssetSource() {
+            // 400, not 404. This asserts the status only: the request is refused, so no asset is
+            // served and the index/fallback substitution cannot mask a traversal. WHICH guard
+            // refuses it is deliberately not claimed here — the response carries no attribution and
+            // this test observes nothing that would distinguish one from another. The source-level
+            // guarantee (index and fallback never substitute for a traversal) is pinned over seven
+            // traversal spellings, this one included, by DirectoryAssetSourceTest.
+            given()
+                    .urlEncodingEnabled(false)
+                    .when()
+                    .get("/assets/spa/%2e%2e/%2e%2e/etc/passwd")
+                    .then()
+                    .statusCode(400);
+        }
+
+        @Test
+        @DisplayName("the same root without an index still answers a directory address 404")
+        void routeWithoutIndexAnswersDirectoryAddressNotFound() {
+            // THE CONTROL: /assets/static serves the same /app/assets root but declares no index, so the
+            // index above is proven to come from the route's configuration rather than from the root.
+            given()
+                    .when()
+                    .get("/assets/static/")
+                    .then()
+                    .statusCode(404);
+        }
     }
 
     /**

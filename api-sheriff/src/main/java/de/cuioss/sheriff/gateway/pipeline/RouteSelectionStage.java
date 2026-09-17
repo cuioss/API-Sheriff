@@ -27,11 +27,14 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 /**
  * Stage 2 — deny-by-default route selection on the single canonical path.
  * <p>
- * The stage walks the boot-assembled {@link RouteRuntime} list (already ordered longest-prefix-first
- * by the {@code RouteRuntimeAssembler}) and selects the first route whose compiled
- * {@link RouteRuntime#matcher() matcher} accepts the request — prefix <em>and</em> match-methods
- * <em>and</em> host <em>and</em> every header matcher. Because the list is longest-prefix-first, the
- * first match is the most specific route. No candidate is a hard 404
+ * The stage walks the boot-assembled {@link RouteRuntime} list — already ordered by the route-table
+ * builder <em>exact-first</em> (every {@code match.path} route before every {@code match.path_prefix}
+ * route), then longest-prefix-first — and selects the first route whose compiled
+ * {@link RouteRuntime#matcher() matcher} accepts the request — exact path or prefix <em>and</em>
+ * match-methods <em>and</em> host <em>and</em> every header matcher. First match wins, so for the same
+ * address an exact route is selected before any prefix route, and among prefix routes the most
+ * specific one is selected. An exact path is compared un-normalized: {@code /a} does not match
+ * {@code /a/}. No candidate is a hard 404
  * ({@link EventType#NO_ROUTE_MATCHED}); the gateway never forwards an unmatched request.
  * <p>
  * Selection consumes the {@link PipelineRequest#canonicalPath() canonical path} set at stage 1
@@ -45,7 +48,8 @@ public final class RouteSelectionStage {
     private final List<RouteRuntime> routes;
 
     /**
-     * @param routes the boot-assembled routes, ordered longest {@code path_prefix} first
+     * @param routes the boot-assembled routes, ordered exact routes first, then longest
+     *               {@code path_prefix} first
      */
     public RouteSelectionStage(List<RouteRuntime> routes) {
         this.routes = List.copyOf(Objects.requireNonNull(routes, "routes"));

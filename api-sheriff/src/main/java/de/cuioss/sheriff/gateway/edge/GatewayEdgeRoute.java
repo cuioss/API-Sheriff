@@ -59,6 +59,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -138,15 +139,26 @@ import org.jspecify.annotations.Nullable;
  * first, under the {@linkplain EdgeHardeningOptions#reservedBodyMaxBytes() reserved-body byte
  * ceiling}, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
  * <ol>
- *   <li>stage 0 — response-header preparation + CORS preflight (short-circuits a preflight here);</li>
+ *   <li>stage 0 — global response security headers + global CORS (short-circuits a preflight here,
+ *       before route selection and authentication);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
  *       guard, and the framing gate;</li>
- *   <li>stage 2 / 2b — deny-by-default route selection then the per-route verb gate;</li>
+ *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
+ *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
+ *       then the per-route verb gate;</li>
  *   <li>stage 3 — per-route thorough checks ({@code allowed_paths}, body cap, divergent pipeline);</li>
  *   <li>stage 4 — offline bearer-token validation;</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
  *       {@link RouteRuntime#getEffectiveForward() effectiveForward} and the global forwarded block;</li>
- *   <li>stage 6 / 7 — streamed upstream dispatch (byte-capped) and the streamed response relay.</li>
+ *   <li>stage 6 / 7 — the route's terminal action: streamed upstream dispatch (byte-capped) and the
+ *       streamed response relay for a proxy route, the buffered governed asset response for an
+ *       asset route, or — for a redirect route — the {@link RedirectStage} answer (configured
+ *       status, {@code Location}, the accumulated stage headers, {@code Cache-Control: no-store}
+ *       when the route is authenticated or the answer carries a {@code Set-Cookie}, {@code Vary}
+ *       naming the route's {@code match.headers} matchers, empty body)
+ *       written without consuming the forward policy or contacting any upstream. A redirect is
+ *       answered only after stage 4, so an unauthenticated request under an authenticated anchor is
+ *       challenged before the location is disclosed.</li>
  * </ol>
  * A {@link GatewayException} at any stage is rendered as an RFC 9457 {@code application/problem+json}
  * response carrying the failing event's status and problem type, never leaking internal detail. On
@@ -174,6 +186,12 @@ public class GatewayEdgeRoute {
     private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
     private static final String COOKIE_HEADER = "Cookie";
     private static final String LOCATION_HEADER = "Location";
+    /** The {@code Cache-Control} response header the redirect terminal action governs. */
+    private static final String CACHE_CONTROL_HEADER = "Cache-Control";
+    /** The {@code Cache-Control} value forced on an authenticated or cookie-bearing redirect answer. */
+    private static final String NO_STORE = "no-store";
+    /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
+    private static final String VARY_HEADER = "Vary";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final String CONNECTION_HEADER = "Connection";
     private static final String CONNECTION_CLOSE = "close";
@@ -233,6 +251,7 @@ public class GatewayEdgeRoute {
     private final AuthenticationStage authenticationStage;
     private final ForwardPolicyStage forwardPolicyStage;
     private final ResponseStage responseStage;
+    private final RedirectStage redirectStage;
     private final OriginValidationStage originValidationStage;
     private final WebSocketRelayStage webSocketRelayStage;
     private final GrpcStatusMapper grpcStatusMapper;
@@ -398,6 +417,7 @@ public class GatewayEdgeRoute {
                 : new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
+        this.redirectStage = new RedirectStage();
         this.originValidationStage = new OriginValidationStage();
         // One WebSocketClient for the whole edge: HttpClient.webSocket(...) is deprecated in favour of
         // the dedicated client, and the dialer carries no per-route state — the upstream host, port,
@@ -763,9 +783,20 @@ public class GatewayEdgeRoute {
                 return;
             }
             routeSelectionStage.process(request);
-            verbGateStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
+            // Stash the metrics label the moment the route is known, not after the stages below have
+            // agreed to serve it. Every one of them can end the request by throwing — the verb gate's
+            // 405 first among them — and a label written after them would leave those terminal
+            // responses metered under NO_ROUTE, which is both wrong and the opposite of what makes
+            // them worth metering: a route answering 405 is exactly what an operator needs to find.
             ctx.put(ROUTE_KEY, route.getId());
+            // Stage 2a: from here on every response — the 405 of the verb gate included — is
+            // route-scoped, so the route's resolved security_headers block (anchor before global,
+            // wholesale) replaces the global block seeded at stage 0. Everything answered earlier
+            // (a stage-1 rejection, an unrouted 404, the CORS preflight) keeps the global block.
+            securityHeadersStage.applyRouteHeaders(request, route.getSecurityHeaders(),
+                    route.getMatcher().matchHeaderNames());
+            verbGateStage.process(request);
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
             // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin
             // provenance before the session runtime resolves it. A bearer-only gateway has no session
@@ -782,6 +813,17 @@ public class GatewayEdgeRoute {
             // upstream). Mirrors the post-framing short-circuit gate above.
             if (request.shortCircuitStatus().isPresent()) {
                 writeShortCircuit(ctx, request);
+                return;
+            }
+            // A redirect route is answered here, after authentication and the short-circuit gate
+            // above: an unauthenticated request under an authenticated anchor is challenged before
+            // any configured location is disclosed. No forward policy is consumed and no upstream is
+            // contacted, so REQUEST_FORWARDED is deliberately not incremented.
+            RedirectConfig redirect = route.getRedirect();
+            if (redirect != null) {
+                writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query(),
+                        route.getEffectiveAuth(), request.responseSetCookies(),
+                        route.getMatcher().matchHeaderNames()));
                 return;
             }
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
@@ -880,7 +922,7 @@ public class GatewayEdgeRoute {
 
     private void renderReserved(RoutingContext ctx, PipelineRequest request,
             BffRuntime.ReservedHttpResponse response) {
-        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse httpResponse = ctx.response();
@@ -928,9 +970,7 @@ public class GatewayEdgeRoute {
 
     private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
-        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
-        String canonical = requireCanonicalPath(request);
-        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         // An asset route serves its terminal action directly — the buffered, gateway-governed
         // asset response — instead of streaming to an upstream. Auth (stage 4) has already run,
         // so an unauthorized request never reaches the source (auth-before-source, ADR-0014).
@@ -959,9 +999,14 @@ public class GatewayEdgeRoute {
         // (renderProblem / writeShortCircuit / failRelay); doing the relay off-loop races the
         // response object and corrupts / truncates the streamed body.
         List<String> stageSetCookies = request.responseSetCookies();
+        // Snapshot both header maps on this virtual thread: the relay runs on the event loop, and a
+        // proxied response is the one path where the default-mode map defers to an origin header.
+        Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         ctx.vertx().runOnContext(v -> {
             applyStageSetCookies(ctx.response(), stageSetCookies);
-            responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
+            responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), route.getLocationRewriter(),
+                    setHeaders, defaultHeaders)
                     .onFailure(failure -> failRelay(ctx, failure));
         });
     }
@@ -992,9 +1037,7 @@ public class GatewayEdgeRoute {
     private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
         originValidationStage.validate(request, route.getId(), route.getEffectiveAllowedOrigins());
-        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
-        String canonical = requireCanonicalPath(request);
-        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         String query = renderQuery(forward.query());
         ResolvedUpstream upstreamTarget = route.getUpstream();
         if (upstreamTarget == null) {
@@ -1017,7 +1060,9 @@ public class GatewayEdgeRoute {
         // whether there is a sub-permit to return.
         ctx.put(WEBSOCKET_RELAY_GUARD_KEY, new AtomicBoolean());
         applyStageSetCookies(ctx.response(), request.responseSetCookies());
-        webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri,
+        // A handshake-failure response is gateway-authored — there is no origin header to defer to — so
+        // the relay receives both header maps merged.
+        webSocketRelayStage.relay(ctx, route, forward.headers(), request.gatewayAuthoredResponseHeaders(), uri,
                 () -> releaseAdmission(ctx, admissionGuard));
     }
 
@@ -1030,9 +1075,7 @@ public class GatewayEdgeRoute {
      */
     private void dispatchGrpc(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
-        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
-        String canonical = requireCanonicalPath(request);
-        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         String query = renderQuery(forward.query());
         ResolvedUpstream upstreamTarget = route.getUpstream();
         if (upstreamTarget == null) {
@@ -1051,10 +1094,12 @@ public class GatewayEdgeRoute {
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
         // like the HTTP relay path.
         List<String> stageSetCookies = request.responseSetCookies();
+        Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         ctx.vertx().runOnContext(v -> {
             applyStageSetCookies(ctx.response(), stageSetCookies);
             responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
-                    request.responseHeaders())
+                    setHeaders, defaultHeaders)
                     .onFailure(failure -> failRelay(ctx, failure));
         });
     }
@@ -1076,7 +1121,7 @@ public class GatewayEdgeRoute {
     }
 
     private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served) {
-        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
@@ -1112,9 +1157,55 @@ public class GatewayEdgeRoute {
         });
     }
 
+    /**
+     * Writes a redirect route's terminal answer on the event loop: the configured status, the
+     * accumulated stage headers and {@code Set-Cookie} lines, the gateway-owned
+     * {@code Cache-Control: no-store} when the answer is {@linkplain RedirectStage.Answer#noStore()
+     * uncacheable} and the gateway-owned {@code Vary} when the answer names
+     * {@linkplain RedirectStage.Answer#vary() varying request headers}, then the {@code Location} —
+     * written last so no stage header can displace it — and an empty body.
+     * <p>
+     * All three gateway-owned headers are written <em>after</em> the stage headers, so none can be
+     * displaced by an accumulated value of the same name. Neither {@code Cache-Control} nor
+     * {@code Vary} is a gateway-owned security header, so neither carries a {@code header_modes}
+     * entry and the set/default precedence does not apply to them — and a redirect answer has no
+     * origin response to defer to in any case.
+     * <p>
+     * {@code Vary} is the one exception to "written after, so it wins": writing it last would
+     * otherwise DISCARD the stage value rather than override a competing one, and the stage value is
+     * load-bearing — the CORS reflection announces {@code Origin} there. It is therefore merged with
+     * the answer's names through {@link SecurityHeadersStage#mergedVary}, the same rule the stage
+     * itself uses.
+     */
+    private void writeRedirect(RoutingContext ctx, PipelineRequest request, RedirectStage.Answer answer) {
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            HttpServerResponse response = ctx.response();
+            if (response.ended()) {
+                return;
+            }
+            response.setStatusCode(answer.status());
+            stageHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, stageSetCookies);
+            if (answer.noStore()) {
+                response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
+            }
+            if (!answer.vary().isEmpty()) {
+                // MERGE, not replace. The stage headers written above can already carry a Vary — the
+                // CORS reflection announces Origin there — and overwriting it would drop that name
+                // while adding these, trading one cache-variant bug for another.
+                response.putHeader(VARY_HEADER,
+                        SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), answer.vary()));
+            }
+            response.putHeader(LOCATION_HEADER, answer.location());
+            response.end();
+        });
+    }
+
     private void writeShortCircuit(RoutingContext ctx, PipelineRequest request) {
         int status = request.shortCircuitStatus().orElse(204);
-        Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
+        Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> setCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
@@ -1137,7 +1228,7 @@ public class GatewayEdgeRoute {
     private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType) {
         RouteRuntime selected = request != null ? request.selectedRoute() : null;
         if (selected != null && selected.getProtocol() == Protocol.GRPC) {
-            Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
+            Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
             List<String> setCookies = request.responseSetCookies();
             ctx.vertx().runOnContext(v -> {
                 applyStageSetCookies(ctx.response(), setCookies);
@@ -1163,7 +1254,7 @@ public class GatewayEdgeRoute {
             title = category != null ? category.title() : "Internal Server Error";
         }
         String body = "{\"type\":\"" + type + "\",\"title\":\"" + title + "\",\"status\":" + status + "}";
-        Map<String, String> responseHeaders = request != null ? Map.copyOf(request.responseHeaders()) : Map.of();
+        Map<String, String> responseHeaders = request != null ? request.gatewayAuthoredResponseHeaders() : Map.of();
         // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
         // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
         List<String> setCookies = request != null ? request.responseSetCookies() : List.of();
@@ -1291,13 +1382,27 @@ public class GatewayEdgeRoute {
         return canonical;
     }
 
+    /**
+     * The part of the canonical path below the selected route's match key — the remainder every
+     * dispatch path appends to the upstream base path. An exact route matched the whole address, so
+     * its remainder is empty; a prefix route strips its (trailing-slash-free) prefix.
+     */
+    private static String remainderAfterMatchKey(RouteRuntime route, String canonical) {
+        if (route.getMatcher().isExact()) {
+            return "";
+        }
+        String prefix = stripTrailingSlash(route.getMatcher().matchKey());
+        return canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+    }
+
     private static String stripTrailingSlash(String value) {
         return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
     }
 
     /**
      * Builds the live {@link AssetSource} for an asset route's resolved terminal action: a
-     * {@link DirectoryAssetSource} rooted at the configured directory for a {@code directory}
+     * {@link DirectoryAssetSource} rooted at the configured directory — carrying its optional
+     * {@code index} and {@code fallback} file names — for a {@code directory}
      * source, or an {@link UpstreamAssetSource} over the boot-resolved secondary origin for an
      * {@code upstream} source. Both apply the gateway's confinement and response envelope; the
      * upstream source rides its own SSRF-guarded fetch seam (ADR-0014), not the proxy data plane.
@@ -1309,7 +1414,8 @@ public class GatewayEdgeRoute {
                 if (directory == null) {
                     throw new IllegalStateException("directory asset source requires a directory root");
                 }
-                yield new DirectoryAssetSource(Path.of(directory), asset.access(), assetContentTypes);
+                yield new DirectoryAssetSource(Path.of(directory), asset.access(), asset.index(), asset.fallback(),
+                        assetContentTypes);
             }
             case UPSTREAM -> {
                 ResolvedUpstream upstream = asset.upstream();

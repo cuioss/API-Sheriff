@@ -20,18 +20,21 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * The immutable, longest-prefix-ordered table of fully materialized routes the
- * gateway serves.
+ * The immutable, exact-first then longest-prefix-ordered table of fully materialized
+ * routes the gateway serves.
  * <p>
  * The table is assembled once at boot from the enabled endpoints (disabled
  * endpoints contribute no rows) by the route-table builder. Its {@code routes}
- * are ordered most-specific-first — by descending {@code path_prefix} length — so
- * the first prefix match found by {@link #lookup(String)} is the most specific
- * route for a request path. The hot path consumes the already materialized
- * {@link ResolvedRoute} values and never re-derives inheritance.
+ * are ordered most-specific-first: every exact ({@code match.path}) route precedes
+ * every prefix ({@code match.path_prefix}) route, and prefix routes follow by
+ * descending {@code path_prefix} length. The first match found by
+ * {@link #lookup(String)} is therefore the most specific route for a request path —
+ * an exact route for the same address always wins over a prefix route. The hot path
+ * consumes the already materialized {@link ResolvedRoute} values and never re-derives
+ * inheritance.
  *
- * @param routes the resolved routes, ordered longest {@code path_prefix} first,
- *               empty when no enabled endpoint declares a route
+ * @param routes the resolved routes, exact routes first, then longest
+ *               {@code path_prefix} first, empty when no enabled endpoint declares a route
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -46,19 +49,29 @@ public record RouteTable(List<ResolvedRoute> routes) {
     }
 
     /**
-     * Finds the most specific route whose {@code path_prefix} is a prefix of the
-     * given request path.
+     * Finds the most specific route whose path matcher covers the given request path.
      * <p>
-     * Because the routes are ordered longest-prefix-first, the first prefix match
-     * is the most specific one. This is a path-prefix lookup only; the full matcher
-     * set (host, methods, headers) is applied by the request pipeline.
+     * An exact route matches only a path equal to its {@code match.path} (un-normalized,
+     * so a trailing slash is significant); a prefix route matches a path at or below its
+     * {@code path_prefix} on a segment boundary. Because the routes are ordered exact-first,
+     * then longest-prefix-first, the first match is the most specific one. This is a path
+     * lookup only; the full matcher set (host, methods, headers) is applied by the request
+     * pipeline.
      *
      * @param path the request path to resolve
-     * @return the most specific prefix-matching route, or empty when none matches
+     * @return the most specific path-matching route, or empty when none matches
      */
     public Optional<ResolvedRoute> lookup(String path) {
         Objects.requireNonNull(path, "path");
-        return routes.stream().filter(route -> matchesPrefix(path, route.pathPrefix())).findFirst();
+        return routes.stream().filter(route -> matchesPath(path, route.match())).findFirst();
+    }
+
+    /**
+     * Tests whether {@code path} is covered by the route's path matcher: string equality for
+     * an exact matcher, the segment-boundary prefix rule otherwise.
+     */
+    private static boolean matchesPath(String path, MatchConfig match) {
+        return match.isExact() ? path.equals(match.matchKey()) : matchesPrefix(path, match.matchKey());
     }
 
     /**

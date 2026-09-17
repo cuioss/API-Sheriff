@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.config.validation;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -32,6 +34,7 @@ import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
+import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -55,6 +58,7 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -65,8 +69,10 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
+import de.cuioss.sheriff.gateway.http.LocationPathReview;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -86,7 +92,9 @@ import org.jspecify.annotations.Nullable;
  * them.
  * <p>
  * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
- * existence, route/namespace membership agreement, the non-weakenable auth floor,
+ * existence, route/namespace membership agreement, anchor-namespace coverage (no route
+ * outside an anchor may swallow the anchor's namespace unless a route under the anchor
+ * covers it), the non-weakenable auth floor,
  * the per-route auth resolvability (every route must resolve an auth posture from
  * its own {@code auth}, its endpoint, or a declared anchor), and the anchor-aware
  * effective-auth completeness check — all collect into the same shared
@@ -113,6 +121,12 @@ import org.jspecify.annotations.Nullable;
  * keep the {@code __Host-} guarantee the gateway-owned cookies carry, be writable verbatim into a
  * {@code Set-Cookie} header, and not collide with a gateway-owned cookie. The schema declares the key
  * an unrestricted string; this rule is the single enforcing authority.
+ * <p>
+ * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
+ * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect
+ * spellings at boot — a redirect is written verbatim at request time, so this review is the only
+ * place its target is ever judged — and refuses {@code keep_query} together with
+ * {@code allow_external}, the pair that would hand the inbound query to a foreign origin.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -214,6 +228,9 @@ public final class ConfigValidator {
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
 
+    /** The only schemes an {@code allow_external} redirect location may carry. */
+    private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
+
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
@@ -232,6 +249,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateContentSecurityPolicy(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateHeaderModes(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
@@ -241,6 +260,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateRewriteLocationProtocol(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateAssetIndexAndFallback(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
@@ -556,33 +577,70 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: no two enabled routes share a (normalized) {@code match.path_prefix}
-     * without being distinguished by host, method, or a header matcher. The
-     * same-prefix disjointness check runs here in the all-violations pass rather than
-     * being thrown during route-table assembly (ADR-0009 single-reporter principle);
-     * prefix normalization makes {@code /api} and {@code /api/} collide.
+     * Rule: no two enabled routes share a path matcher without being distinguished by host, method,
+     * or a header matcher. The disjointness check runs here in the all-violations pass rather than
+     * being thrown during route-table assembly (ADR-0009 single-reporter principle).
+     * <ul>
+     *   <li>Two prefix routes collide when their normalized {@code match.path_prefix} values are
+     *       equal — prefix normalization makes {@code /api} and {@code /api/} collide.</li>
+     *   <li>Two exact routes collide when their {@code match.path} strings are equal. An exact path
+     *       is compared un-normalized, so {@code /a} and {@code /a/} are distinct addresses and do
+     *       not collide.</li>
+     *   <li>An exact route never collides with a prefix route, even for the same string: the exact
+     *       route is selected first by design, and the prefix route keeps serving every other path
+     *       below it.</li>
+     * </ul>
      */
     private static void validateRouteDisjointness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        List<RouteWithOwner> routes = flattenRoutes(endpoints);
+        for (int i = 0; i < routes.size(); i++) {
+            for (int j = i + 1; j < routes.size(); j++) {
+                checkRoutePairDisjoint(routes.get(i), routes.get(j), errors);
+            }
+        }
+    }
+
+    /**
+     * @return every enabled-or-not route across every endpoint, each paired with the endpoint that
+     *         declares it — the flat population the pairwise disjointness check iterates
+     */
+    private static List<RouteWithOwner> flattenRoutes(List<EndpointConfig> endpoints) {
         List<RouteWithOwner> routes = new ArrayList<>();
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 routes.add(new RouteWithOwner(endpoint, route));
             }
         }
-        for (int i = 0; i < routes.size(); i++) {
-            for (int j = i + 1; j < routes.size(); j++) {
-                RouteWithOwner first = routes.get(i);
-                RouteWithOwner second = routes.get(j);
-                String firstPrefix = RouteTableBuilder.normalizePrefix(first.route().match().pathPrefix());
-                String secondPrefix = RouteTableBuilder.normalizePrefix(second.route().match().pathPrefix());
-                if (firstPrefix.equals(secondPrefix)
-                        && overlaps(first.route().match(), second.route().match())) {
-                    errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
-                            "routes '%s' and '%s' share prefix '%s' and are not disjoint".formatted(
-                                    first.route().id(), second.route().id(), firstPrefix)));
-                }
-            }
+        return routes;
+    }
+
+    /**
+     * Records a disjointness violation for one route pair, or returns having found none. The three
+     * refusals are applied in the order the rule states them: two routes of different match forms
+     * never collide, two routes with different collision keys never collide, and two routes a host,
+     * method or header matcher tells apart never collide.
+     */
+    private static void checkRoutePairDisjoint(RouteWithOwner first, RouteWithOwner second, List<ConfigError> errors) {
+        MatchConfig firstMatch = first.route().match();
+        MatchConfig secondMatch = second.route().match();
+        if (firstMatch.isExact() != secondMatch.isExact()) {
+            return;
         }
+        String firstKey = disjointnessKey(firstMatch);
+        if (!firstKey.equals(disjointnessKey(secondMatch)) || !overlaps(firstMatch, secondMatch)) {
+            return;
+        }
+        String kind = firstMatch.isExact() ? "path" : "prefix";
+        errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
+                "routes '%s' and '%s' share %s '%s' and are not disjoint".formatted(
+                        first.route().id(), second.route().id(), kind, firstKey)));
+    }
+
+    /**
+     * The key two same-form routes collide on: the exact path verbatim, or the normalized prefix.
+     */
+    private static String disjointnessKey(MatchConfig match) {
+        return match.isExact() ? match.matchKey() : RouteTableBuilder.normalizePrefix(match.matchKey());
     }
 
     private record RouteWithOwner(EndpointConfig endpoint, RouteConfig route) {
@@ -630,12 +688,25 @@ public final class ConfigValidator {
         return presentA != null && presentB != null && !presentA.equals(presentB);
     }
 
+    /**
+     * Rule: {@code base_url} is mandatory exactly when the endpoint carries a proxy route
+     * ({@link RouteConfig#isProxyRoute()} — the same predicate the route-table builder resolves the
+     * alias on), and a declared alias must resolve in the topology whether or not a proxy route uses
+     * it. An endpoint serving only {@code asset} and/or {@code redirect} routes may omit
+     * {@code base_url}.
+     */
     private static void validateBaseUrlResolvable(List<EndpointConfig> endpoints, ResolvedTopology topology,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
-            if (topology.lookup(endpoint.baseUrl()).isEmpty()) {
+            String baseUrl = endpoint.baseUrl();
+            if (baseUrl == null) {
+                if (endpoint.routes().stream().anyMatch(RouteConfig::isProxyRoute)) {
+                    errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
+                            "endpoint '%s' declares proxy route(s) but no base_url".formatted(endpoint.id())));
+                }
+            } else if (topology.lookup(baseUrl).isEmpty()) {
                 errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
-                        "unresolved topology alias: " + endpoint.baseUrl()));
+                        "unresolved topology alias: " + baseUrl));
             }
         }
     }
@@ -683,20 +754,35 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rules: (3) every enabled route's {@code match.path_prefix} lies inside its
+     * Rules: (3) every enabled route's match key ({@code match.path_prefix}, or the exact
+     * {@code match.path}) lies inside its
      * declared anchor's namespace; (4) every enabled route whose path lies inside
      * any anchor namespace declares exactly that anchor — an undeclared squatter
-     * fails the boot (ADR-0007).
+     * fails the boot (ADR-0007); (4b) no enabled <em>prefix</em> route whose namespace strictly
+     * contains an anchor's {@code path_prefix} serves that anchor's namespace, unless the anchor
+     * covers it with a prefix route of its own — the mirror of rule (4), see
+     * {@link #checkRouteContainsUncoveredAnchor}.
      * <p>
-     * {@code protocol: grpc} routes are exempt from both containment rules. A gRPC
-     * method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
+     * {@code protocol: grpc} routes are exempt from rules (3) and (4) — and from those two only.
+     * Both are <em>declaration</em>-scoped: they judge a route by where its own match key sits. A
+     * gRPC method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
      * service segment is a single opaque path segment (dots, no slashes), so it is
      * structurally never nested under a gateway path namespace on a segment boundary
      * — no non-root anchor {@code path_prefix} can contain it, and stock gRPC clients
-     * cannot be told to prepend a namespace prefix. Only the path-prefix containment
-     * geometry is skipped for gRPC routes: a gRPC route still declares an anchor for
-     * its ADR-0013 type/access classification and its ADR-0007 auth floor, and every
-     * other anchor rule (declared-anchor existence, pairwise-disjoint prefixes,
+     * cannot be told to prepend a namespace prefix.
+     * <p>
+     * Rule (4b) judges the opposite geometry — whether the route's own prefix <em>contains</em> an
+     * anchor namespace — so that rationale does not reach it, and it is applied to gRPC routes
+     * unchanged. Nothing constrains a gRPC route's declared match key to a bare service path, and
+     * selection is protocol-blind ({@code RouteTable.lookup} filters on path alone, and
+     * {@code RouteMatcher} carries no protocol dimension), so a gRPC route declaring a broad
+     * {@code path_prefix} answers plain HTTP requests inside the swallowed anchor namespace with
+     * <em>its</em> auth posture and <em>its</em> {@code security_headers} block — the same CWE-284
+     * desync rule (4b) exists to close.
+     * <p>
+     * Only the two declaration-scoped containment checks are skipped for gRPC routes: a gRPC route
+     * still declares an anchor for its ADR-0013 type/access classification and its ADR-0007 auth
+     * floor, and every other anchor rule (declared-anchor existence, pairwise-disjoint prefixes,
      * non-weakenable auth floor, access→auth matrix) stays enforced for it unchanged.
      * {@code websocket} and {@code http} routes keep full containment enforcement.
      */
@@ -705,33 +791,38 @@ public final class ConfigValidator {
         if (gateway.anchors().isEmpty()) {
             return;
         }
+        Set<String> coveredAnchors = anchorsCoveredByOwnPrefixRoute(gateway, endpoints);
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                if (effectiveProtocol(route) == Protocol.GRPC) {
-                    // gRPC routes ride a service-rooted single-segment path that no gateway path
-                    // namespace can contain on a segment boundary — exempt from containment (rules 3 & 4).
-                    continue;
-                }
                 String declaredName = declaredAnchorName(endpoint, route);
-                String routePrefix = route.match().pathPrefix();
-                checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routePrefix, errors);
-                checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routePrefix, errors);
+                String routeMatchKey = route.match().matchKey();
+                // gRPC routes ride a service-rooted single-segment path that no gateway path namespace
+                // can contain on a segment boundary, so the two declaration-scoped containment rules
+                // (3) and (4) are skipped for them — and only those two.
+                if (effectiveProtocol(route) != Protocol.GRPC) {
+                    checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routeMatchKey,
+                            errors);
+                    checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routeMatchKey, errors);
+                }
+                // Rule 4b judges what the route's prefix CONTAINS, not where its match key sits, and
+                // selection is protocol-blind — so it applies to every protocol, gRPC included.
+                checkRouteContainsUncoveredAnchor(gateway, endpoint, route, declaredName, coveredAnchors, errors);
             }
         }
     }
 
     /**
-     * Rule (3): an enabled route's {@code match.path_prefix} must lie inside its declared anchor's
-     * namespace (ADR-0007). A no-op when the route declares no anchor, or its declared anchor name
-     * is not a defined anchor.
+     * Rule (3): an enabled route's match key ({@code match.path_prefix}, or the exact
+     * {@code match.path}) must lie inside its declared anchor's namespace (ADR-0007). A no-op when
+     * the route declares no anchor, or its declared anchor name is not a defined anchor.
      */
     private static void checkRouteInsideDeclaredAnchorNamespace(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable String declaredName, String routePrefix, List<ConfigError> errors) {
+            RouteConfig route, @Nullable String declaredName, String routeMatchKey, List<ConfigError> errors) {
         AnchorConfig anchor = declaredName == null ? null : gateway.anchors().get(declaredName);
-        if (anchor != null && !prefixContains(anchor.pathPrefix(), routePrefix)) {
+        if (anchor != null && !prefixContains(anchor.pathPrefix(), routeMatchKey)) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
-                            .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+                            .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
         }
     }
 
@@ -740,15 +831,111 @@ public final class ConfigValidator {
      * that anchor — an undeclared squatter fails the boot (ADR-0007).
      */
     private static void checkRouteDeclaresContainingAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable String declaredName, String routePrefix, List<ConfigError> errors) {
+            RouteConfig route, @Nullable String declaredName, String routeMatchKey, List<ConfigError> errors) {
         for (AnchorConfig anchor : gateway.anchors().values()) {
-            if (prefixContains(anchor.pathPrefix(), routePrefix)
+            if (prefixContains(anchor.pathPrefix(), routeMatchKey)
                     && !anchor.name().equals(declaredName)) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                         "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
-                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+                                .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
             }
         }
+    }
+
+    /**
+     * Rule (4b): the namespace-coverage mirror of rule (4). A <em>prefix</em> route whose namespace
+     * strictly contains an anchor's {@code path_prefix}, and which does not resolve that anchor,
+     * fails the boot unless the anchor's own namespace is covered by a prefix route that does
+     * resolve it.
+     * <p>
+     * Rules (3) and (4) are <em>declaration</em>-scoped: they judge a route by where its own match
+     * key sits. That leaves the opposite geometry unjudged — a route sitting <em>outside</em> and
+     * <em>above</em> an anchor, whose namespace swallows the anchor's. Selection then decides what
+     * is actually served: for an address inside the anchor namespace, an exact route wins outright
+     * and the longest matching prefix wins among the rest. So with an exact {@code path: /admin}
+     * route as the anchor's only member, {@code /admin/} and {@code /admin/x} match no route
+     * belonging to the anchor and fall through to the broader route — served with <em>its</em> auth
+     * posture and <em>its</em> {@code security_headers} block, with the anchor's floor escaped for
+     * every address in the namespace but the one exact string (CWE-284).
+     * <p>
+     * The coverage exception is what keeps the ordinary topology legal, and it is exact rather than
+     * approximate. Rule (3) confines an anchored route's match key to the anchor's namespace, so
+     * the broadest prefix a member can declare is the anchor prefix itself. When such a route
+     * exists, every address in the namespace matches it at the anchor prefix's full length, while
+     * any containing route matches at a strictly shorter one — so longest-prefix selection always
+     * picks the member, and rule (4) has already refused every exact route outside the anchor whose
+     * path lies inside it. The namespace is then genuinely closed and a broader route alongside it
+     * is not a bypass.
+     * <p>
+     * Only prefix routes are judged here: an exact route covers exactly one address, and an exact
+     * route whose address lies inside an anchor namespace is rule (4)'s case, not this one. Unlike
+     * rules (3) and (4), this rule is <em>not</em> waived for {@code protocol: grpc} routes — see
+     * {@link #validateAnchorNamespaceMembership} for why the exemption's rationale stops at the two
+     * declaration-scoped rules.
+     * <p>
+     * Coverage requires the covering route to match its whole namespace, not merely to name it.
+     * {@link #anchorsCoveredByOwnPrefixRoute} therefore tests prefix equality <em>and</em>
+     * {@link MatchConfig#narrowsBeyondPath()}: a member narrowed on {@code match.methods},
+     * {@code match.host} or {@code match.headers} serves only part of its namespace, and the
+     * complement — a {@code POST} where the member matched {@code GET}, a request from another host —
+     * would fall through to the containing route and be answered under <em>its</em> auth and
+     * {@code security_headers} posture. That is the same bypass this rule exists to refuse, reached
+     * one dimension over, so such a route does not count as coverage and the containing route is
+     * refused as if the anchor had no covering member at all.
+     */
+    private static void checkRouteContainsUncoveredAnchor(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route, @Nullable String declaredName, Set<String> coveredAnchors, List<ConfigError> errors) {
+        if (route.match().isExact()) {
+            return;
+        }
+        String routePrefix = route.match().matchKey();
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            if (!anchor.name().equals(declaredName)
+                    && strictlyContains(routePrefix, anchor.pathPrefix())
+                    && !coveredAnchors.contains(anchor.name())) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        ("route '%s' path_prefix '%s' contains anchor '%s' namespace '%s' without declaring it, and "
+                                + "no route under that anchor covers the namespace; declare a route with "
+                                + "path_prefix '%s' under anchor '%s', or narrow this route so it stays outside "
+                                + "the namespace")
+                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix(),
+                                        anchor.pathPrefix(), anchor.name())));
+            }
+        }
+    }
+
+    /**
+     * The names of the anchors whose whole namespace is served by a prefix route resolving that
+     * anchor — a route whose normalized {@code match.path_prefix} equals the normalized anchor
+     * {@code path_prefix}. Computed once per validation pass and consumed by
+     * {@link #checkRouteContainsUncoveredAnchor}.
+     * <p>
+     * Three tests, all required: the route is not exact, it narrows on no dimension beyond the path
+     * ({@link MatchConfig#narrowsBeyondPath()}), and its normalized match key equals the normalized
+     * anchor prefix. The middle test is what makes "covered" mean <em>every</em> address in the
+     * namespace rather than merely every address the member chose to serve — see
+     * {@link #checkRouteContainsUncoveredAnchor} for the bypass it refuses.
+     */
+    private static Set<String> anchorsCoveredByOwnPrefixRoute(GatewayConfig gateway,
+            List<EndpointConfig> endpoints) {
+        Set<String> covered = new HashSet<>();
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                if (route.match().isExact()) {
+                    continue;
+                }
+                if (route.match().narrowsBeyondPath()) {
+                    continue;
+                }
+                String declaredName = declaredAnchorName(endpoint, route);
+                AnchorConfig anchor = declaredName == null ? null : gateway.anchors().get(declaredName);
+                if (anchor != null && RouteTableBuilder.normalizePrefix(route.match().matchKey())
+                        .equals(RouteTableBuilder.normalizePrefix(anchor.pathPrefix()))) {
+                    covered.add(anchor.name());
+                }
+            }
+        }
+        return covered;
     }
 
     /**
@@ -964,13 +1151,26 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: the terminal-action / anchor-type consistency matrix (ADR-0014). A route whose
-     * resolving anchor is {@code type: asset} must declare an {@code asset} terminal action; a
-     * route under a {@code proxy} / {@code bff} anchor (or with no anchor) must not — its terminal
-     * action is the endpoint upstream. An {@code asset} block on a non-asset route is a boot
-     * failure. For a declared asset action, the source-specific field must be present and, for a
-     * {@code source: upstream} action, its topology alias must resolve. Every violation collects
-     * into the shared list; the rule never fails fast.
+     * Rule: the terminal-action / anchor-type consistency matrix (ADR-0014 and its Amendment A1).
+     * A route resolves exactly one terminal action — the endpoint upstream, an {@code asset}, or a
+     * {@code redirect}.
+     * <ul>
+     *   <li><strong>Exclusivity.</strong> A {@code redirect} declared together with an
+     *       {@code asset} or an {@code upstream} block is refused: either block would be silently
+     *       ignored.</li>
+     *   <li><strong>Anchor matrix.</strong> A route whose resolving anchor is {@code type: asset}
+     *       must declare an {@code asset} or a {@code redirect} action; an {@code asset} block on a
+     *       route under a {@code proxy} / {@code bff} anchor (or with no anchor) is refused. A
+     *       {@code redirect} is admitted under every anchor type, since it serves nothing the anchor
+     *       type governs.</li>
+     *   <li><strong>Asset source.</strong> For a declared asset action, the source-specific field
+     *       must be present and, for a {@code source: upstream} action, its topology alias must
+     *       resolve.</li>
+     *   <li><strong>Redirect.</strong> A declared redirect action must ride the {@code http}
+     *       protocol and pass the open-redirect review of its {@code location} (see
+     *       {@link #validateRedirectAction}).</li>
+     * </ul>
+     * Every violation collects into the shared list; the rule never fails fast.
      */
     private static void validateTerminalAction(GatewayConfig gateway, List<EndpointConfig> endpoints,
             ResolvedTopology topology, List<ConfigError> errors) {
@@ -982,8 +1182,9 @@ public final class ConfigValidator {
     }
 
     /**
-     * The per-route half of the terminal-action rule (ADR-0014): the anchor-type / asset-action
-     * consistency check, plus the source-field check for a declared asset action. Every violation
+     * The per-route half of the terminal-action rule (ADR-0014 and its Amendment A1): redirect
+     * exclusivity, the anchor-type / terminal-action consistency check, the source-field check for a
+     * declared asset action, and the redirect review for a declared redirect action. Every violation
      * collects into the shared list; the check never fails fast.
      */
     private static void validateRouteTerminalAction(GatewayConfig gateway, EndpointConfig endpoint,
@@ -991,9 +1192,13 @@ public final class ConfigValidator {
         AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
         boolean assetAnchor = anchor != null && anchor.type() == AnchorType.ASSET;
         AssetConfig asset = route.asset();
-        if (assetAnchor && asset == null) {
+        RedirectConfig redirect = route.redirect();
+        if (redirect != null) {
+            validateRedirectExclusivity(endpoint, route, errors);
+        }
+        if (assetAnchor && asset == null && redirect == null) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                    "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
+                    "route '%s' resolves to asset anchor '%s' but declares no asset terminal action and no redirect terminal action"
                             .formatted(route.id(), anchor.name())));
         } else if (!assetAnchor && asset != null) {
             String context = anchor == null
@@ -1007,6 +1212,199 @@ public final class ConfigValidator {
         if (asset != null) {
             validateAssetSource(endpoint, route, asset, topology, errors);
         }
+        if (redirect != null) {
+            validateRedirectAction(endpoint, route, redirect, errors);
+        }
+    }
+
+    /**
+     * Refuses a {@code redirect} action declared together with another terminal action. A route
+     * resolves exactly one; accepting the pair would silently drop one of the two blocks.
+     */
+    private static void validateRedirectExclusivity(EndpointConfig endpoint, RouteConfig route,
+            List<ConfigError> errors) {
+        if (route.asset() != null) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares both a redirect and an asset terminal action; a route resolves exactly one of upstream, asset or redirect"
+                            .formatted(route.id())));
+        }
+        if (route.upstream() != null) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares both a redirect terminal action and an upstream block; a redirect contacts no upstream, so the upstream settings would be silently ignored"
+                            .formatted(route.id())));
+        }
+    }
+
+    /**
+     * The redirect half of the terminal-action rule (ADR-0014 Amendment A1).
+     * <p>
+     * <strong>Protocol.</strong> A redirect is answered with a plain HTTP status and
+     * {@code Location}, which a gRPC, WebSocket or GraphQL client cannot follow — so a redirect on
+     * any protocol other than {@code http} is refused rather than silently ignored.
+     * <p>
+     * <strong>Open-redirect review.</strong> {@code location} is written verbatim into the
+     * {@code Location} header, so it is reviewed once, here, and never at request time. Every
+     * refused spelling is one a browser or an intermediary resolves to a <em>different origin</em>
+     * than a reader of the configuration would expect:
+     * <ul>
+     *   <li>whatever the form, the value must be non-empty printable ASCII — no whitespace, no
+     *       control character (a CR/LF would forge a response header) — and must not carry a
+     *       {@code #} when {@code keep_query} is set, since a query appended after a fragment never
+     *       reaches the server;</li>
+     *   <li>a <strong>gateway path</strong> must pass {@link #gatewayPathRefusal}, which delegates to
+     *       the shared {@link LocationPathReview}: exactly one leading {@code /} ({@code //host} is
+     *       scheme-relative and names another origin), no {@code \} (browsers read {@code /\host} as
+     *       {@code //host}), no percent-encoded {@code /} or {@code \} ({@code %2F}, {@code %5C}, in
+     *       either case), no dot-segment ({@code .} or {@code ..}, including their {@code %2E}
+     *       spellings) in its path, and nothing the {@code cui-http} {@code URL_PATH} pipeline
+     *       refuses — double encoding, escaping traversal, null bytes, control characters and the
+     *       1024-character length cap;</li>
+     *   <li>anything else is refused unless the route sets {@code allow_external: true}, which
+     *       additionally admits an absolute {@code http}/{@code https} URI with a non-empty host and
+     *       no user-info. Every other scheme ({@code javascript:}, {@code data:}, …) stays refused.
+     *       Opting in emits {@link ConfigLogMessages.WARN#REDIRECT_EXTERNAL_TARGET_ALLOWED}, naming
+     *       the route but never the location.</li>
+     * </ul>
+     * Refusal messages echo the value through {@link #renderForMessage}, so a hostile value cannot
+     * forge boot log lines (CWE-117).
+     * <p>
+     * <strong>Query hand-off.</strong> {@code keep_query} together with {@code allow_external} is
+     * refused as a pair. Each is defensible alone — {@code keep_query} carries the inbound query
+     * across a <em>same-origin</em> move, {@code allow_external} points a fixed, reviewed target at
+     * another origin — but together they opt every inbound query parameter out of the gateway
+     * origin: a request to {@code /go?code=...&state=...} produces a {@code Location} that plants
+     * those values in the third party's access log, {@code Referer} chain and page analytics
+     * (CWE-201 / CWE-598). Unlike the target itself, the query is <em>attacker-supplied</em>, so no
+     * boot review can vet it; the pair is therefore refused rather than warned about, and an
+     * operator who wants one of the two drops the other. The refusal names the route and the two
+     * keys, never the location.
+     */
+    private static void validateRedirectAction(EndpointConfig endpoint, RouteConfig route, RedirectConfig redirect,
+            List<ConfigError> errors) {
+        Protocol protocol = effectiveProtocol(route);
+        if (protocol != Protocol.HTTP) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares a redirect terminal action but its protocol is '%s'; a redirect is answered over http only"
+                            .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
+        }
+        if (redirect.keepQuery() && redirect.allowExternal()) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    ("route '%s' declares both keep_query and allow_external; that hands the inbound query "
+                            + "string to a foreign origin, where it lands in the target's access log and Referer "
+                            + "chain — drop keep_query to confine the query to this gateway, or drop "
+                            + "allow_external to keep the redirect same-origin")
+                            .formatted(route.id())));
+        }
+        redirectLocationRefusal(redirect).ifPresent(reason -> errors.add(
+                new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        "route '%s' redirect location '%s' is refused: %s"
+                                .formatted(route.id(), renderForMessage(redirect.location()), reason))));
+        if (redirect.allowExternal()) {
+            LOGGER.warn(ConfigLogMessages.WARN.REDIRECT_EXTERNAL_TARGET_ALLOWED, route.id());
+        }
+    }
+
+    /**
+     * The open-redirect review of a redirect {@code location}; see {@link #validateRedirectAction}
+     * for the rules and why each exists.
+     *
+     * @return the refusal reason, or empty when the location is admitted
+     */
+    private static Optional<String> redirectLocationRefusal(RedirectConfig redirect) {
+        String location = redirect.location();
+        if (location.isEmpty()) {
+            return Optional.of("the location must not be empty");
+        }
+        if (!isPrintableAscii(location)) {
+            return Optional.of("the location must be printable ASCII without whitespace or control characters");
+        }
+        if (redirect.keepQuery() && location.indexOf('#') >= 0) {
+            return Optional.of("keep_query appends the request query, which a '#' fragment would swallow");
+        }
+        if (location.startsWith("/")) {
+            return gatewayPathRefusal(location);
+        }
+        if (!redirect.allowExternal()) {
+            return Optional.of("without allow_external the location must be a gateway path starting with exactly one '/'");
+        }
+        return externalLocationRefusal(location);
+    }
+
+    private static boolean isPrintableAscii(String value) {
+        return value.chars().allMatch(character -> character > 0x20 && character < 0x7F);
+    }
+
+    /**
+     * The gateway-path half of the location review. The refusal set itself is not this class's own:
+     * the path portion is handed to {@link LocationPathReview#refusalReason(String)}, the single place
+     * the gateway decides which {@code Location} path is dangerous, so this boot review and the
+     * runtime {@code routing.LocationRewriter} mapping of an <em>upstream</em> {@code Location} cannot
+     * disagree (GW-13). That review covers the scheme-relative {@code //} prefix, the percent-encoded
+     * separators, the dot segments, and everything the {@code cui-http} {@code URL_PATH} pipeline owns
+     * — double encoding above all, which no hand-written substring test here ever caught
+     * ({@code /%252F%252Fevil.example}).
+     * <p>
+     * Two tests stay here rather than moving into that review, because a <em>configured</em> value is
+     * scoped more widely than an upstream-supplied one. Both are applied to the whole location, query
+     * and fragment included:
+     * <ul>
+     *   <li>a <strong>literal backslash</strong> anywhere. The shared review sees the path only, where
+     *       the {@code cui-http} pipeline already refuses it as {@code INVALID_CHARACTER}; this arm is
+     *       what extends the refusal past the {@code ?}.</li>
+     *   <li>a <strong>percent-encoded separator</strong> anywhere, via
+     *       {@link LocationPathReview#carriesEncodedSeparator(String)} — the same test the shared
+     *       review applies to the path, reused rather than restated so the two cannot drift.</li>
+     * </ul>
+     * The wider scope is deliberate and costs a configured value nothing: an operator writing a fixed
+     * redirect target has no reason to encode a separator in its query, whereas an upstream redirect
+     * routinely carries one (which is why {@code LocationRewriter} scopes the same test to the path).
+     * A separator after the {@code ?} cannot form an authority, so this is a tightening for
+     * operator-authored values, not a security necessity.
+     */
+    private static Optional<String> gatewayPathRefusal(String location) {
+        if (location.indexOf('\\') >= 0) {
+            return Optional.of("a backslash is read as '/' by browsers");
+        }
+        if (LocationPathReview.carriesEncodedSeparator(location)) {
+            return Optional.of("a percent-encoded '/' or '\\' is decoded by intermediaries");
+        }
+        return LocationPathReview.refusalReason(location.substring(0, firstIndexOf(location, '?', '#')));
+    }
+
+    /** The index of the first occurrence of either character, or the value's length when neither occurs. */
+    private static int firstIndexOf(String value, char first, char second) {
+        for (int index = 0; index < value.length(); index++) {
+            char current = value.charAt(index);
+            if (current == first || current == second) {
+                return index;
+            }
+        }
+        return value.length();
+    }
+
+    /**
+     * The external half of the location review, reached only under {@code allow_external}: an
+     * absolute {@code http}/{@code https} URI with a non-empty host and no user-info.
+     */
+    private static Optional<String> externalLocationRefusal(String location) {
+        URI uri;
+        try {
+            uri = new URI(location);
+        } catch (URISyntaxException _) {
+            return Optional.of("the location is neither a gateway path nor a well-formed absolute URI");
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || !EXTERNAL_REDIRECT_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT))) {
+            return Optional.of("an external location must use the http or https scheme");
+        }
+        String host = uri.getHost();
+        if (host == null || host.isEmpty()) {
+            return Optional.of("an external location must name a non-empty host");
+        }
+        if (uri.getRawUserInfo() != null) {
+            return Optional.of("an external location must not carry user-info, which disguises the real host");
+        }
+        return Optional.empty();
     }
 
     /**
@@ -1195,10 +1593,90 @@ public final class ConfigValidator {
     private record CidrRange(String cidr, int bits, int prefixLength, BigInteger start, BigInteger end) {
     }
 
+    /**
+     * Rule: the global CORS block must not combine a wildcard origin with {@code allow_credentials}.
+     * <p>
+     * CORS is global only (ADR-0007 Amendment A1): it is evaluated at stage 0, before route selection
+     * and authentication, so no anchor can scope it. The bundled schema refuses a {@code cors} block
+     * under {@code anchors.*.security_headers} at load, which is why only the gateway block is checked
+     * here.
+     */
     private static void validateCors(GatewayConfig gateway, List<ConfigError> errors) {
         checkCors(gateway.securityHeaders(), "/security_headers/cors", errors);
+    }
+
+    /**
+     * Rule: a {@code content_security_policy} value must carry no CR, LF or other control character,
+     * on the global block and on every anchor block alike.
+     * <p>
+     * The value is served verbatim as the {@code Content-Security-Policy} response header, so a line
+     * terminator would inject a header (CWE-113). The bundled schema already bounds the value's shape;
+     * this rule is the boot-time authority that names the offending block, echoing the value only
+     * through the injection-safe {@code renderForMessage} (CWE-117). Every violation collects into the
+     * shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateContentSecurityPolicy(GatewayConfig gateway, List<ConfigError> errors) {
+        checkContentSecurityPolicy(gateway.securityHeaders(), "/security_headers/content_security_policy", errors);
         for (AnchorConfig anchor : gateway.anchors().values()) {
-            checkCors(anchor.securityHeaders(), "/anchors/%s/security_headers/cors".formatted(anchor.name()), errors);
+            checkContentSecurityPolicy(anchor.securityHeaders(),
+                    "/anchors/%s/security_headers/content_security_policy".formatted(anchor.name()), errors);
+        }
+    }
+
+    private static void checkContentSecurityPolicy(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
+            List<ConfigError> errors) {
+        String policy = securityHeaders == null ? null : securityHeaders.contentSecurityPolicy();
+        if (policy == null) {
+            return;
+        }
+        if (policy.isBlank() || policy.chars().anyMatch(Character::isISOControl)) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    "content_security_policy %s must be a non-blank value without CR, LF or other control characters; it is served verbatim as a response header"
+                            .formatted(renderForMessage(policy))));
+        }
+    }
+
+    /**
+     * Rule: a {@code header_modes} entry may only name a header the same block enables — on the global
+     * block and on every anchor block alike.
+     * <p>
+     * A mode for a header that is absent (or {@code false}) in its block would configure the precedence
+     * of a header the gateway never emits for that block: the key would parse and do nothing. It is
+     * refused rather than silently ignored, naming the offending entry. Every violation collects into the
+     * shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateHeaderModes(GatewayConfig gateway, List<ConfigError> errors) {
+        checkHeaderModes(gateway.securityHeaders(), "/security_headers/header_modes", errors);
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            checkHeaderModes(anchor.securityHeaders(),
+                    "/anchors/%s/security_headers/header_modes".formatted(anchor.name()), errors);
+        }
+    }
+
+    private static void checkHeaderModes(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
+            List<ConfigError> errors) {
+        if (securityHeaders == null) {
+            return;
+        }
+        SecurityHeadersConfig.HeaderModes modes = securityHeaders.headerModes();
+        if (modes == null) {
+            return;
+        }
+        checkHeaderMode(modes.hsts(), securityHeaders.hsts() != null, "hsts", pointer, errors);
+        checkHeaderMode(modes.contentTypeNosniff(), Boolean.TRUE.equals(securityHeaders.contentTypeNosniff()),
+                "content_type_nosniff", pointer, errors);
+        checkHeaderMode(modes.frameDeny(), Boolean.TRUE.equals(securityHeaders.frameDeny()), "frame_deny", pointer,
+                errors);
+        checkHeaderMode(modes.contentSecurityPolicy(), securityHeaders.contentSecurityPolicy() != null,
+                "content_security_policy", pointer, errors);
+    }
+
+    private static void checkHeaderMode(SecurityHeadersConfig.@Nullable HeaderMode mode, boolean headerEnabled,
+            String key, String pointer, List<ConfigError> errors) {
+        if (mode != null && !headerEnabled) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer + "/" + key,
+                    "header_modes.%s is declared but the same security_headers block does not enable %s; a mode for a header the gateway never emits is refused"
+                            .formatted(key, key)));
         }
     }
 
@@ -1595,6 +2073,66 @@ public final class ConfigValidator {
         }
     }
 
+    /**
+     * Rule: {@code upstream.rewrite_location: true} is refused on a {@code grpc} or {@code websocket}
+     * route. The mapping is applied by the HTTP response relay only — a gRPC response is relayed with
+     * its trailers and carries no redirect, and a WebSocket route hands the connection to the opaque
+     * relay — so on those protocols the key would be silently ignored. Every violation collects into
+     * the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateRewriteLocationProtocol(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                UpstreamConfig upstream = route.upstream();
+                Protocol protocol = effectiveProtocol(route);
+                if (upstream != null && Boolean.TRUE.equals(upstream.rewriteLocation())
+                        && (protocol == Protocol.GRPC || protocol == Protocol.WEBSOCKET)) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' declares upstream.rewrite_location but its protocol is '%s'; the Location rewrite applies to http and graphql routes only and would be silently ignored"
+                                    .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
+                }
+            }
+        }
+    }
+
+    /**
+     * Rule (AS-12): {@code asset.index} and {@code asset.fallback} apply to a {@code source: directory}
+     * action only, and each value must be a single file-name segment. On {@code source: upstream} the
+     * keys would be silently ignored, so they are refused. A value carrying {@code /}, {@code \}, a
+     * control character, or naming {@code .} / {@code ..} — or an empty value — is refused, because
+     * the source resolves it beneath the requested directory (index) or the root (fallback), and a
+     * path-shaped value would widen what the confinement is asked to serve. The segment predicate is
+     * the one {@link DirectoryAssetSource} itself enforces, so boot and runtime cannot disagree. The
+     * offending value is never echoed. Every violation collects into the shared list (ADR-0009).
+     */
+    private static void validateAssetIndexAndFallback(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                AssetConfig asset = route.asset();
+                if (asset != null) {
+                    validateAssetFileName(endpoint, route, asset, "index", asset.index(), errors);
+                    validateAssetFileName(endpoint, route, asset, "fallback", asset.fallback(), errors);
+                }
+            }
+        }
+    }
+
+    private static void validateAssetFileName(EndpointConfig endpoint, RouteConfig route, AssetConfig asset,
+            String key, @Nullable String value, List<ConfigError> errors) {
+        if (value == null) {
+            return;
+        }
+        if (asset.source() != AssetConfig.Source.DIRECTORY) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "asset route '%s' declares asset.%s but its source is 'upstream'; index and fallback apply to source: directory only"
+                            .formatted(route.id(), key)));
+        } else if (!DirectoryAssetSource.isSingleFileName(value)) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "asset route '%s' asset.%s must be a single file-name segment (not empty, no '/', no '\\', no '.' or '..', no control characters)"
+                            .formatted(route.id(), key)));
+        }
+    }
+
     private static Map<String, String> passthroughSni(GatewayConfig gateway) {
         TlsConfig tls = gateway.tls();
         return tls == null ? Map.of() : tls.passthroughSni();
@@ -1677,6 +2215,21 @@ public final class ConfigValidator {
             return true;
         }
         return child.equals(owner) || child.startsWith(owner + "/");
+    }
+
+    /**
+     * Whether {@code candidate} lies <em>strictly</em> within the {@code container} namespace: the
+     * containment of {@link #prefixContains} minus the equal-namespace case, so a route declared at
+     * an anchor's own prefix does not count as containing it.
+     *
+     * @param container the owning prefix
+     * @param candidate the prefix tested for strict containment
+     * @return {@code true} when {@code candidate} is inside, and not equal to, {@code container}
+     */
+    private static boolean strictlyContains(String container, String candidate) {
+        return prefixContains(container, candidate)
+                && !RouteTableBuilder.normalizePrefix(container)
+                .equals(RouteTableBuilder.normalizePrefix(candidate));
     }
 
     private static String endpointFile(EndpointConfig endpoint) {

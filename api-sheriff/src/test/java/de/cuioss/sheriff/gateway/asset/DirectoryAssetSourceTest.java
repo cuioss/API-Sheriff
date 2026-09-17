@@ -41,6 +41,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link DirectoryAssetSource}: in-root files serve through the shared
@@ -77,7 +79,7 @@ class DirectoryAssetSourceTest {
     }
 
     private DirectoryAssetSource publicSource() {
-        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, Map.of());
+        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null, Map.of());
     }
 
     @Test
@@ -191,7 +193,7 @@ class DirectoryAssetSourceTest {
     @DisplayName("Should serve an operator-declared extension with the operator's content type")
     void shouldServeOperatorDeclaredExtension() throws Exception {
         Files.writeString(root.resolve("site.webmanifest"), "{}");
-        DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC,
+        DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null,
                 Map.of("webmanifest", "application/manifest+json"));
 
         AssetSource.Served served = source.serve(HttpMethod.GET, "site.webmanifest");
@@ -207,7 +209,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should keep the built-in content type when an operator entry names a built-in extension")
     void shouldKeepBuiltInContentTypeAgainstOperatorOverride() {
-        DirectoryAssetSource hostile = new DirectoryAssetSource(root, AccessLevel.PUBLIC,
+        DirectoryAssetSource hostile = new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null,
                 Map.of("html", "text/plain; charset=utf-8"));
 
         AssetSource.Served served = hostile.serve(HttpMethod.GET, "index.html");
@@ -221,7 +223,8 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should force Cache-Control: no-store for an authenticated route")
     void shouldForceNoStoreForAuthenticatedRoute() {
-        DirectoryAssetSource authenticated = new DirectoryAssetSource(root, AccessLevel.AUTHENTICATED, Map.of());
+        DirectoryAssetSource authenticated =
+                new DirectoryAssetSource(root, AccessLevel.AUTHENTICATED, null, null, Map.of());
 
         AssetSource.Served served = authenticated.serve(HttpMethod.GET, "index.html");
 
@@ -261,6 +264,204 @@ class DirectoryAssetSourceTest {
         AssetSource.Served served = publicSource().serve(HttpMethod.POST, "index.html");
 
         assertEquals(METHOD_NOT_ALLOWED, served.status(), "POST must be rejected 405");
+    }
+
+    // --- asset.index and asset.fallback (AS-12) --------------------------------------------------
+    // The substitutions widen WHICH file a request is answered with, never HOW it is served: each
+    // substitute is re-confined and walked through the same chain. So every positive case below is
+    // paired with the refusal that proves the chain still applies to the substitute.
+
+    private DirectoryAssetSource spaSource(String index, String fallback) {
+        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, index, fallback, Map.of());
+    }
+
+    @ParameterizedTest(name = "directory address ''{0}''")
+    @ValueSource(strings = {"", "/"})
+    @DisplayName("Should answer the root directory address with the index file")
+    void shouldServeIndexForRootDirectoryAddress(String subPath) {
+        AssetSource.Served served = spaSource("index.html", null).serve(HttpMethod.GET, subPath);
+
+        assertAll(
+                () -> assertEquals(OK, served.status(), "the root directory address serves its index"),
+                () -> assertArrayEquals(INDEX_BODY, served.body(), "the index file's bytes are served"),
+                () -> assertEquals("text/html; charset=utf-8",
+                        served.headers().get(AssetResponseEnvelope.CONTENT_TYPE),
+                        "the content type follows the served index file's name, not the request path"));
+    }
+
+    @ParameterizedTest(name = "nested directory address ''{0}''")
+    @ValueSource(strings = {"docs", "docs/"})
+    @DisplayName("Should answer a nested directory address with that directory's own index file")
+    void shouldServeNestedDirectoryIndex(String subPath) throws Exception {
+        Files.createDirectories(root.resolve("docs"));
+        Files.writeString(root.resolve("docs/index.html"), "docs-home");
+
+        AssetSource.Served served = spaSource("index.html", null).serve(HttpMethod.GET, subPath);
+
+        assertAll(
+                () -> assertEquals(OK, served.status(), "a nested directory address serves its index"),
+                () -> assertEquals("docs-home", new String(served.body(), StandardCharsets.UTF_8),
+                        "the index is resolved beneath the addressed directory, not at the root"));
+    }
+
+    @Test
+    @DisplayName("Should answer a directory without the index file with 404, even when a fallback is configured")
+    void shouldReturnNotFoundForDirectoryMissingItsIndex() {
+        AssetSource.Served served = spaSource("index.html", "index.html").serve(HttpMethod.GET, "assets");
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status(),
+                        "a directory whose index file is absent is a 404 — the directory exists, so the "
+                                + "fallback for unknown paths does not apply"),
+                () -> assertEquals(0, served.body().length, "no byte is served for the missing index"));
+    }
+
+    @Test
+    @DisplayName("Should answer a directory address with 404 when no index is configured")
+    void shouldReturnNotFoundForDirectoryAddressWithoutIndex() {
+        AssetSource.Served served = publicSource().serve(HttpMethod.GET, "");
+
+        assertEquals(NOT_FOUND, served.status(),
+                "THE CONTROL: without an index the directory address stays a 404, so the index case above "
+                        + "is the configuration acting and not a source that serves index.html by default");
+    }
+
+    @ParameterizedTest(name = "unknown extensionless path ''{0}''")
+    @ValueSource(strings = {"dashboard", "app/settings", "app/settings/", "users/42"})
+    @DisplayName("Should answer an unknown extensionless path with the root-level fallback")
+    void shouldServeFallbackForUnknownExtensionlessPath(String subPath) {
+        AssetSource.Served served = spaSource(null, "index.html").serve(HttpMethod.GET, subPath);
+
+        assertAll(
+                () -> assertEquals(OK, served.status(), "an unknown extensionless path serves the fallback"),
+                () -> assertArrayEquals(INDEX_BODY, served.body(), "the root-level fallback's bytes are served"),
+                () -> assertEquals("text/html; charset=utf-8",
+                        served.headers().get(AssetResponseEnvelope.CONTENT_TYPE),
+                        "the content type follows the fallback file, not the extensionless request path"));
+    }
+
+    @ParameterizedTest(name = "unknown path with extension ''{0}''")
+    @ValueSource(strings = {"missing.js", "app/bundle.js", "styles/site.css", ".env"})
+    @DisplayName("Should keep an unknown path carrying an extension a 404 even when a fallback is configured")
+    void shouldReturnNotFoundForUnknownPathWithExtension(String subPath) {
+        AssetSource.Served served = spaSource(null, "index.html").serve(HttpMethod.GET, subPath);
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status(),
+                        "a missing script or stylesheet must never be answered with the fallback document"),
+                () -> assertEquals(0, served.body().length, "no byte of the fallback is served"));
+    }
+
+    @Test
+    @DisplayName("Should serve an existing file directly rather than the fallback")
+    void shouldServeExistingFileDirectlyWithFallbackConfigured() {
+        AssetSource.Served served = spaSource("index.html", "index.html").serve(HttpMethod.GET, "assets/app.css");
+
+        assertAll(
+                () -> assertEquals(OK, served.status(), "an existing file serves as itself"),
+                () -> assertEquals("text/css; charset=utf-8",
+                        served.headers().get(AssetResponseEnvelope.CONTENT_TYPE),
+                        "the existing stylesheet is served, not the fallback document"));
+    }
+
+    @Test
+    @DisplayName("Should answer 404 when the configured fallback file itself does not exist")
+    void shouldReturnNotFoundWhenFallbackFileMissing() {
+        AssetSource.Served served = spaSource(null, "app.html").serve(HttpMethod.GET, "dashboard");
+
+        assertEquals(NOT_FOUND, served.status(), "a fallback that names a missing file serves nothing");
+    }
+
+    @Test
+    @DisplayName("Should answer HEAD on the fallback with the governed headers and an empty body")
+    void shouldServeFallbackOnHeadWithoutBody() {
+        AssetSource.Served served = spaSource(null, "index.html").serve(HttpMethod.HEAD, "dashboard");
+
+        assertAll(
+                () -> assertEquals(OK, served.status(), "HEAD on a fallback path serves 200"),
+                () -> assertEquals(0, served.body().length, "HEAD carries no body"));
+    }
+
+    @ParameterizedTest(name = "traversal ''{0}''")
+    @ValueSource(strings = {"../secret.txt", "../secret", "..", "../public-sibling/", "%2e%2e/secret",
+            "..%2fsecret", "assets/../../secret"})
+    @DisplayName("Should deny traversal with 404 when index and fallback are configured, never substituting")
+    void shouldDenyTraversalWithIndexAndFallbackConfigured(String subPath) {
+        AssetSource.Served served = spaSource("index.html", "index.html").serve(HttpMethod.GET, subPath);
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status(),
+                        "a confinement rejection is a 404 before either substitution is considered — an "
+                                + "extensionless escape attempt must not be answered with the fallback"),
+                () -> assertEquals(0, served.body().length, "no byte is served for a traversal attempt"));
+    }
+
+    @Test
+    @DisplayName("Should deny the index behind a directory symlink that leaves the root")
+    void shouldDenyIndexBehindOutOfRootDirectorySymlink() throws Exception {
+        Path outsideDir = Files.createDirectories(tempDir.resolve("outside"));
+        Files.writeString(outsideDir.resolve("index.html"), SECRET);
+        assumeSymlink(root.resolve("escape"), outsideDir);
+
+        AssetSource.Served served = spaSource("index.html", "index.html").serve(HttpMethod.GET, "escape");
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status(),
+                        "the substituted index is held to the real-path check like any addressed file"),
+                () -> assertNotEquals(SECRET, new String(served.body(), StandardCharsets.UTF_8),
+                        "the out-of-root index content must never appear in the response body"));
+    }
+
+    @Test
+    @DisplayName("Should deny an extensionless symlink escaping the root rather than serving the fallback")
+    void shouldDenyExtensionlessSymlinkEscapeWithFallbackConfigured() {
+        assumeSymlink(root.resolve("linked-secret"), tempDir.resolve("secret.txt"));
+
+        AssetSource.Served served = spaSource(null, "index.html").serve(HttpMethod.GET, "linked-secret");
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status(),
+                        "an existing entry is never a fallback candidate; its escape is refused as a 404"),
+                () -> assertEquals(0, served.body().length, "no byte of the symlink target is served"));
+    }
+
+    @Test
+    @DisplayName("Should deny a fallback file that is a symlink leaving the root")
+    void shouldDenyFallbackFileThatEscapesRoot() {
+        assumeSymlink(root.resolve("shell.html"), tempDir.resolve("secret.txt"));
+
+        AssetSource.Served served = spaSource(null, "shell.html").serve(HttpMethod.GET, "dashboard");
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status(),
+                        "the substituted fallback is held to the real-path check like any addressed file"),
+                () -> assertEquals(0, served.body().length, "no byte of the out-of-root fallback is served"));
+    }
+
+    @ParameterizedTest(name = "invalid file name ''{0}''")
+    // " " and "\t" are the blank-but-not-empty cases: each passes every other test in the predicate —
+    // neither is "." or "..", neither carries a separator, and a space is not an ISO control
+    // character — so an emptiness test admitted them while requireFileName's contract says blank is
+    // refused. A route configured that way booted and then resolved a substitute nobody serves.
+    @ValueSource(strings = {"", " ", "\t", ".", "..", "../index.html", "sub/index.html", "sub\\index.html",
+            "index\0.html", "index\n.html"})
+    @DisplayName("Should refuse an index or fallback that is not a single file-name segment")
+    void shouldRefuseInvalidIndexOrFallbackName(String name) {
+        assertAll(
+                () -> assertFalse(DirectoryAssetSource.isSingleFileName(name)),
+                () -> assertThrows(IllegalArgumentException.class, () -> spaSource(name, null),
+                        "a path-shaped index must be refused at construction"),
+                () -> assertThrows(IllegalArgumentException.class, () -> spaSource(null, name),
+                        "a path-shaped fallback must be refused at construction"));
+    }
+
+    @ParameterizedTest(name = "valid file name ''{0}''")
+    @ValueSource(strings = {"index.html", "app.shell.html", "default", ".well-known"})
+    @DisplayName("Should accept a single file-name segment as index or fallback")
+    void shouldAcceptSingleFileName(String name) {
+        assertAll(
+                () -> assertTrue(DirectoryAssetSource.isSingleFileName(name)),
+                () -> assertDoesNotThrow(() -> spaSource(name, name)));
     }
 
     // --- Ancestor-component confinement ----------------------------------------------------------
@@ -379,12 +580,12 @@ class DirectoryAssetSourceTest {
     // boundary as a matched pair plus a control, so none of them can pass vacuously.
 
     private DirectoryAssetSource cappedSource(long maxBytes) {
-        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, new PathConfinement(), maxBytes, Map.of());
+        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, null, null, new PathConfinement(), maxBytes,
+                Map.of());
     }
 
     private DirectoryAssetSource cappedSource(long maxBytes, DirectoryAssetSource.Opener opener) {
-        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, new PathConfinement(), maxBytes, Map.of(),
-                opener);
+        return cappedSource(maxBytes).withOpener(opener);
     }
 
     @Test

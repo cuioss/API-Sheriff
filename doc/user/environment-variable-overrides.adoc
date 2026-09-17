@@ -253,15 +253,19 @@ an alias referenced by an endpoint file that resolves to nothing, is a *boot fai
 * The resolved value is a full URL (`scheme://host[:port][/base-path]`), validated and decomposed
   once into `{scheme, host, port, base-path}`.
 * A route's upstream target keeps the resolved alias's *scheme, host and port* and combines them
-  with an *effective base path* plus the *remainder* -- the request path with the matched
-  `match.path_prefix` stripped (segments are joined with exactly one `/`). The effective base
-  path is the route's `upstream.path` when declared and the alias-derived base path otherwise:
-  a declared `upstream.path` *replaces* the alias's base path rather than appending to it
-  (link:../adr/0004-topology-indirection.adoc[ADR-0004]). So `/api/orders/42` on
-  `path_prefix: /api/orders` with `upstream.path: /orders` reaches
-  `https://app1.internal:8443/orders/42` -- APP1's own `/app1` base path is replaced, not
-  prefixed. Omit `upstream.path` and the same request reaches
-  `https://app1.internal:8443/app1/orders/42`.
+  with an *effective base path* plus the *remainder* -- the request path with the route's match key
+  (`match.path_prefix`, or `match.path` on an exact route) stripped (segments are joined with exactly
+  one `/`). The effective base path
+  is the alias-derived base path with the route's `upstream.path` *appended* to it when declared,
+  and the alias-derived base path alone otherwise
+  (link:../adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004 Amendment A2]). So
+  `/api/orders/42` on `path_prefix: /api/orders` with `upstream.path: /orders` reaches
+  `https://app1.internal:8443/app1/orders/42` -- APP1's own `/app1` base path is kept and the route
+  path follows it. Omit `upstream.path` and the same request reaches
+  `https://app1.internal:8443/app1/42`.
+* Because the alias base path is always kept, *relocating a backend to a different context path is
+  a topology-only change* -- `TOPOLOGY_APP1=https://app1.mycompany.com/v2` moves every APP1 route,
+  including the ones that declare `upstream.path`, with no endpoint-file edit.
 * Component overrides (e.g. changing only the port) are intentionally *not* supported initially; the
   whole URL is the unit of override. A `TOPOLOGY_<ALIAS>_PORT`-style escape hatch may be added later
   if a real partial-override need appears -- see
@@ -535,8 +539,14 @@ stays.
 * *Posture:* deny-by-default. A cross-origin SPA must enable CORS deliberately, with credentials,
   rather than inheriting a permissive default.
 * *Override route:* *neutral*, `gateway.yaml`, resolved at gateway -> anchor level only. Endpoints and
-  routes deliberately cannot override it, because response headers and the CORS preflight answer are
-  emitted *before* route selection -- there is no route yet whose policy could apply.
+  routes deliberately cannot override it: resolution stops at the anchor. The gateway-owned security
+  headers (HSTS, nosniff, frame-deny, CSP) are seeded globally before route selection and then
+  *replaced wholesale* by the selected route's anchor block once a route is chosen
+  (link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] Amendment A1), so a global -> anchor
+  resolution -- not the global block alone -- is what an anchored route serves. Only CORS and the
+  responses produced *before* a route is selected (a stage-1 rejection, a 404 for an unrouted path,
+  the preflight answer) are governed by the global block alone. CORS stays global by necessity: the
+  preflight is answered before route selection, so there is no route yet whose policy could apply.
 * *Deployment-bound by necessity?* No, and correctly so: an allowed-origin list is policy.
 
 === What the sweep did not find

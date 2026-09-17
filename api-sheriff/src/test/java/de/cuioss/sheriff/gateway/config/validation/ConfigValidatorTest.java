@@ -82,7 +82,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link ConfigValidator}: one negative case per enforced cross-cutting
- * rule (including the seven ADR-0007 anchor / effective-auth rules), the D5
+ * rule (including the ADR-0007 anchor / effective-auth rules, namespace coverage among them), the D5
  * boot-time hardening rules (real-CIDR {@code trusted_proxies} parsing with
  * full-space rejection and broad-prefix boot-WARN, and the same-prefix
  * route-disjointness rule moved here from {@code RouteTableBuilder}), the structural
@@ -220,6 +220,15 @@ class ConfigValidatorTest {
                 .build();
     }
 
+    /** An exact ({@code match.path}) route — the AS-2 matcher form the coverage rule reasons about. */
+    private static RouteConfig exactRoute(String id, String path, @Nullable String anchorName) {
+        return RouteConfig.builder()
+                .id(id)
+                .anchor(anchorName)
+                .match(MatchConfig.builder().path(path).build())
+                .build();
+    }
+
     private static RouteConfig assetRoute(String id, String prefix, String anchorName, AssetConfig asset,
             HttpMethod... methods) {
         return RouteConfig.builder()
@@ -238,6 +247,237 @@ class ConfigValidatorTest {
     private static AssetConfig upstreamAsset(String alias) {
         return AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
                 .upstream(alias).build();
+    }
+
+    @Nested
+    @DisplayName("content_security_policy — header-injection refusal on the global and every anchor block")
+    class ContentSecurityPolicyInjection {
+
+        private static final String GLOBAL_POINTER = "/security_headers/content_security_policy";
+        private static final String ANCHOR_POINTER = "/anchors/frontend/security_headers/content_security_policy";
+        private static final String VALID_POLICY = "default-src 'self'; img-src 'self' data:";
+
+        private static GatewayConfig gatewayWithPolicies(@Nullable String globalPolicy, @Nullable String anchorPolicy) {
+            AnchorConfig frontend = AnchorConfig.builder()
+                    .name("frontend")
+                    .pathPrefix("/frontend")
+                    .type(AnchorType.PROXY)
+                    .access(AccessLevel.PUBLIC)
+                    .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build())
+                    .build();
+            return validGateway()
+                    .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(globalPolicy).build())
+                    .anchors(Map.of(frontend.name(), frontend))
+                    .build();
+        }
+
+        private static List<ConfigError> policyErrors(List<ConfigError> errors) {
+            return errors.stream().filter(error -> error.pointer().endsWith("/content_security_policy")).toList();
+        }
+
+        @ParameterizedTest(name = "global value #{index}")
+        @ValueSource(strings = {"default-src 'self'\r\nSet-Cookie: session=forged", "default-src 'self'\nX-Injected: 1",
+                "default-src 'self'\rX-Injected: 1", "default-src 'self'", "default-src\t'self'",
+                "default-src'self'", "   "})
+        @DisplayName("Should refuse a global policy that is blank or carries a CR, LF or other control character")
+        void shouldRefuseInjectingGlobalPolicy(String policy) {
+            List<ConfigError> errors = validator.validate(gatewayWithPolicies(policy, null), List.of(), topologyWith());
+
+            assertHasError(errors, GLOBAL_POINTER, "without CR, LF or other control characters");
+        }
+
+        @ParameterizedTest(name = "anchor value #{index}")
+        @ValueSource(strings = {"default-src 'self'\r\nSet-Cookie: session=forged", "default-src 'self'\nX-Injected: 1",
+                "default-src 'self'", "   "})
+        @DisplayName("Should refuse an anchor policy that is blank or carries a control character, naming the anchor block")
+        void shouldRefuseInjectingAnchorPolicy(String policy) {
+            List<ConfigError> errors = validator.validate(gatewayWithPolicies(VALID_POLICY, policy), List.of(),
+                    topologyWith());
+
+            assertAll("only the anchor block is named",
+                    () -> assertHasError(errors, ANCHOR_POINTER, "without CR, LF or other control characters"),
+                    () -> assertTrue(errors.stream().noneMatch(error -> GLOBAL_POINTER.equals(error.pointer())),
+                            () -> "the valid global policy must not be reported, got: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should never echo a raw line terminator of the refused value into the error message")
+        void shouldNotEchoRawLineTerminator() {
+            List<ConfigError> errors = validator.validate(
+                    gatewayWithPolicies("default-src 'self'\r\nSet-Cookie: session=forged", null), List.of(),
+                    topologyWith());
+
+            assertAll("the refusal message stays single-line (CWE-117)",
+                    policyErrors(errors).stream().map(error -> () -> assertFalse(
+                            error.message().contains("\r") || error.message().contains("\n"),
+                            () -> "the message must not carry a raw line terminator: " + error.message())));
+        }
+
+        @Test
+        @DisplayName("Should collect a global and an anchor violation together rather than stopping at the first")
+        void shouldCollectGlobalAndAnchorViolationsTogether() {
+            List<ConfigError> errors = validator.validate(gatewayWithPolicies("a\nb", "c\rd"), List.of(),
+                    topologyWith());
+
+            List<String> pointers = policyErrors(errors).stream().map(ConfigError::pointer).toList();
+            assertAll("both blocks are reported in one pass",
+                    () -> assertEquals(2, pointers.size(), () -> "exactly one error per block, got: " + pointers),
+                    () -> assertTrue(pointers.containsAll(List.of(GLOBAL_POINTER, ANCHOR_POINTER)),
+                            () -> "the global and the anchor block are both named, got: " + pointers));
+        }
+
+        @Test
+        @DisplayName("Should accept a well-formed policy on both blocks, and an omitted policy on either")
+        void shouldAcceptWellFormedOrOmittedPolicies() {
+            List<ConfigError> declared = validator.validate(gatewayWithPolicies(VALID_POLICY, VALID_POLICY), List.of(),
+                    topologyWith());
+            List<ConfigError> omitted = validator.validate(gatewayWithPolicies(null, null), List.of(), topologyWith());
+
+            assertAll("a control-character-free policy, or none, raises no content_security_policy error",
+                    () -> assertTrue(policyErrors(declared).isEmpty(), () -> "got: " + declared),
+                    () -> assertTrue(policyErrors(omitted).isEmpty(), () -> "got: " + omitted));
+        }
+    }
+
+    @Nested
+    @DisplayName("header_modes — a mode may only name a header its own block enables")
+    class HeaderModesOrphanRefusal {
+
+        private static final String GLOBAL_MODES = "/security_headers/header_modes/";
+        private static final String ANCHOR_MODES = "/anchors/frontend/security_headers/header_modes/";
+
+        private static List<ConfigError> modeErrors(List<ConfigError> errors) {
+            return errors.stream().filter(error -> error.pointer().contains("/header_modes/")).toList();
+        }
+
+        private static GatewayConfig gatewayWithBlocks(SecurityHeadersConfig global,
+                @Nullable SecurityHeadersConfig anchorBlock) {
+            AnchorConfig frontend = AnchorConfig.builder()
+                    .name("frontend")
+                    .pathPrefix("/frontend")
+                    .type(AnchorType.PROXY)
+                    .access(AccessLevel.PUBLIC)
+                    .securityHeaders(anchorBlock)
+                    .build();
+            return validGateway().securityHeaders(global).anchors(Map.of(frontend.name(), frontend)).build();
+        }
+
+        private static SecurityHeadersConfig.HeaderModes allDefault() {
+            SecurityHeadersConfig.HeaderMode mode = SecurityHeadersConfig.HeaderMode.DEFAULT;
+            return new SecurityHeadersConfig.HeaderModes(mode, mode, mode, mode);
+        }
+
+        @Test
+        @DisplayName("Should refuse every mode naming a header the global block does not enable, one error per key")
+        void shouldRefuseEveryOrphanModeOnTheGlobalBlock() {
+            SecurityHeadersConfig global = SecurityHeadersConfig.builder()
+                    .contentTypeNosniff(false)
+                    .headerModes(allDefault())
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gatewayWithBlocks(global, null), List.of(), topologyWith());
+
+            assertAll("an absent hsts / csp and a false nosniff / absent frame_deny are all orphans",
+                    () -> assertEquals(4, modeErrors(errors).size(), () -> "got: " + errors),
+                    () -> assertHasError(errors, GLOBAL_MODES + "hsts", "does not enable hsts"),
+                    () -> assertHasError(errors, GLOBAL_MODES + "content_type_nosniff",
+                            "does not enable content_type_nosniff"),
+                    () -> assertHasError(errors, GLOBAL_MODES + "frame_deny", "does not enable frame_deny"),
+                    () -> assertHasError(errors, GLOBAL_MODES + "content_security_policy",
+                            "does not enable content_security_policy"));
+        }
+
+        @Test
+        @DisplayName("Should judge an anchor block's modes against that anchor block, not against the global block")
+        void shouldJudgeAnchorModesAgainstTheAnchorBlock() {
+            SecurityHeadersConfig global = SecurityHeadersConfig.builder().frameDeny(true).build();
+            SecurityHeadersConfig anchorBlock = SecurityHeadersConfig.builder()
+                    .contentTypeNosniff(true)
+                    .headerModes(SecurityHeadersConfig.HeaderModes.builder()
+                            .frameDeny(SecurityHeadersConfig.HeaderMode.DEFAULT).build())
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gatewayWithBlocks(global, anchorBlock), List.of(),
+                    topologyWith());
+
+            assertAll("the global frame_deny does not legitimise the anchor's frame_deny mode (wholesale replacement)",
+                    () -> assertEquals(1, modeErrors(errors).size(), () -> "got: " + errors),
+                    () -> assertHasError(errors, ANCHOR_MODES + "frame_deny", "does not enable frame_deny"));
+        }
+
+        @Test
+        @DisplayName("Should accept a mode for every header its block enables, on the global and an anchor block")
+        void shouldAcceptModesForEnabledHeaders() {
+            SecurityHeadersConfig enabledAll = SecurityHeadersConfig.builder()
+                    .hsts(new SecurityHeadersConfig.Hsts(31536000, true))
+                    .contentTypeNosniff(true)
+                    .frameDeny(true)
+                    .contentSecurityPolicy("default-src 'self'")
+                    .headerModes(allDefault())
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gatewayWithBlocks(enabledAll, enabledAll), List.of(),
+                    topologyWith());
+
+            assertTrue(modeErrors(errors).isEmpty(), () -> "no mode is an orphan, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("Conditional base_url — mandatory exactly with a proxy route (AS-4)")
+    class ConditionalBaseUrl {
+
+        private static final String BASE_URL_POINTER = "/endpoint/base_url";
+
+        @Test
+        @DisplayName("Should refuse an endpoint carrying a proxy route but no base_url")
+        void shouldRefuseProxyRouteEndpointWithoutBaseUrl() {
+            EndpointConfig endpoint = endpoint("orders", null, List.of(), route("orders-read", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint), topologyWith());
+
+            assertHasError(errors, BASE_URL_POINTER, "endpoint 'orders' declares proxy route(s) but no base_url");
+        }
+
+        @Test
+        @DisplayName("Should accept an asset-only endpoint that declares no base_url")
+        void shouldAcceptAssetOnlyEndpointWithoutBaseUrl() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", null, "assets",
+                    new AuthConfig(Require.NONE, List.of()),
+                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith());
+
+            assertTrue(errors.isEmpty(), () -> "an endpoint without a proxy route needs no base_url, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should still refuse a declared base_url alias that does not resolve, proxy route or not")
+        void shouldRefuseUnresolvedDeclaredAliasWithoutProxyRoutes() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "MISSING", "assets",
+                    new AuthConfig(Require.NONE, List.of()),
+                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith());
+
+            assertHasError(errors, BASE_URL_POINTER, "unresolved topology alias: MISSING");
+        }
+
+        @Test
+        @DisplayName("Should report no base_url violation for a proxy route whose declared alias resolves")
+        void shouldAcceptProxyRouteWithResolvableBaseUrl() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-read", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(error -> BASE_URL_POINTER.equals(error.pointer())),
+                    () -> "a resolvable base_url on a proxy-route endpoint is valid, got: " + errors);
+        }
     }
 
     @Nested
@@ -795,6 +1035,29 @@ class ConfigValidatorTest {
         }
 
         @Test
+        @DisplayName("Should check CORS on the global block only — an anchor cannot carry cors (ADR-0007 Amendment A1)")
+        void shouldCheckCorsOnGlobalBlockOnly() {
+            SecurityHeadersConfig wildcardWithCredentials = SecurityHeadersConfig.builder()
+                    .cors(SecurityHeadersConfig.Cors.builder()
+                            .allowedOrigins(List.of("*"))
+                            .allowCredentials(true)
+                            .build())
+                    .build();
+            AnchorConfig anchorWithCors = AnchorConfig.builder()
+                    .name("open").pathPrefix("/open").type(AnchorType.PROXY).access(AccessLevel.PUBLIC)
+                    .securityHeaders(wildcardWithCredentials)
+                    .build();
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("open", anchorWithCors));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains("cors")),
+                    () -> "CORS is evaluated before route selection, so an anchor block is never a CORS source and "
+                            + "the gateway schema refuses one at load; the validator checks the global block only, got: "
+                            + errors);
+        }
+
+        @Test
         @DisplayName("Should accept cookie session mode without an encryption_key (generate-on-startup)")
         void shouldAcceptCookieSessionWithoutEncryptionKey() {
             GatewayConfig gateway = validGateway()
@@ -944,7 +1207,7 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("The seven anchor / effective-auth rules (ADR-0007)")
+    @DisplayName("The anchor / effective-auth rules (ADR-0007)")
     class AnchorRules {
 
         @Test
@@ -996,6 +1259,124 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertHasError(errors, "/endpoint/routes", "does not declare it");
+        }
+
+        // --- Rule 4b: the namespace-coverage mirror of rule 4 --------------------------------------
+        // Rules 3 and 4 judge a route by where its OWN match key sits, so a route sitting outside and
+        // ABOVE an anchor is unjudged by both. With AS-2 exact routes that gap is reachable: an exact
+        // route covers one address, so every other address in the namespace falls through to the
+        // broader route and is served with ITS auth posture. These four cases pin the rule and its
+        // coverage exception, with the covered case as the negative control.
+
+        @Test
+        @DisplayName("Rule 4b: Should reject a broader route swallowing a namespace whose only member is an exact route")
+        void shouldRejectBroaderRouteSwallowingExactOnlyAnchorNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    exactRoute("admin-entry", "/admin", "admin"));
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // /admin/ and /admin/x match no route belonging to the anchor and would be served by the
+            // unanchored catch-all with require: none — the anchor's bearer floor escaped.
+            assertHasError(errors, "/endpoint/routes",
+                    "route 'catch-all' path_prefix '/' contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
+        @Test
+        @DisplayName("Rule 4b: Should accept a broader route when a prefix route under the anchor covers the namespace")
+        void shouldAcceptBroaderRouteWhenAnchoredPrefixRouteCoversNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-app", "/admin", "admin"));
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // Longest-prefix selection gives every address under /admin to the anchored route, so the
+            // catch-all alongside it is the ordinary topology and not a bypass.
+            assertTrue(errors.isEmpty(),
+                    () -> "a covered anchor namespace must not refuse a broader sibling route, got: " + errors);
+        }
+
+        /**
+         * The covering route from the accepted case above, narrowed on one dimension at a time. Each
+         * value is the {@code match} of a route declared at the anchor's own prefix — so it passes the
+         * prefix-equality half of the coverage test and is rejected solely by the narrowing.
+         */
+        static Stream<Arguments> narrowedCoveringMatchers() {
+            return Stream.of(
+                    Arguments.of("methods", MatchConfig.builder().pathPrefix("/admin")
+                            .methods(List.of(HttpMethod.GET)).build()),
+                    Arguments.of("host", MatchConfig.builder().pathPrefix("/admin")
+                            .host("admin.example.org").build()),
+                    Arguments.of("headers", MatchConfig.builder().pathPrefix("/admin")
+                            .headers(List.of(new MatchConfig.HeaderMatcher("X-Admin", null, "yes"))).build()));
+        }
+
+        @ParameterizedTest(name = "narrowed on {0}")
+        @MethodSource("narrowedCoveringMatchers")
+        @DisplayName("Rule 4b: Should reject when the covering route narrows beyond the path, so it serves only part of the namespace")
+        void shouldRejectWhenCoveringRouteNarrowsBeyondThePath(String dimension, MatchConfig narrowed) {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    RouteConfig.builder().id("admin-app").anchor("admin").match(narrowed).build());
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // The member names the whole namespace but answers only the part its narrowing admits: a
+            // POST (or a request from another host, or one without the header) matches no anchored
+            // route and is served by the unanchored catch-all under require: none. Naming a namespace
+            // is not covering it, so this must refuse exactly as an uncovered namespace does.
+            assertHasError(errors, "/endpoint/routes",
+                    "contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
+        @Test
+        @DisplayName("Rule 4b: Should reject when the anchored prefix route covers only part of the namespace")
+        void shouldRejectWhenAnchoredPrefixRouteCoversOnlyASubPath() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-users", "/admin/users", "admin"));
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // /admin/reports is inside the namespace but below no anchored route, so it still falls
+            // through: partial coverage is not coverage.
+            assertHasError(errors, "/endpoint/routes",
+                    "contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
+        @Test
+        @DisplayName("Rule 4b: Should not judge an exact route, which serves one address and never a namespace")
+        void shouldNotJudgeExactRouteAgainstTheCoverageRule() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-app", "/admin", "admin"));
+            EndpointConfig root = anchoredEndpoint("root-ep", "ROOT", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    exactRoute("root-entry", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, root),
+                    topologyWith("ADMIN", "ROOT"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "an exact route matches one address and can swallow no namespace, got: " + errors);
         }
 
         @Test
@@ -1134,8 +1515,15 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("gRPC anchor-namespace containment exemption (ADR-0007)")
+    @DisplayName("gRPC anchor-namespace containment exemption — rules 3 and 4 only (ADR-0007)")
     class GrpcNamespaceExemption {
+
+        // The exemption is SCOPED, and this class pins both sides of that scope. Rules 3 and 4 judge a
+        // route by where its OWN match key sits, which a service-rooted gRPC method path can never
+        // satisfy — those two are waived (the first three cases below, the negative controls for the
+        // inversion). Rule 4b judges the opposite geometry — what the route's prefix CONTAINS — and
+        // selection is protocol-blind (RouteTable.lookup filters on path alone), so a gRPC route
+        // swallowing an uncovered anchor namespace fails the boot exactly like an http one.
 
         private static final String ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.Echo";
         private static final String SECURE_ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.SecureEcho";
@@ -1192,6 +1580,67 @@ class ConfigValidatorTest {
 
             assertTrue(errors.isEmpty(),
                     () -> "a gRPC route inside a catch-all anchor namespace must not be rejected as a squatter, got: "
+                            + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 4b applies to gRPC: a gRPC route whose prefix swallows an uncovered anchor namespace fails the boot")
+        void shouldRejectGrpcRouteContainingUncoveredAnchorNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    exactRoute("admin-entry", "/admin", "admin"));
+            EndpointConfig echo = anchoredEndpoint("echo", "ECHO", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    grpcRoute("grpc-echo", "/", null, null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, echo),
+                    topologyWith("ADMIN", "ECHO"));
+
+            // Selection is protocol-blind, so a plain GET /admin/x matches no route belonging to the
+            // anchor, falls through to this gRPC route, and is served with its require: none posture
+            // and its security_headers block — the anchor's bearer floor escaped for every address in
+            // the namespace but the one exact string.
+            assertHasError(errors, "/endpoint/routes",
+                    "route 'grpc-echo' path_prefix '/' contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
+        @Test
+        @DisplayName("Rule 4b coverage exception applies to gRPC too: a covered anchor namespace boots beside a gRPC catch-all")
+        void shouldAcceptGrpcRouteContainingCoveredAnchorNamespace() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    anchoredRoute("admin-app", "/admin", "admin"));
+            EndpointConfig echo = anchoredEndpoint("echo", "ECHO", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    grpcRoute("grpc-echo", "/", null, null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, echo),
+                    topologyWith("ADMIN", "ECHO"));
+
+            // Same geometry as the case above with the one thing that matters changed: the anchor now
+            // carries a prefix route at its own path_prefix, so longest-prefix selection gives it every
+            // address in the namespace and the gRPC route alongside it is not a bypass.
+            assertTrue(errors.isEmpty(),
+                    () -> "a covered anchor namespace must not refuse a broader gRPC sibling route, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 4b applies to gRPC only as a container: a gRPC route on a bare service path swallows no anchor")
+        void shouldNotJudgeBareServicePathGrpcRouteAgainstTheCoverageRule() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    exactRoute("admin-entry", "/admin", "admin"));
+            EndpointConfig echo = anchoredEndpoint("echo", "ECHO", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    grpcRoute("grpc-echo", ECHO_PATH, null, null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, echo),
+                    topologyWith("ADMIN", "ECHO"));
+
+            // The shipped gRPC descriptors ride bare service paths, which contain no anchor prefix, so
+            // extending rule 4b to gRPC leaves them booting exactly as before.
+            assertTrue(errors.isEmpty(),
+                    () -> "a service-rooted gRPC route contains no anchor namespace and must not be refused, got: "
                             + errors);
         }
 
@@ -2751,6 +3200,147 @@ class ConfigValidatorTest {
             assertTrue(errors.getFirst().message().contains("declares both"),
                     () -> "the message must state that both lists were declared, got: "
                             + errors.getFirst().message());
+        }
+    }
+
+    @Nested
+    @DisplayName("asset.index and asset.fallback (AS-12)")
+    class AssetIndexAndFallback {
+
+        private List<ConfigError> validateAsset(AssetConfig asset) {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
+                    new AuthConfig(Require.NONE, List.of()),
+                    assetRoute("spa", "/assets", "assets", asset, HttpMethod.GET));
+            return validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
+        }
+
+        private static AssetConfig directoryWith(@Nullable String index, @Nullable String fallback) {
+            return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv/spa")
+                    .index(index).fallback(fallback).build();
+        }
+
+        @Test
+        @DisplayName("Should accept a directory asset declaring a single-segment index and fallback")
+        void shouldAcceptDirectoryIndexAndFallback() {
+            List<ConfigError> errors = validateAsset(directoryWith("index.html", "index.html"));
+
+            assertTrue(errors.isEmpty(), () -> "a directory source may declare index and fallback, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "asset.{0} on source: upstream")
+        @ValueSource(strings = {"index", "fallback"})
+        @DisplayName("Should refuse index or fallback on an upstream asset source")
+        void shouldRefuseOnUpstreamSource(String key) {
+            AssetConfig.AssetConfigBuilder asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
+                    .upstream("SECONDARY");
+            if ("index".equals(key)) {
+                asset.index("index.html");
+            } else {
+                asset.fallback("index.html");
+            }
+
+            List<ConfigError> errors = validateAsset(asset.build());
+
+            assertHasError(errors, "/endpoint/routes",
+                    "asset route 'spa' declares asset." + key + " but its source is 'upstream'");
+        }
+
+        @ParameterizedTest(name = "invalid file name ''{0}''")
+        @ValueSource(strings = {"", ".", "..", "../index.html", "sub/index.html", "sub\\index.html", "index\0.html",
+                "index\r.html"})
+        @DisplayName("Should refuse an index or fallback that is not a single file-name segment")
+        void shouldRefuseInvalidFileName(String name) {
+            List<ConfigError> indexErrors = validateAsset(directoryWith(name, null));
+            List<ConfigError> fallbackErrors = validateAsset(directoryWith(null, name));
+
+            assertAll("both keys are held to the single-segment rule",
+                    () -> assertHasError(indexErrors, "/endpoint/routes",
+                            "asset route 'spa' asset.index must be a single file-name segment"),
+                    () -> assertHasError(fallbackErrors, "/endpoint/routes",
+                            "asset route 'spa' asset.fallback must be a single file-name segment"));
+        }
+
+        @Test
+        @DisplayName("Should never echo the offending file-name value into the refusal message")
+        void shouldNotEchoOffendingValue() {
+            List<ConfigError> errors = validateAsset(directoryWith("../../etc/passwd", null));
+
+            assertTrue(errors.stream().noneMatch(error -> error.message().contains("etc/passwd")),
+                    () -> "the refused value must not reach the operator log, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("upstream.rewrite_location protocol restriction (AS-11)")
+    class RewriteLocationProtocol {
+
+        private static final String REWRITE_LOCATION = "upstream.rewrite_location";
+
+        private List<ConfigError> validateRoute(@Nullable Protocol protocol, @Nullable Boolean rewriteLocation) {
+            RouteConfig route = RouteConfig.builder()
+                    .id("rewritten")
+                    .protocol(protocol)
+                    .match(match("/rewritten", HttpMethod.GET))
+                    .upstream(UpstreamConfig.builder().rewriteLocation(rewriteLocation).build())
+                    .build();
+            return validator.validate(validGateway().build(),
+                    List.of(endpoint("orders", "ORDERS", List.of(HttpMethod.GET), route)), topologyWith("ORDERS"));
+        }
+
+        private static boolean hasRewriteLocationError(List<ConfigError> errors) {
+            return errors.stream().anyMatch(error -> error.message().contains(REWRITE_LOCATION));
+        }
+
+        /**
+         * Whether {@code rewrite_location} is refused for this protocol — the expectation half of the
+         * matrix below, as an EXHAUSTIVE switch rather than a hand-written name list. A protocol added
+         * to {@link Protocol} fails to compile here until someone decides which side it belongs on,
+         * where a {@code names = {...}} selector would simply have stopped covering it and left the
+         * validator free to drift with every test still green.
+         */
+        private static boolean rewriteLocationRefused(Protocol protocol) {
+            return switch (protocol) {
+                // The rewrite reads an HTTP Location response header, which neither carries.
+                case GRPC, WEBSOCKET -> true;
+                case HTTP, GRAPHQL -> false;
+            };
+        }
+
+        @ParameterizedTest
+        @EnumSource(Protocol.class)
+        @DisplayName("Should refuse rewrite_location: true on exactly the protocols that cannot carry a Location")
+        void shouldRefuseRewriteLocationPerProtocol(Protocol protocol) {
+            List<ConfigError> errors = validateRoute(protocol, true);
+
+            if (rewriteLocationRefused(protocol)) {
+                assertHasError(errors, "/endpoint/routes", "route 'rewritten' declares " + REWRITE_LOCATION);
+                assertHasError(errors, "/endpoint/routes",
+                        "its protocol is '" + protocol.name().toLowerCase(Locale.ROOT) + "'");
+            } else {
+                assertFalse(hasRewriteLocationError(errors),
+                        () -> protocol + " routes support the Location rewrite, got: " + errors);
+            }
+        }
+
+        @Test
+        @DisplayName("Should accept rewrite_location: true on a route that omits protocol (http)")
+        void shouldAcceptWhenProtocolOmitted() {
+            List<ConfigError> errors = validateRoute(null, true);
+
+            assertTrue(errors.isEmpty(), () -> "an omitted protocol means http, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @EnumSource(Protocol.class)
+        @DisplayName("Should not refuse any protocol's route whose rewrite_location is false or absent")
+        void shouldNotRefuseWhenToggleOff(Protocol protocol) {
+            assertAll("only an enabled toggle is refused",
+                    () -> assertFalse(hasRewriteLocationError(validateRoute(protocol, false)),
+                            "a declared false is not refused"),
+                    () -> assertFalse(hasRewriteLocationError(validateRoute(protocol, null)),
+                            "an absent key is not refused"));
         }
     }
 }

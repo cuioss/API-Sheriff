@@ -4,7 +4,8 @@
 
 == Status
 
-Accepted.
+Accepted. Amended by <<amendment-a1>> (`security_headers` apply after route selection; CORS stays
+global and pre-auth).
 
 == Context
 
@@ -80,7 +81,24 @@ Three lessons condense out:
   every route whose path falls inside *any* anchor's namespace must declare that anchor.
   A mismatch (declared anchor vs. actual path) or an undeclared squatter fails the boot.
   When no `anchors` block is configured, nothing changes.
-* *gRPC routes are exempt from the namespace-containment geometry.* A `protocol: grpc`
+* *Namespace coverage at boot (the mirror of the squatter rule).* The two directions above are
+  *declaration*-scoped: they judge a route by where its own match key sits, so a route sitting
+  outside and *above* an anchor is judged by neither, while request-time selection still lets it
+  serve addresses inside the namespace. A prefix route whose namespace *strictly contains* an
+  anchor's `path_prefix`, and which does not declare that anchor, therefore also fails the boot --
+  unless a prefix route declared at the anchor's own `path_prefix` covers the namespace, in which
+  case longest-prefix selection gives every address inside it to that member and the broader route
+  is not a bypass. Covering means matching the whole namespace, not naming it: a candidate that
+  narrows on a non-path `match` dimension (`match.methods`, `match.host`, `match.headers`) serves
+  only part of it, leaving the complement to the enclosing route, so it is not accepted as coverage.
+  The rule became load-bearing with exact (`match.path`) routes: an anchor whose
+  only member is `path: /admin` claims exactly one address, leaving `/admin/` and `/admin/x` to the
+  enclosing route and its weaker posture. Exact routes are not judged by it (an exact route serves
+  one address, which is the squatter rule's case). `protocol: grpc` routes *are* judged by it --
+  the exemption below is scoped to the two declaration-scoped directions and does not reach this
+  one.
+* *gRPC routes are exempt from the two declaration-scoped containment directions -- and from those
+  two only.* A `protocol: grpc`
   route rides the service-rooted `/{package}.{Service}/{Method}` path, whose service
   component (e.g. `de.cuioss.sheriff.api.integration.grpc.Echo`) is a *single opaque path
   segment* -- dots, no slashes. No non-root anchor `path_prefix` can contain such a path on
@@ -88,8 +106,19 @@ Three lessons condense out:
   service path and cannot be told to prepend a gateway namespace prefix -- so neither the
   containment check (route inside its declared anchor) nor the squatter check (undeclared
   route inside any anchor namespace) can ever be satisfied for a bare gRPC service path.
-  Both containment checks are therefore skipped for `protocol: grpc` routes. Only the
-  path-prefix *geometry* is exempt: a gRPC route still *declares* an anchor for its ADR-0013
+  Those two are therefore skipped for `protocol: grpc` routes.
+  The *coverage mirror* is not, and the difference is the direction each rule reads. The two
+  skipped directions judge a route by where its own match key sits, which is exactly what the
+  service-rooted path argument is about; the coverage rule judges what the route's `path_prefix`
+  *contains*, and nothing constrains a gRPC route's declared match key to a bare service path.
+  Route selection is protocol-blind -- the route table looks a request path up on the path alone
+  and the matcher carries no protocol dimension -- so a gRPC route declaring a broad `path_prefix`
+  answers plain HTTP requests inside a swallowed anchor namespace with *its* auth posture and
+  *its* `security_headers` block. Exempting it there would reopen the exact bypass the coverage
+  rule was added to close, so the coverage rule applies to `grpc` routes exactly as it does to
+  `http` and `websocket` ones.
+  Only the path-prefix *geometry* of the two declaration-scoped directions is exempt: a gRPC route
+  still *declares* an anchor for its ADR-0013
   type/access classification and its auth floor, and every other anchor rule --
   declared-anchor existence, pairwise-disjoint anchor prefixes, the non-weakenable auth
   floor, and the ADR-0013 access→auth matrix -- stays enforced for gRPC routes unchanged.
@@ -127,6 +156,50 @@ Three lessons condense out:
   two surfaces need different auth anyway.
 * Namespace enforcement had to land *before* the request pipeline froze route selection --
   retrofitting it into an existing pipeline is substantially harder -- and it did.
+
+[[amendment-a1]]
+== Amendment A1 -- `security_headers` apply after route selection; CORS stays global and pre-auth
+
+=== Context
+
+The Decision above materializes an anchor's `security_headers` block onto every member route, but
+the response headers were seeded by stage 0 of the request pipeline -- *before* route selection --
+from the global block alone. The per-route effective block was carried on the route and never
+applied, so an anchor declaring `frame_deny` changed nothing on the wire. The block could not simply
+move behind route selection either: stage 0 also owns CORS, and a CORS preflight must be answered
+before authentication, which runs after route selection.
+
+=== Decision
+
+* *The stage splits in two positions.* Stage 0 keeps CORS -- the preflight short-circuit and the
+  `Access-Control-Allow-*` headers of an actual request -- and seeds the gateway-owned response
+  security headers (`Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`) from
+  the *global* block. A new stage 2a runs immediately after route selection and before the verb gate:
+  it removes every gateway-owned security-header name from the response and seeds the selected
+  route's resolved block (the anchor's block when its anchor declares one, otherwise the global
+  block).
+* *Pre-route responses keep the global block.* Everything answered before a route is selected -- a
+  stage-1 rejection, a `404` for an unrouted path, the CORS preflight -- carries the global block,
+  because no anchor is known yet. Every response after stage 2a, the verb gate's `405` included,
+  carries the route's block.
+* *The anchor block replaces the global block wholesale.* There is no key-by-key merge, in line with
+  the replacement rule of the Decision: an anchor block declaring only `frame_deny` drops the global
+  `Strict-Transport-Security` for its routes. An operator who wants both declares both on the anchor.
+* *CORS is global only.* It is evaluated before route selection, so an anchor cannot scope it. The
+  bundled `gateway.schema.json` therefore accepts `cors` in the global `security_headers` block only;
+  an anchor-level `cors` block fails the boot at schema load instead of being silently ignored, and
+  the configuration validator's CORS rule checks the global block alone.
+* CORS headers and every non-security header already accumulated on the response (for example
+  `Allow` or `WWW-Authenticate`) are never touched by stage 2a.
+
+=== Consequences
+
+* Anchor-scoped response headers take effect on routed responses, closing the gap between the
+  materialized posture printed in the boot log and the headers actually served.
+* A browser preflight still never reaches route selection, authentication or an upstream, and its
+  outcome is unchanged.
+* A configuration that placed `cors` under an anchor -- previously accepted and ignored -- is now a
+  refused boot; the fix is to move the block to the global `security_headers`.
 
 == References
 

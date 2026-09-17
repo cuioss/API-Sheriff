@@ -57,8 +57,11 @@ Configuration is three kinds of artifact:
   `oidc` block (BFF variants). No routes.
 
 | `endpoints/*.yaml`
-| *One file per endpoint* -- a service / host / app, or a logical group. Each file binds to one
-  `base_url` *alias* and declares the routes for that endpoint. These files are
+| *One file per endpoint* -- a service / host / app, or a logical group. Each file declares the
+  routes for that endpoint and, when at least one route proxies, binds to one `base_url` *alias*
+  (an endpoint of asset and redirect routes only needs none, and a *disabled* endpoint needs none
+  either -- the requirement is checked for enabled endpoints only, see
+  link:#_endpoint_identity[`enabled`]). These files are
   *environment-independent* in their backend leg -- they never contain a real *upstream* host.
   (An inbound `match.host` matcher names the gateway's own public vhost and is
   environment-specific; write it as a `${VAR}` placeholder.)
@@ -88,11 +91,14 @@ subdirectories, are ignored.
 
 * `gateway.yaml`, every file under `endpoints/`, and `topology.properties` are read once at
   startup.
-* Each endpoint's `base_url` alias is *resolved* against the topology (an explicit in-file
+* Each `base_url` alias declared by an *enabled* endpoint is *resolved* against the topology (a
+  disabled endpoint takes no part in resolution, so its alias may stay unresolved -- see
+  link:#_endpoint_identity[`enabled`]; an explicit in-file
   `${VAR}` placeholder lets an environment value win over the placeholder's default, see
   link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology]); the resolved URL is *decomposed once* into
   `{scheme, host, port, base-path}` (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
-* The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias,
+* The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias
+  *of an enabled endpoint* (a disabled endpoint's alias is exempt -- see the bullet above),
   a malformed topology URL, or a route referencing a missing endpoint all *fail the boot*.
 * Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
   commit. Topology values may be literal (they are locations, not secrets) but are still
@@ -142,7 +148,7 @@ file-and-JSON-pointer error before any immutable value object is built:
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
   `anchor`, `auth`, `allowed_methods`, `upstream_defaults`) and its `routes[]`, each route's
   `id`, `protocol`, `anchor`, `match`, `auth`, `security_filter`, `forward`, `upstream`, `asset`,
-  the WebSocket-route `websocket` block (which holds `allowed_origins` and
+  `redirect`, the WebSocket-route `websocket` block (which holds `allowed_origins` and
   `idle_timeout_seconds`), and reserved `rate_limit`.
 |===
 
@@ -152,7 +158,9 @@ this document field-for-field and are the *structural* gate only. The *cross-cut
 schema cannot express are enforced in code and listed under
 link:#_configuration_validation_rules_summary[Configuration Validation Rules]: endpoint- and
 route-`id` uniqueness across files, `upstream_defaults` and `allowed_methods` wholesale-replacement,
-`allowed_methods` verb membership, topology-alias resolvability, and same-prefix disjointness. Every
+`allowed_methods` verb membership, topology-alias resolvability, the `base_url`-only-with-a-proxy-route
+rule, the one-terminal-action rule and the open-redirect review of a `redirect` location, and
+same-prefix / same-exact-path disjointness. Every
 violation the schema gate and the configuration-validator rules detect is collected in a single
 pass and reported together, rather than one at a time, and any violation refuses the boot. The one
 deliberate exception is an unresolvable `base_url` alias of an *enabled* endpoint: the topology
@@ -222,11 +230,17 @@ management:                       # TLS policy for the management interface (hea
                                    #   the WHOLE management surface to plain HTTP and emits a
                                    #   loud boot WARN (ApiSheriff-115)
 
-security_headers:                  # response-header middleware (global default)
+security_headers:                  # response-header middleware (global block). Seeded onto every
+                                   #   response; once a route is selected, an anchor block REPLACES
+                                   #   it wholesale for that anchor's routes (see "security_headers")
   hsts: { max_age: 31536000, include_subdomains: true }
   content_type_nosniff: true
   frame_deny: true
-  cors:                            # disabled unless configured; a cross-origin SPA (see
+  content_security_policy: "default-src 'self'"   # served VERBATIM; omit => no CSP header
+  header_modes:                    # OPTIONAL per-header precedence vs. the origin's own header:
+    content_security_policy: default   #   set (absent key, overwrite) | default (origin value kept)
+  cors:                            # GLOBAL ONLY -- refused inside an anchor block. Disabled unless
+                                   #   configured; a cross-origin SPA (see
     enabled: true                  #   oidc.session.csrf below) needs this enabled WITH
     allowed_origins: [https://app.example.com]   # credentials, or the browser blocks the calls
     allowed_methods: [GET, POST]
@@ -267,6 +281,12 @@ anchors:                           # OPTIONAL namespace-scoped policy (see "Anch
     auth: { require: bearer }      # every /api route presents a bearer token; a member route
                                    #   may replace this block but never weaken it to `none`
     security_filter: { profile: strict }
+    security_headers:              # REPLACES the global block for /api routes -- no merge: a key
+                                   #   not restated here (content_security_policy, header_modes)
+                                   #   is absent under /api. No `cors` key is accepted here
+      hsts: { max_age: 31536000, include_subdomains: true }
+      content_type_nosniff: true
+      frame_deny: true
   bff:
     path_prefix: /bff
     type: bff                      # a bff surface MUST declare access: authenticated
@@ -464,7 +484,14 @@ enablement fields:
 |===
 
 The endpoint's other fields are documented under their own headings: `base_url`
-(link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004]), `anchor`
+(link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004];
+*mandatory exactly when an enabled endpoint carries a proxy route* -- a route declaring neither
+`asset` nor `redirect` -- and omitted by an endpoint of asset and redirect routes only. A *disabled*
+endpoint is exempt on both counts: the validator is handed only the enabled endpoints, so such an
+endpoint may omit `base_url` while carrying proxy routes, and may name an alias the topology does not
+resolve. See
+link:user/endpoint-routes.adoc#_base_url_only_with_proxy_routes[`base_url` is mandatory only with a
+proxy route]), `anchor`
 (link:user/anchors.adoc#_anchors[Anchors] -- the normative reference for both the gateway `anchors` block and
 the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
 `allowed_methods` (link:#_allowed_methods[`allowed_methods`]), and
@@ -2216,8 +2243,16 @@ Matchers compose with AND semantics; a route matches only if every declared matc
 
 | `path_prefix`
 | Literal path prefix, compared segment-wise against the validated, normalized path
-  (`/api` matches `/api/orders` but not `/apifoo`). Also the precedence key (see
-  link:user/endpoint-routes.adoc#_route_ordering[Route ordering]).
+  (`/api` matches `/api/orders` but not `/apifoo`). Also the precedence key among prefix routes
+  (longest first, see link:user/endpoint-routes.adoc#_route_ordering[Route ordering]). Mutually
+  exclusive with `path`.
+
+| `path`
+| *Exact* path: the route matches this one address only, by an *un-normalized* string comparison
+  against the canonical request path -- `/a` and `/a/` are distinct addresses, and `path: /a`
+  matches neither `/a/` nor `/a/b`. Every exact route is selected *before* every prefix route, so for
+  the same address an exact route always wins. Exactly one of `path_prefix` and `path` must be
+  declared; both, or neither, fail the boot at schema load.
 
 | `methods`
 | HTTP method list; omitted means all methods.
@@ -2363,13 +2398,34 @@ bearer -- and that order is one rule stated twice:
 . *Gateway-owned transport truth beats operator configuration.* The regenerated forwarding
   headers and the mediated bearer merge after `set_headers`, the bearer last.
 
+[[_upstream]]
 === `upstream`
 
-The target is `resolved(endpoint.base_url) + upstream.path + remainder`, where *remainder* is
-the request path after stripping the matched `match.path_prefix` -- so path parameters survive
-the mapping (`/api/orders/42` -> `.../orders/42`), and `upstream.path` *replaces* the matched
-prefix rather than prepending to the full request path. The query parameters the route's
-link:#_forward[`forward`] mode admits are appended unchanged.
+The target is `resolved(endpoint.base_url) + upstream.path + remainder`
+(link:adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004 Amendment A2]). The resolved alias
+supplies the scheme, host, port and *base path*; `upstream.path` is *appended* to that base path,
+joined on exactly one `/` whichever side carries a slash; an omitted or blank `upstream.path` keeps
+the alias base path unchanged. *Remainder* is the request path after stripping the route's match key
+(`match.path_prefix`, or the whole `match.path` on an exact route, whose remainder is empty) -- so
+path parameters survive the mapping: `/api/orders/42` on `path_prefix: /api/orders` with
+`upstream.path: /orders` behind `APP1=https://app1.internal:8443/app1` reaches
+`https://app1.internal:8443/app1/orders/42`. The query parameters the route's
+link:#_forward[`forward`] mode admits are appended unchanged. Worked examples and the migration from
+the former replace semantics are in
+link:user/endpoint-routes.adoc#_upstream_path[Endpoint Routes -- Upstream path].
+
+`rewrite_location` is a boolean, *default `false`*. When `true`, an upstream `Location` response
+header that points inside this route's upstream is mapped back onto the gateway: a path-absolute
+value, or an absolute URI whose scheme, host and effective port equal the route upstream, whose path
+equals the effective upstream base path (alias base path + `upstream.path`) or continues it on a
+segment boundary, is rewritten to the route's match key plus the remainder, emitted as a
+gateway-relative path with query and fragment kept verbatim. A foreign origin, a scheme-relative
+`//host` value, an unparseable value, a path outside the effective base path, and a path carrying a
+dot segment or an ambiguous separator (a backslash, or a percent-encoded `/` or `\`, either case) are
+relayed unchanged. It is valid on `http` and `graphql` routes; declaring it on a `grpc` or `websocket` route
+fails the boot. See link:user/endpoint-routes.adoc#_rewrite_location[Rewriting upstream `Location`
+headers].
+
 `connect_timeout_ms` / `read_timeout_ms` are
 millisecond-precision options on the shared per-upstream-tuple data-plane client
 (link:adr/0008-data-plane-transport.adoc[ADR-0008]). `retry` and `circuit_breaker` map to the
@@ -2380,6 +2436,93 @@ upstream; the breaker is stateless per node, opens after `failures` consecutive 
 half-opens after `reset_ms`
 (see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
 written literally here -- only the alias-relative `path`.
+
+An `upstream` block belongs to a *proxy* route. A route declaring a `redirect` block must not declare
+one -- the pair fails the boot, since a redirect contacts no upstream and the settings would be
+silently ignored.
+
+[[_asset]]
+=== `asset`
+
+The static-content terminal action
+(link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]); how to author it is in
+link:user/endpoint-routes.adoc#_asset_terminal_action[Endpoint Routes -- Asset terminal action]. A
+route declaring an `asset` block rides a `type: asset` anchor.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `source`
+| *Mandatory.* `directory` (a local directory / volume mount) or `upstream` (a secondary origin
+  reached through the SSRF-controlled data plane).
+
+| `directory`
+| The directory root for `source: directory`; required by that source. The request sub-path is
+  canonicalized and confined under the root; any escape is a `404`.
+
+| `upstream`
+| The topology alias of the secondary origin for `source: upstream`; required by that source and
+  must resolve at boot.
+
+| `index`
+| *Optional, `source: directory` only.* A file name answering a *directory address* -- the bare
+  route prefix, a sub-path ending in `/`, or a sub-path naming an existing directory -- with that file
+  from the addressed directory. A directory without the file is a `404`; without `index`, every
+  directory address is a `404`.
+
+| `fallback`
+| *Optional, `source: directory` only.* A file name answering a request whose target does not exist
+  *and whose last path segment has no `.` extension*, with that file from the directory *root* -- the
+  single-page-application fallback. A missing path *with* an extension (`/app.js`) stays a `404`.
+|===
+
+`index` and `fallback` are served through the same confinement chain as any other asset, and each
+must be a *single file-name segment* -- no `/`, no `\`, no `..`, no control characters, not empty.
+Either key on a `source: upstream` block, or a value that is not a single segment, fails the boot.
+
+[[_redirect]]
+=== `redirect`
+
+The redirect terminal action
+(link:adr/0014-asset-serving-terminal-action.adoc#amendment-a1[ADR-0014 Amendment A1]): the gateway
+answers the request itself with `status` and a `Location` header and contacts no upstream. How to
+author it -- status choice, the context-path convention and the review table -- is in
+link:user/endpoint-routes.adoc#_redirect_terminal_action[Endpoint Routes -- Redirect terminal action].
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `location`
+| *Mandatory.* The `Location` value, written *verbatim*: never prefixed with the application context
+  path and carrying no request placeholder. Without `allow_external` it must be a gateway path
+  starting with exactly one `/`, with no backslash, no percent-encoded `/` or `\`, no dot-segment
+  (`.`, `..` or their `%2E` spellings), and only printable ASCII without whitespace. A violation fails
+  the boot, echoing the value in escaped form.
+
+| `status`
+| *Mandatory*, one of `301`, `302`, `303`, `307`, `308`. There is no default because `301` and `308`
+  are cached by browsers, so permanence must be an explicit choice. Any other value fails the boot at
+  schema load.
+
+| `keep_query`
+| *Boolean, default `false`.* When `true`, the raw inbound query string is appended to `location`,
+  joined with `?` -- or with `&` when `location` already carries a query. A `location` containing `#`
+  together with `keep_query: true` fails the boot.
+
+| `allow_external`
+| *Boolean, default `false`.* When `true`, `location` may additionally be an absolute `http` or
+  `https` URI with a non-empty host and no user-info; every other scheme stays refused. Opting in
+  emits `WARN ApiSheriff-128` at boot, naming the route id but never the location.
+|===
+
+A route declares *exactly one* terminal action: a `redirect` block together with an `asset` block or
+an `upstream` block fails the boot. A redirect is admitted under every anchor `type` and on
+unanchored routes, but only on `protocol: http` -- a `grpc`, `websocket` or `graphql` route declaring
+one fails the boot. The redirect is answered *after* authentication, so under an authenticated anchor
+an unauthenticated caller is challenged before the location is disclosed; the route's `forward` block
+is not consulted.
 
 [[_upstream_defaults]]
 === `upstream_defaults`
@@ -2539,36 +2682,79 @@ and no `429` is ever produced.
 traceability, no runtime behaviour. Retained so the model need not change if dynamic
 discovery is added later (link:adr/0002-initial-scope.adoc[ADR-0002]).
 
+[[_security_headers]]
 === `security_headers`
 
-Response-header middleware applied to every response the gateway returns. Resolved at
-*gateway -> anchor* scope only (an anchor may replace the block wholesale for its namespace --
-see link:user/anchors.adoc#_anchors[Anchors]); endpoints and routes can neither override nor disable it.
-Responses emitted before route selection (CORS preflight, pre-routing rejections) use the
-anchor block when the request path lies inside an anchor namespace, else the gateway block.
+Response-header middleware applied to every response the gateway returns. Declared in the global
+`gateway.yaml` block and, optionally, in an anchor's block; endpoints and routes can neither override
+nor disable it (link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]).
 
-[cols="1,3"]
+*Two positions in the pipeline.* The *global* block is seeded onto the response at the first stage,
+before anything else runs. Immediately after route selection, the selected route's resolved block --
+its anchor's block when the anchor declares one, the global block otherwise -- replaces the
+gateway-owned security headers. Every response produced before a route is selected (a stage-1
+rejection, the `404` for an unrouted path, a CORS preflight answer) therefore carries the *global*
+block, and every response produced after it (a proxied response, an asset, a redirect, a `405`, an
+authentication rejection) carries the *route's* block.
+
+*An anchor block replaces the global block wholesale.* There is no key-by-key merge: a key the anchor
+block does not declare is absent for that anchor's routes. An anchor declaring only `frame_deny: true`
+drops the global `Strict-Transport-Security`; an anchor block without `content_security_policy` drops
+the global policy; an anchor's `header_modes` replace the global ones. Restate every global header an
+anchor should keep. See link:user/anchors.adoc#_anchor_security_headers[Anchors -- Anchor
+`security_headers`].
+
+[cols="1,1,3"]
 |===
-| Field | Meaning
+| Field | Scope | Meaning
 
 | `hsts`
+| global, anchor
 | `Strict-Transport-Security` with `max_age` and `include_subdomains`.
 
 | `content_type_nosniff`
+| global, anchor
 | `X-Content-Type-Options: nosniff`.
 
 | `frame_deny`
+| global, anchor
 | `X-Frame-Options: DENY`.
 
+| `content_security_policy`
+| global, anchor
+| `Content-Security-Policy`, served *verbatim* (e.g. `"default-src 'self'"`). Omitted, no policy is
+  emitted. The schema caps the value at 4096 characters and refuses control characters; the
+  configuration validator refuses a blank value or one carrying CR, LF or any other control character
+  at boot, naming the offending block -- the value becomes a response header, so either would be a
+  header-injection vector.
+
+| `header_modes`
+| global, anchor
+| Per-header precedence against the same header sent by the *origin*, one optional key per
+  gateway-owned header of the *same block*: `hsts`, `content_type_nosniff`, `frame_deny`,
+  `content_security_policy`, each `set` or `default`. `set` -- the value of an absent key -- overwrites
+  the origin's value; `default` keeps an origin-set value and emits the configured one only when the
+  origin sent none. An omitted block is exactly the overwrite behaviour. A response the gateway authors
+  itself (a rejection, a redirect, an asset, a preflight) has no origin header, so both modes emit the
+  configured value there. A mode for a header its block does not enable (e.g. `frame_deny: default`
+  while `frame_deny` is absent or `false`) fails the boot. `cors` has no mode.
+
 | `cors`
+| *global only*
 | CORS preflight/response handling. Disabled by default. `allowed_origins` are exact origins;
   a wildcard origin combined with `allow_credentials: true` is rejected at boot (credential
-  leak). Preflight `OPTIONS` requests are answered by the CORS layer *before* authentication --
-  preflights carry no cookies by spec, so routing them into the auth stage would break every
-  credentialed cross-origin call. Responses to CORS requests carry `Vary: Origin` (shared-cache
-  poisoning guard). When disabled, no CORS headers are emitted and cross-origin browser calls
-  fail -- the secure default.
+  leak). Preflight `OPTIONS` requests are answered by the CORS layer *before* route selection and
+  authentication -- preflights carry no cookies by spec, so routing them into the auth stage would
+  break every credentialed cross-origin call. Responses to CORS requests carry `Vary: Origin`
+  (shared-cache poisoning guard). When disabled, no CORS headers are emitted and cross-origin browser
+  calls fail -- the secure default. Because CORS is evaluated before any anchor is known, a `cors` key
+  inside an anchor's `security_headers` block *fails the boot* at schema load.
 |===
+
+*`default` is a trust decision about the upstream.* Under `default` the upstream decides a header's
+final value, including a weaker one -- a permissive `Content-Security-Policy`, or
+`X-Frame-Options: SAMEORIGIN` where the gateway would send `DENY`. Keep `set` unless the upstream is trusted to own that header (see
+link:security-threat-model.adoc#gw-14[GW-14]).
 
 === `security_defaults`
 
@@ -2974,7 +3160,10 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * `version` must be a known value.
 * Every `endpoint.id` is unique across all endpoint files (in one file or across files); a
   duplicate endpoint `id` fails the boot.
-* Every route has a unique `id` (across all endpoint files) and a resolvable `endpoint.base_url`.
+* Every route has a unique `id` (across all endpoint files).
+* An enabled endpoint declares `base_url` *exactly when* it carries at least one proxy route (a route
+  declaring neither `asset` nor `redirect`); an endpoint with a proxy route and no `base_url` fails the
+  boot. A declared `base_url` must resolve whether or not a route uses it.
 * An endpoint is *enabled* unless its resolved `enabled` value is `false` (file literal, or a
   `${ENDPOINT_<ID>_ENABLED:-...}` placeholder resolved against the environment -- ADR-0004
   Amendment A1). A *disabled* endpoint is schema-validated but otherwise inert: its routes are
@@ -2988,10 +3177,24 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[Defaults for omitted blocks]).
 * Anchor `path_prefix` values are pairwise disjoint -- no anchor prefix is a prefix of another;
   overlap fails the boot.
-* When an `anchors` block is configured: every enabled route's `match.path_prefix` lies inside
-  its *declared* anchor's `path_prefix`, and every enabled route whose path lies inside any
-  anchor's namespace declares exactly that anchor. A membership/namespace mismatch, a missing
+* When an `anchors` block is configured: every enabled route's match key (`match.path_prefix`, or the
+  exact `match.path`) lies inside its *declared* anchor's `path_prefix`, and every enabled route whose
+  path lies inside any
+  anchor's namespace declares exactly that anchor -- so a route whose path lies outside *every* anchor
+  namespace declares no anchor at all. A membership/namespace mismatch, a missing
   declaration inside an anchor namespace, or a reference to an undefined anchor fails the boot.
+  `protocol: grpc` routes are exempt from *these two containment checks only* -- a service-rooted gRPC
+  method path can never nest inside a gateway path namespace on a segment boundary -- and stay subject
+  to every other anchor rule (see link:user/anchors.adoc#_anchors[Anchors]).
+* *Namespace coverage.* A *prefix* route whose namespace strictly contains an anchor's `path_prefix`
+  without declaring that anchor fails the boot, *unless* a prefix route declared at the anchor's own
+  `path_prefix` covers the namespace. This rule judges what a route's prefix *contains* rather than
+  where its own match key sits, so -- unlike the two checks above -- it applies to `protocol: grpc`
+  routes unchanged. Coverage requires the covering route to match the *whole* namespace: its
+  normalized match key must equal the anchor prefix *and* it must narrow on no further `match`
+  dimension. A candidate narrowed by `methods`, `host` or `headers` serves only part of the namespace,
+  so it is not coverage and the containing route is refused exactly as if the anchor had no covering
+  member (see link:user/anchors.adoc#_anchors[Anchors]).
 * Where a route's anchor declares `auth.require` of `bearer` or `session`, the route's
   *effective* auth must not resolve to `require: none` -- the anchor floor cannot be weakened;
   violation fails the boot. Non-auth overrides that relax anchor limits are logged as boot
@@ -2999,11 +3202,27 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * A route whose *effective* auth is `require: bearer` requires a `token_validation` block with
   at least one issuer.
 * A route whose *effective* auth is `require: session` requires an `oidc` block.
-* Any two routes with an identical `match.path_prefix` -- same file or not -- must be statically
-  disjoint (both declare different `host` values, or non-overlapping `methods`, or same-name
-  header matchers with different exact values or opposite presence assertions -- `present: true`
-  on one and `present: false` on the other; a lone `present: true` establishes nothing);
-  otherwise the boot fails (see link:user/endpoint-routes.adoc#_route_ordering[Route ordering]).
+* A route's `match` declares exactly one of `path_prefix` and `path` (enforced by the schema).
+* Any two routes with an identical `match.path_prefix` (compared normalized), or any two exact routes
+  with an identical `match.path` (compared verbatim, so `/a` and `/a/` never collide) -- same file or
+  not -- must be statically disjoint (both declare different `host` values, or non-overlapping
+  `methods`, or same-name header matchers with different exact values or opposite presence
+  assertions -- `present: true` on one and `present: false` on the other; a lone `present: true`
+  establishes nothing); otherwise the boot fails. An exact route never collides with a prefix route
+  (see link:user/endpoint-routes.adoc#_route_ordering[Route ordering]).
+* A route resolves *exactly one* terminal action: a `redirect` block together with an `asset` block or
+  an `upstream` block fails the boot. A route under a `type: asset` anchor declares an `asset` or a
+  `redirect` block; an `asset` block under any other anchor type, or on an unanchored route, fails the
+  boot. A `redirect` is refused on any `protocol` other than `http`.
+* A `redirect.location` without `allow_external: true` must be a gateway path: exactly one leading
+  `/`, no backslash, no percent-encoded `/` or `\`, no dot-segment, printable ASCII without
+  whitespace, and no `#` when `keep_query` is `true`. With `allow_external: true` it may instead be an
+  absolute `http`/`https` URI with a non-empty host and no user-info. Any other value fails the boot;
+  a route opting into `allow_external` emits the `ApiSheriff-128` boot WARN. `redirect.status` must be
+  one of `301`, `302`, `303`, `307`, `308` (enforced by the schema).
+* `upstream.rewrite_location: true` is refused on `grpc` and `websocket` routes.
+* `asset.index` and `asset.fallback` are refused on a `source: upstream` asset block, and each value
+  must be a single file-name segment (no `/`, `\`, `..` or control character, not empty).
 * `allowed_methods` (global, anchor, or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`,
   `PATCH`, `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint
   `allowed_methods` *replaces* the anchor/global list wholesale, an anchor's replaces the
@@ -3112,7 +3331,13 @@ control, which is the rule above doing exactly the work it was added for.
   unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime
   builds its identity-provider client, before any dial (see
   link:#_oidc_back_channel_posture[The BFF OIDC back-channel]).
-* `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
+* `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected. `cors`
+  is accepted in the global `security_headers` block only; a `cors` key inside an anchor's
+  `security_headers` block fails the boot at schema load.
+* A `security_headers.content_security_policy` value -- global or anchor -- that is blank or carries
+  a CR, LF or any other control character fails the boot.
+* A `security_headers.header_modes` entry -- global or anchor -- naming a header its own block does
+  not enable fails the boot.
 * A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
   *non-empty* link:#_allowed_origins[`websocket.allowed_origins`] list; an absent or empty
   allowlist *fails the boot* (fail-closed -- there is no "any origin" default). Each entry is an

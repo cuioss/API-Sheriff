@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
@@ -57,14 +58,25 @@ import org.jspecify.annotations.Nullable;
  * (pipeline step 8).
  * <p>
  * The builder merges the routes of the <em>enabled endpoints only</em> — disabled
- * endpoints contribute no rows — orders them by descending normalized
- * {@code path_prefix} length (most specific first), and
- * materializes each route's effective auth, effective {@code allowed_methods},
+ * endpoints contribute no rows — and orders them <em>exact-first</em>: every
+ * {@code match.path} (exact) route precedes every {@code match.path_prefix} route, exact
+ * routes ordered by descending path length then lexically, prefix routes by descending
+ * normalized {@code path_prefix} length (most specific first) then lexically. For the same
+ * address an exact route therefore always wins over a prefix route.
+ * <p>
+ * Each route resolves exactly one of three terminal actions (ADR-0014 and its Amendment A1):
+ * {@code asset} (static content), {@code redirect} (answered at the gateway) or — when it
+ * declares neither — {@code upstream} (proxy). An endpoint's {@code base_url} alias is
+ * resolved through the topology only when the endpoint carries at least one proxy route
+ * ({@link RouteConfig#isProxyRoute()}); asset-only and redirect-only endpoints need none.
+ * <p>
+ * The builder materializes each route's effective auth, effective {@code allowed_methods},
  * effective {@code security_filter} / {@code security_headers}, effective retry
- * / not-modified toggles, the effective {@code forward} filter (whose
+ * / not-modified toggles, the {@code upstream.rewrite_location} toggle (absent meaning off, no
+ * inheritance), the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
  * wholesale, deny lists included), and the effective upstream base path (the route-level
- * {@code upstream.path} replacing the alias-derived base path when declared)
+ * {@code upstream.path} appended to the alias-derived base path when declared)
  * into a {@link ResolvedRoute}. The inheritance chains
  * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
  * step — ADR-0007) are resolved here, once, so the request pipeline never
@@ -114,14 +126,24 @@ public final class RouteTableBuilder {
     private static final int DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS = 300;
 
     /**
+     * The route-table order: exact routes before prefix routes, then the longer ordering key
+     * first, then the ordering key lexically for a deterministic tie-break.
+     */
+    private static final Comparator<ResolvedRoute> ROUTE_ORDER = Comparator
+            .comparing((ResolvedRoute route) -> !route.match().isExact())
+            .thenComparing(Comparator.comparingInt((ResolvedRoute route) -> orderingKey(route).length()).reversed())
+            .thenComparing(RouteTableBuilder::orderingKey);
+
+    /**
      * Builds the route table from the enabled endpoints and the resolved topology.
      *
      * @param gateway   the bound gateway document
      * @param endpoints the endpoints to merge; disabled entries are skipped
      * @param topology  the resolved topology providing each endpoint's upstream
-     * @return the immutable, longest-prefix-ordered route table
-     * @throws RouteTableException when an enabled endpoint's alias does not resolve,
-     *                             or a route has no resolvable effective auth
+     * @return the immutable, exact-first then longest-prefix-ordered route table
+     * @throws RouteTableException when an enabled endpoint carrying a proxy route declares no
+     *                             {@code base_url} or its alias does not resolve, or a route has
+     *                             no resolvable effective auth
      */
     public RouteTable build(GatewayConfig gateway, List<EndpointConfig> endpoints, ResolvedTopology topology) {
         Objects.requireNonNull(gateway, "gateway");
@@ -133,9 +155,7 @@ public final class RouteTableBuilder {
             if (!endpoint.enabled()) {
                 continue;
             }
-            ResolvedUpstream upstream = topology.lookup(endpoint.baseUrl()).orElseThrow(() -> new RouteTableException(
-                    "unresolved topology alias for enabled endpoint '%s': %s".formatted(endpoint.id(),
-                            endpoint.baseUrl())));
+            ResolvedUpstream upstream = resolveEndpointUpstream(endpoint, topology);
             UpstreamDefaultsConfig defaults = resolveDefaults(gateway, endpoint);
             for (RouteConfig route : endpoint.routes()) {
                 AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
@@ -143,10 +163,41 @@ public final class RouteTableBuilder {
             }
         }
 
-        resolved.sort(Comparator
-                .comparingInt((ResolvedRoute route) -> normalizePrefix(route.pathPrefix()).length()).reversed()
-                .thenComparing((ResolvedRoute route) -> normalizePrefix(route.pathPrefix())));
+        resolved.sort(ROUTE_ORDER);
         return new RouteTable(resolved);
+    }
+
+    /**
+     * Resolves the endpoint's {@code base_url} alias through the topology — but only when the
+     * endpoint carries at least one proxy route ({@link RouteConfig#isProxyRoute()}). An endpoint
+     * serving only {@code asset} and/or {@code redirect} routes needs no upstream, so its
+     * {@code base_url} is neither required nor resolved here.
+     *
+     * @return the alias-resolved upstream, or {@code null} when the endpoint has no proxy route
+     * @throws RouteTableException when the endpoint has a proxy route but declares no
+     *                             {@code base_url}, or the declared alias does not resolve
+     */
+    private static @Nullable ResolvedUpstream resolveEndpointUpstream(EndpointConfig endpoint,
+            ResolvedTopology topology) {
+        if (endpoint.routes().stream().noneMatch(RouteConfig::isProxyRoute)) {
+            return null;
+        }
+        String baseUrl = endpoint.baseUrl();
+        if (baseUrl == null) {
+            throw new RouteTableException(
+                    "enabled endpoint '%s' declares proxy route(s) but no base_url".formatted(endpoint.id()));
+        }
+        return topology.lookup(baseUrl).orElseThrow(() -> new RouteTableException(
+                "unresolved topology alias for enabled endpoint '%s': %s".formatted(endpoint.id(), baseUrl)));
+    }
+
+    /**
+     * The ordering key of a route: the exact path verbatim for an exact route (an exact path is
+     * compared un-normalized, so {@code /a} and {@code /a/} stay distinct), the normalized
+     * {@code path_prefix} for a prefix route.
+     */
+    private static String orderingKey(ResolvedRoute route) {
+        return route.match().isExact() ? route.matchKey() : normalizePrefix(route.matchKey());
     }
 
     /**
@@ -175,7 +226,7 @@ public final class RouteTableBuilder {
     }
 
     private static ResolvedRoute resolveRoute(GatewayConfig gateway, RouteConfig route, EndpointConfig endpoint,
-            @Nullable AnchorConfig anchor, ResolvedUpstream upstream, UpstreamDefaultsConfig defaults,
+            @Nullable AnchorConfig anchor, @Nullable ResolvedUpstream upstream, UpstreamDefaultsConfig defaults,
             ResolvedTopology topology) {
         AuthConfig auth = resolveEffectiveAuth(route, endpoint, anchor);
         List<HttpMethod> allowedMethods = effectiveAllowedMethods(gateway, endpoint, anchor);
@@ -215,17 +266,23 @@ public final class RouteTableBuilder {
                 .effectiveSecurityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
+                .rewriteLocation(routeUpstream != null && Boolean.TRUE.equals(routeUpstream.rewriteLocation()))
                 .effectiveForward(effectiveForward)
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeout);
-        // A route resolves to exactly one terminal action: an asset action (when the route
-        // declares an asset block) is materialized here; otherwise the route proxies to its
-        // endpoint upstream. ADR-0014: upstream XOR asset.
+        // A route resolves to exactly one terminal action (ADR-0014 and its Amendment A1): an asset
+        // action when the route declares an asset block, a redirect action when it declares a
+        // redirect block, otherwise the route proxies to its endpoint upstream. The upstream is
+        // present for every proxy route: resolveEndpointUpstream refuses a proxy-route endpoint
+        // whose base_url is absent or unresolvable before any of its routes reach this point.
         AssetConfig asset = route.asset();
+        RedirectConfig redirect = route.redirect();
         if (asset != null) {
             builder.asset(resolveAsset(route, asset, anchor, auth, topology));
+        } else if (redirect != null) {
+            builder.redirect(redirect);
         } else {
-            builder.upstream(applyRouteUpstreamPath(upstream, route));
+            builder.upstream(applyRouteUpstreamPath(Objects.requireNonNull(upstream, "upstream"), route));
         }
         ResolvedRoute resolved = builder.build();
         logPosture(resolved, globalProfile(gateway));
@@ -323,34 +380,73 @@ public final class RouteTableBuilder {
 
     /**
      * Materializes the route-level {@code upstream.path} into the route's effective upstream base
-     * path. A route that declares a non-blank {@code upstream.path} <em>replaces</em> the
-     * alias-derived base path with it (the bare-service-path routing model): the forward URI is
-     * then reconstructed as {@code stripTrailingSlash(upstream.path) + remainder-after-prefix} by
-     * {@link de.cuioss.sheriff.gateway.edge.DispatchStage#upstreamRequestUri}, so a gRPC route's
-     * {@code /{package}.{Service}} segment (and a benchmark route's {@code /anything/<aspect>}
-     * rewrite) reaches the upstream instead of being stripped. The alias host / port / scheme are
-     * carried through unchanged, so the client- and guard-sharing tuple
+     * path. A route that declares a non-blank {@code upstream.path} <em>appends</em> it to the
+     * alias-derived base path (ADR-0004 Amendment A2): the two are joined on exactly one
+     * {@code /}, so the effective base path is
+     * {@code stripTrailingSlashes(alias base path) + "/" + stripLeadingSlashes(upstream.path)} — no
+     * doubled and no missing slash, whichever side the operator wrote one on. Both helpers remove
+     * <em>repeated</em> slashes at the seam, so an alias ending {@code /anything//} joined with
+     * {@code //graphql} still yields {@code /anything/graphql}. The forward URI is
+     * then reconstructed as {@code stripTrailingSlash(effective base path) + remainder-after-match-key}
+     * by {@link de.cuioss.sheriff.gateway.edge.DispatchStage#upstreamRequestUri}.
+     * <p>
+     * Aliases therefore carry environments and routes carry paths: an alias
+     * {@code http://go-httpbin:8080/anything} with {@code upstream.path: /graphql} forwards to
+     * {@code /anything/graphql}. A gRPC route rides an alias with an empty base path, so its
+     * {@code upstream.path: /{package}.{Service}} is the whole effective base path and the full
+     * method path reaches the upstream unchanged. The alias host / port / scheme are carried
+     * through unchanged, so the client- and guard-sharing tuple
      * ({@link de.cuioss.sheriff.gateway.edge.RouteRuntimeAssembler.UpstreamTarget}, keyed on
-     * scheme/host/port) is unaffected. A route without {@code upstream.path} keeps the
+     * scheme/host/port) is unaffected. A route without a non-blank {@code upstream.path} keeps the
      * alias-derived base path unchanged — the default proxy behavior.
      *
      * @param aliasUpstream the endpoint's alias-resolved upstream (shared across the endpoint's
      *                      routes)
-     * @param route         the route whose optional {@code upstream.path} overrides the base path
+     * @param route         the route whose optional {@code upstream.path} is appended to the base path
      * @return the per-route upstream carrying the effective base path
      */
+    // java:S1075 — the "/" below is the RFC 3986 path separator joining two URL path segments, not a
+    // hard-coded location: both operands are operator-supplied (the alias base path and upstream.path)
+    // and only the separator between them is fixed, because the URI grammar admits no other character
+    // for it. Making it configurable, or deriving it from File.separator, would emit a non-URI address.
+    @SuppressWarnings("java:S1075")
     private static ResolvedUpstream applyRouteUpstreamPath(ResolvedUpstream aliasUpstream, RouteConfig route) {
         UpstreamConfig upstream = route.upstream();
         String path = upstream == null ? null : upstream.path();
         if (path == null || path.isBlank()) {
             return aliasUpstream;
         }
-        return new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(), aliasUpstream.port(), path);
+        // Only the SEAM is normalized here — a trailing slash the route declares is deliberately
+        // carried through (shouldKeepDeclaredTrailingSlashOfUpstreamPath pins that), because the
+        // consumers normalize it. What those consumers must agree on is HOW MANY they strip:
+        // DispatchStage and LocationRewriter both remove the whole trailing run, so a stored
+        // '/upload//' cannot make the rewrite and the follow-up dispatch disagree about the path.
+        String effectiveBasePath = stripTrailingSlashes(aliasUpstream.basePath()) + "/" + stripLeadingSlashes(path);
+        return new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(), aliasUpstream.port(),
+                effectiveBasePath);
+    }
+
+    private static String stripTrailingSlashes(String value) {
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
+    }
+
+    private static String stripLeadingSlashes(String value) {
+        int start = 0;
+        while (start < value.length() && value.charAt(start) == '/') {
+            start++;
+        }
+        return value.substring(start);
     }
 
     /**
      * Materializes a route's asset terminal action (ADR-0014). A {@code directory}
-     * source carries its configured root; an {@code upstream} source resolves its
+     * source carries its configured root together with its optional {@code index} and
+     * {@code fallback} file names (AS-12; an {@code upstream} source carries neither — the
+     * configuration validator refuses them there); an {@code upstream} source resolves its
      * topology alias through the same {@link ResolvedTopology} the proxy action uses —
      * no parallel resolution. The effective access level the gateway-owned response
      * envelope (asset package) keys its caching on is
@@ -371,7 +467,7 @@ public final class RouteTableBuilder {
                     throw new RouteTableException(
                             "asset route '%s' declares source: directory but no directory root".formatted(route.id()));
                 }
-                yield ResolvedAsset.directory(directory, access);
+                yield ResolvedAsset.directory(directory, access, asset.index(), asset.fallback());
             }
             case UPSTREAM -> {
                 String alias = asset.upstream();

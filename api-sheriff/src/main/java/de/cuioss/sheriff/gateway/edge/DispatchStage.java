@@ -280,8 +280,24 @@ public final class DispatchStage {
         return null;
     }
 
+    /**
+     * Removes <em>every</em> trailing slash, not just one.
+     * <p>
+     * The count matters because {@code LocationRewriter} strips all of them before matching an
+     * upstream {@code Location} against this same base path. Removing one here and all of them there
+     * splits the {@code rewrite_location} round trip whenever a base path ends in a run: the rewriter
+     * maps an upstream {@code /upload/next} onto the gateway, and the client's follow-up is then
+     * dispatched to {@code /upload//next} — not the path the mapping was derived from. A base path
+     * reaches here from two places and only one of them is normalized ({@code RouteTableBuilder}
+     * normalizes a configured {@code upstream.path}; an alias base path is whatever
+     * {@code URI.getPath()} returned), so the agreement is enforced here rather than assumed.
+     */
     private static String stripTrailingSlash(String value) {
-        return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
     }
 
     /**

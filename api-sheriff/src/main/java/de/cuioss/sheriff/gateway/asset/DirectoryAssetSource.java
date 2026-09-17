@@ -39,6 +39,7 @@ import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.tools.logging.CuiLogger;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The local-directory / volume-mount {@link AssetSource} (decision: ADR-0014).
@@ -59,6 +60,12 @@ import de.cuioss.tools.logging.CuiLogger;
  * Honouring the {@link AssetSource} ordering contract, the backing filesystem is
  * touched only after confinement has produced an in-root target — no byte is read for
  * a rejected path.
+ * <p>
+ * <strong>Index and fallback (AS-12).</strong> An optional {@code index} file name answers a
+ * request addressing a directory with that file from the directory, and an optional
+ * {@code fallback} file name answers a request for a non-existent, extensionless path with the
+ * root-level fallback file. Both substitute targets are re-confined and served through exactly the
+ * same chain as a directly addressed file; see {@link #serve} for the precise rules.
  * <p>
  * <strong>How the bytes are materialized, and what that does and does not close.</strong>
  * Proving a path in-root and then re-walking it to open it is a check-then-act window: the
@@ -117,6 +124,8 @@ public final class DirectoryAssetSource implements AssetSource {
 
     private final Path root;
     private final AccessLevel access;
+    private final @Nullable String index;
+    private final @Nullable String fallback;
     private final PathConfinement confinement;
     private final long maxBytes;
     private final Map<String, String> operatorContentTypes;
@@ -129,11 +138,17 @@ public final class DirectoryAssetSource implements AssetSource {
      *
      * @param root                 the configured directory root (mandatory)
      * @param access               the serving route's effective access level (mandatory)
+     * @param index                the directory index file name, or {@code null} when unconfigured
+     * @param fallback             the root-level fallback file name, or {@code null} when unconfigured
      * @param operatorContentTypes the boot-resolved add-only content-type additions
      *                             (mandatory; empty when unconfigured)
+     * @throws IllegalArgumentException when {@code index} or {@code fallback} is not a single
+     *                                  file-name segment
      */
-    public DirectoryAssetSource(Path root, AccessLevel access, Map<String, String> operatorContentTypes) {
-        this(root, access, new PathConfinement(), AssetSource.DEFAULT_MAX_BYTES, operatorContentTypes);
+    public DirectoryAssetSource(Path root, AccessLevel access, @Nullable String index, @Nullable String fallback,
+            Map<String, String> operatorContentTypes) {
+        this(root, access, index, fallback, new PathConfinement(), AssetSource.DEFAULT_MAX_BYTES,
+                operatorContentTypes);
     }
 
     /**
@@ -141,42 +156,26 @@ public final class DirectoryAssetSource implements AssetSource {
      *
      * @param root                 the configured directory root (mandatory)
      * @param access               the serving route's effective access level (mandatory)
+     * @param index                the directory index file name, or {@code null} when unconfigured
+     * @param fallback             the root-level fallback file name, or {@code null} when unconfigured
      * @param confinement          the shared path confinement (mandatory)
      * @param maxBytes             the maximum served-file size in bytes
      * @param operatorContentTypes the boot-resolved add-only content-type additions
      *                             (mandatory; empty when unconfigured). Resolved once at
      *                             boot and read-only thereafter — no per-request lookup
      *                             and no shared mutable state.
-     * @throws IllegalArgumentException when {@code maxBytes} is negative or exceeds
-     *                                  {@link #MAX_ENFORCEABLE_BYTES}
-     */
-    public DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
-            Map<String, String> operatorContentTypes) {
-        this(root, access, confinement, maxBytes, operatorContentTypes, new SecureWalkOpener());
-    }
-
-    /**
-     * Creates a source with an explicit {@link Opener} — the seam that materializes the asset.
-     * <p>
-     * Package-visible for tests: the production {@link SecureWalkOpener} reports a stat and a read
-     * that always agree, which leaves the post-read cap check unreachable. Injecting an opener whose
-     * stat sits at or under the cap while its read yields more bytes is what exercises that check.
-     *
-     * @param root                 the configured directory root (mandatory)
-     * @param access               the serving route's effective access level (mandatory)
-     * @param confinement          the shared path confinement (mandatory)
-     * @param maxBytes             the maximum served-file size in bytes
-     * @param operatorContentTypes the boot-resolved add-only content-type additions (mandatory)
-     * @param opener               the stat-and-read seam (mandatory)
      * @throws IllegalArgumentException when {@code maxBytes} is negative, or exceeds
      *                                  {@link #MAX_ENFORCEABLE_BYTES} — a cap this source could not
      *                                  hold the bytes for, and so could only honour by serving a
-     *                                  prefix as a complete response
+     *                                  prefix as a complete response — or when {@code index} or
+     *                                  {@code fallback} is not a single file-name segment
      */
-    DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
-            Map<String, String> operatorContentTypes, Opener opener) {
+    public DirectoryAssetSource(Path root, AccessLevel access, @Nullable String index, @Nullable String fallback,
+            PathConfinement confinement, long maxBytes, Map<String, String> operatorContentTypes) {
         this.root = Objects.requireNonNull(root, "root").toAbsolutePath().normalize();
         this.access = Objects.requireNonNull(access, "access");
+        this.index = requireFileName(index, "index");
+        this.fallback = requireFileName(fallback, "fallback");
         this.confinement = Objects.requireNonNull(confinement, "confinement");
         if (maxBytes < 0 || maxBytes > MAX_ENFORCEABLE_BYTES) {
             throw new IllegalArgumentException(
@@ -186,11 +185,59 @@ public final class DirectoryAssetSource implements AssetSource {
         this.maxBytes = maxBytes;
         this.operatorContentTypes = Map.copyOf(
                 Objects.requireNonNull(operatorContentTypes, "operatorContentTypes"));
+        this.opener = new SecureWalkOpener();
+    }
+
+    /**
+     * Copies {@code template} with the {@link Opener} seam substituted; every other field is carried
+     * over already-validated, so no argument check repeats here.
+     */
+    private DirectoryAssetSource(DirectoryAssetSource template, Opener opener) {
+        this.root = template.root;
+        this.access = template.access;
+        this.index = template.index;
+        this.fallback = template.fallback;
+        this.confinement = template.confinement;
+        this.maxBytes = template.maxBytes;
+        this.operatorContentTypes = template.operatorContentTypes;
         this.opener = Objects.requireNonNull(opener, "opener");
     }
 
     /**
+     * Returns a copy of this source that materializes its assets through {@code opener} instead of
+     * the production {@link SecureWalkOpener}.
+     * <p>
+     * Package-visible for tests: the production {@link SecureWalkOpener} reports a stat and a read
+     * that always agree, which leaves the post-read cap check unreachable. Injecting an opener whose
+     * stat sits at or under the cap while its read yields more bytes is what exercises that check.
+     * The seam is a wither rather than a constructor parameter so that a test-only injection point
+     * never widens the constructor every production caller has to read.
+     *
+     * @param opener the stat-and-read seam (mandatory)
+     * @return a source identical to this one except for the seam it reads through
+     */
+    DirectoryAssetSource withOpener(Opener opener) {
+        return new DirectoryAssetSource(this, opener);
+    }
+
+    /**
      * Serves the confined asset addressed by {@code subPath}.
+     * <p>
+     * Two optional substitutions apply after the request sub-path has been confined, and neither
+     * bypasses a protection — each substitute target is itself re-confined and served through the
+     * unchanged confinement, real-path-in-root and secure-walk chain, so traversal, symlink and FIFO
+     * refusals hold for it exactly as for a directly addressed file:
+     * <ul>
+     *   <li><strong>index</strong> — when the confined target is a directory (the empty sub-path
+     *       addresses the root) and an {@code index} is configured, {@code subPath + "/" + index} is
+     *       served. A directory without that file is a {@code 404}.</li>
+     *   <li><strong>fallback</strong> — when the confined target does not exist, a {@code fallback}
+     *       is configured, and the target's last path segment carries no {@code .}, the root-level
+     *       {@code fallback} is served (the single-page-application shape). An unknown path that does
+     *       carry an extension — {@code /app.js} — stays a {@code 404}, so a missing script or
+     *       stylesheet is never answered with a document.</li>
+     * </ul>
+     * A sub-path the confinement rejects is a {@code 404} before either substitution is considered.
      *
      * @param method  the request verb; only {@code GET} and {@code HEAD} are served
      * @param subPath the untrusted request sub-path relative to the root
@@ -209,8 +256,27 @@ public final class DirectoryAssetSource implements AssetSource {
         if (confined.isEmpty()) {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
-        Path file = confined.get();
-        if (!Files.isRegularFile(file)) {
+        Path target = confined.get();
+        if (index != null && Files.isDirectory(target)) {
+            return serveTarget(method,
+                    confinement.confine(root, stripTrailingSlashes(subPath) + "/" + index).orElse(null));
+        }
+        if (fallback != null && Files.notExists(target, LinkOption.NOFOLLOW_LINKS) && hasNoExtension(target)) {
+            return serveTarget(method, confinement.confine(root, fallback).orElse(null));
+        }
+        return serveTarget(method, target);
+    }
+
+    /**
+     * Serves a confined target that must be a regular file whose real path lies inside the root.
+     *
+     * @param method the request verb, already narrowed to {@code GET} or {@code HEAD}
+     * @param file   the confined target, or {@code null} when the confinement rejected it
+     * @return the governed response, {@code 404} when the target was rejected, is not a regular file,
+     *         or escapes the root through a symlink
+     */
+    private Served serveTarget(HttpMethod method, @Nullable Path file) {
+        if (file == null || !Files.isRegularFile(file)) {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
         Optional<InRoot> inRoot = realPathWithinRoot(file);
@@ -218,6 +284,58 @@ public final class DirectoryAssetSource implements AssetSource {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
         return serveConfined(method, file, inRoot.get());
+    }
+
+    /**
+     * @param target the confined, non-existent request target
+     * @return {@code true} when the target's last path segment carries no {@code .} at all
+     */
+    private static boolean hasNoExtension(Path target) {
+        Path name = target.getFileName();
+        return name != null && name.toString().indexOf('.') < 0;
+    }
+
+    private static String stripTrailingSlashes(String value) {
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
+    }
+
+    /**
+     * Refuses an {@code index} / {@code fallback} value that is not a single file-name segment. The
+     * configuration validator already refuses such a value at boot; repeating the check at the only
+     * place the value reaches the filesystem keeps the source safe for any caller that bypasses it.
+     *
+     * @param value the configured file name, or {@code null} when unconfigured
+     * @param name  the parameter name for the refusal message
+     * @return {@code value} unchanged
+     * @throws IllegalArgumentException when the value is blank, names a path, or carries a control
+     *                                  character
+     */
+    private static @Nullable String requireFileName(@Nullable String value, String name) {
+        if (value != null && !isSingleFileName(value)) {
+            throw new IllegalArgumentException(name + " must be a single file-name segment");
+        }
+        return value;
+    }
+
+    /**
+     * @param value a candidate file name
+     * @return {@code true} when {@code value} is non-blank, is neither {@code .} nor {@code ..}, and
+     *         carries no {@code /}, no {@code \} and no ISO control character
+     */
+    public static boolean isSingleFileName(String value) {
+        Objects.requireNonNull(value, "value");
+        // isBlank, not isEmpty: a name of " " passes every other test here — it is not "." or "..",
+        // carries no separator, and a space is not an ISO control character — so an emptiness test
+        // admitted it, against what requireFileName documents. Such a route boots and then resolves a
+        // substitute file name no deployment means to serve.
+        if (value.isBlank() || ".".equals(value) || "..".equals(value)) {
+            return false;
+        }
+        return value.chars().noneMatch(c -> c == '/' || c == '\\' || Character.isISOControl(c));
     }
 
     /**

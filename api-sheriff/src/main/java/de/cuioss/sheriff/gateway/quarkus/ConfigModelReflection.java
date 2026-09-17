@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RateLimitConfig;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
@@ -72,6 +73,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         ManagementConfig.ManagementTls.class,
         SecurityHeadersConfig.class,
         SecurityHeadersConfig.Hsts.class,
+        SecurityHeadersConfig.HeaderModes.class,
+        SecurityHeadersConfig.HeaderMode.class,
         SecurityHeadersConfig.Cors.class,
         SecurityDefaultsConfig.class,
         SecurityFilterConfig.class,
@@ -102,6 +105,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         AssetConfig.class,
         AssetConfig.Source.class,
         AssetDefaultsConfig.class,
+        RedirectConfig.class,
         RateLimitConfig.class,
         WebSocketConfig.class,
         HttpMethod.class,

@@ -4,7 +4,7 @@
 
 == Status
 
-Accepted.
+Accepted. Amended by <<amendment-a1>> (redirect as a third terminal action and exact-path routes).
 
 == Context
 
@@ -67,7 +67,8 @@ the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-C
 * Asset serving gets a declared home through the `asset` anchor `type`
   (link:0013-anchor-type-access-axes.adoc[ADR-0013]); an asset surface's audience is boot-enforced
   like any other anchor.
-* A route still carries at most one terminal action -- `upstream` or `asset`, never both.
+* A route still carries exactly one terminal action -- originally `upstream` or `asset`, never
+  both; <<amendment-a1>> adds `redirect` as the third.
 * Classpath-embedded resources and any parallel outbound HTTP stack are explicitly out of scope.
 * *The forward policy does not reach an asset route, and the three-mode model
   (link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036])
@@ -80,6 +81,52 @@ the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-C
   than deriving: an asset route's exposure is bounded by auth-before-source-resolution, the
   confinement, and the gateway-owned response envelope -- never by a forward list -- so no asset
   descriptor needs a `forward` block added to hold its posture.
+
+[[amendment-a1]]
+== Amendment A1 -- redirect as a third terminal action and exact-path routes
+
+=== Context
+
+Two routing needs did not fit the two-action model. Moving an address -- an old path to a new
+one, or a bare path to its canonical form -- required standing up an upstream that answers with a
+`3xx`, so the gateway proxied a request whose only purpose was to be sent somewhere else. And a
+route could only be declared as a `path_prefix`, so a single address (`/`, `/favicon.ico`, a moved
+page) could not be claimed without also claiming everything below it on a segment boundary.
+
+=== Decision
+
+* *`redirect` is a third terminal action.* A route resolves *exactly one* of `upstream` (proxy),
+  `asset` or `redirect`. A redirect route is answered at the gateway with the configured `status`
+  (`301`, `302`, `303`, `307` or `308`, mandatory -- `301` and `308` are cached by browsers, so
+  permanence is an explicit operator choice) and `Location`, and never contacts an upstream. The
+  `location` is written verbatim and is reviewed for open-redirect spellings at boot; an external
+  target requires the explicit `allow_external` opt-in. `keep_query` carries the raw inbound
+  query string.
+* *`match.path` declares an exact route.* A route's matcher declares exactly one of `path_prefix`
+  or `path`. An exact `path` is compared as an un-normalized string against the canonical request
+  path, so `/a` and `/a/` are distinct addresses.
+* *Exact routes precede prefix routes.* The route table orders every exact route before every
+  prefix route; prefix routes keep the longest-prefix rule. First match wins, so for the same
+  address an exact route is always selected over a prefix route. Two exact routes on the same
+  `path` collide at boot unless host, method or a header matcher distinguishes them; an exact
+  route never collides with a prefix route of the same string.
+* *`base_url` is mandatory only with a proxy route.* A route that declares neither `asset` nor
+  `redirect` is a proxy route; an endpoint must declare `base_url` exactly when it carries one.
+  Asset-only and redirect-only endpoints boot without it, and a declared alias must still resolve.
+
+=== Consequences
+
+* An address move or a canonical-path redirect needs no upstream and no forward-policy
+  consumption; the redirect answer carries the gateway's stage headers like any other
+  gateway-authored response.
+* The terminal-action invariant is enforced on the resolved route as "exactly one of three", and
+  the route-table builder and the configuration validator share one proxy-route predicate, so the
+  conditional `base_url` rule cannot drift between assembly and validation.
+* A single address can be claimed without shadowing the paths below it, and an exact route can
+  sit inside a prefix route's namespace to override one address of it.
+* The forward-policy statement above holds for redirect routes too: a redirect route consumes no
+  forward projection, and its exposure is bounded by authentication and the boot-time review of
+  its `location`.
 
 == References
 

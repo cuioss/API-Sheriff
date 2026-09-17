@@ -1,11 +1,15 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # Public asset endpoint (ADR-0014) exercised by DirectoryAssetServingIT and
-# UpstreamAssetServingIT. It carries three asset terminal-action routes under the
+# UpstreamAssetServingIT. It carries four asset terminal-action routes under the
 # 'assets-public' anchor (/assets, access: public):
 #
 #   * /assets/static/*  -> source: directory, root /app/assets (the read-only
 #     volume mount). The gateway confines the request sub-path under the root and
 #     serves the file through the response envelope.
+#   * /assets/spa/*     -> source: directory, the same /app/assets root, with
+#     index: index.html and fallback: index.html (AS-12): a directory address serves
+#     the index, an unknown extensionless path (a client-side SPA route) serves the
+#     root-level fallback, and an unknown path WITH an extension stays 404.
 #   * /assets/cdn/*     -> source: upstream, alias ASSET_ORIGIN (the secondary
 #     static server 'asset-origin'). The gateway fetches the confined remainder over
 #     the same SSRF-controlled egress the proxy uses and re-serves it under
@@ -24,14 +28,13 @@
 # performs no filesystem existence check, so they boot unchanged and DirectoryAssetSource
 # answers 404 on that path.
 #
-# base_url is mandatory on every endpoint; an asset route never proxies to it, so it
-# points at the same resolvable UPSTREAM alias the proxy endpoints use and is unused.
+# The endpoint declares NO base_url: base_url is mandatory only on an endpoint carrying a
+# proxy route, and every route here is an asset route that never proxies to one (AS-4).
 # The endpoint declares require: none because the 'assets-public' anchor is
 # access: public and carries no auth block (ADR-0013).
 endpoint:
   id: assets
   enabled: true
-  base_url: UPSTREAM
   anchor: assets-public
   auth:
     require: none
@@ -43,6 +46,18 @@ endpoint:
       asset:
         source: directory
         directory: /app/assets
+    # AS-12 index and fallback, over the same /app/assets root as assets-directory. The two are
+    # declared on this route only, so assets-directory stays the no-index control: its directory
+    # address still answers 404.
+    - id: assets-spa
+      anchor: assets-public
+      match:
+        path_prefix: /assets/spa
+      asset:
+        source: directory
+        directory: /app/assets
+        index: index.html
+        fallback: index.html
     - id: assets-upstream
       anchor: assets-public
       match:
@@ -52,9 +67,9 @@ endpoint:
         upstream: ASSET_ORIGIN
     # The demo SPA (demo-client module, authored by plan-11 deliverable 4). The same route
     # also serves the post-logout landing page at /assets/demo/landing.html, so the landing
-    # target needs no second route, no second anchor and no second mount. Note that
-    # DirectoryAssetSource performs NO directory-index resolution: /assets/demo/ without a
-    # filename returns 404, which is why every entry point names a concrete file.
+    # target needs no second route, no second anchor and no second mount. This route
+    # declares no index: /assets/demo/ without a filename returns 404, which is why every
+    # entry point names a concrete file.
     - id: assets-demo
       anchor: assets-public
       match:

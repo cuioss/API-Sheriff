@@ -223,6 +223,11 @@ class GrpcDispatchStageTest {
     @DisplayName("response-trailer relay over a live Vert.x server")
     class TrailerRelay {
 
+        private static final String FRAME_OPTIONS = "X-Frame-Options";
+        private static final String ORIGIN_FRAME_OPTIONS = "SAMEORIGIN";
+        private static final String CSP = "Content-Security-Policy";
+        private static final String GATEWAY_POLICY = "default-src 'none'";
+
         private Vertx vertx;
         private HttpClient client;
         private HttpServer upstream;
@@ -234,8 +239,11 @@ class GrpcDispatchStageTest {
             client = vertx.createHttpClient();
 
             // Stub upstream: a chunked opaque gRPC frame followed by grpc-status / grpc-message trailers.
+            // It also sets its own X-Frame-Options, so a default-mode gateway header has an origin value to
+            // defer to.
             upstream = Awaits.connect(vertx.createHttpServer().requestHandler(req -> {
                 HttpServerResponse response = req.response();
+                response.putHeader(FRAME_OPTIONS, ORIGIN_FRAME_OPTIONS);
                 response.setChunked(true);
                 response.write(Buffer.buffer("opaque-grpc-frame"));
                 response.putTrailer("grpc-status", "0");
@@ -245,14 +253,16 @@ class GrpcDispatchStageTest {
             int upstreamPort = upstream.actualPort();
 
             // Front server: relays the upstream response WITH its trailers exactly as the gRPC dispatch
-            // path does (ResponseStage#relayWithTrailers).
+            // path does (ResponseStage#relayWithTrailers), with X-Frame-Options and
+            // Content-Security-Policy both in default mode.
             ResponseStage responseStage = new ResponseStage();
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
                     .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, LoopbackHost.ADDRESS,
                             "/svc.Service/Method")
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
-                            .relayWithTrailers(upResp, clientReq.response(), false, Map.of())
+                            .relayWithTrailers(upResp, clientReq.response(), false, Map.of(),
+                                    Map.of(FRAME_OPTIONS, "DENY", CSP, GATEWAY_POLICY))
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
@@ -290,6 +300,29 @@ class GrpcDispatchStageTest {
                     "the upstream grpc-status trailer is relayed to the client");
             assertEquals("ok", trailers.get("grpc-message"),
                     "the upstream grpc-message trailer is relayed to the client");
+        }
+
+        @Test
+        @DisplayName("keeps an origin-set header and fills an absent one for default-mode gateway headers, trailers intact")
+        void defaultModeDefersToOriginOnTrailerRelay() throws Exception {
+            int frontPort = front.actualPort();
+            AtomicReference<MultiMap> headers = new AtomicReference<>();
+
+            MultiMap trailers = Awaits.connect(client
+                    .request(io.vertx.core.http.HttpMethod.POST, frontPort, LoopbackHost.ADDRESS,
+                            "/svc.Service/Method")
+                    .compose(req -> req.send())
+                    .compose(resp -> resp.body().map(buffer -> {
+                        headers.set(resp.headers());
+                        return resp.trailers();
+                    })), "the relayed gRPC response headers and trailers");
+
+            assertEquals(List.of(ORIGIN_FRAME_OPTIONS), headers.get().getAll(FRAME_OPTIONS),
+                    "the origin X-Frame-Options is kept and the default-mode gateway value is not added");
+            assertEquals(List.of(GATEWAY_POLICY), headers.get().getAll(CSP),
+                    "the default-mode gateway policy fills the header the origin did not send");
+            assertEquals("0", trailers.get("grpc-status"),
+                    "the default-mode header handling leaves the gRPC status trailer untouched");
         }
     }
 

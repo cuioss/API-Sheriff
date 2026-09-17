@@ -29,9 +29,14 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The compiled form of a route's {@code match} block, assembled once at boot. Matchers
- * compose with AND semantics: a request matches only when the path is at or below the
- * prefix on a segment boundary AND (when constrained) the method, host, and every header
- * matcher hold.
+ * compose with AND semantics: a request matches only when the path matcher holds AND (when
+ * constrained) the method, host, and every header matcher hold.
+ * <p>
+ * The path matcher is either an exact path or a prefix. An exact path matches by string
+ * equality against the canonical request path — no normalization, so a trailing slash is
+ * significant ({@code /a} does not match {@code /a/}). A prefix matches a path at or below it
+ * on a segment boundary ({@code /proxy} matches {@code /proxy} and {@code /proxy/x} but not
+ * {@code /proxy-helper}).
  * <p>
  * This is the match test only; the effective {@code allowed_methods} verb gate (405) is
  * carried separately on {@link RouteRuntime}.
@@ -41,17 +46,21 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RouteMatcher {
 
-    private final String pathPrefix;
+    private final String matchKey;
+    private final boolean exact;
     private final Set<HttpMethod> matchMethods;
     private final @Nullable String host;
     private final List<HeaderMatcher> headers;
+    private final List<String> matchHeaderNames;
 
-    private RouteMatcher(String pathPrefix, Set<HttpMethod> matchMethods, @Nullable String host,
+    private RouteMatcher(String matchKey, boolean exact, Set<HttpMethod> matchMethods, @Nullable String host,
             List<HeaderMatcher> headers) {
-        this.pathPrefix = pathPrefix;
+        this.matchKey = matchKey;
+        this.exact = exact;
         this.matchMethods = matchMethods;
         this.host = host;
         this.headers = headers;
+        this.matchHeaderNames = headers.stream().map(HeaderMatcher::name).distinct().toList();
     }
 
     /**
@@ -65,32 +74,69 @@ public final class RouteMatcher {
         Set<HttpMethod> methods = match.methods().isEmpty()
                 ? EnumSet.noneOf(HttpMethod.class)
                 : EnumSet.copyOf(match.methods());
-        return new RouteMatcher(match.pathPrefix(), methods, match.host(), List.copyOf(match.headers()));
+        return new RouteMatcher(match.matchKey(), match.isExact(), methods, match.host(),
+                List.copyOf(match.headers()));
     }
 
     /**
-     * @return the route's literal {@code path_prefix}
-     */
-    public String pathPrefix() {
-        return pathPrefix;
-    }
-
-    /**
-     * Tests whether {@code path} is covered by this route's prefix on a segment boundary.
+     * Returns the route's declared path matcher value — the exact {@code path} for an exact
+     * route, the {@code path_prefix} otherwise. The dispatch paths strip it from the request
+     * path to obtain the upstream remainder, which is empty for an exact route.
      *
-     * @param path the request path
-     * @return {@code true} when the path is at or below the prefix
+     * @return the route's match key
      */
-    public boolean matchesPrefix(String path) {
+    public String matchKey() {
+        return matchKey;
+    }
+
+    /**
+     * Returns whether this matcher is an exact-path matcher.
+     *
+     * @return {@code true} for an exact {@code path} matcher, {@code false} for a prefix matcher
+     */
+    public boolean isExact() {
+        return exact;
+    }
+
+    /**
+     * Returns the request-header names this route's {@code match.headers} matchers read, in
+     * declaration order with duplicates collapsed. Empty when the route declares no header matcher.
+     * <p>
+     * A header matcher makes <em>route selection</em> depend on a request header, so a cacheable
+     * response served by such a route genuinely varies by that header. A shared cache keys a stored
+     * response on the method and the request URI, never on an arbitrary request header, so without a
+     * matching {@code Vary} it would replay one variant's answer to a request carrying a different
+     * one (CWE-524). Emitting the response side of that contract needs the names, and this is the
+     * only place they survive route compilation — {@link #matches} consumes the matchers themselves
+     * and reports a boolean. Computed once at boot; the request path only reads it.
+     *
+     * @return the declared matcher header names, never {@code null}
+     */
+    public List<String> matchHeaderNames() {
+        return matchHeaderNames;
+    }
+
+    /**
+     * Tests whether {@code path} is covered by this route's path matcher: string equality for an
+     * exact matcher (no normalization, trailing slash significant), the segment-boundary prefix
+     * rule for a prefix matcher.
+     *
+     * @param path the canonical request path
+     * @return {@code true} when the path equals the exact path, or is at or below the prefix
+     */
+    public boolean matchesPath(String path) {
         Objects.requireNonNull(path, "path");
-        if (path.equals(pathPrefix)) {
+        if (path.equals(matchKey)) {
             return true;
         }
-        return pathPrefix.endsWith("/") ? path.startsWith(pathPrefix) : path.startsWith(pathPrefix + "/");
+        if (exact) {
+            return false;
+        }
+        return path.startsWith(matchKey.endsWith("/") ? matchKey : matchKey + "/");
     }
 
     /**
-     * Applies the full matcher set (prefix AND method AND host AND headers).
+     * Applies the full matcher set (path AND method AND host AND headers).
      *
      * @param path           the request path
      * @param method         the request method
@@ -103,7 +149,7 @@ public final class RouteMatcher {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(requestHeaders, "requestHeaders");
-        if (!matchesPrefix(path)) {
+        if (!matchesPath(path)) {
             return false;
         }
         if (!matchMethods.isEmpty() && !matchMethods.contains(method)) {

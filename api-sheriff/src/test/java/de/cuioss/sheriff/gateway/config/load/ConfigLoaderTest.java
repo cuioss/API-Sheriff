@@ -44,7 +44,9 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
@@ -492,65 +494,62 @@ class ConfigLoaderTest {
                 "the JWKS flag binds by the same rules as its upstream peer");
     }
 
-    @Test
-    void rejectsNonBooleanJwksVerifyHostname() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                egress_tls:
-                  jwks_verify_hostname: "no"
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        // The bundled schema must refuse it BEFORE bind. That ordering is the whole assertion: the
-        // record component is a primitive boolean, so a value that reached the deserializer would be
-        // coerced rather than rejected — "no" is a YAML 1.1 boolean and Jackson's asBoolean would be
-        // free to read it as false, silently relaxing hostname verification from a document the
-        // operator believes disables nothing. The JSON pointer is asserted by name rather than by
-        // the enclosing block alone, so a schema that refused the whole egress_tls object for an
-        // unrelated reason could not satisfy this.
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("jwks_verify_hostname")),
-                () -> "a non-boolean jwks_verify_hostname must be refused at schema validation, naming "
-                        + "the key's own pointer, got: " + exception.errors());
+    /**
+     * One case per gateway-level block the bundled schema must refuse, each carrying the JSON pointer
+     * the refusal has to name. The three previously stood as separate {@code @Test} methods with a
+     * byte-identical body: what differs between them is the document and the pointer, which is
+     * exactly what an argument row carries, so they are one parameterized test. Each case's own
+     * reason is recorded at its row rather than lost in the merge.
+     *
+     * @return (case description, {@code gateway.yaml} text, the pointer fragment the refusal names)
+     */
+    static Stream<Arguments> refusedGatewayBlocks() {
+        return Stream.of(
+                // The schema must refuse this BEFORE bind, and that ordering is the whole case: the
+                // record component is a primitive boolean, so a value reaching the deserializer would
+                // be coerced rather than rejected — "no" is a YAML 1.1 boolean and Jackson's
+                // asBoolean would be free to read it as false, silently relaxing hostname
+                // verification from a document the operator believes disables nothing. The pointer is
+                // asserted by name rather than by the enclosing block alone, so a schema that refused
+                // the whole egress_tls object for an unrelated reason could not satisfy it.
+                Arguments.of("a non-boolean jwks_verify_hostname - refused before bind, never coerced",
+                        """
+                                version: 1
+                                egress_tls:
+                                  jwks_verify_hostname: "no"
+                                """,
+                        "jwks_verify_hostname"),
+                // An unprefixed verify_hostname is a plausible operator abbreviation of any of the
+                // three prefixed keys, so it must be refused rather than silently ignored.
+                Arguments.of("an unknown key inside egress_tls - a plausible operator abbreviation",
+                        """
+                                version: 1
+                                egress_tls:
+                                  verify_hostname: false
+                                """,
+                        "egress_tls"),
+                Arguments.of("a forwarded block omitting the mandatory trusted_proxies",
+                        """
+                                version: 1
+                                forwarded:
+                                  trust_scheme_host: true
+                                """,
+                        "forwarded"));
     }
 
-    @Test
-    void rejectsUnknownKeyInsideEgressTls() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                egress_tls:
-                  verify_hostname: false
-                """);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("refusedGatewayBlocks")
+    void rejectsRefusedGatewayBlock(String description, String gatewayYaml, String pointerFragment) throws Exception {
+        writeConfig("gateway.yaml", gatewayYaml);
 
         ConfigLoader loader = loader(Map.of());
         ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("egress_tls")),
-                () -> "an unprefixed verify_hostname is a plausible operator abbreviation and must be "
-                        + "refused rather than silently ignored, got: " + exception.errors());
-    }
-
-    @Test
-    void rejectsForwardedBlockOmittingTrustedProxies() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                forwarded:
-                  trust_scheme_host: true
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("forwarded")),
-                () -> "expected a schema violation for a forwarded block omitting trusted_proxies, got: "
-                        + exception.errors());
+                                && error.pointer().contains(pointerFragment)),
+                () -> "expected " + description + " to be refused at a pointer naming '" + pointerFragment
+                        + "', got: " + exception.errors());
     }
 
     @Test
@@ -920,6 +919,231 @@ class ConfigLoaderTest {
         assertNull(endpoint.auth(),
                 "an anchored endpoint may omit its auth block and still bind at the schema level");
         assertEquals("api", endpoint.anchor());
+    }
+
+    // --- Exact routes, redirect action and optional base_url (AS-3/AS-4) ---------------------------
+    // The schema owns the shape: exactly one path form per matcher, the redirect block's required
+    // keys and its status value range. base_url is no longer schema-required — its conditional
+    // mandatoriness (proxy routes only) is a code rule, so a document without it must bind here.
+
+    @Test
+    void bindsAnEndpointWithoutBaseUrlCarryingOnlyAssetAndRedirectRoutes() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/site.yaml", """
+                endpoint:
+                  id: site
+                  auth:
+                    require: none
+                  routes:
+                    - id: site-assets
+                      match:
+                        path_prefix: /static
+                      asset:
+                        source: directory
+                        directory: /srv/static
+                    - id: site-moved
+                      match:
+                        path: /old-home
+                      redirect:
+                        location: /new-home
+                        status: 308
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        EndpointConfig endpoint = loaded.endpoints().getFirst();
+        RouteConfig assets = endpoint.routes().getFirst();
+        RouteConfig moved = endpoint.routes().get(1);
+        assertAll("an endpoint without proxy routes binds without base_url",
+                () -> assertNull(endpoint.baseUrl(), "an omitted base_url binds to null"),
+                () -> assertEquals(2, endpoint.routes().size()),
+                () -> assertFalse(assets.isProxyRoute(), "the asset route is not a proxy route"),
+                () -> assertFalse(moved.isProxyRoute(), "the redirect route is not a proxy route"));
+    }
+
+    @Test
+    void bindsAnExactMatchPathUnNormalized() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-root
+                      match:
+                        path: /orders/
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        MatchConfig match = loaded.endpoints().getFirst().routes().getFirst().match();
+        assertAll("match.path binds as an exact matcher",
+                () -> assertEquals("/orders/", match.path(), "the exact path keeps its trailing slash"),
+                () -> assertNull(match.pathPrefix()),
+                () -> assertTrue(match.isExact()),
+                () -> assertEquals("/orders/", match.matchKey()));
+    }
+
+    @Test
+    void bindsARedirectBlockWithEveryKey() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-docs
+                      match:
+                        path_prefix: /docs
+                      redirect:
+                        location: https://docs.example.com/
+                        status: 302
+                        keep_query: true
+                        allow_external: true
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(new RedirectConfig("https://docs.example.com/", 302, true, true),
+                loaded.endpoints().getFirst().routes().getFirst().redirect(),
+                "every snake_cased redirect key binds to its record component");
+    }
+
+    @Test
+    void bindsARedirectBlockOmittingTheFlagsToTheSecureDefaults() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: 307
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(new RedirectConfig("/home", 307, false, false),
+                loaded.endpoints().getFirst().routes().getFirst().redirect(),
+                "omitted keep_query and allow_external bind to false: no query is carried and no external"
+                        + " target is admitted unless the operator opts in");
+    }
+
+    @Test
+    void rejectsAMatchDeclaringBothPathAndPathPrefix() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                        path: /orders
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.pointer().contains("/routes/0/match")),
+                () -> "a matcher declaring both path forms must be refused at load at the match pointer, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void rejectsAMatchDeclaringNeitherPathNorPathPrefix() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        methods: ["GET"]
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.pointer().contains("/routes/0/match")),
+                () -> "a matcher declaring no path form must be refused at load at the match pointer, got: "
+                        + exception.errors());
+    }
+
+    /**
+     * The redirect {@code status} value range is owned by the bundled schema ({@code enum [301, 302,
+     * 303, 307, 308]}), so a status outside it is a boot error at load, before any code rule runs.
+     */
+    @ParameterizedTest(name = "redirect.status {0} fails the boot")
+    @ValueSource(ints = {300, 304, 200, 399})
+    void rejectsARedirectStatusOutsideTheEnum(int status) throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: %d
+                """.formatted(status));
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
+                                && error.pointer().contains("/redirect/status")),
+                () -> "a redirect status outside the enum must be refused at its own pointer, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void rejectsARedirectOmittingTheMandatoryStatus() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/moved.yaml", """
+                endpoint:
+                  id: moved
+                  auth:
+                    require: none
+                  routes:
+                    - id: moved-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
+                                && error.pointer().contains("/redirect")),
+                () -> "an omitted status must be refused rather than defaulted — permanence is an explicit"
+                        + " operator choice, got: " + exception.errors());
     }
 
     @Test
@@ -1701,6 +1925,139 @@ class ConfigLoaderTest {
         assertEquals(Map.of("avif", "image/avif", "m4v", "video/mp4;codecs=avc1"),
                 loaded.gateway().assetDefaults().contentTypes(),
                 "a well-formed media type, with and without a parameter, must still bind");
+    }
+
+    /**
+     * ADR-0007 Amendment A1: CORS is evaluated before route selection, so an anchor can never scope it.
+     * The anchor {@code security_headers} schema therefore carries only the response security headers,
+     * and a {@code cors} block there fails the boot at load rather than being accepted and ignored.
+     */
+    @Test
+    void refusesCorsUnderAnAnchorSecurityHeadersBlock() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  frontend:
+                    path_prefix: /app
+                    type: proxy
+                    access: public
+                    security_headers:
+                      frame_deny: true
+                      cors:
+                        enabled: true
+                        allowed_origins: ["https://app.example"]
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("security_headers")),
+                () -> "an anchor-level cors block must be refused at schema load, got: " + exception.errors());
+    }
+
+    @Test
+    void bindsAnAnchorResponseHeadersBlockAlongsideGlobalCors() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                security_headers:
+                  hsts:
+                    max_age: 31536000
+                  cors:
+                    enabled: true
+                    allowed_origins: ["https://app.example"]
+                anchors:
+                  frontend:
+                    path_prefix: /app
+                    type: proxy
+                    access: public
+                    security_headers:
+                      hsts:
+                        max_age: 600
+                        include_subdomains: true
+                      content_type_nosniff: true
+                      frame_deny: true
+                """);
+
+        GatewayConfig gateway = loader(Map.of()).load().gateway();
+
+        AnchorConfig frontend = gateway.anchors().get("frontend");
+        assertAll("the anchor accepts every response security header and the global block keeps cors",
+                () -> assertEquals(600, frontend.securityHeaders().hsts().maxAge()),
+                () -> assertTrue(frontend.securityHeaders().contentTypeNosniff()),
+                () -> assertTrue(frontend.securityHeaders().frameDeny()),
+                () -> assertNull(frontend.securityHeaders().cors(), "the anchor block carries no cors"),
+                () -> assertNotNull(gateway.securityHeaders().cors(), "the global block still binds cors"));
+    }
+
+    @Test
+    void bindsUpstreamRewriteLocationAndAssetIndexAndFallback() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/web.yaml", """
+                endpoint:
+                  id: web
+                  base_url: WEB
+                  auth:
+                    require: none
+                  routes:
+                    - id: rewritten
+                      match:
+                        path_prefix: /api
+                      upstream:
+                        path: /svc
+                        rewrite_location: true
+                    - id: verbatim
+                      match:
+                        path_prefix: /other
+                    - id: spa
+                      match:
+                        path_prefix: /app
+                      asset:
+                        source: directory
+                        directory: /srv/spa
+                        index: index.html
+                        fallback: index.html
+                """);
+
+        EndpointConfig endpoint = loader(Map.of()).load().endpoints().getFirst();
+
+        RouteConfig rewritten = endpoint.routes().get(0);
+        RouteConfig verbatim = endpoint.routes().get(1);
+        RouteConfig spa = endpoint.routes().get(2);
+        assertAll("the new keys bind through the schema and the snake_case strategy",
+                () -> assertEquals(Boolean.TRUE, rewritten.upstream().rewriteLocation(),
+                        "upstream.rewrite_location binds"),
+                () -> assertNull(verbatim.upstream(), "a route without an upstream block binds none"),
+                () -> assertEquals("index.html", spa.asset().index(), "asset.index binds"),
+                () -> assertEquals("index.html", spa.asset().fallback(), "asset.fallback binds"));
+    }
+
+    @Test
+    void refusesAnUnknownKeyBesideAssetIndexAndFallback() throws Exception {
+        // THE CONTROL for the binding test above: the asset block still declares additionalProperties:
+        // false, so a misspelt key next to the new ones is refused rather than silently ignored.
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/web.yaml", """
+                endpoint:
+                  id: web
+                  auth:
+                    require: none
+                  routes:
+                    - id: spa
+                      match:
+                        path_prefix: /app
+                      asset:
+                        source: directory
+                        directory: /srv/spa
+                        index_file: index.html
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream().anyMatch(error -> error.file().contains("web.yaml")),
+                () -> "a misspelt asset key must be refused at schema load, got: " + exception.errors());
     }
 
     @Test

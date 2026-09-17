@@ -22,10 +22,12 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
+import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServerResponse;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 7 — the streamed response relay.
@@ -42,8 +44,16 @@ import io.vertx.core.http.HttpServerResponse;
  *       through only when the route enables {@code not_modified}; on a disabled route they are
  *       stripped so no validator ever reaches the client. A {@code 304} on an enabled route relays
  *       untouched.</li>
- *   <li><strong>Stage-0 security headers</strong> accumulated on the response are applied last, so
- *       gateway-controlled headers win over any upstream value.</li>
+ *   <li><strong>{@code Location}</strong> is relayed unchanged unless the route opts into
+ *       {@code upstream.rewrite_location}: {@link #relay} then maps a value pointing inside the route
+ *       upstream back onto the route's match key through the route's {@link LocationRewriter}, and
+ *       leaves every other value — a foreign origin above all — untouched. {@link #relayWithTrailers}
+ *       applies no rewrite: the gRPC path carries no redirect.</li>
+ *   <li><strong>Gateway headers</strong> accumulated on the request are applied last, in two maps whose
+ *       names never overlap: a <em>set</em>-header replaces any upstream value of that name, a
+ *       <em>default</em>-header (a gateway-owned security header whose {@code header_modes} entry is
+ *       {@code default}) is added only when the upstream response carried no value for that name, so an
+ *       origin-set header is relayed untouched.</li>
  * </ul>
  *
  * @author API Sheriff Team
@@ -53,6 +63,8 @@ public final class ResponseStage {
 
     /** Conditional-response validators stripped unless the route enables {@code not_modified}. */
     private static final Set<String> CONDITIONAL_RESPONSE_HEADERS = Set.of("etag", "last-modified");
+
+    private static final String LOCATION_HEADER = "Location";
 
     /**
      * @param name               the upstream response-header name
@@ -71,31 +83,72 @@ public final class ResponseStage {
     }
 
     /**
-     * Relays the upstream response to the client: status, filtered headers, stage-0 security
-     * headers, then the streamed body.
+     * Relays the upstream response to the client: status, filtered headers (with an upstream
+     * {@code Location} mapped through the route's rewriter when it opts in), the gateway headers, then
+     * the streamed body.
      *
-     * @param upstream                the upstream response (body still streaming)
-     * @param client                  the client response write stream
-     * @param notModifiedEnabled      whether the route honours conditional requests / responses
-     * @param stageZeroSecurityHeaders the stage-0 security headers accumulated on the response
+     * @param upstream           the upstream response (body still streaming)
+     * @param client             the client response write stream
+     * @param notModifiedEnabled whether the route honours conditional requests / responses
+     * @param locationRewriter   the route's {@code upstream.rewrite_location} mapping, or
+     *                           {@code null} to relay {@code Location} unchanged
+     * @param setHeaders         the set-mode gateway headers, overwriting an upstream value of the same name
+     * @param defaultHeaders     the default-mode gateway headers, added only for a name the upstream
+     *                           response did not carry
      * @return a future completing when the body has been fully streamed
      */
     public Future<Void> relay(HttpClientResponse upstream, HttpServerResponse client,
-            boolean notModifiedEnabled, Map<String, String> stageZeroSecurityHeaders) {
+            boolean notModifiedEnabled, @Nullable LocationRewriter locationRewriter,
+            Map<String, String> setHeaders, Map<String, String> defaultHeaders) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(client, "client");
-        Objects.requireNonNull(stageZeroSecurityHeaders, "stageZeroSecurityHeaders");
+        Objects.requireNonNull(setHeaders, "setHeaders");
+        Objects.requireNonNull(defaultHeaders, "defaultHeaders");
 
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
-            if (isForwardableResponseHeader(header.getKey(), notModifiedEnabled)) {
+            String name = header.getKey();
+            if (isForwardableResponseHeader(name, notModifiedEnabled)) {
                 // add (not set) so multi-valued headers such as Set-Cookie are all preserved.
-                client.headers().add(header.getKey(), header.getValue());
+                client.headers().add(name, relayedHeaderValue(name, header.getValue(), locationRewriter));
             }
         }
-        stageZeroSecurityHeaders.forEach((name, value) -> client.headers().set(name, value));
+        applyGatewayHeaders(upstream, client, setHeaders, defaultHeaders);
         applyResponseFraming(upstream, client);
         return upstream.pipeTo(client);
+    }
+
+    /**
+     * Applies the gateway headers to a relayed response: every set-header overwrites, every
+     * default-header is added only when the upstream response carried no value for that name. The
+     * upstream check is case-insensitive, as header names are.
+     */
+    private static void applyGatewayHeaders(HttpClientResponse upstream, HttpServerResponse client,
+            Map<String, String> setHeaders, Map<String, String> defaultHeaders) {
+        setHeaders.forEach((name, value) -> client.headers().set(name, value));
+        defaultHeaders.forEach((name, value) -> {
+            if (!upstream.headers().contains(name)) {
+                client.headers().set(name, value);
+            }
+        });
+    }
+
+    /**
+     * The value a forwardable upstream response header carries to the client: an upstream
+     * {@code Location} is mapped through the route's rewriter when the route opts into
+     * {@code upstream.rewrite_location}; every other header — and {@code Location} on a route that
+     * does not opt in — keeps its upstream value.
+     *
+     * @param name             the upstream response-header name
+     * @param value            the upstream response-header value
+     * @param locationRewriter the route's {@code upstream.rewrite_location} mapping, or {@code null}
+     * @return the value relayed to the client
+     */
+    static String relayedHeaderValue(String name, String value, @Nullable LocationRewriter locationRewriter) {
+        if (locationRewriter != null && LOCATION_HEADER.equalsIgnoreCase(name)) {
+            return locationRewriter.rewrite(value);
+        }
+        return value;
     }
 
     /**
@@ -108,17 +161,20 @@ public final class ResponseStage {
      * the client observes the gRPC status. The response is set chunked so trailers are framed on an
      * HTTP/1.1 client (HTTP/2 ignores the flag and frames trailers natively).
      *
-     * @param upstream                 the upstream response (body + trailers still streaming)
-     * @param client                   the client response write stream
-     * @param notModifiedEnabled       whether the route honours conditional requests / responses
-     * @param stageZeroSecurityHeaders the stage-0 security headers accumulated on the response
+     * @param upstream           the upstream response (body + trailers still streaming)
+     * @param client             the client response write stream
+     * @param notModifiedEnabled whether the route honours conditional requests / responses
+     * @param setHeaders         the set-mode gateway headers, overwriting an upstream value of the same name
+     * @param defaultHeaders     the default-mode gateway headers, added only for a name the upstream
+     *                           response did not carry in its leading headers
      * @return a future completing when the body and trailers have been fully relayed
      */
     public Future<Void> relayWithTrailers(HttpClientResponse upstream, HttpServerResponse client,
-            boolean notModifiedEnabled, Map<String, String> stageZeroSecurityHeaders) {
+            boolean notModifiedEnabled, Map<String, String> setHeaders, Map<String, String> defaultHeaders) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(client, "client");
-        Objects.requireNonNull(stageZeroSecurityHeaders, "stageZeroSecurityHeaders");
+        Objects.requireNonNull(setHeaders, "setHeaders");
+        Objects.requireNonNull(defaultHeaders, "defaultHeaders");
 
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
@@ -126,7 +182,7 @@ public final class ResponseStage {
                 client.headers().add(header.getKey(), header.getValue());
             }
         }
-        stageZeroSecurityHeaders.forEach((name, value) -> client.headers().set(name, value));
+        applyGatewayHeaders(upstream, client, setHeaders, defaultHeaders);
         // gRPC trailers require a chunked (HTTP/1.1) or HTTP/2 response frame.
         client.setChunked(true);
 

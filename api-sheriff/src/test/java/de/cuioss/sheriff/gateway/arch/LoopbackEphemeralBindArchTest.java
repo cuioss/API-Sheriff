@@ -1215,11 +1215,11 @@ class LoopbackEphemeralBindArchTest {
          * why the sweep's source set is asserted to exclude it too. Only then does the exclusion mean
          * anything.
          *
-         * @throws IOException when the guarded source tree cannot be walked
+         * @throws Exception when the guarded source tree cannot be walked
          */
         @Test
         @DisplayName("Production's deliberate wildcard binder stays out of scope (positive control)")
-        void productionWildcardBinderIsOutOfScope() throws IOException {
+        void productionWildcardBinderIsOutOfScope() throws Exception {
             Optional<JavaClass> binder = PRODUCTION_CLASSES.stream()
                     .filter(javaClass -> PRODUCTION_WILDCARD_BINDER.equals(javaClass.getName()))
                     .findFirst();

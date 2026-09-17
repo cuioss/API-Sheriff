@@ -52,8 +52,12 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * Two alias sources are resolved, and they fail <em>asymmetrically</em>:
  * <ul>
- * <li>An <em>enabled</em> endpoint's {@code base_url} alias must resolve or the boot
- * fails: an unresolved one throws {@link TopologyResolutionException}.</li>
+ * <li>An <em>enabled</em> endpoint's declared {@code base_url} alias must resolve or the
+ * boot fails: an unresolved one throws {@link TopologyResolutionException}. An endpoint
+ * that declares no {@code base_url} is skipped — {@code base_url} is mandatory only for an
+ * endpoint carrying a proxy route, and that conditional rule is reported by
+ * {@link de.cuioss.sheriff.gateway.config.validation.ConfigValidator}, not here (an
+ * asset-only or redirect-only endpoint legitimately has no alias to resolve).</li>
  * <li>An {@code additionalAliases} entry (the {@code tls.passthrough_sni} targets)
  * resolves regardless of endpoint enablement, because passthrough is a TLS-level
  * concern — but an unresolved one is <em>skipped silently</em> (omitted from the
@@ -105,7 +109,8 @@ public final class TopologyResolver {
      * endpoints together with the supplied additional aliases.
      *
      * @param topologyFile      the {@code topology.properties} file (may be absent)
-     * @param enabledEndpoints  the endpoints already filtered to those enabled
+     * @param enabledEndpoints  the endpoints already filtered to those enabled; an endpoint
+     *                          declaring no {@code base_url} contributes no alias
      * @param additionalAliases aliases to resolve independently of endpoint
      *                          enablement (the {@code tls.passthrough_sni} targets);
      *                          an entry that resolves to no value is skipped rather
@@ -123,7 +128,7 @@ public final class TopologyResolver {
         Map<String, ResolvedUpstream> resolved = new LinkedHashMap<>();
         for (EndpointConfig endpoint : enabledEndpoints) {
             String alias = endpoint.baseUrl();
-            if (resolved.containsKey(alias)) {
+            if (alias == null || resolved.containsKey(alias)) {
                 continue;
             }
             String value = resolveValue(alias, fileAliases);

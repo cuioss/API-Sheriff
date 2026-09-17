@@ -61,7 +61,7 @@
     "endpoint": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "base_url", "routes"],
+      "required": ["id", "routes"],
       "properties": {
         "id": {
           "type": "string",
@@ -75,7 +75,7 @@
         },
         "base_url": {
           "type": "string",
-          "description": "Topology alias resolved from topology.properties. Never a concrete host."
+          "description": "Topology alias resolved from topology.properties. Never a concrete host. Mandatory exactly when the endpoint carries a proxy route (a route declaring neither asset nor redirect); an endpoint serving only asset and/or redirect routes may omit it. The conditional mandatoriness is enforced in code."
         },
         "anchor": {
           "type": "string",
@@ -110,9 +110,20 @@
               "match": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["path_prefix"],
+                "description": "The route matcher set. Exactly one of path_prefix or path must be declared. Matchers compose with AND semantics.",
+                "oneOf": [
+                  { "required": ["path_prefix"] },
+                  { "required": ["path"] }
+                ],
                 "properties": {
-                  "path_prefix": { "type": "string" },
+                  "path_prefix": {
+                    "type": "string",
+                    "description": "Literal path prefix matched on a segment boundary; the longest prefix wins among prefix routes. Mutually exclusive with path."
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Exact path matched by an un-normalized string comparison against the canonical request path: /a and /a/ are distinct addresses. Exact routes are selected before any prefix route. Mutually exclusive with path_prefix."
+                  },
                   "methods": { "type": "array", "items": { "$ref": "#/$defs/httpVerb" } },
                   "host": { "type": "string" },
                   "headers": {
@@ -148,7 +159,15 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "path": { "type": "string" },
+                  "path": {
+                    "type": "string",
+                    "description": "Upstream path appended to the topology alias base path, joined on exactly one slash (ADR-0004 Amendment A2). The request remainder after the match key follows it. Omitted or blank keeps the alias base path."
+                  },
+                  "rewrite_location": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Whether an upstream Location response header pointing inside this route's upstream is mapped back onto the gateway. A relative path or an absolute URI whose scheme, host and effective port equal the route upstream, and whose path equals the effective upstream base path or continues it on a segment boundary, is rewritten to the route's match key plus the remainder, emitted as a gateway-relative path; query and fragment are kept verbatim. Foreign origins, scheme-relative //host values, unparseable values and paths outside the base path are relayed unchanged. Defaults to false (Location relayed unchanged). Valid on http and graphql routes only; refused on grpc and websocket routes (enforced in code)."
+                  },
                   "connect_timeout_ms": { "type": "integer" },
                   "read_timeout_ms": { "type": "integer" },
                   "retry": {
@@ -181,7 +200,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["source"],
-                "description": "Optional asset terminal action (ADR-0014). Serves static content through the gateway-owned response envelope instead of proxying. A route carries at most one terminal action, so 'asset' and 'upstream' are mutually exclusive (enforced in code).",
+                "description": "Optional asset terminal action (ADR-0014). Serves static content through the gateway-owned response envelope instead of proxying. asset and redirect are the two explicit terminal actions and are mutually exclusive; a route declaring neither proxies, to the endpoint base_url unless a route-level upstream block overrides it (enforced in code).",
                 "properties": {
                   "source": {
                     "type": "string",
@@ -195,6 +214,41 @@
                   "upstream": {
                     "type": "string",
                     "description": "The topology alias of the secondary origin for source: upstream."
+                  },
+                  "index": {
+                    "type": "string",
+                    "description": "Directory index file name for source: directory (e.g. index.html). A request addressing a directory - the empty sub-path, a sub-path ending with /, or an existing directory - is answered with this file from that directory, served through the same path confinement as any other asset; a directory without the file is a 404. A single file-name segment: no /, no backslash, no .., no control characters, not empty. Refused on source: upstream (enforced in code)."
+                  },
+                  "fallback": {
+                    "type": "string",
+                    "description": "Single-page-application fallback file name for source: directory. A request whose target does not exist and whose last path segment carries no dot extension is answered with this root-level file, served through the same path confinement as any other asset; an unknown path with an extension (e.g. /app.js) stays a 404. A single file-name segment: no /, no backslash, no .., no control characters, not empty. Refused on source: upstream (enforced in code)."
+                  }
+                }
+              },
+              "redirect": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["location", "status"],
+                "description": "Optional redirect terminal action (ADR-0014 Amendment A1). The gateway answers the request itself with the configured status and Location, without contacting any upstream. redirect and asset are the two explicit terminal actions and are mutually exclusive; a route declaring neither proxies, to the endpoint base_url unless a route-level upstream block overrides it. The open-redirect review of location and the protocol restriction are enforced in code.",
+                "properties": {
+                  "location": {
+                    "type": "string",
+                    "description": "The Location value, written verbatim (never context-path-prefixed, no request placeholders). Without allow_external it must be a single-slash gateway path free of backslashes, encoded slashes, dot-segments and control characters."
+                  },
+                  "status": {
+                    "type": "integer",
+                    "enum": [301, 302, 303, 307, 308],
+                    "description": "The redirect status. Mandatory rather than defaulted: 301 and 308 are cached by browsers, so permanence must be an explicit operator choice."
+                  },
+                  "keep_query": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Whether the raw inbound query string is appended to location (joined with ? or &). Defaults to false. Same-origin only: combining it with allow_external fails the boot, because the inbound query is attacker-supplied and would be handed to the foreign origin."
+                  },
+                  "allow_external": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Whether location may be an absolute http/https URI on another origin. Defaults to false; opting in emits a boot warning and cannot be combined with keep_query."
                   }
                 }
               },

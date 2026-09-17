@@ -5,8 +5,9 @@
 == Status
 
 Accepted; the *override channel* is superseded by link:#_amendment_a1[Amendment A1] below
-(in-file `${VAR:-default}` placeholder instead of the convention-named env var). The
-single-URL-per-alias model is unchanged.
+(in-file `${VAR:-default}` placeholder instead of the convention-named env var), and the
+*`route.upstream.path` semantics* are superseded by link:#_amendment_a2[Amendment A2] (append to
+the alias base path instead of replacing it). The single-URL-per-alias model is unchanged.
 
 == Context
 
@@ -55,6 +56,8 @@ researched what the majority of widely-used systems do for human-authored, env-o
   and the forward URI is `stripTrailingSlash(effective base path) + <request-path remainder after
   the matched prefix>`, where the effective base path is the `route.upstream.path` when declared and
   the alias-derived base path otherwise (see link:../configuration.adoc[Configuration -- `upstream`]).
+  *(Superseded by link:#_amendment_a2[Amendment A2]: `route.upstream.path` now appends to the
+  alias-derived base path.)*
 * *No component split initially.* Per-component overrides (e.g. `TOPOLOGY_APP1_PORT`) are *not*
   implemented now. They may be added later as a narrow escape hatch (mirroring Kong: full URL as the
   ergonomic default, components as fine-grained override) only if a real partial-override need appears.
@@ -95,6 +98,73 @@ the placeholder, resolved once before schema validation. Everything else in this
 files) stands. The mechanism is implemented, and the operator guide's
 link:../user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology and
 endpoint enablement section] documents it.
+
+[[_amendment_a2]]
+== Amendment A2 (2026-09-15) -- `route.upstream.path` appends to the alias base path
+
+The Decision above made a declared `route.upstream.path` *replace* the alias-derived base path. A2
+supersedes that one bullet: `route.upstream.path` is now *appended* to the alias base path, joined
+on exactly one `/`.
+
+----
+effective base path = stripTrailingSlashes(alias base path) + "/" + stripLeadingSlashes(route.upstream.path)
+                      -- both helpers remove REPEATED slashes at the seam, so exactly one "/" survives
+forward URI         = stripTrailingSlash(effective base path) + <request-path remainder after the match key>
+----
+
+The two `*Slashes` helpers are plural on purpose: `RouteTableBuilder` strips *all* trailing slashes
+from the alias base path and *all* leading slashes from `route.upstream.path` before joining, so an
+alias ending `/anything//` and an `upstream.path` of `//graphql` still join to `/anything/graphql`
+rather than to a doubled seam. `RouteTableBuilderTest.shouldJoinOnExactlyOneSlash` is the assertion
+that covers exactly that pair.
+
+A blank or absent `route.upstream.path` keeps the alias base path unchanged, exactly as before.
+
+=== Why append
+
+Replace semantics made a route restate the environment-specific part of the location. With the
+integration alias `UPSTREAM=http://go-httpbin:8080/anything`, every benchmark-aspect route had to
+spell `upstream.path: /anything/<aspect>` -- the `/anything` segment belongs to the environment the
+alias describes, yet it was repeated in the portable endpoint file, which is exactly the coupling this
+ADR exists to remove. Under append, *aliases carry environments and routes carry paths*: the route
+says `/<aspect>` and the alias supplies the base.
+
+The replace-justification recorded in the code was re-checked against every in-repo usage and did
+not hold. The gRPC routes ride `GRPC_ECHO=http://grpc-echo:9000`, whose base path is empty, so append
+and replace produce the same URI for them; they never needed replace. The benchmark aspect routes
+were the only other users, and they are the ones replace forced into restating the alias base.
+
+=== Migration
+
+Every in-repo configuration was migrated in the same change so its *effective upstream URI stays
+identical* on the integration topology:
+
+* `integration-tests/.../endpoints/httpbin.yaml` -- the six routes declaring
+  `upstream.path: /anything/<x>` (`minimal-mode`, `graphql`, `upload-small`, `upload-large`,
+  `deny-list`, `forward-all`) now declare `/<x>`; with the `/anything` alias base they still reach
+  `/anything/<x>`.
+* `integration-tests/.../endpoints/grpc.yaml` -- values unchanged: the alias base path is empty, so
+  append equals replace. Only the formula in its comment was updated.
+* `integration-tests/.../endpoints/origin-headers.yaml` -- authored under append in this same change
+  rather than migrated, so it restates no alias base path to drop. Both its routes declare
+  `route.upstream.path` (`/response-headers`, `/redirect-to`) behind `HTTPBIN_ROOT`, the deliberately
+  base-path-free sibling of `UPSTREAM`; with an empty alias base append equals replace there too, so
+  the declared path *is* the whole effective upstream base.
+* Apart from those three files, no test resource, deployment sample, WebSocket, asset, BFF or secure
+  endpoint declares `route.upstream.path`, so nothing else changes.
+
+=== Consequences
+
+* Moving a backend to a different context path is again a topology-only change, even for routes that
+  declare `route.upstream.path`.
+* The benchmark overlay shifts the path of the six migrated routes, and that is accepted.
+  `docker-compose.benchmark.yml` repoints `TOPOLOGY_UPSTREAM=http://nginx-static:8080` -- no base path
+  -- so that the `/proxy` route (which declares no `upstream.path` and is the proxied-static fairness
+  baseline shared with the other gateways) keeps its exact upstream URI. One alias value cannot keep
+  both route groups identical on that overlay: the six migrated routes now reach nginx-static at
+  `/<x>` instead of `/anything/<x>`. nginx-static answers every path from its single `location /`
+  block with the same fixed `200 OK`, so the response bytes and the measured work are unchanged; the
+  overlay is therefore left as it is rather than trading away the baseline route's exact URI.
 
 == References
 

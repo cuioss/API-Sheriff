@@ -52,8 +52,10 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # Every route that declares no `security_filter.profile` resolves to this value — including the
 # /proxy, /bff, /graphql and asset routes — so the strict preset's caps (1 MiB body, 20 query
 # parameters, 1024-character header values and parameter values, 1024-character paths) are the
-# floor the suite proves. The single `minimal`-mode route below is the only opt-out, and it is a
-# PARTIAL one.
+# floor the suite proves. The `minimal`-mode routes are the only opt-outs — the endpoint files are
+# the authoritative set, so no count is repeated here — and each is PARTIAL:
+# httpbin-minimal-mode (endpoints/httpbin.yaml), which proves the partial-disable matrix, and
+# origin-location-rewrite (endpoints/origin-headers.yaml), whose `url` query parameter must carry a URL.
 #
 # `max_authorization_header_value_length` bounds the `Authorization` header VALUE only, at the
 # non-skippable pre-route floor (BasicChecksStage) that runs BEFORE route selection. The strict
@@ -117,11 +119,30 @@ tls:
 asset_defaults:
   content_types:
     webmanifest: application/manifest+json
+# The global response security headers plus the global CORS policy — mirrored from the base document,
+# which carries the explanation (RoutingAndResponseHeadersIT asserts them against the base instance).
+security_headers:
+  hsts:
+    max_age: 31536000
+    include_subdomains: true
+  cors:
+    enabled: true
+    allowed_origins: ["https://sheriff.test"]
+    allowed_methods: ["GET", "POST"]
+    allowed_headers: ["authorization", "content-type"]
+    allow_credentials: false
 anchors:
   api:
     path_prefix: /proxy
     type: proxy
     access: public
+    # Mirrored from the base document: the anchor block that replaces the global block wholesale for
+    # every /proxy route, with frame_deny in `default` mode.
+    security_headers:
+      frame_deny: true
+      content_security_policy: "default-src 'self'"
+      header_modes:
+        frame_deny: default
   bff:
     path_prefix: /bff
     type: proxy
@@ -291,9 +312,9 @@ oidc:
     #      ConfigValidator.prefixContains treats a container prefix normalizing to '/' as containing
     #      everything, so validateAnchorPrefixDisjointness fails the boot fail-closed against every
     #      one of the ten anchors this document already declares.
-    #   2. Even were it routable, DirectoryAssetSource performs no directory-index resolution: a bare
-    #      '/' yields an empty remainder that resolves to the directory root, fails isRegularFile and
-    #      returns 404.
+    #   2. Even were it routable, the /assets/demo route declares no asset.index: a bare '/' yields an
+    #      empty remainder that resolves to the directory root, and a directory source without an index
+    #      answers a directory address 404.
     # So final_redirect names a concrete file under an anchor that already exists. This is a
     # per-instance value of the same class as redirect_uri and post_logout_redirect_uri, which already
     # differ across the four overlays; the mtls and ws-admission overlays keep final_redirect: / and

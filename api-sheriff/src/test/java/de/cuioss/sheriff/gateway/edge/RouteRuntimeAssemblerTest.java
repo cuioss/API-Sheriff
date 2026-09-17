@@ -44,12 +44,14 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
@@ -83,7 +85,8 @@ class RouteRuntimeAssemblerTest {
         clientFactory = _ -> vertx.createHttpClient();
         guardFactory = _ -> new StoredOnlyGuard();
         assetSourceFactory = asset -> new DirectoryAssetSource(
-                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access(), Map.of());
+                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access(), asset.index(),
+                asset.fallback(), Map.of());
     }
 
     @AfterEach
@@ -157,7 +160,7 @@ class RouteRuntimeAssemblerTest {
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertEquals(List.of("first", "second"), runtimes.stream().map(RouteRuntime::getId).toList(),
-                "Assembly preserves the longest-prefix-first order");
+                "Assembly preserves the route-table order");
     }
 
     @Test
@@ -299,6 +302,75 @@ class RouteRuntimeAssemblerTest {
     }
 
     @Test
+    @DisplayName("Should carry the resolved security headers onto every route kind and leave a block-less route without any")
+    void shouldCarryResolvedSecurityHeaders() {
+        SecurityHeadersConfig anchorBlock = SecurityHeadersConfig.builder()
+                .frameDeny(true).contentSecurityPolicy("default-src 'self'").build();
+        ResolvedRoute proxy = ResolvedRoute.builder()
+                .id("proxy").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/p").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(anchorBlock)
+                .upstream(upstream("a.example")).build();
+        ResolvedRoute asset = ResolvedRoute.builder()
+                .id("asset").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/a").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(anchorBlock)
+                .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html")).build();
+        ResolvedRoute redirect = ResolvedRoute.builder()
+                .id("redirect").protocol(Protocol.HTTP).match(MatchConfig.builder().path("/old").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(anchorBlock)
+                .redirect(new RedirectConfig("/new", 301, false, false)).build();
+        RouteTable table = new RouteTable(List.of(proxy, asset, redirect,
+                route("block-less", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
+                assetSourceFactory);
+
+        assertAll("the resolved block reaches RouteRuntime.securityHeaders unchanged for every terminal action",
+                () -> assertEquals(anchorBlock, runtimes.getFirst().getSecurityHeaders(), "proxy route"),
+                () -> assertEquals(anchorBlock, runtimes.get(1).getSecurityHeaders(), "asset route"),
+                () -> assertEquals(anchorBlock, runtimes.get(2).getSecurityHeaders(), "redirect route"),
+                () -> assertNull(runtimes.get(3).getSecurityHeaders(),
+                        "a route resolving no block carries none, so stage 2a seeds no gateway-owned header"));
+    }
+
+    @Test
+    @DisplayName("Should build a Location rewriter from the effective upstream and match key only for an opted-in route")
+    void shouldBuildLocationRewriterOnlyForOptedInRoute() {
+        ResolvedUpstream effectiveUpstream = new ResolvedUpstream("https", "a.example", 443, "/svc/v1");
+        RouteTable table = new RouteTable(List.of(
+                ResolvedRoute.builder()
+                        .id("rewritten").protocol(Protocol.HTTP)
+                        .match(MatchConfig.builder().pathPrefix("/api").build())
+                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                        .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                        .rewriteLocation(true)
+                        .upstream(effectiveUpstream).build(),
+                ResolvedRoute.builder()
+                        .id("verbatim").protocol(Protocol.HTTP)
+                        .match(MatchConfig.builder().pathPrefix("/other").build())
+                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                        .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                        .upstream(effectiveUpstream).build()));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
+                assetSourceFactory);
+
+        RouteRuntime rewritten = runtimes.getFirst();
+        assertAll("rewrite_location wiring",
+                () -> assertNotNull(rewritten.getLocationRewriter(), "an opted-in proxy route carries a rewriter"),
+                () -> assertEquals("/api/items?id=7",
+                        rewritten.getLocationRewriter().rewrite("https://a.example/svc/v1/items?id=7"),
+                        "the rewriter maps the effective upstream base path onto the route's match key"),
+                () -> assertNull(runtimes.get(1).getLocationRewriter(),
+                        "a route that does not opt in carries no rewriter, so Location relays unchanged"));
+    }
+
+    @Test
     @DisplayName("Should assemble an asset route with a live source and no client or guard")
     void shouldAssembleAssetRouteWithoutClientOrGuard() {
         ResolvedRoute assetRoute = ResolvedRoute.builder()
@@ -306,18 +378,57 @@ class RouteRuntimeAssemblerTest {
                 .match(MatchConfig.builder().pathPrefix("/assets").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC))
+                .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html"))
                 .build();
         RouteTable table = new RouteTable(List.of(assetRoute));
+        List<ResolvedAsset> requestedSources = new ArrayList<>();
+        RouteRuntimeAssembler.AssetSourceFactory capturingAssetSourceFactory = asset -> {
+            requestedSources.add(asset);
+            return assetSourceFactory.create(asset);
+        };
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
-                assetSourceFactory);
+                capturingAssetSourceFactory);
 
         RouteRuntime runtime = runtimes.getFirst();
         assertNotNull(runtime.getAssetSource(), "an asset route carries a live asset source");
         assertNull(runtime.getUpstream(), "an asset route holds no proxy upstream");
         assertNull(runtime.getHttpClient(), "an asset route holds no Vert.x client");
         assertNull(runtime.getResilienceGuard(), "an asset route holds no resilience guard");
+        assertNull(runtime.getLocationRewriter(), "an asset route holds no Location rewriter");
+        assertEquals(1, requestedSources.size(), "the asset source is built once for the route");
+        assertEquals("index.html", requestedSources.getFirst().index(),
+                "the resolved index reaches the asset-source factory");
+        assertEquals("index.html", requestedSources.getFirst().fallback(),
+                "the resolved fallback reaches the asset-source factory");
+    }
+
+    @Test
+    @DisplayName("Should assemble a redirect route carrying its redirect and no client, guard, source or upstream")
+    void shouldAssembleRedirectRouteWithoutClientOrGuard() {
+        RedirectConfig redirect = new RedirectConfig("/new-home", 301, false, false);
+        ResolvedRoute redirectRoute = ResolvedRoute.builder()
+                .id("moved").protocol(Protocol.HTTP)
+                .match(MatchConfig.builder().path("/old-home").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .redirect(redirect)
+                .build();
+        RouteTable table = new RouteTable(List.of(redirectRoute));
+        List<RouteRuntimeAssembler.UpstreamTarget> requestedClients = new ArrayList<>();
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory,
+                capturingClientFactory(requestedClients), guardFactory, assetSourceFactory);
+
+        RouteRuntime runtime = runtimes.getFirst();
+        assertAll("a redirect route never touches the proxy data plane",
+                () -> assertEquals(redirect, runtime.getRedirect(), "the redirect block reaches the runtime"),
+                () -> assertTrue(runtime.getMatcher().isExact(), "the exact matcher is compiled for the route"),
+                () -> assertNull(runtime.getUpstream(), "a redirect route holds no proxy upstream"),
+                () -> assertNull(runtime.getHttpClient(), "a redirect route holds no Vert.x client"),
+                () -> assertNull(runtime.getResilienceGuard(), "a redirect route holds no resilience guard"),
+                () -> assertNull(runtime.getAssetSource(), "a redirect route holds no asset source"),
+                () -> assertTrue(requestedClients.isEmpty(), "no upstream client is requested for a redirect"));
     }
 
     @Test

@@ -4,9 +4,10 @@
 #
 # ROUTING MODEL — bare service path (operator decision 2026-07-21). A gRPC method path is the
 # service-rooted /{package}.{Service}/{Method}. A route matches on the bare service path via
-# match.path_prefix and sets an IDENTICAL upstream.path, so the gateway's path rewrite
-# (upstream = stripTrailingSlash(upstream.path) + remainder-after-prefix) reconstructs the full
-# method path unchanged end-to-end. There is NO synthetic /grpc/<aspect> anchor prefix and NO
+# match.path_prefix and sets an IDENTICAL upstream.path. upstream.path APPENDS to the alias base
+# path (ADR-0004 Amendment A2), and GRPC_ECHO carries no base path, so the forward URI
+# (alias base (empty) + upstream.path + remainder-after-prefix) reconstructs the full method path
+# unchanged end-to-end. There is NO synthetic /grpc/<aspect> anchor prefix and NO
 # client-side path rewriting: a stock grpc-java channel (and k6's grpc client) dials the real
 # service path and works as-is.
 #

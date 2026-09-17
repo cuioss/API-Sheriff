@@ -15,29 +15,37 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
-import java.util.HashMap;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -50,6 +58,7 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -61,10 +70,13 @@ import io.vertx.core.http.RequestOptions;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * End-to-end serving contract of the public data-plane edge, driven over a live Vert.x HTTP server
@@ -81,6 +93,32 @@ class GatewayEdgePipelineTest {
     private static final String ORIGIN = "https://app.example";
     /** The {@code max_body_bytes} the {@code profile: minimal} route declares, retained under that mode. */
     private static final int MINIMAL_ROUTE_BODY_CAP = 1024;
+    /** The status every redirect route of this fixture answers with. */
+    private static final int REDIRECT_STATUS = 308;
+    /** The gateway path every redirect route of this fixture points at. */
+    private static final String REDIRECT_LOCATION = "/echo/new-home";
+    /** The HSTS max-age the fixture's global security_headers block declares. */
+    private static final int GLOBAL_HSTS_MAX_AGE = 31536000;
+    private static final String GLOBAL_HSTS_VALUE = "max-age=" + GLOBAL_HSTS_MAX_AGE;
+    /** The Content-Security-Policy the fixture's global security_headers block declares. */
+    private static final String GLOBAL_POLICY = "default-src 'self'";
+    private static final String HSTS = "Strict-Transport-Security";
+    private static final String FRAME_OPTIONS = "X-Frame-Options";
+    private static final String NOSNIFF = "X-Content-Type-Options";
+    private static final String CSP = "Content-Security-Policy";
+    private static final String CACHE_CONTROL = "Cache-Control";
+    /** The status the stub upstream refuses every WebSocket upgrade with. */
+    private static final int UPGRADE_REFUSED_STATUS = 403;
+    /** The gRPC status a trailers-only rejection of a missing bearer token carries. */
+    private static final String GRPC_UNAUTHENTICATED = "16";
+    private static final String ASSET_FILE = "index.html";
+    private static final String FRONTEND_ANCHOR = "frontend";
+
+    /** Counts the requests that actually reached the stub upstream. */
+    private final AtomicInteger upstreamHits = new AtomicInteger();
+
+    @TempDir
+    Path assetDirectory;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -90,15 +128,28 @@ class GatewayEdgePipelineTest {
     private HttpServer frontServer;
     private HttpClient client;
     private int frontPort;
+    /** A bearer token the fixture's validator accepts, so a {@code require: bearer} route can be reached. */
+    private String validBearerToken;
+    /** Held rather than discarded so a test can read back the labels the edge metered a request under. */
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() throws Exception {
+        meterRegistry = new SimpleMeterRegistry();
         vertx = Vertx.vertx();
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
         // Stub upstream: echoes the received method, URI, and body so the forward path is observable.
+        // It refuses every WebSocket upgrade outright, so a websocket route's handshake fails
+        // deterministically and the gateway's handshake-failure response becomes observable.
+        upstreamHits.set(0);
         upstreamServer = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
                 request.body().onComplete(body -> {
+                    upstreamHits.incrementAndGet();
+                    if ("websocket".equalsIgnoreCase(request.getHeader("Upgrade"))) {
+                        request.response().setStatusCode(UPGRADE_REFUSED_STATUS).end();
+                        return;
+                    }
                     String payload = body.succeeded() && body.result() != null ? body.result().toString() : "";
                     request.response()
                             .putHeader("X-Upstream-Echo", "hit")
@@ -106,18 +157,36 @@ class GatewayEdgePipelineTest {
                 }))
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         int upstreamPort = upstreamServer.actualPort();
+        Files.writeString(assetDirectory.resolve(ASSET_FILE), "<html><body>asset</body></html>");
 
+        // The holder is retained rather than inlined: the raw token it carries is what lets a
+        // require:bearer route be reached, and it must come from the SAME holder whose issuer config
+        // the validator trusts. Assigns the field main introduced — a local would shadow it and leave
+        // the field null for every test that reads it.
+        TestTokenHolder tokenHolder = TestTokenGenerators.accessTokens().next();
+        validBearerToken = tokenHolder.getRawToken();
         tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+                .issuerConfig(tokenHolder.getIssuerConfig()).build();
 
         routeTable = new RouteTable(List.of(
                 route("secure", "/secure", Require.BEARER, upstreamPort, HttpMethod.GET),
                 route("echo", "/echo", Require.NONE, upstreamPort, HttpMethod.GET, HttpMethod.POST),
-                minimalModeRoute(upstreamPort)));
+                minimalModeRoute(upstreamPort),
+                redirectRoute("moved", "/moved", Require.NONE),
+                redirectRoute("secure-moved", "/secure-moved", Require.BEARER),
+                assetRoute("assets", "/assets", null),
+                grpcRoute("grpc", "/grpc", upstreamPort, null),
+                webSocketRoute("ws", "/ws", upstreamPort, null),
+                anchoredRoute("frontend-open", "/frontend-open", Require.NONE, upstreamPort),
+                anchoredRoute("frontend-secure", "/frontend-secure", Require.BEARER, upstreamPort),
+                anchored(redirectRoute("frontend-moved", "/frontend-moved", Require.NONE)),
+                assetRoute("frontend-assets", "/frontend-assets", FRONTEND_ANCHOR),
+                grpcRoute("frontend-grpc", "/frontend-grpc", upstreamPort, FRONTEND_ANCHOR),
+                webSocketRoute("frontend-ws", "/frontend-ws", upstreamPort, FRONTEND_ANCHOR)));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
-                .securityHeaders(corsHeaders())
+                .securityHeaders(globalHeaders())
                 .build();
 
         frontServer = startFront(gatewayConfig);
@@ -130,7 +199,7 @@ class GatewayEdgePipelineTest {
     private HttpServer startFront(GatewayConfig gatewayConfig) throws Exception {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry), BffRuntime.inert(),
                 EgressTrustProfiles.unconsulted());
 
         Router router = Router.router(vertx);
@@ -195,6 +264,24 @@ class GatewayEdgePipelineTest {
         // Assert
         assertEquals(405, response.status());
         assertNotNull(response.headers().get("Allow"), "a 405 names the permitted verbs in the Allow header");
+    }
+
+    @Test
+    @DisplayName("meters a verb-gate 405 under the selected route, not under <no-route>")
+    void metersDisallowedVerbUnderItsRoute() throws Exception {
+        // Act — same refusal as above, read through the meter rather than the response
+        assertEquals(405, send(io.vertx.core.http.HttpMethod.DELETE, "/echo/orders", Map.of(), null).status());
+
+        // Assert — the route WAS selected; the verb gate refused afterwards. Metering that under
+        // <no-route> would hide it from the per-route view an operator uses to find a client calling a
+        // route with the wrong verb, and would contradict the label's own contract ("the id stashed at
+        // route selection").
+        assertEquals(1.0, meterRegistry.counter(SheriffMetrics.REQUESTS_TOTAL,
+                        "route", "echo", "method", "DELETE", "status_family", "4xx").count(),
+                "a 405 refused after route selection is metered under that route");
+        assertNull(meterRegistry.find(SheriffMetrics.REQUESTS_TOTAL)
+                        .tag("route", SheriffMetrics.NO_ROUTE).counter(),
+                "no request in this test is unrouted, so the <no-route> series must not exist at all");
     }
 
     @Test
@@ -301,7 +388,7 @@ class GatewayEdgePipelineTest {
         Map<String, String> nonAsciiHeader = Map.of("X-Display-Name", "José");
         HttpServer optedInFront = startFront(GatewayConfig.builder()
                 .version(1)
-                .securityHeaders(corsHeaders())
+                .securityHeaders(globalHeaders())
                 .securityDefaults(new SecurityDefaultsConfig(null, null, null, true))
                 .build());
         try {
@@ -360,6 +447,208 @@ class GatewayEdgePipelineTest {
                 "a benign in-allowlist request on the minimal route is served");
     }
 
+    @Test
+    @DisplayName("answers a redirect route at the gateway with status, Location and stage headers, never contacting the upstream")
+    void answersRedirectRouteWithoutUpstreamContact() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/moved/old-page?lang=de",
+                Map.of("Origin", ORIGIN), null);
+
+        assertEquals(REDIRECT_STATUS, response.status(), "the configured redirect status is answered");
+        assertEquals(REDIRECT_LOCATION + "?lang=de", response.headers().get("Location"),
+                "the configured location is written verbatim with the kept raw query");
+        assertEquals(ORIGIN, response.headers().get("Access-Control-Allow-Origin"),
+                "the stage-0 headers accumulated on the request ride on the redirect");
+        assertNull(response.headers().get(CACHE_CONTROL),
+                "a public redirect carrying no cookie stays ordinary cacheable configuration");
+        assertTrue(response.body().isEmpty(), "a redirect answer carries no body: " + response.body());
+        assertEquals(0, upstreamHits.get(), "a redirect route must never contact the upstream");
+    }
+
+    @Test
+    @DisplayName("serves an authenticated redirect answer no-store so no shared cache stores and replays it")
+    void answersAuthenticatedRedirectRouteUncacheable() throws Exception {
+        // The /secure-moved route answers 308 — cacheable by default under RFC 9111 heuristic
+        // freshness — and is reached only with a valid bearer, so its answer is one caller's.
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure-moved/old-page",
+                Map.of("Authorization", "Bearer " + validBearerToken), null);
+
+        assertAll("an authenticated redirect answer is served but never stored",
+                () -> assertEquals(REDIRECT_STATUS, response.status(),
+                        "the authenticated caller receives the configured redirect"),
+                () -> assertEquals(REDIRECT_LOCATION, response.headers().get("Location"),
+                        "the configured location is disclosed to the authenticated caller"),
+                () -> assertEquals("no-store", response.headers().get(CACHE_CONTROL),
+                        "an authenticated redirect must carry Cache-Control: no-store"),
+                () -> assertEquals(0, upstreamHits.get(), "a redirect route must never contact the upstream"));
+    }
+
+    @Test
+    @DisplayName("challenges an unauthenticated request on an authenticated redirect route before disclosing the location")
+    void challengesAuthenticatedRedirectRouteBeforeRedirecting() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure-moved/old-page", Map.of(), null);
+
+        assertEquals(401, response.status(), "the authentication stage runs before the redirect terminal");
+        assertEquals("Bearer", response.headers().get("WWW-Authenticate"),
+                "the missing bearer token is challenged");
+        assertNull(response.headers().get("Location"), "the location must not be disclosed before authentication");
+        assertEquals(0, upstreamHits.get(), "a challenged redirect route never contacts the upstream");
+    }
+
+    // --- security_headers after route selection (ADR-0007 Amendment A1) ------------------------------
+
+    @Test
+    @DisplayName("applies the anchor security_headers block wholesale to a routed response, keeping global CORS")
+    void appliesAnchorBlockToRoutedResponse() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/frontend-open/page",
+                Map.of("Origin", ORIGIN), null);
+
+        assertAll("a routed response under the anchor carries the anchor block, not the global one",
+                () -> assertEquals(200, response.status()),
+                () -> assertEquals("nosniff", response.headers().get(NOSNIFF),
+                        "the anchor block's content_type_nosniff is applied"),
+                () -> assertEquals("DENY", response.headers().get(FRAME_OPTIONS),
+                        "the anchor block's frame_deny is applied"),
+                () -> assertNull(response.headers().get(HSTS),
+                        "the global HSTS is replaced wholesale, not merged into the anchor block"),
+                () -> assertNull(response.headers().get(CSP),
+                        "the global content_security_policy is dropped by an anchor block that omits it"),
+                () -> assertEquals(ORIGIN, response.headers().get("Access-Control-Allow-Origin"),
+                        "CORS stays global and is untouched by the route block"));
+    }
+
+    @Test
+    @DisplayName("keeps the global security_headers block on a routed response of an unanchored route")
+    void keepsGlobalBlockOnUnanchoredRoute() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders", Map.of(), null);
+
+        assertAll("THE CONTROL: an unanchored route resolves the global block",
+                () -> assertEquals(200, response.status()),
+                () -> assertEquals(GLOBAL_HSTS_VALUE, response.headers().get(HSTS)),
+                () -> assertEquals(GLOBAL_POLICY, response.headers().get(CSP)),
+                () -> assertNull(response.headers().get(FRAME_OPTIONS),
+                        "the anchor-only frame_deny does not leak onto a route outside the anchor"),
+                () -> assertNull(response.headers().get(NOSNIFF),
+                        "the anchor-only nosniff does not leak onto a route outside the anchor"));
+    }
+
+    @Test
+    @DisplayName("keeps the global security_headers block on a pre-route 404")
+    void keepsGlobalBlockOnPreRouteRejection() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/nowhere", Map.of(), null);
+
+        assertAll("no route is selected, so the global block is the only one that can apply",
+                () -> assertEquals(404, response.status()),
+                () -> assertEquals(GLOBAL_HSTS_VALUE, response.headers().get(HSTS)),
+                () -> assertEquals(GLOBAL_POLICY, response.headers().get(CSP)),
+                () -> assertNull(response.headers().get(FRAME_OPTIONS)),
+                () -> assertNull(response.headers().get(NOSNIFF)));
+    }
+
+    @Test
+    @DisplayName("applies the anchor block to route-scoped rejections: the verb gate 405 and the bearer 401")
+    void appliesAnchorBlockToRouteScopedRejections() throws Exception {
+        Response verbRejected = send(io.vertx.core.http.HttpMethod.DELETE, "/frontend-open/page", Map.of(), null);
+        Response challenged = send(io.vertx.core.http.HttpMethod.GET, "/frontend-secure/data", Map.of(), null);
+
+        assertAll("every response after route selection carries the route's block",
+                () -> assertEquals(405, verbRejected.status()),
+                () -> assertEquals("DENY", verbRejected.headers().get(FRAME_OPTIONS),
+                        "the verb gate runs after stage 2a, so its 405 is route-scoped"),
+                () -> assertNull(verbRejected.headers().get(HSTS)),
+                () -> assertEquals(401, challenged.status()),
+                () -> assertEquals("DENY", challenged.headers().get(FRAME_OPTIONS),
+                        "the authentication challenge carries the route's block"),
+                () -> assertNull(challenged.headers().get(CSP)),
+                () -> assertEquals("Bearer", challenged.headers().get("WWW-Authenticate"),
+                        "the non-security challenge header is untouched by stage 2a"));
+    }
+
+    @Test
+    @DisplayName("applies the anchor frame_deny to every response kind under the anchor: proxy, asset, redirect, rejection, gRPC trailers-only and WebSocket handshake failure")
+    void appliesAnchorFrameDenyToEveryResponseKindUnderTheAnchor() throws Exception {
+        Map<String, Response> responses = new LinkedHashMap<>();
+        responses.put("proxy", send(io.vertx.core.http.HttpMethod.GET, "/frontend-open/page", Map.of(), null));
+        responses.put("asset", send(io.vertx.core.http.HttpMethod.GET, "/frontend-assets/" + ASSET_FILE,
+                Map.of(), null));
+        responses.put("redirect", send(io.vertx.core.http.HttpMethod.GET, "/frontend-moved/old", Map.of(), null));
+        responses.put("rejection", send(io.vertx.core.http.HttpMethod.GET, "/frontend-secure/data", Map.of(), null));
+        responses.put("grpc-trailers-only", send(io.vertx.core.http.HttpMethod.POST, "/frontend-grpc/Svc/Call",
+                Map.of("Content-Type", "application/grpc"), null));
+        responses.put("websocket-handshake-failure", send(io.vertx.core.http.HttpMethod.GET, "/frontend-ws/socket",
+                Map.of(), null));
+
+        assertExpectedStatuses(responses);
+        assertAll("every response produced after selecting an anchored route carries the anchor block",
+                responses.entrySet().stream().map(entry -> (Executable) () -> assertAll(entry.getKey(),
+                        () -> assertEquals("DENY", entry.getValue().headers().get(FRAME_OPTIONS),
+                                entry.getKey() + ": the anchor's frame_deny is applied"),
+                        () -> assertNull(entry.getValue().headers().get(HSTS),
+                                entry.getKey() + ": the global HSTS is replaced wholesale"),
+                        () -> assertNull(entry.getValue().headers().get(CSP),
+                                entry.getKey() + ": the global policy does not survive the anchor block"))));
+    }
+
+    @Test
+    @DisplayName("keeps frame_deny off every response kind outside the anchor, which carries the global block instead")
+    void keepsFrameDenyOffEveryResponseKindOutsideTheAnchor() throws Exception {
+        Map<String, Response> responses = new LinkedHashMap<>();
+        responses.put("proxy", send(io.vertx.core.http.HttpMethod.GET, "/echo/orders", Map.of(), null));
+        responses.put("asset", send(io.vertx.core.http.HttpMethod.GET, "/assets/" + ASSET_FILE, Map.of(), null));
+        responses.put("redirect", send(io.vertx.core.http.HttpMethod.GET, "/moved/old", Map.of(), null));
+        responses.put("rejection", send(io.vertx.core.http.HttpMethod.GET, "/secure/data", Map.of(), null));
+        responses.put("grpc-trailers-only", send(io.vertx.core.http.HttpMethod.POST, "/grpc/Svc/Call",
+                Map.of("Content-Type", "application/grpc"), null));
+        responses.put("websocket-handshake-failure", send(io.vertx.core.http.HttpMethod.GET, "/ws/socket",
+                Map.of(), null));
+
+        assertExpectedStatuses(responses);
+        assertAll("THE CONTROL: the identical response kinds outside the anchor never carry its frame_deny",
+                responses.entrySet().stream().map(entry -> (Executable) () -> assertAll(entry.getKey(),
+                        () -> assertNull(entry.getValue().headers().get(FRAME_OPTIONS),
+                                entry.getKey() + ": the anchor-only frame_deny does not leak outside the anchor"),
+                        () -> assertEquals(GLOBAL_HSTS_VALUE, entry.getValue().headers().get(HSTS),
+                                entry.getKey() + ": the global HSTS applies"),
+                        () -> assertEquals(GLOBAL_POLICY, entry.getValue().headers().get(CSP),
+                                entry.getKey() + ": the global policy is served verbatim"))));
+    }
+
+    /**
+     * Pins each response kind to the terminal path that produced it, so the header assertions that
+     * follow cannot pass on a response that took a different path (for example a problem response
+     * standing in for the gRPC trailers-only rejection).
+     */
+    private static void assertExpectedStatuses(Map<String, Response> responses) {
+        assertAll("each response kind was produced by its own terminal path",
+                () -> assertEquals(200, responses.get("proxy").status(), "proxy relay"),
+                () -> assertEquals(200, responses.get("asset").status(), "governed asset response"),
+                () -> assertEquals(REDIRECT_STATUS, responses.get("redirect").status(), "redirect answer"),
+                () -> assertEquals(401, responses.get("rejection").status(), "problem rejection"),
+                () -> assertEquals(200, responses.get("grpc-trailers-only").status(),
+                        "a gRPC rejection is an HTTP 200 trailers-only response"),
+                () -> assertEquals(GRPC_UNAUTHENTICATED, responses.get("grpc-trailers-only").headers().get("grpc-status"),
+                        "the trailers-only response names the missing bearer token"),
+                () -> assertEquals(UPGRADE_REFUSED_STATUS, responses.get("websocket-handshake-failure").status(),
+                        "the upstream's upgrade refusal is relayed as the handshake-failure response"));
+    }
+
+    @Test
+    @DisplayName("answers a CORS preflight on an authenticated anchored route 204 with the global block, never reaching authentication")
+    void preflightOnAuthenticatedAnchoredRouteNeverReachesAuthentication() throws Exception {
+        Response response = send(io.vertx.core.http.HttpMethod.OPTIONS, "/frontend-secure/data",
+                Map.of("Origin", ORIGIN, "Access-Control-Request-Method", "GET"), null);
+
+        assertAll("the preflight is answered at stage 0, before route selection and authentication",
+                () -> assertEquals(204, response.status(),
+                        "a preflight on a bearer route is not challenged — it never reaches authentication"),
+                () -> assertNull(response.headers().get("WWW-Authenticate")),
+                () -> assertEquals(ORIGIN, response.headers().get("Access-Control-Allow-Origin")),
+                () -> assertEquals(GLOBAL_HSTS_VALUE, response.headers().get(HSTS),
+                        "no route was selected for the preflight, so it keeps the global block"),
+                () -> assertNull(response.headers().get(NOSNIFF),
+                        "the anchor block is not applied to a request answered before route selection"),
+                () -> assertEquals(0, upstreamHits.get(), "a preflight never reaches the upstream"));
+    }
+
     private Response send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> requestHeaders,
             String body) throws Exception {
         return send(frontPort, method, uri, requestHeaders, body);
@@ -376,7 +665,9 @@ class GatewayEdgePipelineTest {
                 })
                 .compose(response -> {
                     int status = response.statusCode();
-                    Map<String, String> headers = new HashMap<>();
+                    // Header names are case-insensitive (RFC 9110 §5.1); the gRPC mapper, for one, writes
+                    // them lower-cased, so an exact-case lookup would miss a header that is present.
+                    Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
                     response.headers().forEach(entry -> headers.putIfAbsent(entry.getKey(), entry.getValue()));
                     return response.body().map(buffer -> new Response(status, headers,
                             buffer == null ? "" : buffer.toString()));
@@ -385,14 +676,111 @@ class GatewayEdgePipelineTest {
         return Awaits.connect(future, "the edge response to " + method + " " + uri);
     }
 
-    private static SecurityHeadersConfig corsHeaders() {
+    /**
+     * The global {@code security_headers} block: HSTS and a {@code content_security_policy} plus the
+     * global CORS policy, and deliberately no {@code frame_deny}, so an {@code X-Frame-Options} header
+     * on a response can only have come from the anchor block. Every unanchored route of this fixture
+     * resolves it, exactly as {@code RouteTableBuilder} resolves the gateway block for a route without
+     * an anchor block.
+     */
+    private static SecurityHeadersConfig globalHeaders() {
         SecurityHeadersConfig.Cors cors = SecurityHeadersConfig.Cors.builder()
                 .enabled(Boolean.TRUE)
                 .allowedOrigins(List.of(ORIGIN))
                 .allowedMethods(List.of("GET", "POST"))
                 .allowedHeaders(List.of("authorization"))
                 .build();
-        return SecurityHeadersConfig.builder().cors(cors).build();
+        return SecurityHeadersConfig.builder()
+                .hsts(new SecurityHeadersConfig.Hsts(GLOBAL_HSTS_MAX_AGE, false))
+                .contentSecurityPolicy(GLOBAL_POLICY)
+                .cors(cors)
+                .build();
+    }
+
+    /**
+     * The {@value #FRONTEND_ANCHOR} anchor's {@code security_headers} block declaring
+     * {@code content_type_nosniff} and {@code frame_deny} only: it replaces the global block wholesale
+     * for its routes, so they carry both and neither the global HSTS nor the global
+     * {@code Content-Security-Policy}.
+     */
+    private static SecurityHeadersConfig anchorHeaders() {
+        return SecurityHeadersConfig.builder().contentTypeNosniff(true).frameDeny(true).build();
+    }
+
+    /** The headers block a route resolves: its anchor's block under an anchor, the global one otherwise. */
+    private static SecurityHeadersConfig resolvedHeaders(@Nullable String anchor) {
+        return anchor == null ? globalHeaders() : anchorHeaders();
+    }
+
+    private static ResolvedRoute anchoredRoute(String id, String pathPrefix, Require require, int upstreamPort) {
+        return ResolvedRoute.builder()
+                .id(id)
+                .protocol(Protocol.HTTP)
+                .anchor(FRONTEND_ANCHOR)
+                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                .effectiveAuth(AuthConfig.builder().require(require).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(anchorHeaders())
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                .build();
+    }
+
+    /** Re-homes an unanchored fixture route under the {@value #FRONTEND_ANCHOR} anchor. */
+    private static ResolvedRoute anchored(ResolvedRoute route) {
+        return new ResolvedRoute(route.id(), route.protocol(), FRONTEND_ANCHOR, route.match(), route.effectiveAuth(),
+                route.effectiveAllowedMethods(), route.effectiveSecurityFilter(), anchorHeaders(),
+                route.retryEnabled(), route.notModifiedEnabled(), route.rewriteLocation(), route.upstream(),
+                route.asset(), route.redirect(), route.effectiveForward(), route.effectiveAllowedOrigins(),
+                route.effectiveWebSocketIdleTimeoutSeconds());
+    }
+
+    /** A public directory asset route serving {@value #ASSET_FILE} from the fixture's temporary directory. */
+    private ResolvedRoute assetRoute(String id, String pathPrefix, @Nullable String anchor) {
+        return ResolvedRoute.builder()
+                .id(id)
+                .protocol(Protocol.HTTP)
+                .anchor(anchor)
+                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(resolvedHeaders(anchor))
+                .asset(ResolvedAsset.directory(assetDirectory.toString(), AccessLevel.PUBLIC, null, null))
+                .build();
+    }
+
+    /**
+     * A bearer-protected gRPC route: a call without a token is refused at stage 4 and rendered as a
+     * trailers-only gRPC status, so it never dials the (HTTP/1.1) stub upstream.
+     */
+    private static ResolvedRoute grpcRoute(String id, String pathPrefix, int upstreamPort, @Nullable String anchor) {
+        return ResolvedRoute.builder()
+                .id(id)
+                .protocol(Protocol.GRPC)
+                .anchor(anchor)
+                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.POST))
+                .effectiveSecurityHeaders(resolvedHeaders(anchor))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                .build();
+    }
+
+    /**
+     * A public WebSocket route without an Origin allowlist, dialing the stub upstream — which refuses
+     * the upgrade, so every request on it ends in the handshake-failure response.
+     */
+    private static ResolvedRoute webSocketRoute(String id, String pathPrefix, int upstreamPort,
+            @Nullable String anchor) {
+        return ResolvedRoute.builder()
+                .id(id)
+                .protocol(Protocol.WEBSOCKET)
+                .anchor(anchor)
+                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(resolvedHeaders(anchor))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                .build();
     }
 
     /**
@@ -413,7 +801,34 @@ class GatewayEdgePipelineTest {
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .effectiveSecurityFilter(filter)
+                // Resolved, not omitted. A route whose effectiveSecurityHeaders is null makes stage 2a
+                // remove the gateway-owned names and reseed nothing — correct per ADR-0007, but it is
+                // the shape a route takes only when NEITHER its anchor NOR the gateway declares a
+                // block. This fixture's gateway does declare one, so a null here modelled a topology
+                // the suite never runs and left every response through /open without the global HSTS
+                // and CSP the other routes carry.
+                .effectiveSecurityHeaders(globalHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                .build();
+    }
+
+    /**
+     * A redirect route answering {@value #REDIRECT_STATUS} towards {@value #REDIRECT_LOCATION} with
+     * {@code keep_query} on; it resolves no upstream, so any upstream contact is a defect.
+     */
+    private static ResolvedRoute redirectRoute(String id, String pathPrefix, Require require) {
+        return ResolvedRoute.builder()
+                .id(id)
+                .protocol(Protocol.HTTP)
+                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                .effectiveAuth(AuthConfig.builder().require(require).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveSecurityHeaders(globalHeaders())
+                .redirect(RedirectConfig.builder()
+                        .location(REDIRECT_LOCATION)
+                        .status(REDIRECT_STATUS)
+                        .keepQuery(true)
+                        .build())
                 .build();
     }
 
@@ -425,6 +840,7 @@ class GatewayEdgePipelineTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(methods))
+                .effectiveSecurityHeaders(globalHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }

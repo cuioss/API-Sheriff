@@ -28,6 +28,7 @@ import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -36,6 +37,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessor;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteMatcher;
@@ -59,6 +61,8 @@ import org.jspecify.annotations.Nullable;
  *   <li>one SmallRye Fault-Tolerance {@link Guard} per distinct {@linkplain ResilienceShape
  *       resilience shape}.</li>
  * </ul>
+ * A proxy route that opts into {@code upstream.rewrite_location} additionally carries its own
+ * {@link LocationRewriter}, built here from the route's effective upstream and match key.
  * The heavy objects are produced by the injected factories (so tests supply fakes and the
  * production wiring supplies the real Vert.x / SmallRye instances). An unsupported protocol fails
  * boot through the {@link ProtocolProcessorRegistry}. {@code require: session} routes are compiled
@@ -92,7 +96,7 @@ public final class RouteRuntimeAssembler {
      * @param guardFactory          builds one {@link Guard} per resilience shape
      * @param assetSourceFactory    builds the live {@link AssetSource} for an asset route's
      *                              terminal action
-     * @return the assembled runtimes, in the table's longest-prefix-first order
+     * @return the assembled runtimes, in the table's exact-first then longest-prefix-first order
      * @throws GatewayException when a route declares an unsupported protocol
      */
     public List<RouteRuntime> assemble(RouteTable table, SecurityConfigurationFactory securityConfigFactory,
@@ -140,17 +144,21 @@ public final class RouteRuntimeAssembler {
                     .effectiveAllowedOrigins(route.effectiveAllowedOrigins())
                     .effectiveWebSocketIdleTimeoutSeconds(route.effectiveWebSocketIdleTimeoutSeconds());
 
-            // A route resolves exactly one terminal action (ADR-0014). An asset route builds its
-            // live source and skips the Vert.x client / resilience-guard dedup entirely — its
-            // egress rides the source's own SSRF-controlled fetch seam, not the proxy data plane.
+            // A route resolves exactly one terminal action (ADR-0014 and its Amendment A1). An asset
+            // route builds its live source and a redirect route carries its redirect block; both skip
+            // the Vert.x client / resilience-guard dedup entirely — an asset route's egress rides the
+            // source's own SSRF-controlled fetch seam, and a redirect route never contacts an upstream.
             ResolvedAsset asset = route.asset();
+            RedirectConfig redirect = route.redirect();
             if (asset != null) {
                 runtime.assetSource(assetSourceFactory.create(asset));
+            } else if (redirect != null) {
+                runtime.redirect(redirect);
             } else {
                 ResolvedUpstream resolvedUpstream = route.upstream();
                 if (resolvedUpstream == null) {
-                    throw new GatewayException(EventType.CONFIG_INVALID,
-                            "Route '" + route.id() + "' resolves no terminal action (neither upstream nor asset)");
+                    throw new GatewayException(EventType.CONFIG_INVALID, "Route '" + route.id()
+                            + "' resolves no terminal action (none of upstream, asset, redirect)");
                 }
                 // gRPC requires HTTP/2 end-to-end, so the forced-h2 flag joins the client-sharing tuple:
                 // a gRPC route to host:port holds a distinct forced-h2 client from an HTTP/1.1 route to
@@ -162,6 +170,15 @@ public final class RouteRuntimeAssembler {
                 runtime.upstream(resolvedUpstream)
                         .httpClient(client)
                         .resilienceGuard(guard);
+                // Built once here, from the effective upstream (alias base + upstream.path), the match
+                // key and the matcher's exactness, so the relay applies a ready mapping and derives
+                // nothing per request. Exactness is part of the mapping rule, not a detail of matching:
+                // an exact route routes its match key and nothing below it, so the rewriter must not
+                // emit a mapping the route's own matcher would reject.
+                if (route.rewriteLocation()) {
+                    runtime.locationRewriter(new LocationRewriter(resolvedUpstream, route.matchKey(),
+                            route.match().isExact()));
+                }
             }
 
             runtimes.add(runtime.build());

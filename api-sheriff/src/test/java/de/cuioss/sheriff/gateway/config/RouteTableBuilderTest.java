@@ -43,6 +43,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
@@ -66,11 +67,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * Tests for {@link RouteTableBuilder}: enabled-only merge, longest-prefix
- * ordering over normalized prefixes (same-prefix disjointness now lives in
+ * Tests for {@link RouteTableBuilder}: enabled-only merge, exact-first then longest-prefix
+ * ordering over normalized prefixes, the three-way terminal action (upstream / asset /
+ * redirect), the conditional {@code base_url} resolution (same-prefix disjointness now lives in
  * {@code ConfigValidator}, ADR-0009), the materialization of effective
  * auth, effective {@code allowed_methods}, and the three-level retry / not-modified
  * override chain, and the D1/D2 anchor resolution (gateway → anchor → endpoint →
@@ -191,8 +194,8 @@ class RouteTableBuilderTest {
     class UpstreamPathMaterialization {
 
         @Test
-        @DisplayName("Should materialize a non-blank route upstream.path as the effective base path")
-        void shouldMaterializeRouteUpstreamPath() {
+        @DisplayName("Should use the route upstream.path as the whole base path when the alias has no base path")
+        void shouldAppendRouteUpstreamPathToEmptyAliasBase() {
             EndpointConfig endpoint = endpoint("grpc", "GRPC")
                     .routes(List.of(routeWithUpstreamPath("grpc-echo",
                             "/de.cuioss.sheriff.api.integration.grpc.Echo",
@@ -202,27 +205,63 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("GRPC"));
 
             ResolvedUpstream upstream = find(table, "grpc-echo").upstream();
-            assertAll("the route upstream.path becomes the effective base path so the service segment survives",
+            assertAll("an empty alias base plus the route upstream.path keeps the gRPC service segment",
                     () -> assertEquals("/de.cuioss.sheriff.api.integration.grpc.Echo", upstream.basePath(),
-                            "the bare-service route path is materialized as the upstream base path"),
+                            "the bare-service route path is the whole effective base path"),
                     () -> assertEquals("grpc.internal", upstream.host(),
                             "the alias host is carried through unchanged"),
-                    () -> assertEquals(443, upstream.port(), "the alias port is carried through unchanged"));
+                    () -> assertEquals(443, upstream.port(), "the alias port is carried through unchanged"),
+                    () -> assertEquals("https", upstream.scheme(), "the alias scheme is carried through unchanged"));
         }
 
         @Test
-        @DisplayName("Should replace a non-empty alias base path with the route upstream.path (not append)")
-        void shouldReplaceAliasBasePathWithRouteUpstreamPath() {
+        @DisplayName("Should append the route upstream.path to a non-empty alias base path")
+        void shouldAppendRouteUpstreamPathToAliasBasePath() {
             EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
-                    .routes(List.of(routeWithUpstreamPath("httpbin-graphql", "/graphql", "/anything/graphql")))
+                    .routes(List.of(routeWithUpstreamPath("httpbin-graphql", "/graphql", "/graphql")))
                     .build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint),
                     topologyWithBasePath("UPSTREAM", "/anything"));
 
             assertEquals("/anything/graphql", find(table, "httpbin-graphql").upstream().basePath(),
-                    "the route upstream.path replaces the alias base path wholesale — it must not be doubled to "
-                            + "/anything/anything/graphql");
+                    "the alias carries the environment base and the route carries its own path");
+        }
+
+        @ParameterizedTest(name = "alias base ''{0}'' + upstream.path ''{1}''")
+        @CsvSource({
+                "/anything, graphql",
+                "/anything/, /graphql",
+                "/anything/, graphql",
+                "/anything//, //graphql",
+                "/, /graphql"
+        })
+        @DisplayName("Should join the alias base path and upstream.path on exactly one slash")
+        void shouldJoinOnExactlyOneSlash(String aliasBasePath, String upstreamPath) {
+            String expected = "/".equals(aliasBasePath) ? "/graphql" : "/anything/graphql";
+            EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
+                    .routes(List.of(routeWithUpstreamPath("httpbin-graphql", "/graphql", upstreamPath)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint),
+                    topologyWithBasePath("UPSTREAM", aliasBasePath));
+
+            assertEquals(expected, find(table, "httpbin-graphql").upstream().basePath(),
+                    "no doubled and no missing slash may survive the join");
+        }
+
+        @Test
+        @DisplayName("Should keep a trailing slash the route upstream.path declares")
+        void shouldKeepDeclaredTrailingSlashOfUpstreamPath() {
+            EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
+                    .routes(List.of(routeWithUpstreamPath("httpbin-upload", "/upload", "/upload/")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint),
+                    topologyWithBasePath("UPSTREAM", "/anything"));
+
+            assertEquals("/anything/upload/", find(table, "httpbin-upload").upstream().basePath(),
+                    "the join normalizes only the seam, the dispatch strips the trailing slash later");
         }
 
         @Test
@@ -251,6 +290,69 @@ class RouteTableBuilderTest {
 
             assertEquals("/anything", find(table, "httpbin-blank").upstream().basePath(),
                     "a blank upstream.path is treated as absent, keeping the alias base path");
+        }
+    }
+
+    @Nested
+    @DisplayName("Route-level upstream.rewrite_location materialization")
+    class RewriteLocationMaterialization {
+
+        private RouteConfig routeWithRewriteLocation(String id, Boolean rewriteLocation) {
+            UpstreamConfig upstream = UpstreamConfig.builder().rewriteLocation(rewriteLocation).build();
+            return RouteConfig.builder().id(id).match(match("/" + id)).upstream(upstream).build();
+        }
+
+        @Test
+        @DisplayName("Should materialize a declared rewrite_location: true onto the resolved route")
+        void shouldMaterializeDeclaredTrue() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("r", true))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(find(table, "r").rewriteLocation(), "a declared true must reach the resolved route");
+        }
+
+        @Test
+        @DisplayName("Should materialize a declared rewrite_location: false as off")
+        void shouldMaterializeDeclaredFalse() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("r", false))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertFalse(find(table, "r").rewriteLocation(), "a declared false must stay off");
+        }
+
+        @Test
+        @DisplayName("Should resolve an absent rewrite_location key, or an absent upstream block, to off")
+        void shouldResolveAbsentToOff() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("declared-upstream", null),
+                            route("no-upstream", HttpMethod.GET)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("rewrite_location defaults to off with no inheritance",
+                    () -> assertFalse(find(table, "declared-upstream").rewriteLocation(),
+                            "an upstream block without the key resolves to off"),
+                    () -> assertFalse(find(table, "no-upstream").rewriteLocation(),
+                            "a route without an upstream block resolves to off"));
+        }
+
+        @Test
+        @DisplayName("Should keep the toggle per route rather than leaking it to a sibling route")
+        void shouldKeepTogglePerRoute() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithRewriteLocation("on", true), routeWithRewriteLocation("off", null)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("the flag is a route-local materialization",
+                    () -> assertTrue(find(table, "on").rewriteLocation()),
+                    () -> assertFalse(find(table, "off").rewriteLocation()));
         }
     }
 
@@ -612,6 +714,40 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should carry content_security_policy through resolution verbatim, and drop the gateway one under an anchor block without it")
+        void shouldCarryContentSecurityPolicyThroughResolution() {
+            String gatewayPolicy = "default-src 'self'; frame-ancestors 'none'";
+            String anchorPolicy = "default-src 'none'; script-src 'self'";
+            GatewayConfig config = gateway()
+                    .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(gatewayPolicy).build())
+                    .anchors(Map.of(
+                            "api", anchor("api", "/api", new AuthConfig(Require.BEARER, List.of()), null, null,
+                            SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build()),
+                            "bff", anchor("bff", "/bff", new AuthConfig(Require.BEARER, List.of()), null, null,
+                            headers())))
+                    .build();
+            EndpointConfig withPolicy = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("anchor-policy", "/api/orders", HttpMethod.GET))).build();
+            EndpointConfig withoutPolicy = anchoredEndpoint("frontend", "FRONTEND", "bff")
+                    .routes(List.of(routeWithPrefix("anchor-no-policy", "/bff/home", HttpMethod.GET))).build();
+            EndpointConfig plain = endpoint("public", "PUBLIC")
+                    .routes(List.of(routeWithPrefix("gateway-policy", "/public", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(withPolicy, withoutPolicy, plain),
+                    topologyWith("ORDERS", "FRONTEND", "PUBLIC"));
+
+            assertAll("content_security_policy follows the wholesale gateway → anchor resolution",
+                    () -> assertEquals(anchorPolicy,
+                            find(table, "anchor-policy").effectiveSecurityHeaders().contentSecurityPolicy(),
+                            "an anchor block's own policy reaches its routes verbatim"),
+                    () -> assertNull(find(table, "anchor-no-policy").effectiveSecurityHeaders().contentSecurityPolicy(),
+                            "an anchor block omitting the policy does not inherit the gateway one"),
+                    () -> assertEquals(gatewayPolicy,
+                            find(table, "gateway-policy").effectiveSecurityHeaders().contentSecurityPolicy(),
+                            "an unanchored route carries the gateway policy verbatim"));
+        }
+
+        @Test
         @DisplayName("Should let a per-route anchor override the endpoint default membership")
         void shouldLetRouteAnchorOverrideEndpointAnchor() {
             GatewayConfig config = gateway().anchors(Map.of(
@@ -916,6 +1052,32 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should carry a directory asset's index and fallback onto the resolved action (AS-12)")
+        void shouldMaterializeDirectoryAssetIndexAndFallback() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("assets", assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
+            AssetConfig spa = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
+                    .directory("/srv/spa").index("index.html").fallback("shell.html").build();
+            AssetConfig plain = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
+                    .directory("/srv/plain").build();
+            EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
+                    .anchor("assets").auth(new AuthConfig(Require.NONE, List.of()))
+                    .routes(List.of(assetRoute("spa", "/assets/spa", "assets", spa),
+                            assetRoute("plain", "/assets/plain", "assets", plain)))
+                    .build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB"));
+
+            ResolvedAsset spaAsset = find(table, "spa").asset();
+            ResolvedAsset plainAsset = find(table, "plain").asset();
+            assertAll("index and fallback flow from the asset block to the resolved action",
+                    () -> assertEquals("index.html", spaAsset.index(), "the declared index is carried"),
+                    () -> assertEquals("shell.html", spaAsset.fallback(), "the declared fallback is carried"),
+                    () -> assertNull(plainAsset.index(), "an undeclared index stays absent"),
+                    () -> assertNull(plainAsset.fallback(), "an undeclared fallback stays absent"));
+        }
+
+        @Test
         @DisplayName("Should materialize an upstream asset action resolving its alias through the topology")
         void shouldMaterializeUpstreamAsset() {
             GatewayConfig config = gateway().anchors(Map.of("assets",
@@ -1010,6 +1172,141 @@ class RouteTableBuilderTest {
                             "the guarded absent-asset branch resolves the upstream terminal action"),
                     () -> assertEquals("orders.internal", resolved.upstream().host(),
                             "the resolved upstream host is driven from the guarded absent-asset branch"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Exact routes, redirect terminal action and conditional base_url (AS-3/AS-4)")
+    class ExactRoutesRedirectAndConditionalBaseUrl {
+
+        private RouteConfig exactRoute(String id, String path) {
+            return RouteConfig.builder().id(id)
+                    .match(MatchConfig.builder().path(path).methods(List.of(HttpMethod.GET)).build())
+                    .build();
+        }
+
+        private RouteConfig redirectRoute(String id, String path, RedirectConfig redirect) {
+            return RouteConfig.builder().id(id)
+                    .match(MatchConfig.builder().path(path).build())
+                    .redirect(redirect)
+                    .build();
+        }
+
+        private RouteConfig directoryAssetRoute(String id, String prefix) {
+            return RouteConfig.builder().id(id)
+                    .match(match(prefix, HttpMethod.GET))
+                    .asset(AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv/site").build())
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should materialize a redirect route as the third terminal action with no upstream or asset")
+        void shouldMaterializeRedirectAction() {
+            RedirectConfig redirect = new RedirectConfig("/new-home", 308, true, false);
+            EndpointConfig endpoint = endpoint("site", null)
+                    .routes(List.of(redirectRoute("moved", "/old-home", redirect))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith());
+
+            ResolvedRoute resolved = find(table, "moved");
+            assertAll("the redirect arm of the three-way terminal action",
+                    () -> assertEquals(redirect, resolved.redirect(), "the redirect block is carried verbatim"),
+                    () -> assertNull(resolved.upstream(), "a redirect route resolves no proxy upstream"),
+                    () -> assertNull(resolved.asset(), "a redirect route resolves no asset action"));
+        }
+
+        @Test
+        @DisplayName("Should order every exact route before every prefix route, each group longest-first")
+        void shouldOrderExactRoutesBeforePrefixRoutes() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("prefix-short", "/a", HttpMethod.GET),
+                            exactRoute("exact-short", "/a"),
+                            routeWithPrefix("prefix-long", "/a/b/c", HttpMethod.GET),
+                            exactRoute("exact-long", "/a/b/longer")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(List.of("exact-long", "exact-short", "prefix-long", "prefix-short"),
+                    table.routes().stream().map(ResolvedRoute::id).toList(),
+                    "exact routes precede prefix routes regardless of length; each group orders longest-first");
+        }
+
+        @Test
+        @DisplayName("Should order exact routes of equal length lexically for a deterministic table")
+        void shouldOrderEqualLengthExactRoutesLexically() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(exactRoute("second", "/bb"), exactRoute("first", "/aa")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(List.of("first", "second"), table.routes().stream().map(ResolvedRoute::id).toList());
+        }
+
+        @Test
+        @DisplayName("Should look up the exact route for its own address and the prefix route for every other")
+        void shouldLookUpExactBeforePrefixForTheSameAddress() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("prefix", "/a", HttpMethod.GET), exactRoute("exact", "/a")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("exact-first lookup",
+                    () -> assertEquals("exact", table.lookup("/a").orElseThrow().id(),
+                            "the exact route wins for its own address"),
+                    () -> assertEquals("prefix", table.lookup("/a/").orElseThrow().id(),
+                            "an exact path is un-normalized: /a does not match /a/"),
+                    () -> assertEquals("prefix", table.lookup("/a/child").orElseThrow().id(),
+                            "the prefix route keeps serving the paths below the exact address"));
+        }
+
+        @Test
+        @DisplayName("Should build an endpoint without base_url that carries only asset and redirect routes")
+        void shouldBuildEndpointWithoutBaseUrlAndWithoutProxyRoutes() {
+            EndpointConfig endpoint = endpoint("site", null)
+                    .routes(List.of(directoryAssetRoute("site-assets", "/static"),
+                            redirectRoute("site-root", "/", new RedirectConfig("/static/", 302, false, false))))
+                    .build();
+
+            RouteTable table = assertDoesNotThrow(
+                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith()),
+                    "an endpoint without a proxy route needs no base_url");
+
+            assertEquals(2, table.routes().size());
+        }
+
+        @Test
+        @DisplayName("Should not resolve a declared alias of an endpoint that carries no proxy route")
+        void shouldNotResolveDeclaredAliasWithoutProxyRoutes() {
+            EndpointConfig endpoint = endpoint("site", "UNRESOLVED")
+                    .routes(List.of(redirectRoute("site-root", "/", new RedirectConfig("/home", 307, false, false))))
+                    .build();
+
+            RouteTable table = assertDoesNotThrow(
+                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith()),
+                    "the builder resolves base_url only for an endpoint with a proxy route; the validator owns the"
+                            + " declared-alias resolvability rule");
+
+            assertNull(find(table, "site-root").upstream());
+        }
+
+        @Test
+        @DisplayName("Should refuse an endpoint that carries a proxy route but declares no base_url")
+        void shouldRefuseProxyRouteEndpointWithoutBaseUrl() {
+            EndpointConfig endpoint = endpoint("orders", null)
+                    .routes(List.of(route("orders-read", HttpMethod.GET),
+                            redirectRoute("orders-moved", "/old", new RedirectConfig("/orders-read", 301, false, false))))
+                    .build();
+            GatewayConfig config = gateway().build();
+            List<EndpointConfig> endpoints = List.of(endpoint);
+            ResolvedTopology topology = topologyWith("ORDERS");
+
+            RouteTableBuilder.RouteTableException exception = assertThrows(
+                    RouteTableBuilder.RouteTableException.class, () -> builder.build(config, endpoints, topology));
+
+            assertEquals("enabled endpoint 'orders' declares proxy route(s) but no base_url", exception.getMessage());
         }
     }
 

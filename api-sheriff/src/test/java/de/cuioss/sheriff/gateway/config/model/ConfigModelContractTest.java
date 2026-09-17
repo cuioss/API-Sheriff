@@ -26,9 +26,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
@@ -122,9 +124,14 @@ class ConfigModelContractTest {
                 .hsts(new SecurityHeadersConfig.Hsts(31536000, true))
                 .contentTypeNosniff(true)
                 .frameDeny(true)
+                .contentSecurityPolicy("default-src 'self'")
                 .cors(new SecurityHeadersConfig.Cors(true, List.of("https://app.example.com"),
                         List.of("GET"), List.of("Authorization"), false))
                 .build();
+    }
+
+    private static SecurityHeadersConfig.HeaderModes frameDenyDefault() {
+        return SecurityHeadersConfig.HeaderModes.builder().frameDeny(SecurityHeadersConfig.HeaderMode.DEFAULT).build();
     }
 
     private static TokenValidationConfig tokenValidationConfig() {
@@ -216,9 +223,20 @@ class ConfigModelContractTest {
                 .effectiveSecurityHeaders(securityHeadersConfig())
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
+                .rewriteLocation(true)
                 .upstream(resolvedUpstream())
                 .effectiveForward(new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
                         Map.of("X-Gateway", "api-sheriff")))
+                .build();
+    }
+
+    private static ResolvedRoute resolvedRouteWithRewriteLocation(boolean rewriteLocation) {
+        return ResolvedRoute.builder()
+                .id("orders-read")
+                .match(matchConfig())
+                .effectiveAuth(auth())
+                .rewriteLocation(rewriteLocation)
+                .upstream(resolvedUpstream())
                 .build();
     }
 
@@ -232,6 +250,14 @@ class ConfigModelContractTest {
                 .methods(List.of(HttpMethod.GET))
                 .host("api.example.com")
                 .headers(List.of(new MatchConfig.HeaderMatcher("X-Tenant", true, "acme")))
+                .build();
+    }
+
+    private static RedirectConfig redirectConfig() {
+        return RedirectConfig.builder()
+                .location("/new-home")
+                .status(308)
+                .keepQuery(true)
                 .build();
     }
 
@@ -253,6 +279,7 @@ class ConfigModelContractTest {
     private static UpstreamConfig upstreamConfig() {
         return UpstreamConfig.builder()
                 .path("/v1/orders")
+                .rewriteLocation(true)
                 .connectTimeoutMs(2000)
                 .readTimeoutMs(5000)
                 .retry(new UpstreamConfig.Retry(true, 3, true))
@@ -286,6 +313,19 @@ class ConfigModelContractTest {
                             new TlsConfig.Mtls(true, "/ca"), new TlsConfig.Mtls(false, null)),
                     voCase("SecurityHeadersConfig", securityHeadersConfig(), securityHeadersConfig(),
                             SecurityHeadersConfig.builder().build()),
+                    // content_security_policy participates in identity: the unequal instance varies only
+                    // that component, so dropping it from equals() fails this case alone.
+                    voCase("SecurityHeadersConfig (content_security_policy)",
+                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null, null),
+                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null, null),
+                            new SecurityHeadersConfig(null, true, true, "default-src 'none'", null, null)),
+                    voCase("SecurityHeadersConfig (header_modes)",
+                            new SecurityHeadersConfig(null, null, true, null, frameDenyDefault(), null),
+                            new SecurityHeadersConfig(null, null, true, null, frameDenyDefault(), null),
+                            new SecurityHeadersConfig(null, null, true, null, null, null)),
+                    voCase("SecurityHeadersConfig.HeaderModes", frameDenyDefault(), frameDenyDefault(),
+                            SecurityHeadersConfig.HeaderModes.builder()
+                                    .frameDeny(SecurityHeadersConfig.HeaderMode.SET).build()),
                     voCase("SecurityHeadersConfig.Hsts",
                             new SecurityHeadersConfig.Hsts(1, true),
                             new SecurityHeadersConfig.Hsts(1, true),
@@ -372,6 +412,20 @@ class ConfigModelContractTest {
                                     .upstream(resolvedUpstream()).build()),
                     voCase("MatchConfig", matchConfig(), matchConfig(),
                             MatchConfig.builder().pathPrefix("/other").build()),
+                    // The matcher form participates in identity: an exact path and a prefix
+                    // spelling the same string are different addresses, so they must not be equal.
+                    voCase("MatchConfig (exact path vs prefix of the same string)",
+                            MatchConfig.builder().path("/orders").build(),
+                            MatchConfig.builder().path("/orders").build(),
+                            MatchConfig.builder().pathPrefix("/orders").build()),
+                    voCase("RedirectConfig (location)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/other", 308, true, false)),
+                    voCase("RedirectConfig (status)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/new-home", 301, true, false)),
+                    voCase("RedirectConfig (keep_query)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/new-home", 308, false, false)),
+                    voCase("RedirectConfig (allow_external)", redirectConfig(), redirectConfig(),
+                            new RedirectConfig("/new-home", 308, true, true)),
                     voCase("MatchConfig.HeaderMatcher",
                             new MatchConfig.HeaderMatcher("X-Key", true, "v"),
                             new MatchConfig.HeaderMatcher("X-Key", true, "v"),
@@ -393,6 +447,14 @@ class ConfigModelContractTest {
                             new WebSocketConfig(List.of("https://app.example.com"), 300),
                             new WebSocketConfig(List.of("https://other.example.com"), 60)),
                     voCase("UpstreamConfig", upstreamConfig(), upstreamConfig(), UpstreamConfig.builder().build()),
+                    // rewrite_location participates in identity on both records: each case varies only
+                    // that component, so dropping it from equals() fails its own case alone.
+                    voCase("UpstreamConfig (rewrite_location)",
+                            UpstreamConfig.builder().path("/v1").rewriteLocation(true).build(),
+                            UpstreamConfig.builder().path("/v1").rewriteLocation(true).build(),
+                            UpstreamConfig.builder().path("/v1").build()),
+                    voCase("ResolvedRoute (rewrite_location)", resolvedRouteWithRewriteLocation(true),
+                            resolvedRouteWithRewriteLocation(true), resolvedRouteWithRewriteLocation(false)),
                     voCase("UpstreamConfig.Retry",
                             new UpstreamConfig.Retry(true, 3, true),
                             new UpstreamConfig.Retry(true, 3, true),
@@ -464,6 +526,34 @@ class ConfigModelContractTest {
                     .build();
             assertEquals(viaCtor, viaBuilder);
         }
+
+        @Test
+        void securityHeadersConfigBuilderMatchesConstructor() {
+            SecurityHeadersConfig.Hsts hsts = new SecurityHeadersConfig.Hsts(600, false);
+            SecurityHeadersConfig viaCtor = new SecurityHeadersConfig(hsts, null, true, "default-src 'self'",
+                    frameDenyDefault(), null);
+            SecurityHeadersConfig viaBuilder = SecurityHeadersConfig.builder().hsts(hsts).frameDeny(true)
+                    .contentSecurityPolicy("default-src 'self'").headerModes(frameDenyDefault()).build();
+            assertAll("content_security_policy and header_modes sit, in that order, between frame_deny and cors",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals("default-src 'self'", viaCtor.contentSecurityPolicy()),
+                    () -> assertEquals(frameDenyDefault(), viaCtor.headerModes()),
+                    () -> assertNull(viaCtor.cors()));
+        }
+
+        @Test
+        void redirectConfigBuilderMatchesConstructor() {
+            RedirectConfig viaCtor = new RedirectConfig("/new-home", 308, true, false);
+            RedirectConfig viaBuilder = redirectConfig();
+            assertEquals(viaCtor, viaBuilder);
+        }
+
+        @Test
+        void matchConfigBuilderMatchesConstructorForAnExactPath() {
+            MatchConfig viaCtor = new MatchConfig(null, "/orders", List.of(HttpMethod.GET), null, List.of());
+            MatchConfig viaBuilder = MatchConfig.builder().path("/orders").methods(List.of(HttpMethod.GET)).build();
+            assertEquals(viaCtor, viaBuilder);
+        }
     }
 
     // --- Null-normalization ------------------------------------------------
@@ -490,6 +580,35 @@ class ConfigModelContractTest {
             assertNull(cfg.oidc());
             assertNull(cfg.edgeHardening());
             assertNull(cfg.egressTls());
+        }
+
+        @Test
+        void securityHeadersConfigKeepsAnAbsentContentSecurityPolicyAbsent() {
+            SecurityHeadersConfig cfg = new SecurityHeadersConfig(null, null, null, null, null, null);
+            assertAll("every security_headers component round-trips null — an absent policy emits no header",
+                    () -> assertNull(cfg.hsts()),
+                    () -> assertNull(cfg.contentTypeNosniff()),
+                    () -> assertNull(cfg.frameDeny()),
+                    () -> assertNull(cfg.contentSecurityPolicy()),
+                    () -> assertNull(cfg.headerModes()),
+                    () -> assertNull(cfg.cors()));
+        }
+
+        @Test
+        void securityHeadersConfigResolvesEveryAbsentModeToSet() {
+            SecurityHeadersConfig noBlock = SecurityHeadersConfig.builder().build();
+            SecurityHeadersConfig partialBlock = SecurityHeadersConfig.builder().headerModes(frameDenyDefault()).build();
+            assertAll("an absent header_modes block, and an absent key inside a declared one, both mean set",
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.hstsMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.contentTypeNosniffMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.frameDenyMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, noBlock.contentSecurityPolicyMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.DEFAULT, partialBlock.frameDenyMode(),
+                            "a declared key resolves to its declared mode"),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, partialBlock.hstsMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, partialBlock.contentTypeNosniffMode()),
+                    () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET,
+                            partialBlock.contentSecurityPolicyMode()));
         }
 
         @Test
@@ -539,10 +658,13 @@ class ConfigModelContractTest {
 
         @Test
         void routeConfigNormalizesAbsentAnchor() {
-            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null, null);
+            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null,
+                    null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
             assertNull(cfg.securityFilter());
+            assertNull(cfg.asset());
+            assertNull(cfg.redirect());
             assertNull(cfg.websocket());
         }
 
@@ -558,7 +680,7 @@ class ConfigModelContractTest {
         @Test
         void resolvedRouteNormalizesAbsentComponents() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, resolvedUpstream(), null, null, null, null);
+                    true, false, resolvedUpstream(), null, null, null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.effectiveSecurityFilter());
             assertNull(cfg.effectiveSecurityHeaders());
@@ -587,7 +709,8 @@ class ConfigModelContractTest {
             assertTrue(new TlsConfig(null, null, null, null, null).cipherSuites().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).alpn().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).passthroughSni().isEmpty());
-            assertTrue(new MatchConfig("/p", null, null, null).methods().isEmpty());
+            assertTrue(new MatchConfig("/p", null, null, null, null).methods().isEmpty());
+            assertTrue(new MatchConfig("/p", null, null, null, null).headers().isEmpty());
             assertTrue(new SecurityFilterConfig(null, null, null, null, null, null, null, null, null, null)
                     .allowedPaths().isEmpty());
             assertTrue(new OidcConfig.Csrf(null).trustedOrigins().isEmpty());
@@ -714,9 +837,17 @@ class ConfigModelContractTest {
     class MandatoryFields {
 
         @Test
-        void endpointConfigRequiresIdAndBaseUrl() {
-            assertThrows(NullPointerException.class, () -> endpointConfigWith(null, "url"));
-            assertThrows(NullPointerException.class, () -> endpointConfigWith("id", null));
+        void endpointConfigRequiresId() {
+            NullPointerException ex = assertThrows(NullPointerException.class, () -> endpointConfigWith(null, "url"));
+            assertEquals("id", ex.getMessage());
+        }
+
+        @Test
+        void endpointConfigAcceptsAnAbsentBaseUrl() {
+            EndpointConfig cfg = endpointConfigWith("id", null);
+            assertNull(cfg.baseUrl(),
+                    "base_url is conditionally mandatory; the record admits its absence and the validator"
+                            + " enforces it for endpoints carrying a proxy route");
         }
 
         /**
@@ -775,8 +906,35 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void matchConfigRequiresPathPrefix() {
-            assertThrows(NullPointerException.class, () -> new MatchConfig(null, List.of(), null, List.of()));
+        void matchConfigRequiresExactlyOneOfPathPrefixAndPath() {
+            IllegalArgumentException neither = assertThrows(IllegalArgumentException.class,
+                    () -> matchConfigWith(null, null));
+            IllegalArgumentException both = assertThrows(IllegalArgumentException.class,
+                    () -> matchConfigWith("/orders", "/orders"));
+
+            assertAll("a matcher declares exactly one path form",
+                    () -> assertEquals("exactly one of pathPrefix or path must be declared", neither.getMessage(),
+                            "a matcher with no path form is rejected"),
+                    () -> assertEquals("exactly one of pathPrefix or path must be declared", both.getMessage(),
+                            "a matcher declaring both path forms is rejected"),
+                    () -> assertEquals("/orders", matchConfigWith("/orders", null).pathPrefix()),
+                    () -> assertEquals("/orders", matchConfigWith(null, "/orders").path()));
+        }
+
+        /**
+         * Builds an otherwise-valid {@link MatchConfig} so a mandatory-field test can vary
+         * exactly the two path components, keeping each {@code assertThrows} lambda to a single
+         * invocation.
+         */
+        private MatchConfig matchConfigWith(String pathPrefix, String path) {
+            return new MatchConfig(pathPrefix, path, List.of(), null, List.of());
+        }
+
+        @Test
+        void redirectConfigRequiresLocation() {
+            NullPointerException ex = assertThrows(NullPointerException.class,
+                    () -> new RedirectConfig(null, 302, false, false));
+            assertEquals("location", ex.getMessage());
         }
 
         @Test
@@ -797,7 +955,7 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private RouteConfig routeConfigWith(String id, MatchConfig match) {
-            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null);
+            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null);
         }
 
         @Test
@@ -807,27 +965,71 @@ class ConfigModelContractTest {
             ResolvedUpstream upstream = resolvedUpstream();
             ResolvedUpstream noUpstream = null;
             ResolvedAsset noAsset = null;
-            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC);
+            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, null);
+            RedirectConfig noRedirect = null;
+            RedirectConfig redirect = redirectConfig();
 
-            assertThrows(NullPointerException.class, () -> resolvedRouteWith(null, match, auth, upstream, noAsset));
-            assertThrows(NullPointerException.class, () -> resolvedRouteWith("id", null, auth, upstream, noAsset));
-            assertThrows(NullPointerException.class, () -> resolvedRouteWith("id", match, null, upstream, noAsset));
+            assertThrows(NullPointerException.class,
+                    () -> resolvedRouteWith(null, match, auth, upstream, noAsset, noRedirect));
+            assertThrows(NullPointerException.class,
+                    () -> resolvedRouteWith("id", null, auth, upstream, noAsset, noRedirect));
+            assertThrows(NullPointerException.class,
+                    () -> resolvedRouteWith("id", match, null, upstream, noAsset, noRedirect));
+            IllegalArgumentException none = assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, noUpstream, noAsset, noRedirect),
+                    "a route with no terminal action is rejected");
+            assertEquals("route 'id' must resolve exactly one terminal action (one of upstream, asset, redirect)",
+                    none.getMessage());
             assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, noUpstream, noAsset),
-                    "a route with neither an upstream nor an asset terminal action is rejected (XOR)");
+                    () -> resolvedRouteWith("id", match, auth, upstream, asset, noRedirect),
+                    "a route with both an upstream and an asset terminal action is rejected");
             assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, upstream, asset),
-                    "a route with both an upstream and an asset terminal action is rejected (XOR)");
+                    () -> resolvedRouteWith("id", match, auth, upstream, noAsset, redirect),
+                    "a route with both an upstream and a redirect terminal action is rejected");
+            assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, noUpstream, asset, redirect),
+                    "a route with both an asset and a redirect terminal action is rejected");
+            assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, upstream, asset, redirect),
+                    "a route with all three terminal actions is rejected");
+        }
+
+        @Test
+        void resolvedRouteAcceptsEachSingleTerminalAction() {
+            MatchConfig match = matchConfig();
+            AuthConfig auth = auth();
+
+            assertAll("exactly one terminal action is accepted, whichever it is",
+                    () -> assertNotNull(resolvedRouteWith("proxy", match, auth, resolvedUpstream(), null, null)
+                            .upstream()),
+                    () -> assertNotNull(resolvedRouteWith("asset", match, auth, null,
+                            ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, null), null).asset()),
+                    () -> assertEquals(redirectConfig(),
+                            resolvedRouteWith("redirect", match, auth, null, null, redirectConfig()).redirect()));
+        }
+
+        @Test
+        void resolvedRouteExposesTheMatchKeyForBothMatcherForms() {
+            AuthConfig auth = auth();
+            ResolvedRoute prefixRoute = resolvedRouteWith("prefix", matchConfig(), auth, resolvedUpstream(), null,
+                    null);
+            ResolvedRoute exactRoute = resolvedRouteWith("exact", MatchConfig.builder().path("/orders/1").build(),
+                    auth, resolvedUpstream(), null, null);
+
+            assertAll("the match key delegates to the matcher",
+                    () -> assertEquals("/orders", prefixRoute.matchKey()),
+                    () -> assertEquals("/orders/1", exactRoute.matchKey()));
         }
 
         /**
-         * Builds an otherwise-valid {@link ResolvedRoute} so a mandatory-field or XOR test can vary
-         * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
+         * Builds an otherwise-valid {@link ResolvedRoute} so a mandatory-field or terminal-action test
+         * can vary exactly one component, keeping each {@code assertThrows} lambda to a single
+         * invocation.
          */
         private ResolvedRoute resolvedRouteWith(String id, MatchConfig match, AuthConfig auth,
-                ResolvedUpstream upstream, ResolvedAsset asset) {
+                ResolvedUpstream upstream, ResolvedAsset asset, RedirectConfig redirect) {
             return new ResolvedRoute(id, Protocol.HTTP, null, match, auth, List.of(), null,
-                    null, true, true, upstream, asset, null, null, null);
+                    null, true, true, false, upstream, asset, redirect, null, null, null);
         }
     }
 
@@ -921,12 +1123,247 @@ class ConfigModelContractTest {
             assertNotNull(cfg.effectiveSecurityHeaders());
             assertEquals(List.of("Accept"), cfg.effectiveForward().headersAllow(),
                     "the materialized forward allowlist is carried on the resolved route");
+            assertTrue(cfg.rewriteLocation(), "the materialized rewrite_location toggle is carried on the resolved route");
+        }
+
+        @Test
+        void upstreamConfigRewriteLocationRoundTripsAndDefaultsToAbsent() {
+            assertAll("rewrite_location is a nullable toggle whose absence means off",
+                    () -> assertEquals(Boolean.TRUE, upstreamConfig().rewriteLocation()),
+                    () -> assertNull(UpstreamConfig.builder().build().rewriteLocation(),
+                            "the record applies no default; absent stays null and resolves to off at assembly"));
+        }
+
+        @Test
+        void resolvedRouteRewriteLocationDefaultsToFalseOnTheBuilder() {
+            ResolvedRoute cfg = ResolvedRoute.builder().id("r").match(matchConfig()).effectiveAuth(auth())
+                    .upstream(resolvedUpstream()).build();
+            assertFalse(cfg.rewriteLocation(), "an unset toggle is the relay-unchanged default");
         }
 
         @Test
         void gatewayConfigExposesAnchors() {
             GatewayConfig cfg = GatewayConfig.builder().version(1).anchors(Map.of("api", anchorConfig())).build();
             assertEquals(Map.of("api", anchorConfig()), cfg.anchors());
+        }
+    }
+
+    // --- Exact routes, redirect action and optional base_url (AS-3/AS-4) ----
+
+    @Nested
+    @DisplayName("Exact routes, redirect terminal action and the proxy-route predicate (AS-3/AS-4)")
+    class ExactRoutesAndRedirect {
+
+        @Test
+        void prefixMatcherExposesItsPrefixAsMatchKey() {
+            MatchConfig prefix = MatchConfig.builder().pathPrefix("/orders").build();
+
+            assertAll("a prefix matcher",
+                    () -> assertEquals("/orders", prefix.matchKey()),
+                    () -> assertFalse(prefix.isExact()),
+                    () -> assertNull(prefix.path()));
+        }
+
+        @Test
+        void exactMatcherExposesItsPathAsMatchKey() {
+            MatchConfig exact = MatchConfig.builder().path("/orders/").build();
+
+            assertAll("an exact matcher",
+                    () -> assertEquals("/orders/", exact.matchKey(),
+                            "the exact path is carried un-normalized, trailing slash included"),
+                    () -> assertTrue(exact.isExact()),
+                    () -> assertNull(exact.pathPrefix()));
+        }
+
+        @Test
+        void routeWithoutAssetOrRedirectIsAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("proxy").match(matchConfig()).upstream(upstreamConfig())
+                    .build();
+
+            assertTrue(route.isProxyRoute(), "a route declaring neither asset nor redirect forwards upstream");
+        }
+
+        @Test
+        void routeWithoutAnyTerminalBlockIsAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("proxy").match(matchConfig()).build();
+
+            assertTrue(route.isProxyRoute(), "an absent upstream block still proxies to the endpoint base_url");
+        }
+
+        @Test
+        void assetRouteIsNotAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("assets").match(matchConfig())
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, null, null)).build();
+
+            assertFalse(route.isProxyRoute(), "an asset route needs no base_url");
+        }
+
+        @Test
+        void redirectRouteIsNotAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("moved").match(matchConfig()).redirect(redirectConfig())
+                    .build();
+
+            assertAll("a redirect route",
+                    () -> assertFalse(route.isProxyRoute(), "a redirect route needs no base_url"),
+                    () -> assertEquals(redirectConfig(), route.redirect()));
+        }
+
+        @Test
+        void routeDeclaringAssetAndRedirectIsNotAProxyRoute() {
+            RouteConfig route = RouteConfig.builder().id("both").match(matchConfig())
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, null, null))
+                    .redirect(redirectConfig()).build();
+
+            assertFalse(route.isProxyRoute(),
+                    "the predicate stays false; the conflicting terminal actions are refused by the validator");
+        }
+
+        @Test
+        void redirectConfigExposesEveryComponent() {
+            RedirectConfig redirect = new RedirectConfig("https://other.example.com/", 302, false, true);
+
+            assertAll("redirect components",
+                    () -> assertEquals("https://other.example.com/", redirect.location()),
+                    () -> assertEquals(302, redirect.status()),
+                    () -> assertFalse(redirect.keepQuery()),
+                    () -> assertTrue(redirect.allowExternal()));
+        }
+
+        @Test
+        void redirectConfigFlagsDefaultToFalseOnTheBuilder() {
+            RedirectConfig redirect = RedirectConfig.builder().location("/home").status(307).build();
+
+            assertAll("unset flags are the secure default",
+                    () -> assertFalse(redirect.keepQuery(), "the query is not carried unless opted in"),
+                    () -> assertFalse(redirect.allowExternal(), "an external target is not allowed unless opted in"));
+        }
+    }
+
+    // --- The narrowing predicate the anchor-coverage rule depends on ---------
+
+    @Nested
+    @DisplayName("MatchConfig.narrowsBeyondPath and the dimension set it must cover")
+    class NarrowsBeyondPath {
+
+        /** The non-path components of {@link MatchConfig} — the dimensions the predicate must read. */
+        private static final Set<String> NARROWING_COMPONENTS = Set.of("methods", "host", "headers");
+
+        /** The path components, which the predicate deliberately ignores. */
+        private static final Set<String> PATH_COMPONENTS = Set.of("pathPrefix", "path");
+
+        @Test
+        @DisplayName("A matcher constraining nothing but the path does not narrow")
+        void pathOnlyMatcherDoesNotNarrow() {
+            assertAll("neither matcher form narrows on its own",
+                    () -> assertFalse(MatchConfig.builder().pathPrefix("/orders").build().narrowsBeyondPath()),
+                    () -> assertFalse(MatchConfig.builder().path("/orders").build().narrowsBeyondPath()));
+        }
+
+        @Test
+        @DisplayName("Each non-path dimension narrows on its own")
+        void eachDimensionNarrows() {
+            assertAll("every dimension RouteMatcher ANDs with the path",
+                    () -> assertTrue(MatchConfig.builder().pathPrefix("/o")
+                            .methods(List.of(HttpMethod.GET)).build().narrowsBeyondPath(), "methods"),
+                    () -> assertTrue(MatchConfig.builder().pathPrefix("/o")
+                            .host("api.example.org").build().narrowsBeyondPath(), "host"),
+                    () -> assertTrue(MatchConfig.builder().pathPrefix("/o")
+                            .headers(List.of(new MatchConfig.HeaderMatcher("X-K", Boolean.TRUE, null)))
+                            .build().narrowsBeyondPath(), "headers"));
+        }
+
+        /**
+         * THE DRIFT GUARD. {@code narrowsBeyondPath} enumerates the non-path dimensions by hand, and a
+         * dimension added to the record but forgotten there would silently re-open the anchor-coverage
+         * bypass: a route narrowed on the new dimension would again count as covering a namespace it
+         * only partly serves. Deriving the set from the record itself turns that omission into a
+         * failing test at the moment the component is added, which is the only moment anyone is
+         * looking. If this fails because you added a component, decide whether it narrows a match:
+         * extend {@code narrowsBeyondPath} and {@code NARROWING_COMPONENTS}, or add it to
+         * {@code PATH_COMPONENTS} if it is part of the path matcher.
+         */
+        @Test
+        @DisplayName("Every MatchConfig component is classified as narrowing or path")
+        void everyComponentIsClassified() {
+            Set<String> declared = Stream.of(MatchConfig.class.getRecordComponents())
+                    .map(java.lang.reflect.RecordComponent::getName)
+                    .collect(Collectors.toSet());
+            Set<String> classified = new HashSet<>(NARROWING_COMPONENTS);
+            classified.addAll(PATH_COMPONENTS);
+
+            assertEquals(classified, declared,
+                    "a MatchConfig component is neither classified as narrowing nor as part of the path "
+                            + "matcher — narrowsBeyondPath cannot be trusted until it is");
+        }
+    }
+
+    // --- Asset index and fallback (AS-12) ------------------------------------
+
+    @Nested
+    @DisplayName("Asset index and fallback components (AS-12)")
+    class AssetIndexAndFallback {
+
+        private static ResolvedUpstream secondary() {
+            return new ResolvedUpstream("https", "cdn.internal", 443, "");
+        }
+
+        @Test
+        void assetConfigCarriesIndexAndFallbackAndParticipatesInIdentity() {
+            AssetConfig spa = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv")
+                    .index("index.html").fallback("shell.html").build();
+
+            assertAll("index and fallback are record components",
+                    () -> assertEquals("index.html", spa.index()),
+                    () -> assertEquals("shell.html", spa.fallback()),
+                    () -> assertEquals(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, "index.html",
+                            "shell.html"), spa, "the builder matches the canonical constructor"),
+                    () -> assertNotEquals(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, null,
+                            "shell.html"), spa, "the index participates in equals"),
+                    () -> assertNotEquals(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv", null, "index.html",
+                            null), spa, "the fallback participates in equals"),
+                    () -> assertNull(AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).build().index(),
+                            "an omitted index stays absent"));
+        }
+
+        @Test
+        void directoryFactoryCarriesIndexAndFallback() {
+            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, "index.html", "shell.html");
+
+            assertAll("the four-argument directory factory",
+                    () -> assertEquals(AssetConfig.Source.DIRECTORY, asset.source()),
+                    () -> assertEquals("/srv", asset.directory()),
+                    () -> assertEquals("index.html", asset.index()),
+                    () -> assertEquals("shell.html", asset.fallback()),
+                    () -> assertNotEquals(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, "index.html", null),
+                            asset, "the fallback participates in equals"),
+                    () -> assertNotEquals(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, "shell.html"),
+                            asset, "the index participates in equals"));
+        }
+
+        @Test
+        void upstreamAssetRefusesIndexOrFallback() {
+            ResolvedUpstream upstream = secondary();
+
+            IllegalArgumentException withIndex = assertThrows(IllegalArgumentException.class,
+                    () -> upstreamAssetWith(upstream, "index.html", null));
+            assertThrows(IllegalArgumentException.class, () -> upstreamAssetWith(upstream, null, "shell.html"));
+
+            assertAll("index and fallback belong to a directory source only",
+                    () -> assertEquals(
+                            "UPSTREAM asset carries no index or fallback; both apply to a DIRECTORY source only",
+                            withIndex.getMessage()),
+                    () -> assertNull(ResolvedAsset.upstream(upstream, AccessLevel.PUBLIC).index(),
+                            "the upstream factory carries no index"),
+                    () -> assertNull(ResolvedAsset.upstream(upstream, AccessLevel.PUBLIC).fallback(),
+                            "the upstream factory carries no fallback"));
+        }
+
+        /**
+         * Builds an UPSTREAM {@link ResolvedAsset} varying only index and fallback, keeping each
+         * {@code assertThrows} lambda to a single invocation.
+         */
+        private static ResolvedAsset upstreamAssetWith(ResolvedUpstream upstream, String index, String fallback) {
+            return new ResolvedAsset(AssetConfig.Source.UPSTREAM, AccessLevel.PUBLIC, null, upstream, index, fallback);
         }
     }
 
