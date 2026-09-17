@@ -323,12 +323,16 @@ public final class DirectoryAssetSource implements AssetSource {
 
     /**
      * @param value a candidate file name
-     * @return {@code true} when {@code value} is non-empty, is neither {@code .} nor {@code ..}, and
+     * @return {@code true} when {@code value} is non-blank, is neither {@code .} nor {@code ..}, and
      *         carries no {@code /}, no {@code \} and no ISO control character
      */
     public static boolean isSingleFileName(String value) {
         Objects.requireNonNull(value, "value");
-        if (value.isEmpty() || ".".equals(value) || "..".equals(value)) {
+        // isBlank, not isEmpty: a name of " " passes every other test here — it is not "." or "..",
+        // carries no separator, and a space is not an ISO control character — so an emptiness test
+        // admitted it, against what requireFileName documents. Such a route boots and then resolves a
+        // substitute file name no deployment means to serve.
+        if (value.isBlank() || ".".equals(value) || "..".equals(value)) {
             return false;
         }
         return value.chars().noneMatch(c -> c == '/' || c == '\\' || Character.isISOControl(c));

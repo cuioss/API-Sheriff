@@ -3126,9 +3126,11 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   without declaring that anchor fails the boot, *unless* a prefix route declared at the anchor's own
   `path_prefix` covers the namespace. This rule judges what a route's prefix *contains* rather than
   where its own match key sits, so -- unlike the two checks above -- it applies to `protocol: grpc`
-  routes unchanged. Coverage is decided on prefix equality alone: a covering route narrowed by any
-  further `match` dimension covers only what it matches (an accepted residual, see
-  link:user/anchors.adoc#_anchors[Anchors]).
+  routes unchanged. Coverage requires the covering route to match the *whole* namespace: its
+  normalized match key must equal the anchor prefix *and* it must narrow on no further `match`
+  dimension. A candidate narrowed by `methods`, `host` or `headers` serves only part of the namespace,
+  so it is not coverage and the containing route is refused exactly as if the anchor had no covering
+  member (see link:user/anchors.adoc#_anchors[Anchors]).
 * Where a route's anchor declares `auth.require` of `bearer` or `session`, the route's
   *effective* auth must not resolve to `require: none` -- the anchor floor cannot be weakened;
   violation fails the boot. Non-auth overrides that relax anchor limits are logged as boot

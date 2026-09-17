@@ -254,7 +254,8 @@ an alias referenced by an endpoint file that resolves to nothing, is a *boot fai
   once into `{scheme, host, port, base-path}`.
 * A route's upstream target keeps the resolved alias's *scheme, host and port* and combines them
   with an *effective base path* plus the *remainder* -- the request path with the route's match key
-  (`match.path_prefix`) stripped (segments are joined with exactly one `/`). The effective base path
+  (`match.path_prefix`, or `match.path` on an exact route) stripped (segments are joined with exactly
+  one `/`). The effective base path
   is the alias-derived base path with the route's `upstream.path` *appended* to it when declared,
   and the alias-derived base path alone otherwise
   (link:../adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004 Amendment A2]). So
