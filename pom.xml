@@ -60,7 +60,7 @@
     </issueManagement>
 
     <properties>
-        <version.token-sheriff>0.9.5</version.token-sheriff>
+        <version.token-sheriff>0.9.6</version.token-sheriff>
         <version.json-schema-validator>3.0.7</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
