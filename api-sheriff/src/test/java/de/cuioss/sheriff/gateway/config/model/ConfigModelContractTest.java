@@ -91,7 +91,7 @@ class ConfigModelContractTest {
                 .tls(tlsConfig())
                 .management(managementConfig())
                 .securityHeaders(securityHeadersConfig())
-                .securityDefaults(new SecurityDefaultsConfig("strict", 8192, null))
+                .securityDefaults(new SecurityDefaultsConfig("strict", 8192, null, null))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .anchors(Map.of("api", anchorConfig()))
                 .upstreamDefaults(UpstreamDefaultsConfig.defaults())
@@ -298,22 +298,27 @@ class ConfigModelContractTest {
                             new SecurityHeadersConfig.Cors(false, List.of("b"), List.of("POST"),
                                     List.of("Authorization"), true)),
                     // One case per component, so the record contract is proven to discriminate on ALL
-                    // THREE: a single unequal instance differing only in 'profile' would leave both
-                    // max_authorization_header_value_length and allow_get_with_content_length_body
-                    // silently out of equals(). Each case varies exactly one component and holds the
-                    // other two fixed, so a component dropped from equals() fails its own case alone.
+                    // FOUR: a single unequal instance differing only in 'profile' would leave
+                    // max_authorization_header_value_length, allow_get_with_content_length_body and
+                    // allow_extended_ascii silently out of equals(). Each case varies exactly one
+                    // component and holds the other three fixed, so a component dropped from equals()
+                    // fails its own case alone.
                     voCase("SecurityDefaultsConfig (profile)",
-                            new SecurityDefaultsConfig("strict", 8192, null),
-                            new SecurityDefaultsConfig("strict", 8192, null),
-                            new SecurityDefaultsConfig("lenient", 8192, null)),
+                            new SecurityDefaultsConfig("strict", 8192, null, null),
+                            new SecurityDefaultsConfig("strict", 8192, null, null),
+                            new SecurityDefaultsConfig("lenient", 8192, null, null)),
                     voCase("SecurityDefaultsConfig (max_authorization_header_value_length)",
-                            new SecurityDefaultsConfig("strict", 8192, null),
-                            new SecurityDefaultsConfig("strict", 8192, null),
-                            new SecurityDefaultsConfig("strict", 4096, null)),
+                            new SecurityDefaultsConfig("strict", 8192, null, null),
+                            new SecurityDefaultsConfig("strict", 8192, null, null),
+                            new SecurityDefaultsConfig("strict", 4096, null, null)),
                     voCase("SecurityDefaultsConfig (allow_get_with_content_length_body)",
-                            new SecurityDefaultsConfig("strict", 8192, false),
-                            new SecurityDefaultsConfig("strict", 8192, false),
-                            new SecurityDefaultsConfig("strict", 8192, true)),
+                            new SecurityDefaultsConfig("strict", 8192, false, null),
+                            new SecurityDefaultsConfig("strict", 8192, false, null),
+                            new SecurityDefaultsConfig("strict", 8192, true, null)),
+                    voCase("SecurityDefaultsConfig (allow_extended_ascii)",
+                            new SecurityDefaultsConfig("strict", 8192, null, false),
+                            new SecurityDefaultsConfig("strict", 8192, null, false),
+                            new SecurityDefaultsConfig("strict", 8192, null, true)),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),

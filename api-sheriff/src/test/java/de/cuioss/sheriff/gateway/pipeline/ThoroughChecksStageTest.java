@@ -53,8 +53,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("ThoroughChecksStage — stage 3, always dispatched, with a profile-gated skippable half")
 class ThoroughChecksStageTest {
 
-    /** A parameter value the url-parameter pipeline rejects (a path separator inside a value). */
-    private static final String REJECTED_PARAMETER_VALUE = "/home";
+    /**
+     * A parameter value the url-parameter pipeline rejects under every non-minimal preset: {@code <}
+     * lies outside the RFC 3986 {@code query} grammar. (A path separator no longer qualifies — the
+     * {@code query} production admits {@code /}, {@code :} and {@code @}.)
+     */
+    private static final String REJECTED_PARAMETER_VALUE = "<home";
     /** A parameter name the url-parameter pipeline rejects (an embedded null byte). */
     private static final String REJECTED_PARAMETER_NAME = "evil\0name";
 
@@ -693,7 +697,8 @@ class ThoroughChecksStageTest {
         void extendedAsciiIsAdmittedUnderAPermissiveRoute() {
             // Arrange — the matched control: without it the refusal above could not distinguish 'the
             // carve-out inherited the ROUTE's strict setting' from 'the value is refused regardless'.
-            SecurityConfiguration permissiveRoute = SecurityConfiguration.defaults();
+            SecurityConfiguration permissiveRoute = SecurityConfigurations
+                    .builderSeededFrom(SecurityConfiguration.defaults()).allowExtendedAscii(true).build();
             assertTrue(permissiveRoute.allowExtendedAscii(),
                     "the control route must permit what the strict route refuses");
             PipelineRequest request = requestWithHeaders(

@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.config.model;
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.config.SecurityConfigurationBuilder;
 import lombok.experimental.UtilityClass;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The single seeding seam for the cui-http {@link SecurityConfiguration}: the one place in this
@@ -44,7 +45,7 @@ public class SecurityConfigurations {
 
     /**
      * Returns a {@link SecurityConfigurationBuilder} carrying every component of {@code preset}, so a
-     * caller overriding one dimension leaves the other twenty-five on the preset's values. Copies the
+     * caller overriding one dimension leaves the other twenty-six on the preset's values. Copies the
      * record's full component set deliberately: an omitted component would silently fall back to the
      * {@code defaults()} policy the builder starts from.
      *
@@ -64,6 +65,7 @@ public class SecurityConfigurations {
                 .maxBodySize(preset.maxBodySize())
                 .allowNullBytes(preset.allowNullBytes())
                 .allowControlCharacters(preset.allowControlCharacters())
+                .allowLineBreaksInParameterValues(preset.allowLineBreaksInParameterValues())
                 .allowExtendedAscii(preset.allowExtendedAscii())
                 .normalizeUnicode(preset.normalizeUnicode())
                 .caseSensitiveComparison(preset.caseSensitiveComparison())
@@ -79,5 +81,28 @@ public class SecurityConfigurations {
                 .blockedContentTypes(preset.blockedContentTypes())
                 .blockedPathPatterns(preset.blockedPathPatterns())
                 .blockedParameterNames(preset.blockedParameterNames());
+    }
+
+    /**
+     * Applies the gateway-wide {@code security_defaults.allow_extended_ascii} override to a resolved
+     * profile preset.
+     * <p>
+     * The override is <strong>gateway-wide by necessity</strong>: the pre-route floor validates the
+     * path and every header value under the baseline before any route is selected, so a per-route
+     * relaxation could never reach those components. It is therefore applied uniformly — to the
+     * baseline and to every route's resolved preset — which also keeps a route that declares nothing
+     * equal to the baseline, so the post-route re-run stays skipped for it.
+     *
+     * @param preset             the resolved profile preset; never {@code null}
+     * @param allowExtendedAscii the declared override, {@code null} when omitted
+     * @return {@code preset} itself when the key is omitted or already matches the preset, otherwise a
+     *         copy differing from {@code preset} in {@code allowExtendedAscii} alone
+     */
+    public static SecurityConfiguration withDeclaredCharacterPolicy(SecurityConfiguration preset,
+            @Nullable Boolean allowExtendedAscii) {
+        if (allowExtendedAscii == null || allowExtendedAscii == preset.allowExtendedAscii()) {
+            return preset;
+        }
+        return builderSeededFrom(preset).allowExtendedAscii(allowExtendedAscii).build();
     }
 }

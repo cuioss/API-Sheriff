@@ -294,10 +294,13 @@ public class GatewayEdgeRoute {
         // than from a hard-coded SecurityConfiguration.defaults(). This single instance feeds
         // BasicChecksStage, ThoroughChecksStage's skip-if-equal baseline,
         // ForwardedResolverConfig.securityConfig and defaultMaxBodySize — so seeding it here is
-        // what makes an omitted security_defaults block genuinely mean 'strict' for every route.
+        // what makes an omitted security_defaults block genuinely mean 'strict' for every route. The
+        // declared allow_extended_ascii override lands on it here, and on every route's preset below.
         SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
-        SecurityConfiguration defaultConfiguration =
-                SecurityProfile.limitsProfile(globalProfile, globalProfile).preset();
+        SecurityDefaultsConfig securityDefaultsConfig = gatewayConfig.securityDefaults();
+        Boolean allowExtendedAscii = securityDefaultsConfig == null ? null : securityDefaultsConfig.allowExtendedAscii();
+        SecurityConfiguration defaultConfiguration = SecurityConfigurations.withDeclaredCharacterPolicy(
+                SecurityProfile.limitsProfile(globalProfile, globalProfile).preset(), allowExtendedAscii);
         this.defaultMaxBodySize = defaultConfiguration.maxBodySize();
         this.gatewayEventCounter = new GatewayEventCounter();
         this.upstreamFailureMapper = new UpstreamFailureMapper(gatewayEventCounter);
@@ -349,7 +352,7 @@ public class GatewayEdgeRoute {
 
         RouteRuntimeAssembler assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
         this.routes = assembler.assemble(routeTable,
-                filter -> securityPostureFor(filter, globalProfile),
+                filter -> securityPostureFor(filter, globalProfile, allowExtendedAscii),
                 target -> clientFor(vertx, target, upstreamVerifyHostname, upstreamTrustOptions),
                 this::guardFor,
                 asset -> assetSourceFor(asset, assetContentTypes));
@@ -378,7 +381,6 @@ public class GatewayEdgeRoute {
         this.canonicalPathGuard = new CanonicalPathGuard();
         // The GET-body opt-in is gateway-wide by necessity, not by convenience: the framing gate runs
         // at stage 1, before route selection, so there is no resolved route to scope it to.
-        SecurityDefaultsConfig securityDefaultsConfig = gatewayConfig.securityDefaults();
         this.framingGate = new FramingGate(securityDefaultsConfig != null
                 && securityDefaultsConfig.effectiveAllowGetWithContentLengthBody());
         TlsConfig tlsConfig = gatewayConfig.tls();
@@ -1534,7 +1536,9 @@ public class GatewayEdgeRoute {
      * chain (see {@link SecurityProfile#limitsProfile}), never from bare builder defaults, and only
      * the dimensions the route actually declared are overridden on top — so an undeclared dimension
      * lands exactly on the resolved preset rather than below it. A {@code minimal} route therefore
-     * still carries a concrete, enforceable {@code maxBodySize}.
+     * still carries a concrete, enforceable {@code maxBodySize}. The gateway-wide
+     * {@code security_defaults.allow_extended_ascii} override is applied to that preset before the
+     * route's own limits, exactly as it is applied to the baseline.
      * <p>
      * Invoked for every route, including one that declares no {@code security_filter} block at all,
      * which is what lets a gateway-wide {@code profile} govern a block-less route.
@@ -1544,10 +1548,12 @@ public class GatewayEdgeRoute {
      * of only through a booted edge, whose assembled routes are not observable.
      */
     static RouteRuntimeAssembler.SecurityPosture securityPostureFor(
-            @Nullable SecurityFilterConfig filter, SecurityProfile globalProfile) {
+            @Nullable SecurityFilterConfig filter, SecurityProfile globalProfile,
+            @Nullable Boolean allowExtendedAscii) {
         SecurityProfile effective = SecurityProfile.parse(filter == null ? null : filter.profile())
                 .orElse(globalProfile);
-        SecurityConfiguration preset = SecurityProfile.limitsProfile(effective, globalProfile).preset();
+        SecurityConfiguration preset = SecurityConfigurations.withDeclaredCharacterPolicy(
+                SecurityProfile.limitsProfile(effective, globalProfile).preset(), allowExtendedAscii);
         return new RouteRuntimeAssembler.SecurityPosture(effective,
                 filter == null ? preset : applyDeclaredLimits(preset, filter));
     }

@@ -46,10 +46,15 @@ import org.junit.jupiter.api.Test;
 class SecurityProfileModeIT extends BaseIntegrationTest {
 
     /**
-     * A url-parameter value the strict url-parameter pipeline rejects: a path separator inside a
-     * value. Sent with URL encoding disabled so the gateway sees exactly these bytes.
+     * A url-parameter value the strict url-parameter pipeline rejects: {@code <} lies outside the
+     * RFC 3986 {@code query} grammar (a path separator no longer qualifies — that grammar admits
+     * {@code /}). Sent percent-encoded with URL encoding disabled so the gateway sees exactly these
+     * bytes; {@link #REJECTED_PARAMETER_VALUE} is the decoded form the upstream echoes.
      */
-    private static final String REJECTED_PARAMETER_VALUE = "/home";
+    private static final String REJECTED_PARAMETER_VALUE_WIRE = "%3Chome";
+
+    /** The decoded form of {@link #REJECTED_PARAMETER_VALUE_WIRE}. */
+    private static final String REJECTED_PARAMETER_VALUE = "<home";
 
     /** The strict preset's query-parameter count cap; the pre-route floor enforces it for every route. */
     private static final int STRICT_PARAMETER_COUNT_CAP = 20;
@@ -85,7 +90,7 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
             given()
                     .urlEncodingEnabled(false)
                     .when()
-                    .get("/proxy/get?return_to=" + REJECTED_PARAMETER_VALUE)
+                    .get("/proxy/get?return_to=" + REJECTED_PARAMETER_VALUE_WIRE)
                     .then()
                     .statusCode(400);
         }
@@ -104,7 +109,7 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
             var response = given()
                     .urlEncodingEnabled(false)
                     .when()
-                    .get(MINIMAL_ROUTE_PATH + "?return_to=" + REJECTED_PARAMETER_VALUE)
+                    .get(MINIMAL_ROUTE_PATH + "?return_to=" + REJECTED_PARAMETER_VALUE_WIRE)
                     .then()
                     .statusCode(200)
                     .extract();

@@ -308,6 +308,53 @@ And `HEAD` is unaffected on every leg -- a body on `HEAD` stays rejected whateve
 If you set this expecting `GET` framing checks to stop applying generally, that is the misreading to
 correct: it admits one specific, well-framed shape and nothing else.
 
+== Admitting Non-ASCII Characters (`security_defaults.allow_extended_ascii`)
+
+The `strict` profile -- the default -- accepts ASCII only: a header value such as
+`X-Display-Name: José`, or a Latin-1 character in a path or query parameter, is rejected `400`.
+This knob admits them without giving up the rest of the strict posture. Field-level contract lives
+in link:../configuration.adoc#_the_extended_ascii_override[Configuration Reference -- The
+extended-ASCII override]; this section is the operator's decision guide.
+
+=== Symptom and fix
+
+*Symptom:* a request carrying a non-ASCII header value (a display name, a localized label) is
+rejected `400` by the security filter, and the upstream never sees it.
+
+*Fix:* enable the override gateway-wide, keeping the profile:
+
+[source,yaml]
+----
+security_defaults:
+  profile: strict
+  allow_extended_ascii: true
+----
+
+Switching to `profile: lenient` would admit the same characters, but it also relaxes every other
+validator and raises every limit -- prefer this key when non-ASCII input is the only reason.
+
+Declaring `profile: lenient` on the one route that needs it does *not* work for header values: the
+pre-route floor checks every header value against the gateway baseline before a route is selected,
+which is also why this key is gateway-wide rather than per route. The opposite direction works:
+`allow_extended_ascii: false` on a `lenient` gateway rejects non-ASCII input everywhere while
+keeping the lenient limits.
+
+Omit the key and the profile decides, exactly as before the key existed.
+
+=== What it does *not* turn off
+
+Header values may then carry any Unicode; paths and query-parameter values gain only the Latin-1
+range (U+00A0-U+00FF), since URLs stay ASCII-plus-Latin-1 per RFC 3986. Whatever the key says, the
+gateway still rejects:
+
+* the C1 control characters U+0080-U+009F;
+* non-ASCII in a header *name*, a cookie name or a cookie value;
+* Unicode combining marks;
+* CR, LF and the other control characters in headers and cookies (TAB stays legal in a header value).
+
+*Decide it as a gateway-wide posture change.* It reaches every route, so first confirm your
+upstreams, and anything that logs or re-emits header values, handle non-ASCII input safely.
+
 == Asset Content Types (`asset_defaults.content_types`)
 
 The gateway -- never the backing directory or upstream -- decides the `Content-Type` of every asset

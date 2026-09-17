@@ -133,7 +133,7 @@ class ConfigValidatorTest {
      */
     private static GatewayConfig gatewayWithAuthorizationCap(String profile, @Nullable Integer cap) {
         return validGateway()
-                .securityDefaults(new SecurityDefaultsConfig(profile, cap, null))
+                .securityDefaults(new SecurityDefaultsConfig(profile, cap, null, null))
                 .build();
     }
 
@@ -2086,7 +2086,7 @@ class ConfigValidatorTest {
             return validGateway()
                     .anchors(Map.of(anchorConfig.name(), anchorConfig))
                     .securityDefaults(new SecurityDefaultsConfig(globalProfile,
-                            null, null))
+                            null, null, null))
                     .tokenValidation(new TokenValidationConfig(List.of(
                             IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
@@ -2186,7 +2186,7 @@ class ConfigValidatorTest {
                     .anchors(Map.of("open",
                             matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)))
                     .securityDefaults(new SecurityDefaultsConfig(MINIMAL_PROFILE,
-                            null, null))
+                            null, null, null))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
                     new AuthConfig(Require.NONE, List.of()),
@@ -2317,7 +2317,7 @@ class ConfigValidatorTest {
         @Test
         @DisplayName("Should resolve an omitted allow_get_with_content_length_body to false")
         void shouldResolveOmittedKnobToFalse() {
-            SecurityDefaultsConfig securityDefaults = new SecurityDefaultsConfig("strict", null, null);
+            SecurityDefaultsConfig securityDefaults = new SecurityDefaultsConfig("strict", null, null, null);
 
             assertFalse(securityDefaults.effectiveAllowGetWithContentLengthBody(),
                     "an omitted knob must resolve fail-closed, preserving every framing rejection "
@@ -2328,9 +2328,9 @@ class ConfigValidatorTest {
         @DisplayName("Should resolve an explicitly declared value")
         void shouldResolveDeclaredKnob() {
             assertAll(
-                    () -> assertTrue(new SecurityDefaultsConfig("strict", null, true)
+                    () -> assertTrue(new SecurityDefaultsConfig("strict", null, true, null)
                             .effectiveAllowGetWithContentLengthBody(), "declared true resolves true"),
-                    () -> assertFalse(new SecurityDefaultsConfig("strict", null, false)
+                    () -> assertFalse(new SecurityDefaultsConfig("strict", null, false, null)
                             .effectiveAllowGetWithContentLengthBody(), "declared false resolves false"));
         }
 
@@ -2338,7 +2338,7 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a gateway declaring the opt-in without any validation error")
         void shouldAcceptDeclaredOptIn() {
             GatewayConfig gateway = validGateway()
-                    .securityDefaults(new SecurityDefaultsConfig("strict", null, true))
+                    .securityDefaults(new SecurityDefaultsConfig("strict", null, true, null))
                     .build();
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());

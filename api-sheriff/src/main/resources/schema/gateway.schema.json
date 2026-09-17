@@ -198,6 +198,10 @@
         "allow_get_with_content_length_body": {
           "type": "boolean",
           "description": "Admits a Content-Length-framed request body on GET. Defaults to false (omitted = rejected, as before this key existed). PARTIAL relaxation, scoped to a single rejection leg on GET only: the declared Content-Length > 0 leg. A GET whose body is signalled without a declared Content-Length is not Content-Length-framed and stays rejected. Transfer-Encoding on GET stays rejected UNCONDITIONALLY — chunked framing on an otherwise-bodyless method is the shape the request-smuggling defences exist to constrain, and the motivating case (Elasticsearch _search) sends Content-Length-framed bodies, so excluding it costs nothing. HEAD is unaffected on every leg, and the CL+TE and Connection-header framing-strip rules are independent checks that still apply. Gateway-wide because the framing gate runs at stage 1, before route selection."
+        },
+        "allow_extended_ascii": {
+          "type": "boolean",
+          "description": "Overrides the resolved profile's extended-ASCII policy gateway-wide. Omitted = the profile decides (strict rejects, lenient admits). true admits U+00A0-U+00FF in paths, query-parameter values and header values, plus all Unicode above U+00FF in header values; false rejects them. It never admits the C1 controls U+0080-U+009F, non-ASCII in header names or cookies, or Unicode above U+00FF in a URL - those are rejected unconditionally. Gateway-wide because the pre-route floor validates the path and every header value before route selection; it applies to the baseline and to every route alike."
         }
       }
     },

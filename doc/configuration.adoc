@@ -241,6 +241,11 @@ security_defaults:                 # baseline inbound filter mode; overridable p
                                    #   _search). PARTIAL: Transfer-Encoding on GET stays REJECTED
                                    #   unconditionally, and HEAD is unaffected on every leg.
                                    #   See "The `GET`-body opt-in" below.
+  allow_extended_ascii: true       # OPTIONAL, omitted => the profile decides (strict: rejected,
+                                   #   lenient: admitted). Gateway-wide override admitting non-ASCII
+                                   #   header values and Latin-1 characters in paths and parameter
+                                   #   values. C1 controls, header names and cookies stay ASCII-only.
+                                   #   See "The extended-ASCII override" below.
 
 allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
                                    #   (global default). An anchor or endpoint may REPLACE this
@@ -1600,7 +1605,9 @@ block resolves to `strict`, the `strict` column is what an undeclared deployment
 All length limits are measured in *characters* -- the `cui-http` unit -- not bytes. The presets also
 differ in their non-length validators: `strict` normalizes Unicode, compares case-sensitively, fails
 on suspicious patterns, and permits neither double encoding, control characters, nor extended ASCII;
-`lenient` inverts each of those. Neither preset ever permits null bytes.
+`lenient` inverts each of those. Neither preset ever permits null bytes. The extended-ASCII choice
+alone can be overridden gateway-wide with `security_defaults.allow_extended_ascii` -- see
+link:#_the_extended_ascii_override[The extended-ASCII override].
 
 [[_pre_route_header_carve_outs]]
 ==== Pre-route header-name carve-outs
@@ -2525,11 +2532,20 @@ set has exactly three members:
 fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly. The
 concrete numbers each mode carries are tabulated under link:#_preset_limits[Preset limits].
 
-The block carries two further keys:
+The block carries three further keys:
 
 [cols="1,4"]
 |===
 | Key | Meaning
+
+| `allow_extended_ascii`
+| *Boolean, optional; omitted means the resolved profile decides* (`strict` rejects, `lenient`
+  admits). Overrides that single dimension of the profile preset, gateway-wide: `true` admits
+  non-ASCII header values and Latin-1 characters in paths and query-parameter values, `false`
+  rejects them. It applies to the pre-route baseline, to both header-value carve-outs and to every
+  route's resolved preset alike, and changes no other validator. See
+  link:#_the_extended_ascii_override[The extended-ASCII override] below for exactly what it admits
+  and what stays rejected.
 
 | `allow_get_with_content_length_body`
 | *Boolean, default `false`.* Admits a `Content-Length`-framed request body on `GET`. It exists for
@@ -2621,6 +2637,54 @@ its anchor still reads `access: public`. The refusal collects into the all-viola
 other configuration error and names the route, the refusing dimension, and the remedy. A
 `security_defaults.profile: minimal` that reaches such a route through the fallback chain is refused
 identically -- there is no separate global exemption.
+
+[[_the_extended_ascii_override]]
+==== The extended-ASCII override
+
+`allow_extended_ascii` replaces the extended-ASCII choice of the resolved profile preset and nothing
+else. It is a tri-state:
+
+[cols="1,3"]
+|===
+| Declared value | Effect
+
+| _omitted_
+| The profile decides: `strict` (and every undeclared deployment) rejects, `lenient` admits. This is
+  exactly the behaviour of a gateway that never had the key.
+
+| `true`
+| Admitted on every route, including `strict` ones.
+
+| `false`
+| Rejected on every route, including `lenient` ones.
+|===
+
+What `true` admits is fixed by `cui-http`'s character validation, not by API Sheriff:
+
+* *Header values* -- the Latin-1 range (U+00A0-U+00FF) *and* all Unicode above U+00FF. With the key
+  omitted on a `strict` gateway, header values are ASCII-only.
+* *Paths and query-parameter values* -- the Latin-1 range (U+00A0-U+00FF) only. Unicode above
+  U+00FF in a URL stays rejected (RFC 3986).
+
+What stays rejected *whatever the key says*:
+
+* the C1 control range U+0080-U+009F -- non-printing controls, and U+0085 (NEL) is a line terminator
+  to several parsers;
+* any non-ASCII character in a header *name*, a cookie name or a cookie value (RFC 7230 / RFC 6265);
+* Unicode combining marks;
+* CR, LF and every other C0 control in a header or cookie (TAB alone stays legal in a header value).
+
+The key is *gateway-wide* by necessity, not convenience, for the same reason as the `GET`-body
+opt-in: the pre-route floor validates the path and every header value under the baseline *before*
+route selection. A route-level relaxation could never reach those checks -- a route declaring
+`profile: lenient` on a `strict` gateway still has a non-ASCII header value rejected at the floor.
+The override is therefore applied uniformly, to the baseline, to the `Authorization` and `Cookie`
+carve-outs and to every route's resolved preset, so a route declaring nothing stays equal to the
+baseline and its post-route re-run stays skipped.
+
+*Blast radius.* Enabling it admits non-ASCII header values on *every* route. Before enabling it,
+check that the upstreams do not compare header values byte-for-byte against ASCII allowlists, and
+that anything logging or re-emitting header values handles non-ASCII safely.
 
 [[_the_minimal_mode]]
 ==== The `minimal` mode
