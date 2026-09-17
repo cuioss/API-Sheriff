@@ -1265,6 +1265,23 @@ is visible at all.
 Do **not** solve this by adding the example to `<modules>`. Its header records why it is outside the
 reactor, and that reasoning is unchanged by the release cadence.
 
+**`doc/user/downstream-parent.adoc` mirrors this pin and must move with it, in the same commit.**
+The guide reproduces `build-parent/example/pom.xml` verbatim in three places — the embedded POM's
+`<parent><version>`, the "In the example" column of the two-line-diff table, and the "dependency
+resolves to" sentence in the bootstrap step — so all three carry the SNAPSHOT literally rather than
+by reference and none of them is caught by the Step 10a passes (they are neither an image pin, nor
+`$PREV_VERSION` prose, nor a stale-stamp phrase). Sourcery caught this miss on PR #322 at the 0.2.2
+cut: the example was bumped to `0.2.3-SNAPSHOT` and this file was left at `0.2.2-SNAPSHOT`, so
+following the guide from a fresh trunk checkout would resolve a dependency that does not exist
+locally. Re-grep for the SNAPSHOT literal directly rather than trusting the enumeration passes:
+
+```bash
+git grep -n -- '-SNAPSHOT' doc/user/downstream-parent.adoc
+```
+
+Every hit must equal the reactor version the `build-parent/example/pom.xml` check above just
+confirmed; fix any that lag and ship them in the same commit as that POM bump.
+
 ### Step 11 — Reformat the generated release notes
 
 The release is created with **auto-generated** notes (a flat `## What's Changed` list). Rewrite them
