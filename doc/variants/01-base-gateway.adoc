@@ -210,7 +210,7 @@ that creates no SNI front listener. Both arms otherwise face the same upstream. 
 passthrough figure against a non-passthrough instance's is not a like-for-like comparison.
 ====
 
-*No figures are published at 0.2.1* -- see the status note in
+*No figures are published at 0.2.2* -- see the status note in
 link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.
 
 == Relationship to the BFF Variants

@@ -1,18 +1,18 @@
-= API Sheriff -- FAPI 2.0 Conformance Status (0.2.1 Alpha)
+= API Sheriff -- FAPI 2.0 Conformance Status (0.2.2 Alpha)
 :toc: left
 :toclevels: 3
 :sectnums:
 :sectnumlevels: 2
 
 This document states, requirement by requirement, where API Sheriff's BFF stands against the
-*FAPI 2.0 Security Profile (Final)* as of the 0.2.1 alpha release. It exists because the profile is
+*FAPI 2.0 Security Profile (Final)* as of the 0.2.2 alpha release. It exists because the profile is
 frequently claimed loosely, and because an earlier revision of
 link:features-analysis.adoc[the feature analysis] claimed capabilities the shipped code does not
 have (corrected in the same change that added this document).
 
 [IMPORTANT]
 ====
-*Verdict: API Sheriff 0.2.1 is NOT FAPI 2.0 conformant.* Three of the profile's mandatory client
+*Verdict: API Sheriff 0.2.2 is NOT FAPI 2.0 conformant.* Three of the profile's mandatory client
 requirements are unmet. What ships is a hardened OIDC confidential-client BFF -- a sound
 implementation of the RFC 9700 baseline -- not a FAPI 2.0 relying party. No FAPI conformance should
 be claimed, implied, or marketed for this release.
