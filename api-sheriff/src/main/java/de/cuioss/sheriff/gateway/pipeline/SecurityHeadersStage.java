@@ -15,6 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.pipeline;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -64,6 +67,10 @@ public final class SecurityHeadersStage {
 
     private static final int NO_CONTENT = 204;
     private static final String WILDCARD_ORIGIN = "*";
+    /** The {@code Vary} response-header name, written with the casing every writer here uses. */
+    private static final String VARY_HEADER = "Vary";
+    /** The separator RFC 9110 section 12.5.5 uses between {@code Vary} field names. */
+    private static final String VARY_SEPARATOR = ", ";
 
     /**
      * The gateway-owned response security headers — the single authoritative definition driving
@@ -267,6 +274,13 @@ public final class SecurityHeadersStage {
             return;
         }
         request.responseHeaders().put("Access-Control-Allow-Origin", origin.get());
+        // The value just written is the REQUEST's Origin — reflected verbatim, wildcard config
+        // included, because a request Origin is never literally "*". The response therefore differs
+        // per origin, and a shared cache that does not know this can hand one origin's
+        // Access-Control-Allow-Origin to another. That matters more since redirects became a terminal
+        // action: a public, cookie-less 301/308 is heuristically cacheable (RFC 9111) and carries no
+        // no-store, so it is exactly the response a cache will keep.
+        addVary(request, "Origin");
         if (Boolean.TRUE.equals(cors.allowCredentials())) {
             request.responseHeaders().put("Access-Control-Allow-Credentials", "true");
         }
@@ -279,6 +293,56 @@ public final class SecurityHeadersStage {
             }
             request.shortCircuit(NO_CONTENT);
         }
+    }
+
+    /**
+     * Adds one field name to the response's {@code Vary}, merging rather than replacing.
+     * <p>
+     * Three cases, and the first two are why this is not a {@code put}. An existing {@code Vary: *}
+     * already says "varies on everything unlisted" (RFC 9110 section 12.5.5) and is strictly stronger
+     * than any name list, so adding to it would weaken the response — it is left alone. A name already
+     * present is not repeated, since {@code Vary} is a set and a duplicate only misleads a reader.
+     * Otherwise the name is appended to what is already there, because whoever wrote the existing
+     * value had their own reason for it: the redirect path lists its {@code match.headers} names, and
+     * clobbering those to announce {@code Origin} would trade one cache-variant bug for another.
+     *
+     * @param request the in-flight request whose response headers accumulate
+     * @param name    the field name to announce
+     */
+    public static void addVary(PipelineRequest request, String name) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(name, "name");
+        request.responseHeaders().put(VARY_HEADER,
+                mergedVary(request.responseHeaders().get(VARY_HEADER), List.of(name)));
+    }
+
+    /**
+     * Merges field names into an existing {@code Vary} value and returns the result, without touching
+     * any response. This is the single implementation of the merge rule described on
+     * {@link #addVary}; the redirect writer in the edge route calls it directly, because it writes to
+     * a Vert.x response rather than to the accumulating header map and would otherwise need a second
+     * copy of the same three cases.
+     *
+     * @param current the existing {@code Vary} value, {@code null} or blank when none was written
+     * @param names   the field names to announce, in order
+     * @return the merged value; {@code "*"} unchanged when that is what was already there
+     */
+    public static String mergedVary(@Nullable String current, List<String> names) {
+        Objects.requireNonNull(names, "names");
+        if (current != null && WILDCARD_ORIGIN.equals(current.trim())) {
+            return current.trim();
+        }
+        List<String> fields = new ArrayList<>();
+        if (current != null && !current.isBlank()) {
+            Arrays.stream(current.split(",")).map(String::trim).filter(field -> !field.isEmpty())
+                    .forEach(fields::add);
+        }
+        for (String name : names) {
+            if (fields.stream().noneMatch(field -> field.equalsIgnoreCase(name))) {
+                fields.add(name);
+            }
+        }
+        return String.join(VARY_SEPARATOR, fields);
     }
 
     /**

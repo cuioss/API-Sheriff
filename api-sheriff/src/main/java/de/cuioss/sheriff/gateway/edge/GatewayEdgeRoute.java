@@ -192,8 +192,6 @@ public class GatewayEdgeRoute {
     private static final String NO_STORE = "no-store";
     /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
     private static final String VARY_HEADER = "Vary";
-    /** The separator RFC 9110 section 12.5.5 uses between {@code Vary} field names. */
-    private static final String VARY_SEPARATOR = ", ";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final String CONNECTION_HEADER = "Connection";
     private static final String CONNECTION_CLOSE = "close";
@@ -1171,6 +1169,12 @@ public class GatewayEdgeRoute {
      * {@code Vary} is a gateway-owned security header, so neither carries a {@code header_modes}
      * entry and the set/default precedence does not apply to them — and a redirect answer has no
      * origin response to defer to in any case.
+     * <p>
+     * {@code Vary} is the one exception to "written after, so it wins": writing it last would
+     * otherwise DISCARD the stage value rather than override a competing one, and the stage value is
+     * load-bearing — the CORS reflection announces {@code Origin} there. It is therefore merged with
+     * the answer's names through {@link SecurityHeadersStage#mergedVary}, the same rule the stage
+     * itself uses.
      */
     private void writeRedirect(RoutingContext ctx, PipelineRequest request, RedirectStage.Answer answer) {
         Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
@@ -1187,7 +1191,11 @@ public class GatewayEdgeRoute {
                 response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
             }
             if (!answer.vary().isEmpty()) {
-                response.putHeader(VARY_HEADER, String.join(VARY_SEPARATOR, answer.vary()));
+                // MERGE, not replace. The stage headers written above can already carry a Vary — the
+                // CORS reflection announces Origin there — and overwriting it would drop that name
+                // while adding these, trading one cache-variant bug for another.
+                response.putHeader(VARY_HEADER,
+                        SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), answer.vary()));
             }
             response.putHeader(LOCATION_HEADER, answer.location());
             response.end();

@@ -19,7 +19,8 @@ the active mode is a function of configuration.
 
 An inbound request flows left to right through a fixed pipeline. The TLS edge terminates
 (or passes through) the connection; a *security-headers/CORS stage* seeds the *global* response
-security headers applied to *every* response -- including rejections -- and answers CORS preflight
+security headers -- the block every response starts from, and the one a response answered before a
+route is selected keeps, rejections included -- and answers CORS preflight
 `OPTIONS` requests before authentication (preflights carry no credentials by spec; see
 link:configuration.adoc#_security_headers[Configuration -- `security_headers`]); then inbound
 validation and the route matcher act, the selected route's resolved security headers replace the
