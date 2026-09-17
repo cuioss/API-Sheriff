@@ -416,6 +416,11 @@ public final class RouteTableBuilder {
         if (path == null || path.isBlank()) {
             return aliasUpstream;
         }
+        // Only the SEAM is normalized here — a trailing slash the route declares is deliberately
+        // carried through (shouldKeepDeclaredTrailingSlashOfUpstreamPath pins that), because the
+        // consumers normalize it. What those consumers must agree on is HOW MANY they strip:
+        // DispatchStage and LocationRewriter both remove the whole trailing run, so a stored
+        // '/upload//' cannot make the rewrite and the follow-up dispatch disagree about the path.
         String effectiveBasePath = stripTrailingSlashes(aliasUpstream.basePath()) + "/" + stripLeadingSlashes(path);
         return new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(), aliasUpstream.port(),
                 effectiveBasePath);

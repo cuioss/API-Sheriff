@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -85,6 +86,33 @@ class DispatchStageTest {
         void stripsTrailingBasePathSlash() {
             ResolvedUpstream slashed = new ResolvedUpstream("http", "orders-svc", 8080, "/base/");
             assertEquals("/base/orders", DispatchStage.upstreamRequestUri(slashed, "/orders", ""));
+        }
+
+        @Test
+        @DisplayName("strips EVERY trailing slash, so the dispatch and the Location rewrite agree")
+        void stripsEveryTrailingBasePathSlash() {
+            // One slash removed instead of all would forward /base//orders here, while
+            // LocationRewriter — which strips the whole run before matching — would already have
+            // mapped an upstream /base/orders onto the gateway. The client's follow-up would then be
+            // dispatched to a different upstream path than the one the rewrite was derived from.
+            // A base path reaches this method unnormalized whenever the alias URL carries the run,
+            // since TopologyResolver takes URI.getPath() verbatim.
+            ResolvedUpstream doubled = new ResolvedUpstream("http", "orders-svc", 8080, "/base//");
+            ResolvedUpstream tripled = new ResolvedUpstream("http", "orders-svc", 8080, "/base///");
+
+            assertAll("the dispatch normalizes a trailing run exactly as the rewriter does",
+                    () -> assertEquals("/base/orders", DispatchStage.upstreamRequestUri(doubled, "/orders", "")),
+                    () -> assertEquals("/base/orders", DispatchStage.upstreamRequestUri(tripled, "/orders", "")),
+                    () -> assertEquals("/base/orders?page=2",
+                            DispatchStage.upstreamRequestUri(doubled, "/orders", "?page=2")));
+        }
+
+        @Test
+        @DisplayName("a base path that is only slashes collapses to the remainder")
+        void allSlashBasePathCollapses() {
+            // THE EDGE: stripping the whole run must not leave a stray separator behind either.
+            ResolvedUpstream rootish = new ResolvedUpstream("http", "orders-svc", 8080, "//");
+            assertEquals("/orders", DispatchStage.upstreamRequestUri(rootish, "/orders", ""));
         }
     }
 
