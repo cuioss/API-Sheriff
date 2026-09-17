@@ -118,8 +118,9 @@ link:02-bff-session.adoc[session-based variant] and the reason it is the preferr
 == Transparent Refresh and Step-Up
 
 Both work exactly as in the link:02-bff-session.adoc#_transparent_token_refresh[session-based
-variant] -- refresh with rotation on near-expiry, family revocation on reuse detection, and
-RFC 9470 step-up on upstream challenge -- with one difference: the refreshed token is re-sealed
+variant] -- refresh with rotation on near-expiry, refresh failures disposed per kind, reuse
+detection left to the identity provider's strict rotation, and RFC 9470 step-up on upstream
+challenge -- with one difference: the refreshed token is re-sealed
 into a *new cookie* (`Set-Cookie` on the response) rather than written to a store.
 
 *The refresh token's cost in the seal is measured, not open.* Holding it makes the session a
@@ -132,17 +133,43 @@ link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide].
 
 *The concurrent-refresh race (accepted trade-off of statelessness).* Two parallel requests
 carrying the same cookie can both cross the refresh leeway and present the *same* refresh token;
-with rotation plus reuse detection, the IdP may read the second attempt as theft and revoke the
-token family, logging the user out. Mitigations, in order: each instance *single-flights*
-refreshes per session (the second in-instance request waits and reuses the result); where the
-IdP offers reuse tolerance -- a permitted-reuse *count* (Keycloak's "Refresh Token Max Reuse")
-or a short time-window grace (Auth0/Okta style) -- enabling it avoids the false positive, but
-at a real cost: reuse tolerance blunts exactly the theft-detection signal rotation exists to
-provide (RFC 9700 §4.14), so this is a deliberate availability-versus-detection trade, not a
-free fix. Finally, a refresh rejected as reuse is treated as an ordinary refresh failure -- the
-session ends and `on_failure` drives re-authentication. Cross-instance duplicate refresh cannot
-be fully prevented without shared state; with reuse tolerance left off, the residual effect is
-a rare forced re-login.
+with strict rotation the IdP reads the second attempt as reuse and refuses it -- and Keycloak also
+revokes the successor token, so the user is logged out. This race is real in the shipped realms:
+the integration and compose-sample realms both enable strict rotation. Mitigations, in order:
+each instance *single-flights* refreshes per session (the second in-instance request waits and
+reuses the result); where the IdP offers reuse tolerance -- a permitted-reuse *count*
+(Keycloak's "Refresh Token Max Reuse") or a short time-window grace (Auth0/Okta style) --
+enabling it avoids the false positive, but at a real cost: reuse tolerance blunts exactly the
+theft-detection signal rotation exists to provide (RFC 9700 §4.14), so this is a deliberate
+availability-versus-detection trade, not a free fix. A refresh the IdP rejects as reuse arrives
+at the gateway as an ordinary `invalid_grant` -- disposed as a *credential rejection*: the
+session ends, the session cookie is cleared, `ApiSheriff-111` records `credential-rejected`, and
+`on_failure` only decides how that request is answered (a login redirect or a `401`). The
+gateway itself detects no reuse -- it keeps no token family -- so the same IdP rejection is what
+stops a *real* replay of a copied pre-refresh cookie (ADR-0046). Cross-instance duplicate refresh
+cannot be fully prevented without shared state; with reuse tolerance left off, the residual
+effect is a rare forced re-login.
+
+*A retained ended cookie is refused locally (amplification guard).* Ending a cookie-mode session
+destroys nothing server-side -- only the clearing `Set-Cookie` ends it -- so a client that keeps or
+replays the sealed cookie would otherwise drive a fresh refresh grant to the IdP, and a
+`WARN ApiSheriff-111`, on every near-expiry request until the absolute TTL. When the refresh
+coordinator ends a session as `credential-rejected`, `redeemed-response-refused` or `persist-failure`,
+it therefore marks the presented refresh token -- as a salted, non-reversible digest, never the token
+or the cookie -- until the session's absolute lifetime. A later request presenting that token takes
+the session-ended disposition (cleared cookie, `on_failure`) with no IdP call, no revocation and no
+warning record. The marker is keyed on the refresh token, not the session, so a *successor* cookie of
+the same session still reaches the IdP once, is refused there, and is then marked itself. It is a
+bounded negative cache of ended tokens, not a token family: reuse detection stays the IdP's. Its
+residuals are stated plainly:
+
+* *Per instance.* Each other instance still makes one IdP call for the replayed token before it marks
+  the token itself.
+* *In memory.* A restart forgets every marker, so the next replay costs one IdP call again.
+* *Bounded.* The store holds a fixed number of markers; when it is full of unexpired ones, a token is
+  not recorded and its replays degrade to one IdP call per request, as without the guard.
+* *Refresh-ended sessions only.* RP-initiated logout does not set it, and server mode does not use it,
+  because destroying the stored session already ends every copy of the cookie there.
 
 == Logout
 

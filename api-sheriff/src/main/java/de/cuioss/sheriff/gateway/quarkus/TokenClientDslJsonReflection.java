@@ -19,8 +19,10 @@ import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.discovery._ProviderMetadata_DslJsonConverter;
 import de.cuioss.sheriff.token.client.flow.ParResponse;
 import de.cuioss.sheriff.token.client.flow._ParResponse_DslJsonConverter;
+import de.cuioss.sheriff.token.client.token.TokenErrorResponse;
 import de.cuioss.sheriff.token.client.token.TokenResponse;
 import de.cuioss.sheriff.token.client.token.UserInfoResponse;
+import de.cuioss.sheriff.token.client.token._TokenErrorResponse_DslJsonConverter;
 import de.cuioss.sheriff.token.client.token._TokenResponse_DslJsonConverter;
 import de.cuioss.sheriff.token.client.token._UserInfoResponse_DslJsonConverter;
 import io.quarkus.runtime.annotations.RegisterForReflection;
@@ -31,7 +33,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * deserialize IdP responses in a GraalVM native image.
  * <p>
  * The engine parses every back-channel IdP response (OIDC discovery, the token
- * endpoint, PAR, and userinfo) with a DSL-JSON instance built by
+ * endpoint success response, the token endpoint error response, PAR, and userinfo)
+ * with a DSL-JSON instance built by
  * {@code de.cuioss.sheriff.token.commons.transport.ParserConfig}. For each response
  * type the DSL-JSON annotation processor emits a compile-time
  * {@code _<Type>_DslJsonConverter} that implements
@@ -51,6 +54,17 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * their nested {@code $ObjectFormatConverter} readers via a direct {@code new} and are
  * therefore reached by the native-image static analysis without an explicit entry.
  * <p>
+ * A missing entry does not always surface as a visible parse failure. The engine reads
+ * a {@code 4xx} token endpoint body as a {@link TokenErrorResponse} to decide whether the
+ * IdP refused the credential ({@code error=invalid_grant}); a body that cannot be read is
+ * treated as having no error code. Without the {@code _TokenErrorResponse_DslJsonConverter}
+ * entry every {@code invalid_grant} refusal in native is therefore read as an unparseable
+ * body and reported as a transport failure: a refresh-token rejection degrades from
+ * credential-rejected to {@code PRE_REDEMPTION}, and the BFF keeps a session the IdP has
+ * already refused. The JVM lane cannot observe this, because the reflective lookup
+ * succeeds there; {@code TokenClientDslJsonReflectionTest} guards it by asserting every
+ * generated converter in the engine jar is registered here.
+ * <p>
  * The class has no runtime behavior; it exists solely to carry the
  * {@link RegisterForReflection} targets. Referencing the generated converter classes by
  * symbol (rather than by string) makes any future rename in the client engine fail the
@@ -63,10 +77,12 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         _ProviderMetadata_DslJsonConverter.class,
         _ParResponse_DslJsonConverter.class,
         _TokenResponse_DslJsonConverter.class,
+        _TokenErrorResponse_DslJsonConverter.class,
         _UserInfoResponse_DslJsonConverter.class,
         ProviderMetadata.class,
         ParResponse.class,
         TokenResponse.class,
+        TokenErrorResponse.class,
         UserInfoResponse.class
 })
 public final class TokenClientDslJsonReflection {

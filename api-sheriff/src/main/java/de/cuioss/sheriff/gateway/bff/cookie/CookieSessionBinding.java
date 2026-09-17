@@ -40,7 +40,9 @@ import org.jspecify.annotations.Nullable;
  * against the sealed login instant (a browser that keeps an expired cookie past its {@code Max-Age}
  * still gets "no session"), and reconstructs the record; {@link #persist} re-seals the rotated
  * material; {@link #destroy} is a no-op locally — the browser's copy is cleared through
- * {@link #clearingSetCookieHeader()}, which the logout edge emits.
+ * {@link #clearingSetCookieHeader()}, which the logout edge emits. A client that retains the cookie of a
+ * session the refresh coordinator ended is refused by that coordinator's ended-refresh-token marker,
+ * not by this binding.
  * <p>
  * <strong>No IdP-driven destruction.</strong> A stateless gateway holds no index and cannot reach
  * another browser's cookie, so {@link #idpDestruction()} reports

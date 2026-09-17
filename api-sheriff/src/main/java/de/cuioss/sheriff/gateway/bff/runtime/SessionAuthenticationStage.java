@@ -45,10 +45,22 @@ import org.jspecify.annotations.Nullable;
  *       identical for a server-side store and for a stateless binding;</li>
  *   <li>on a live session, offers it to the single-flight {@link TokenRefresh} refresh seam (the D9
  *       hook — the seam owns the near-expiry decision, single-flight coalescing, and rotation; the
- *       unwired binding returns the session unchanged) and emits any {@code Set-Cookie} the seam
- *       returns, so a binding that re-binds on refresh reaches the browser on the same response. A
- *       <em>failed</em> refresh destroyed the session, so the stage clears the browser's copy and
- *       re-drives the same unauthenticated negotiation rather than mediating a revoked token;</li>
+ *       unwired binding returns the session unchanged) and acts on the {@link RefreshResult} it
+ *       returns:
+ *       <ul>
+ *         <li>{@link RefreshResult.Mediate mediate} — emits any {@code Set-Cookie} the seam returns, so
+ *             a binding that re-binds on refresh reaches the browser on the same response, and
+ *             continues with the session;</li>
+ *         <li>{@link RefreshResult.SessionEnded session ended} — the seam destroyed the session, so the
+ *             stage clears the browser's copy and then applies the refresh-failure response;</li>
+ *         <li>{@link RefreshResult.RequestFailed request failed} — the session is still live but this
+ *             request has no valid token to mediate, so the stage applies the refresh-failure response
+ *             <em>without</em> clearing the cookie: the next request can still use the session.</li>
+ *       </ul>
+ *       The refresh-failure response is the {@link OnFailure} policy
+ *       ({@code oidc.session.refresh.on_failure}): {@link OnFailure#REAUTHENTICATE} re-drives the same
+ *       negotiation as a missing session, {@link OnFailure#REJECT} answers {@code 401}
+ *       {@code application/problem+json} for every request, navigation included;</li>
  *   <li>enforces the route's {@code required_scopes} against the <em>mediated</em> token's granted
  *       scopes through the {@link GrantedScopes} seam — a shortfall is {@code 403}
  *       {@link EventType#SCOPE_MISSING} (the D2c residual);</li>
@@ -84,23 +96,28 @@ public final class SessionAuthenticationStage {
     private final TokenRefresh tokenRefresh;
     private final GrantedScopes grantedScopes;
     private final LoginInitiation loginInitiation;
+    private final OnFailure onFailure;
     private final Clock clock;
 
     /**
-     * Assembles the stage with the session binding and the engine / edge seams.
+     * Assembles the stage with the session binding, the engine / edge seams and the refresh-failure
+     * policy.
      *
      * @param sessionBinding  the mode-neutral session binding resolving the request's live session
      * @param tokenRefresh    the single-flight near-expiry refresh seam (the D9 hook)
      * @param grantedScopes   the mediated-token scope-membership seam backing {@code required_scopes}
      * @param loginInitiation the auth-code-flow initiation seam for a navigation redirect
+     * @param onFailure       the resolved {@code oidc.session.refresh.on_failure} policy applied when a
+     *                        refresh leaves the request without a token to mediate
      * @param clock           the reference clock (TTL anchor for session resolution and refresh)
      */
     public SessionAuthenticationStage(SessionBinding sessionBinding, TokenRefresh tokenRefresh,
-            GrantedScopes grantedScopes, LoginInitiation loginInitiation, Clock clock) {
+            GrantedScopes grantedScopes, LoginInitiation loginInitiation, OnFailure onFailure, Clock clock) {
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.tokenRefresh = Objects.requireNonNull(tokenRefresh, "tokenRefresh");
         this.grantedScopes = Objects.requireNonNull(grantedScopes, "grantedScopes");
         this.loginInitiation = Objects.requireNonNull(loginInitiation, "loginInitiation");
+        this.onFailure = Objects.requireNonNull(onFailure, "onFailure");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -109,7 +126,9 @@ public final class SessionAuthenticationStage {
      *
      * @param request the in-flight request; its route must be selected (stage 2)
      * @throws GatewayException {@code 401} when an unauthenticated non-navigation request is
-     *                          challenged, or {@code 403} when the mediated token lacks a required scope
+     *                          challenged or a refresh failure is rejected under
+     *                          {@link OnFailure#REJECT}, or {@code 403} when the mediated token lacks a
+     *                          required scope
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
@@ -123,33 +142,40 @@ public final class SessionAuthenticationStage {
             return;
         }
 
-        Optional<SessionBinding.BoundSession> refreshed =
-                tokenRefresh.refreshIfNeeded(resolved.get(), cookieHeader, now);
-        if (refreshed.isEmpty()) {
-            // The refresh failed and the seam already destroyed the session (an IdP rejection, or
-            // engine-detected refresh-token reuse that revoked the whole family). Mediating the
-            // pre-refresh token here would keep serving a session the gateway just revoked, so the
-            // request re-drives the SAME unauthenticated negotiation as a missing session. The
-            // clearing cookie drops the browser's stale copy of the revoked session; on the
-            // navigation branch the login challenge adds its own binding cookie for a DIFFERENT
-            // cookie name, so both must reach the browser on this one response — hence the
-            // multi-valued Set-Cookie accumulator rather than a single-valued header slot.
-            emitSetCookies(request, List.of(sessionBinding.clearingSetCookieHeader()));
-            challengeUnauthenticated(request, route, now);
-            return;
+        RefreshResult refreshed = tokenRefresh.refreshIfNeeded(resolved.get(), cookieHeader, now);
+        // A pattern switch over the sealed result: javac rejects it the moment a fourth disposition appears.
+        switch (refreshed) {
+            case RefreshResult.Mediate(SessionBinding.BoundSession bound) -> {
+                emitSetCookies(request, bound.setCookieHeaders());
+                SessionRecord session = bound.session();
+                enforceScopes(route, session);
+                request.mediatedBearer(session.accessToken());
+            }
+            case RefreshResult.SessionEnded() -> {
+                // The seam destroyed the session (the identity provider rejected the refresh token —
+                // including a replayed one under strict rotation — or the gateway refused a redeemed
+                // response). Mediating the pre-refresh token would keep serving an ended session, so the
+                // clearing cookie drops the browser's stale copy first. On the reauthenticate navigation
+                // branch the login challenge adds its own binding cookie for a DIFFERENT cookie name, so
+                // both must reach the browser on this one response — hence the multi-valued Set-Cookie
+                // accumulator rather than a single-valued header slot.
+                emitSetCookies(request, List.of(sessionBinding.clearingSetCookieHeader()));
+                challengeRefreshFailure(request, route, now);
+            }
+            case RefreshResult.RequestFailed() ->
+                // The identity provider never processed the refresh and the access token has expired: the
+                // session is still live, so the cookie is deliberately NOT cleared — the next request can
+                // retry the refresh once the back-off has elapsed.
+                challengeRefreshFailure(request, route, now);
         }
-        emitSetCookies(request, refreshed.get().setCookieHeaders());
-        SessionRecord session = refreshed.get().session();
-        enforceScopes(route, session);
-        request.mediatedBearer(session.accessToken());
     }
 
     /**
      * Appends every supplied {@code Set-Cookie} value to the request's multi-valued Set-Cookie
      * accumulator. Appending — never a single-valued put, never a {@code findFirst()} truncation —
      * is what keeps BOTH the clearing cookie and the login-challenge cookie alive on the
-     * failed-refresh navigation path: the clearing cookie is what drops the browser's copy of a
-     * session the gateway just revoked, so losing it would leave a revoked session cookie in place.
+     * ended-session navigation path: the clearing cookie is what drops the browser's copy of a
+     * session the gateway just destroyed, so losing it would leave an ended session cookie in place.
      */
     private static void emitSetCookies(PipelineRequest request, List<String> setCookieHeaders) {
         setCookieHeaders.forEach(request::addResponseSetCookie);
@@ -160,6 +186,17 @@ public final class SessionAuthenticationStage {
         if (!requiredScopes.isEmpty() && !grantedScopes.provides(session.accessToken(), requiredScopes)) {
             throw new GatewayException(EventType.SCOPE_MISSING,
                     "Mediated token missing a required scope for route " + route.getId());
+        }
+    }
+
+    /**
+     * Applies the {@link OnFailure} policy to a request a refresh left without a token to mediate.
+     */
+    private void challengeRefreshFailure(PipelineRequest request, RouteRuntime route, Instant now) {
+        switch (onFailure) {
+            case REAUTHENTICATE -> challengeUnauthenticated(request, route, now);
+            case REJECT -> throw new GatewayException(EventType.TOKEN_MISSING,
+                    "Token refresh failed for require:session route " + route.getId() + " (on_failure: reject)");
         }
     }
 
@@ -215,13 +252,101 @@ public final class SessionAuthenticationStage {
          *                     from, so the coordinator can re-resolve it under single-flight
          *                     exclusion; may be absent
          * @param now          the reference instant
-         * @return the session to mediate from — the same one, or a refreshed copy carrying the
-         *         rotated token material — plus any {@code Set-Cookie} the re-bind produced; or
-         *         {@link Optional#empty()} when the refresh failed and the seam destroyed the
-         *         session, which the stage treats as unauthenticated
+         * @return {@link RefreshResult.Mediate mediate} carrying the session to mediate from — the
+         *         same one, or a refreshed copy carrying the rotated token material — plus any
+         *         {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
+         *         ended} when the seam destroyed the session; or {@link RefreshResult.RequestFailed
+         *         request failed} when the session is kept but this request has no valid token
          */
-        Optional<SessionBinding.BoundSession> refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader,
-                Instant now);
+        RefreshResult refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader, Instant now);
+    }
+
+    /**
+     * What the {@link TokenRefresh} seam decided for one request. Sealed, so the stage's switch over it
+     * is checked for exhaustiveness.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public sealed interface RefreshResult {
+
+        /**
+         * @param boundSession the session to mediate from plus the re-bind's {@code Set-Cookie} values
+         * @return the mediate result
+         */
+        static RefreshResult mediate(SessionBinding.BoundSession boundSession) {
+            return new Mediate(boundSession);
+        }
+
+        /**
+         * @return the result for a session the seam destroyed
+         */
+        static RefreshResult sessionEnded() {
+            return new SessionEnded();
+        }
+
+        /**
+         * @return the result for a kept session whose request has no valid token to mediate
+         */
+        static RefreshResult requestFailed() {
+            return new RequestFailed();
+        }
+
+        /**
+         * The session is usable: mediate its token and emit the re-bind's cookies.
+         *
+         * @param boundSession the session to mediate from plus the re-bind's {@code Set-Cookie} values
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        record Mediate(SessionBinding.BoundSession boundSession) implements RefreshResult {
+
+            /**
+             * Canonical constructor rejecting an absent bound session.
+             */
+            public Mediate {
+                Objects.requireNonNull(boundSession, "boundSession");
+            }
+        }
+
+        /**
+         * The session was destroyed: clear the browser's session cookie, then apply the
+         * {@link OnFailure} policy.
+         *
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        record SessionEnded() implements RefreshResult {
+        }
+
+        /**
+         * The session is kept but this request has no valid token: apply the {@link OnFailure} policy
+         * without clearing the session cookie.
+         *
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        record RequestFailed() implements RefreshResult {
+        }
+    }
+
+    /**
+     * The resolved {@code oidc.session.refresh.on_failure} policy: how a request is answered when a
+     * refresh leaves it without a token to mediate.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public enum OnFailure {
+
+        /**
+         * The default ({@code reauthenticate}, also when the key is omitted): the same negotiation as a
+         * missing session — a navigation is redirected into login, anything else gets {@code 401}.
+         */
+        REAUTHENTICATE,
+
+        /** {@code reject}: {@code 401} {@code application/problem+json} for every request, navigation included. */
+        REJECT
     }
 
     /**

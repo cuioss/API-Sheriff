@@ -274,8 +274,8 @@ link:../configuration.adoc#_default_trust_store_replaces[Supplying a default tru
 platform bundle]. Read `ApiSheriff-17` and `ApiSheriff-122` in the boot log after any trust change.
 
 Before you build a default store for the identity provider, know that you may not need one. The
-BFF's own back-channel to the identity provider -- discovery, the authorization-code exchange and
-refresh -- has a trust key of its own, `egress_tls.oidc_tls_profile`, and a per-issuer
+BFF's own back-channel to the identity provider -- discovery, the authorization-code exchange,
+refresh and refresh-token revocation -- has a trust key of its own, `egress_tls.oidc_tls_profile`, and a per-issuer
 `jwks.tls_profile` does not cover it. Naming that profile keeps the private CA off every other leg;
 the default store is the alternative, and it reaches every leg that names no profile. Both *replace*
 anchors rather than adding to them. See
@@ -288,6 +288,16 @@ browser -- the gateway opens no connection to the identity provider for it, so t
 the *browser's*, not the gateway's. The token-revocation seam that flow carries is bound to a no-op
 in the production wiring and issues no request today; it would acquire a trust dependency only if it
 were ever given a real implementation, and this paragraph is the place to revisit if it is.
+
+Do not read that as "the gateway never revokes a token". The revocation a *refresh failure* triggers
+is a different call and a real one: when the identity provider redeemed the grant but the gateway
+refused its response, or when the exchange succeeded but the rotated session could not be persisted,
+the gateway revokes the refresh token still live at the provider, best-effort, with an RFC 7009
+request (see
+link:../adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+That request *does* go to the identity provider over the BFF OIDC back-channel, so it rides the same
+posture as discovery, the code exchange and refresh -- `egress_tls.oidc_tls_profile` and
+`egress_tls.oidc_verify_hostname` -- and is why revocation appears in the list above.
 
 == The management interface (health and metrics)
 

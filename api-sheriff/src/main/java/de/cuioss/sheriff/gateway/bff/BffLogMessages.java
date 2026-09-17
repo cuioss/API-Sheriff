@@ -115,7 +115,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114 and 127).
      */
     @UtilityClass
     public static final class WARN {
@@ -132,9 +132,15 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A transparent token refresh failed (IdP rejection or engine-detected refresh-token reuse)
-         * and its session was destroyed; the caller re-authenticates. Records only a bounded,
-         * non-sensitive reason — never the presented refresh token or session id.
+         * A transparent token refresh failed and its session was destroyed; the caller
+         * re-authenticates. The session is destroyed for exactly three reasons, each recorded as a
+         * bounded, non-sensitive reason: the identity provider rejected the presented refresh token
+         * ({@code credential-rejected}, which includes a replayed token rejected under strict
+         * rotation), the gateway refused a response the provider had already redeemed
+         * ({@code redeemed-response-refused}), or the rotated session could not be persisted
+         * ({@code persist-failure}). A failure before the provider processed the grant never
+         * destroys the session and is recorded as {@link #SESSION_REFRESH_DEFERRED} instead. Never
+         * records the presented refresh token or session id.
          */
         public static final LogRecord SESSION_REFRESH_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
@@ -178,6 +184,22 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(114)
                 .template("Sealed session cookie exceeds the size budget (%s bytes) — seal refused")
+                .build();
+
+        /**
+         * A transparent token refresh failed before the identity provider processed the grant — a
+         * connection or DNS failure, a {@code 5xx}, or a {@code 4xx} not attributed to the
+         * credential — so the presented refresh token is still valid and the session is kept. The
+         * session's next attempt waits out the fixed back-off, which bounds this record during an
+         * identity-provider outage to one per session per window while the per-instance back-off map
+         * has room, and — once that map is saturated — to one per shared overflow window for all the
+         * sessions it could not track. Records only the back-off in seconds — never the presented
+         * refresh token or session id.
+         */
+        public static final LogRecord SESSION_REFRESH_DEFERRED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(127)
+                .template("Token refresh failed before the identity provider processed it — session kept, next attempt in %s seconds")
                 .build();
     }
 }

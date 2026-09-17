@@ -236,8 +236,9 @@ public final class ConfigLogMessages {
 
         /**
          * {@code egress_tls.oidc_verify_hostname} resolved to {@code false} at boot, so the BFF OIDC
-         * back-channel — discovery, the authorization-code exchange and refresh — no longer compares
-         * the dialled name against the identity provider certificate's names.
+         * back-channel — discovery, the authorization-code exchange, refresh and refresh-token
+         * revocation — no longer compares the dialled name against the identity provider
+         * certificate's names.
          * <p>
          * The sibling of {@link #JWKS_HOSTNAME_VERIFICATION_DISABLED} on the sixth TLS leg, and a
          * {@code WARN} rather than a boot refusal for the same reason: an identity provider reached
@@ -256,7 +257,7 @@ public final class ConfigLogMessages {
         public static final LogRecord OIDC_HOSTNAME_VERIFICATION_DISABLED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(125)
-                .template("egress_tls.oidc_verify_hostname is false — the BFF OIDC back-channel (discovery, the authorization-code exchange and refresh) no longer verifies that the identity provider certificate names the dialled host. Certificate-chain trust is unaffected and an untrusted identity provider is still refused. The relaxation applies to that leg only; egress_tls.jwks_verify_hostname and egress_tls.upstream_verify_hostname govern the JWKS back-channel and the proxy, gRPC and WebSocket egress clients separately and are unchanged by this key. Naming egress_tls.oidc_tls_profile is refused at boot while this key is false, because the two are mutually exclusive. Restore verification by removing the key or setting it back to true in gateway.yaml")
+                .template("egress_tls.oidc_verify_hostname is false — the BFF OIDC back-channel (discovery, the authorization-code exchange, refresh and refresh-token revocation) no longer verifies that the identity provider certificate names the dialled host. Certificate-chain trust is unaffected and an untrusted identity provider is still refused. The relaxation applies to that leg only; egress_tls.jwks_verify_hostname and egress_tls.upstream_verify_hostname govern the JWKS back-channel and the proxy, gRPC and WebSocket egress clients separately and are unchanged by this key. Naming egress_tls.oidc_tls_profile is refused at boot while this key is false, because the two are mutually exclusive. Restore verification by removing the key or setting it back to true in gateway.yaml")
                 .build();
 
         /**
@@ -276,7 +277,7 @@ public final class ConfigLogMessages {
         public static final LogRecord OIDC_TRUST_PROFILE_IN_EFFECT = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(126)
-                .template("egress_tls.oidc_tls_profile '%s' is in effect — its anchors REPLACE the JVM default trust store on the BFF OIDC back-channel (discovery, the authorization-code exchange and refresh), so a public certificate authority is no longer trusted for the identity provider unless the profile carries it too. The JWKS back-channel and the proxy, gRPC and WebSocket egress clients are not governed by this profile")
+                .template("egress_tls.oidc_tls_profile '%s' is in effect — its anchors REPLACE the JVM default trust store on the BFF OIDC back-channel (discovery, the authorization-code exchange, refresh and refresh-token revocation), so a public certificate authority is no longer trusted for the identity provider unless the profile carries it too. The JWKS back-channel and the proxy, gRPC and WebSocket egress clients are not governed by this profile")
                 .build();
 
         /**

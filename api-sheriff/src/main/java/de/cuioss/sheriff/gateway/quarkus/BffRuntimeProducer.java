@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -42,6 +43,7 @@ import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
@@ -75,6 +77,7 @@ import de.cuioss.sheriff.token.client.flow.IssValidator;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
+import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
@@ -82,10 +85,12 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.tools.logging.CuiLogger;
+import io.quarkus.virtual.threads.VirtualThreads;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import org.jspecify.annotations.Nullable;
 
 /**
  * CDI producer of the {@link BffRuntime} — the D16 edge wiring that makes the D1–D12 BFF
@@ -121,6 +126,18 @@ import jakarta.inject.Singleton;
  * stage's refresh seam degrades to the unwired binding — session unchanged, no cookies — so the
  * gateway mediates the token it was issued until the absolute session TTL expires, and no refresh
  * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
+ * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: a
+ * current, refreshed or deferred session is mediated; a failed refresh — the session was destroyed —
+ * clears the session cookie before the refresh-failure response; an unavailable refresh — the identity
+ * provider was unreachable and the access token has expired, but the session is kept — answers the
+ * refresh-failure response without clearing the cookie. That response is
+ * {@code oidc.session.refresh.on_failure}, resolved here and handed to the stage:
+ * {@code reauthenticate} (also when omitted) re-drives the login negotiation, {@code reject} answers
+ * {@code 401} for every request. A refresh token still live at the identity provider after a session
+ * ends on a refused redemption or a persist failure is revoked, best-effort, through the engine's
+ * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
+ * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
+ * failing request never waits for the revocation endpoint.
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
@@ -129,7 +146,8 @@ import jakarta.inject.Singleton;
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
- * authorization-code exchange and refresh — is the sixth TLS-terminating outbound leg, and it is bound
+ * authorization-code exchange, refresh and refresh-token revocation — is the sixth TLS-terminating
+ * outbound leg, and it is bound
  * to the global {@code egress_tls} block through its own peer keys: {@code oidc_verify_hostname} is
  * passed to the builder's {@code verifyHostname} on every build, the {@code true} path included, so
  * the leg's effect never depends on token-sheriff's own default (ADR-0022); {@code oidc_tls_profile},
@@ -162,10 +180,17 @@ public class BffRuntimeProducer {
     private static final String DEFAULT_FINAL_REDIRECT = "/";
     /** The gateway key a named BFF back-channel trust profile is declared under, for error context. */
     private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
+    /** The RFC 7009 {@code token_type_hint} sent when a live refresh token is revoked. */
+    private static final String REFRESH_TOKEN_TYPE_HINT = "refresh_token";
+    /** The {@code oidc.session.refresh.on_failure} spelling that re-drives login negotiation (the default). */
+    private static final String ON_FAILURE_REAUTHENTICATE = "reauthenticate";
+    /** The {@code oidc.session.refresh.on_failure} spelling that answers {@code 401} for every request. */
+    private static final String ON_FAILURE_REJECT = "reject";
 
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> tokenValidator;
     private final JwksTrustProfileResolver trustProfileResolver;
+    private final ExecutorService virtualThreadExecutor;
     /**
      * The resolved global {@code egress_tls} block, read once here for the same reason
      * {@code TokenValidatorProducer} resolves its own key once (ADR-0040): the keys are gateway-global
@@ -176,21 +201,25 @@ public class BffRuntimeProducer {
     private final EgressTlsConfig egressTls;
 
     /**
-     * @param gatewayConfig        the bound global gateway document carrying the {@code oidc} block and
-     *                             the global {@code egress_tls} block
-     * @param tokenValidator       a lazy handle to the gateway's shared offline validator, resolved
-     *                             only on the active BFF path in either session mode (a bearer-only
-     *                             gateway never triggers it)
-     * @param trustProfileResolver the single seam mapping a logical {@code egress_tls.oidc_tls_profile}
-     *                             name to concrete trust anchors, consulted only on the active path and
-     *                             only when a profile is named
+     * @param gatewayConfig         the bound global gateway document carrying the {@code oidc} block and
+     *                              the global {@code egress_tls} block
+     * @param tokenValidator        a lazy handle to the gateway's shared offline validator, resolved
+     *                              only on the active BFF path in either session mode (a bearer-only
+     *                              gateway never triggers it)
+     * @param trustProfileResolver  the single seam mapping a logical {@code egress_tls.oidc_tls_profile}
+     *                              name to concrete trust anchors, consulted only on the active path and
+     *                              only when a profile is named
+     * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor a best-effort refresh-token
+     *                              revocation is dispatched on, off the request path
      */
     public BffRuntimeProducer(GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
-            JwksTrustProfileResolver trustProfileResolver) {
+            JwksTrustProfileResolver trustProfileResolver,
+            @VirtualThreads ExecutorService virtualThreadExecutor) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
         this.trustProfileResolver = Objects.requireNonNull(trustProfileResolver, "trustProfileResolver");
+        this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
         EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
         this.egressTls = declaredEgressTls == null ? EgressTlsConfig.defaults() : declaredEgressTls;
     }
@@ -256,6 +285,7 @@ public class BffRuntimeProducer {
                 refresh == null ? null : refresh.enabled(), DEFAULT_REFRESH_ENABLED);
         Duration refreshLeeway = Duration.ofSeconds(Objects.requireNonNullElse(
                 refresh == null ? null : refresh.leewaySeconds(), DEFAULT_REFRESH_LEEWAY_SECONDS));
+        SessionAuthenticationStage.OnFailure onFailure = onFailurePolicy(refresh == null ? null : refresh.onFailure());
         OidcConfig.Csrf csrf = session.csrf();
         List<String> declaredTrustedOrigins = csrf == null ? List.of() : csrf.trustedOrigins();
         Set<String> trustedOrigins = declaredTrustedOrigins.isEmpty()
@@ -314,12 +344,19 @@ public class BffRuntimeProducer {
         // stage's refresh seam degrades to sessionUnchanged() — the unwired binding
         // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies) — so the
         // gateway mediates the current token verbatim until the session's absolute TTL expires.
+        // The revocation client is built from the SAME back-channel configuration, so a refresh token
+        // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
+        RevocationClient revocationClient = new RevocationClient(clientConfiguration);
         SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
                 ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
-                sessionBinding))
+                sessionBinding,
+                liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
+                        clientAuthentication),
+                virtualThreadExecutor,
+                endedRefreshTokens(session)))
                 : sessionUnchanged();
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
@@ -332,6 +369,7 @@ public class BffRuntimeProducer {
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
+                onFailure,
                 clock);
 
         // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam; the upstream-challenge
@@ -457,11 +495,34 @@ public class BffRuntimeProducer {
     }
 
     /**
+     * Resolves {@code oidc.session.refresh.on_failure} to the stage's policy. An omitted key means
+     * {@code reauthenticate}. The schema admits only the two spellings, so any other value is refused
+     * rather than silently mapped onto a default.
+     *
+     * @param declared the declared {@code on_failure} value, {@code null} when omitted
+     * @return the resolved policy
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} for an unrecognised value
+     */
+    static SessionAuthenticationStage.OnFailure onFailurePolicy(@Nullable String declared) {
+        if (declared == null) {
+            return SessionAuthenticationStage.OnFailure.REAUTHENTICATE;
+        }
+        return switch (declared) {
+            case ON_FAILURE_REAUTHENTICATE -> SessionAuthenticationStage.OnFailure.REAUTHENTICATE;
+            case ON_FAILURE_REJECT -> SessionAuthenticationStage.OnFailure.REJECT;
+            default -> throw new GatewayException(EventType.CONFIG_INVALID,
+                    "oidc.session.refresh.on_failure '" + declared + "' is not recognised — use '"
+                            + ON_FAILURE_REAUTHENTICATE + "' or '" + ON_FAILURE_REJECT + "'");
+        };
+    }
+
+    /**
      * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
-     * seam: a {@code FAILED} outcome becomes {@link Optional#empty()} so the stage re-drives the
-     * unauthenticated negotiation instead of mediating the pre-refresh token of a session the
-     * gateway just revoked; any other outcome yields the session to mediate from plus whatever
-     * {@code Set-Cookie} the re-bind produced.
+     * seam. {@code CURRENT}, {@code REFRESHED} and {@code DEFERRED} carry a session and are mediated
+     * with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} — the session was destroyed
+     * — ends the session so the stage clears the cookie; {@code UNAVAILABLE} — the session was kept
+     * but its access token has expired — fails only this request, so the cookie survives for the next
+     * attempt.
      * <p>
      * Extracted so the enabled and disabled bindings of the seam read as the two alternatives they
      * are, rather than one of them being a multi-statement lambda inline in the assembly.
@@ -472,13 +533,49 @@ public class BffRuntimeProducer {
     static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
         return (sessionRecord, cookieHeader, now) -> {
             TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
-            if (outcome.isFailure()) {
-                return Optional.empty();
-            }
-            return Optional.of(new SessionBinding.BoundSession(
-                    Objects.requireNonNullElse(outcome.session(), sessionRecord),
-                    outcome.setCookieHeaders()));
+            return switch (outcome.kind()) {
+                case CURRENT, REFRESHED, DEFERRED -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(Objects.requireNonNull(outcome.session(), "session"),
+                                outcome.setCookieHeaders()));
+                case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
+                case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
+            };
         };
+    }
+
+    /**
+     * Selects the coordinator's ended-refresh-token marker by session mode. Cookie mode binds the bounded
+     * in-memory marker, because {@code destroy} holds nothing server-side there and a retained sealed
+     * cookie would otherwise drive a fresh refresh grant on every near-expiry request; server mode binds
+     * the inert one, because {@code destroy} already removes the session from the store.
+     *
+     * @param session the resolved {@code oidc.session} block
+     * @return {@link EndedRefreshTokens#bounded()} in cookie mode, {@link EndedRefreshTokens#inert()}
+     *         otherwise
+     */
+    static EndedRefreshTokens endedRefreshTokens(OidcConfig.Session session) {
+        return session.isCookieMode() ? EndedRefreshTokens.bounded() : EndedRefreshTokens.inert();
+    }
+
+    /**
+     * Binds the coordinator's best-effort refresh-token revocation to the engine's RFC 7009 client.
+     * A provider that declares no {@code revocation_endpoint} leaves nothing to call, so the token is
+     * not revoked and the gap is recorded at {@code DEBUG}; the session has already been destroyed
+     * locally either way.
+     *
+     * @param revocationClient     the engine revocation client on the pinned back-channel posture
+     * @param metadata             the resolved provider metadata
+     * @param refreshToken         the refresh token still live at the provider
+     * @param clientAuthentication the confidential-client authentication to present
+     */
+    static void revokeRefreshToken(RevocationClient revocationClient, ProviderMetadata metadata,
+            String refreshToken, ClientAuthentication clientAuthentication) {
+        Optional<String> revocationEndpoint = metadata.getRevocationEndpoint();
+        if (revocationEndpoint.isEmpty()) {
+            LOGGER.debug("Provider declares no revocation_endpoint — refresh token not revoked after the session ended");
+            return;
+        }
+        revocationClient.revoke(revocationEndpoint.get(), refreshToken, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
     }
 
     /**
@@ -492,7 +589,7 @@ public class BffRuntimeProducer {
      */
     static SessionAuthenticationStage.TokenRefresh sessionUnchanged() {
         return (sessionRecord, cookieHeader, now) ->
-                Optional.of(new SessionBinding.BoundSession(sessionRecord, List.of()));
+                SessionAuthenticationStage.RefreshResult.mediate(new SessionBinding.BoundSession(sessionRecord, List.of()));
     }
 
     /**

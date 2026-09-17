@@ -16,15 +16,19 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
@@ -37,6 +41,8 @@ import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.KeyManager;
@@ -44,6 +50,7 @@ import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
@@ -79,23 +86,70 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
         return Integer.parseInt(System.getProperty("test.mtls.port", "10443"));
     }
 
+    /**
+     * Read timeout on every handshake socket. It bounds every blocking read — the handshake records the
+     * client waits for and the post-refusal application-data probe — but not connection establishment,
+     * which {@link #CONNECT_TIMEOUT_MILLIS} bounds. No overall watchdog closes the socket on a deadline:
+     * the client's own TLS flight is a few kilobytes against a loopback socket buffer far larger, so a
+     * handshake write cannot block, and a scheduled closer would add concurrency to a test whose
+     * refusal evidence depends on a deterministic sequence.
+     */
+    private static final int SO_TIMEOUT_MILLIS = 15_000;
+
+    /** Connect timeout for every handshake socket; bounds establishing the TCP connection to the listener. */
+    private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
+
+    /**
+     * How long a refused handshake waits for a completion notification that must never arrive. The JDK
+     * delivers {@link javax.net.ssl.HandshakeCompletedListener} events on a separate notifier thread, so
+     * "the listener never fired" is only a verdict once that thread has had time to run; a completed
+     * handshake waits the full socket timeout instead.
+     */
+    private static final int LISTENER_GRACE_MILLIS = 2_000;
+
+    /** The cipher suite of the JDK's placeholder session, reported when no handshake completed. */
+    private static final String NULL_CIPHER_SUITE = "SSL_NULL_WITH_NULL_NULL";
+
+    /**
+     * Positive control for the refusal evidence: the same {@link #attemptHandshake(SSLContext)} helper
+     * the rejection tests use must observe the completion listener firing and a valid, negotiated
+     * session here. Without this control "the listener never fired" and "the session is not valid"
+     * could be signals that are simply unable to go true.
+     */
     @Test
     @DisplayName("a client cert the client_ca trusts completes the mTLS handshake")
     void trustedClientCertAccepted() throws Exception {
         SSLContext context = clientContext(
                 System.getProperty("test.mtls.client.keystore"),
                 System.getProperty("test.mtls.client.password", "localhost-trust"));
-        assertDoesNotThrow(() -> handshake(context),
-                "a client certificate trusted by client_ca must complete the mTLS handshake");
+
+        HandshakeOutcome outcome = attemptHandshake(context);
+
+        assertAll("a client certificate trusted by client_ca must complete the mTLS handshake",
+                () -> assertNull(outcome.failure(),
+                        () -> "the trusted handshake failed: " + outcome.failure()),
+                () -> assertTrue(outcome.listenerFired(),
+                        "the handshake-completed listener must fire for an accepted handshake"),
+                () -> assertTrue(outcome.sessionValid(),
+                        "an accepted handshake must leave a valid session"),
+                () -> assertNotEquals(NULL_CIPHER_SUITE, outcome.cipherSuite(),
+                        "an accepted handshake must negotiate a real cipher suite"));
     }
 
+    /**
+     * A client with no key manager offers no certificate, and a require-and-verify listener aborts the
+     * handshake rather than serving the request. The abort races the client's own flight writes exactly
+     * as described on {@link #wrongCaClientCertRejected()}, so the same typed-exception plus
+     * refusal-evidence rule applies.
+     */
     @Test
     @DisplayName("a client presenting no certificate is rejected at the handshake")
     void noClientCertRejected() throws Exception {
-        // No KeyManager → the client offers no certificate; a require-and-verify listener aborts the
-        // handshake rather than serving the request.
         SSLContext context = clientContext(null, null);
-        assertThrows(SSLException.class, () -> handshake(context),
+
+        HandshakeOutcome outcome = attemptHandshake(context);
+
+        assertHandshakeRefused(outcome,
                 "a missing client certificate must be rejected at the TLS handshake, not as an HTTP status");
     }
 
@@ -117,11 +171,26 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
      * answers every client-alias request with the foreign key entry's alias whatever issuers the
      * server advertised, and records that the request happened and which alias it answered.
      * <p>
-     * After the expected {@link SSLException}, the recording is asserted: the handshake asked the
-     * client for a certificate, the forced alias was the one offered, and the chain behind that alias
-     * is the leaf issued by {@code mtls-wrong-ca} (the CA {@code generate-mtls-certificates.sh} signs
-     * the foreign identity with). Only with all three in place can the rejection be the foreign-CA
-     * verdict rather than the no-certificate one.
+     * After the refusal, the recording is asserted: the handshake asked the client for a certificate,
+     * the forced alias was the one offered, and the chain behind that alias is the leaf issued by
+     * {@code mtls-wrong-ca} (the CA {@code generate-mtls-certificates.sh} signs the foreign identity
+     * with). Only with all three in place can the rejection be the foreign-CA verdict rather than the
+     * no-certificate one.
+     * <p>
+     * <strong>The refusal races the client's flight.</strong> Since {@code c74f5d2} (#308) introduced
+     * the forced alias, the client genuinely sends its TLS 1.2 flight — the foreign chain,
+     * {@code CertificateVerify} and {@code Finished} — and the server aborts once it has verified the
+     * chain. Which side wins is timing: the client either reads the server's fatal alert and throws an
+     * {@link SSLException}, or its write of the rest of the flight hits the already-closed connection
+     * and throws a {@link SocketException} ({@code Broken pipe}). Both are the same server verdict.
+     * <p>
+     * A {@link SocketException} is nevertheless only admitted together with proof that the server
+     * refused, because a bare socket failure could equally be a dropped connection that says nothing
+     * about client-certificate verification. {@link #assertHandshakeRefused(HandshakeOutcome, String)}
+     * therefore requires, for either exception type, that the handshake-completed listener never
+     * fired, that no valid negotiated session exists, and that no application data can be read. A
+     * timeout — on the handshake or on that read — is never admitted: it means the server did not
+     * refuse. {@link #trustedClientCertAccepted()} proves each of those signals can go the other way.
      */
     @Test
     @DisplayName("a client cert signed by a foreign CA is offered and rejected at the handshake")
@@ -143,7 +212,9 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
                 sunX509KeyManager(loaded, password), foreignAlias);
         SSLContext context = contextWith(new KeyManager[]{keyManager});
 
-        assertThrows(SSLException.class, () -> handshake(context),
+        HandshakeOutcome outcome = attemptHandshake(context);
+
+        assertHandshakeRefused(outcome,
                 "a client certificate signed by a CA the client_ca does not trust must be rejected");
 
         String offered = keyManager.offeredAlias();
@@ -200,15 +271,123 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
     }
 
     /**
-     * Opens a TLS connection to the mTLS listener and drives the handshake to completion. The server
-     * certificate is trust-all (the stack's self-signed material); only the CLIENT-auth outcome is
-     * under test.
+     * Opens a TLS connection to the mTLS listener, drives the handshake and records what happened. The
+     * server certificate is trust-all (the stack's self-signed material); only the CLIENT-auth outcome
+     * is under test.
+     * <p>
+     * The socket is created unconnected so both timeouts are in force before any blocking call: the read
+     * timeout is set first, then the connection is established under {@link #CONNECT_TIMEOUT_MILLIS}. The
+     * peer is still named by the host name {@code localhost}, which the socket adopts as its peer host
+     * exactly as {@code createSocket("localhost", port)} did, so the handshake takes the same listener
+     * path (a dotless host name carries no SNI either way). A failure to connect at all — refused or
+     * timed out — propagates as a test error: an unreachable listener is not a handshake refusal. When
+     * the handshake throws, the socket is probed for application data before it is closed; the client
+     * itself never writes any.
      */
-    private static void handshake(SSLContext context) throws IOException {
+    private static HandshakeOutcome attemptHandshake(SSLContext context)
+            throws IOException, InterruptedException {
         SSLSocketFactory factory = context.getSocketFactory();
-        try (SSLSocket socket = (SSLSocket) factory.createSocket("localhost", mtlsPort())) {
-            socket.setSoTimeout(15_000);
-            socket.startHandshake();
+        try (SSLSocket socket = (SSLSocket) factory.createSocket()) {
+            socket.setSoTimeout(SO_TIMEOUT_MILLIS);
+            socket.connect(new InetSocketAddress("localhost", mtlsPort()), CONNECT_TIMEOUT_MILLIS);
+            CountDownLatch completed = new CountDownLatch(1);
+            socket.addHandshakeCompletedListener(event -> completed.countDown());
+            IOException failure = null;
+            try {
+                socket.startHandshake();
+            } catch (IOException e) {
+                failure = e;
+            }
+            boolean listenerFired = completed.await(
+                    failure == null ? SO_TIMEOUT_MILLIS : LISTENER_GRACE_MILLIS, TimeUnit.MILLISECONDS);
+            SSLSession session = socket.getSession();
+            ApplicationRead applicationRead = failure == null
+                    ? ApplicationRead.NOT_ATTEMPTED
+                    : readApplicationData(socket);
+            return new HandshakeOutcome(failure, listenerFired, session.isValid(), session.getCipherSuite(),
+                    applicationRead);
+        }
+    }
+
+    /**
+     * Attempts one application-data read on a socket whose handshake threw. The read is bounded by the
+     * socket timeout; a closed socket is not read at all.
+     */
+    private static ApplicationRead readApplicationData(SSLSocket socket) {
+        if (socket.isClosed()) {
+            return ApplicationRead.SOCKET_CLOSED;
+        }
+        try {
+            return socket.getInputStream().read() == -1 ? ApplicationRead.END_OF_STREAM : ApplicationRead.DATA;
+        } catch (SocketTimeoutException e) {
+            return ApplicationRead.TIMED_OUT;
+        } catch (IOException e) {
+            return ApplicationRead.IO_FAILURE;
+        }
+    }
+
+    /**
+     * Asserts that the server refused the handshake. Exactly two exception types are admitted —
+     * {@link SSLException} and {@link SocketException} — and neither may stem from a timeout. For both,
+     * the refusal must be evidenced: the completion listener never fired, no valid negotiated session
+     * exists, and the post-failure read yields no application data and does not time out. All checks
+     * are reported together, so a handshake that completed shows every piece of missing evidence.
+     */
+    private static void assertHandshakeRefused(HandshakeOutcome outcome, String expectation) {
+        IOException failure = outcome.failure();
+        assertAll(expectation,
+                () -> assertNotNull(failure, "the handshake completed without any exception"),
+                () -> assertTrue(failure == null || isAdmissibleRefusal(failure),
+                        () -> "only SSLException or a non-timeout SocketException is a handshake refusal, got: "
+                                + failure),
+                () -> assertFalse(outcome.listenerFired(),
+                        "the handshake-completed listener fired, so the handshake was not refused"),
+                () -> assertFalse(outcome.sessionValid() && !NULL_CIPHER_SUITE.equals(outcome.cipherSuite()),
+                        () -> "a valid negotiated session exists (cipher suite " + outcome.cipherSuite()
+                                + "), so the handshake was not refused"),
+                () -> assertTrue(outcome.applicationRead().isRefusalEvidence(),
+                        () -> "after the failed handshake the application-data read ended in "
+                                + outcome.applicationRead() + ", which is not evidence of a refusal"));
+    }
+
+    private static boolean isAdmissibleRefusal(IOException failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SocketTimeoutException) {
+                return false;
+            }
+        }
+        return failure instanceof SSLException || failure instanceof SocketException;
+    }
+
+    /** The recorded result of one handshake attempt, see {@link #attemptHandshake(SSLContext)}. */
+    private record HandshakeOutcome(IOException failure, boolean listenerFired, boolean sessionValid,
+    String cipherSuite, ApplicationRead applicationRead) {
+    }
+
+    /** How the application-data probe after a failed handshake ended. */
+    private enum ApplicationRead {
+
+        /** The handshake did not throw, so no probe ran. */
+        NOT_ATTEMPTED(false),
+        /** The failed handshake already closed the socket; nothing can be exchanged. */
+        SOCKET_CLOSED(true),
+        /** The peer closed the connection without sending application data. */
+        END_OF_STREAM(true),
+        /** The read failed without a timeout; the broken connection carries no data. */
+        IO_FAILURE(true),
+        /** The read timed out: the connection stayed open, which is not a refusal. */
+        TIMED_OUT(false),
+        /** Application bytes arrived, which a refused handshake can never produce. */
+        DATA(false);
+
+        private final boolean refusalEvidence;
+
+        ApplicationRead(boolean refusalEvidence) {
+            this.refusalEvidence = refusalEvidence;
+        }
+
+        boolean isRefusalEvidence() {
+            return refusalEvidence;
         }
     }
 

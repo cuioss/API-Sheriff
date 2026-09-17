@@ -182,7 +182,9 @@ integration incl. RFC 9457 exception mapping via `token-sheriff-client-quarkus`)
 The OIDC/OAuth confidential-client engine, purpose-built for API Sheriff and used by the two
 BFF variants: authorization-code + PKCE retrieval, `state`/`nonce`/mix-up defence, PAR,
 sender-constraint, step-up, RP-initiated logout triggering, and the server-side token
-lifecycle (refresh with rotation and reuse revocation, RFC 7009 revocation). It wires
+lifecycle (refresh with rotation, classification of a refused refresh by failure kind, RFC 7009
+revocation). Refresh-token reuse detection is not part of it: that is the identity provider's
+strict rotation (ADR-0046). It wires
 `token-sheriff-validation` internally to validate every retrieved token. The authoritative
 API and requirement surface is `TokenSheriff/doc/client` (`CLIENT-1..22`); the split between
 engine and BFF responsibilities is stated in

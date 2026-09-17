@@ -124,7 +124,11 @@ public enum EventType {
     SESSION_CREATED(null, 0),
     /** A server-side session was destroyed (RP-initiated logout, back-channel logout, TTL eviction, or refresh failure). */
     SESSION_DESTROYED(null, 0),
-    /** A transparent token refresh failed (IdP rejection or refresh-token reuse) and its session was destroyed. */
+    /**
+     * A transparent token refresh failed and its session was destroyed: the identity provider rejected
+     * the refresh token (including a replay rejected under strict rotation), the gateway refused a
+     * redeemed response, or the rotated session could not be persisted.
+     */
     SESSION_REFRESH_FAILED(null, 0),
     /** A back-channel logout token was accepted and its affected sessions were destroyed. */
     BACKCHANNEL_LOGOUT(null, 0),

@@ -8,6 +8,8 @@
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
   "offlineSessionIdleTimeout": 2592000,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
   "attributes": {
     "frontendUrl": "https://keycloak:8443"
   },
