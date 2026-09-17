@@ -201,6 +201,64 @@ class SecurityHeadersStageTest {
         assertEquals("https://ok.example", request.responseHeaders().get(ACAO));
     }
 
+    @Nested
+    @DisplayName("Vary on the CORS reflection")
+    class VaryOnCorsReflection {
+
+        private static final String VARY = "Vary";
+
+        @Test
+        @DisplayName("announces Vary: Origin whenever an origin is reflected")
+        void reflectionAnnouncesVaryOrigin() {
+            // Arrange — the reflected value IS the request's Origin, so the response differs per
+            // origin. Without Vary a shared cache may hand one origin's ACAO to another; a public
+            // cookie-less redirect is heuristically cacheable, which is where this bites.
+            SecurityHeadersStage stage = corsStage(List.of("*"), false);
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://any.example", false);
+
+            // Act
+            stage.process(request);
+
+            // Assert
+            assertAll("a reflected origin is announced as a cache variant",
+                    () -> assertEquals("https://any.example", request.responseHeaders().get(ACAO)),
+                    () -> assertEquals("Origin", request.responseHeaders().get(VARY)));
+        }
+
+        @Test
+        @DisplayName("adds no Vary when no origin is reflected")
+        void noReflectionNoVary() {
+            // THE CONTROL: Vary must follow the reflection, not the stage. A refused origin produces
+            // no ACAO, so the response does not vary and must not claim to.
+            SecurityHeadersStage stage = corsStage(List.of("https://ok.example"), false);
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://evil.example", false);
+
+            stage.process(request);
+
+            assertNull(request.responseHeaders().get(VARY),
+                    "a response that carries no Access-Control-Allow-Origin does not vary on Origin");
+        }
+
+        @Test
+        @DisplayName("merges into an existing Vary rather than replacing it")
+        void mergesIntoExistingVary() {
+            assertAll("the merge rule",
+                    () -> assertEquals("Origin", SecurityHeadersStage.mergedVary(null, List.of("Origin"))),
+                    () -> assertEquals("Origin", SecurityHeadersStage.mergedVary("  ", List.of("Origin"))),
+                    () -> assertEquals("X-Tenant, Origin",
+                            SecurityHeadersStage.mergedVary("X-Tenant", List.of("Origin")),
+                            "an existing name is kept — the redirect path lists its match.headers there"),
+                    () -> assertEquals("Origin", SecurityHeadersStage.mergedVary("Origin", List.of("Origin")),
+                            "Vary is a set; a repeat only misleads"),
+                    () -> assertEquals("origin", SecurityHeadersStage.mergedVary("origin", List.of("Origin")),
+                            "field names are case-insensitive, so no duplicate is added"),
+                    () -> assertEquals("*", SecurityHeadersStage.mergedVary("*", List.of("Origin")),
+                            "* already varies on everything; adding a name would WEAKEN it"),
+                    () -> assertEquals("X-A, X-B, Origin",
+                            SecurityHeadersStage.mergedVary("X-A, X-B", List.of("Origin"))));
+        }
+    }
+
     @Test
     @DisplayName("emits no CORS header for an origin that is neither listed nor wildcarded")
     void disallowedOriginEmitsNoCorsHeader() {
@@ -384,10 +442,13 @@ class SecurityHeadersStageTest {
             stage.applyRouteHeaders(request, null);
 
             // Assert
-            assertAll("a null route block leaves nothing behind but the CORS header stage 2a never touches",
-                    () -> assertEquals(Set.of(ACAO), request.responseHeaders().keySet(),
+            assertAll("a null route block leaves nothing behind but the CORS headers stage 2a never touches",
+                    () -> assertEquals(Set.of(ACAO, "Vary"), request.responseHeaders().keySet(),
                             "every gateway-owned name stage 0 seeded into the set-map is gone, and only"
-                                    + " the CORS header remains"),
+                                    + " the CORS reflection remains — BOTH halves of it. Vary belongs with"
+                                    + " Access-Control-Allow-Origin and must survive stage 2a for the same"
+                                    + " reason: a reflected origin that outlives its own variance"
+                                    + " announcement is the cache-poisoning shape the Vary exists to close"),
                     () -> assertTrue(request.responseDefaultHeaders().isEmpty(),
                             "the default-map carried two gateway-owned names and must be emptied too"),
                     () -> assertEquals("https://ok.example", request.responseHeaders().get(ACAO)));
