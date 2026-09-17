@@ -52,7 +52,8 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # Every route that declares no `security_filter.profile` resolves to this value — including the
 # /proxy, /bff, /graphql and asset routes — so the strict preset's caps (1 MiB body, 20 query
 # parameters, 1024-character header values and parameter values, 1024-character paths) are the
-# floor the suite proves. Two `minimal`-mode routes are the only opt-outs, and both are PARTIAL:
+# floor the suite proves. The `minimal`-mode routes are the only opt-outs — the endpoint files are
+# the authoritative set, so no count is repeated here — and each is PARTIAL:
 # httpbin-minimal-mode (endpoints/httpbin.yaml), which proves the partial-disable matrix, and
 # origin-location-rewrite (endpoints/origin-headers.yaml), whose `url` query parameter must carry a URL.
 #

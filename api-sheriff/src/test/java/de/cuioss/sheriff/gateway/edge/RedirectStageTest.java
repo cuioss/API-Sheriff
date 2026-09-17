@@ -18,13 +18,19 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.IntStream;
 
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -36,7 +42,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for {@link RedirectStage}: the configured status passes through verbatim, the configured
@@ -79,8 +85,41 @@ class RedirectStageTest {
         return stage.answer(redirect, rawQuery, PUBLIC_AUTH, List.of(), List.of());
     }
 
+    /** The JSON pointer at which the schema declares the admitted {@code redirect.status} values. */
+    private static final String STATUS_ENUM_POINTER =
+            "/properties/endpoint/properties/routes/items/properties/redirect/properties/status/enum";
+
+    /**
+     * The admitted redirect statuses, read from the schema rather than transcribed.
+     * <p>
+     * The schema is what actually admits or refuses a configured status, so a list written here would
+     * be a second copy of that set with nothing tying the two together: adding a status to the schema
+     * would leave these cases silently covering the old set, and removing one would leave them
+     * asserting behaviour for a value the boot now refuses. Reading the enum makes the schema the only
+     * place the set can change.
+     * <p>
+     * The read fails loudly rather than yielding an empty stream — a provider that silently produced
+     * no arguments would turn every case below into a vacuous pass, which is worse than the
+     * transcription it replaces.
+     *
+     * @return the statuses the schema admits
+     * @throws IOException when the schema resource cannot be read
+     */
+    static IntStream admittedRedirectStatuses() throws IOException {
+        try (InputStream schema = RedirectStageTest.class.getResourceAsStream("/schema/endpoint.schema.json")) {
+            assertNotNull(schema, "the endpoint schema is not on the test classpath, so the admitted"
+                    + " redirect statuses cannot be derived from it");
+            JsonNode statuses = new ObjectMapper().readTree(schema).at(STATUS_ENUM_POINTER);
+            assertTrue(statuses.isArray() && !statuses.isEmpty(),
+                    "no status enum at " + STATUS_ENUM_POINTER + " in the endpoint schema — it was moved"
+                            + " or renamed; repoint this provider in the same change rather than letting"
+                            + " it derive nothing and pass");
+            return IntStream.range(0, statuses.size()).map(index -> statuses.get(index).asInt());
+        }
+    }
+
     @ParameterizedTest(name = "status {0}")
-    @ValueSource(ints = {301, 302, 303, 307, 308})
+    @MethodSource("admittedRedirectStatuses")
     @DisplayName("Should pass every admitted redirect status through verbatim")
     void shouldPassStatusThroughVerbatim(int status) {
         String location = gatewayPath();
@@ -221,7 +260,7 @@ class RedirectStageTest {
         }
 
         @ParameterizedTest(name = "status {0}")
-        @ValueSource(ints = {301, 302, 303, 307, 308})
+        @MethodSource("de.cuioss.sheriff.gateway.edge.RedirectStageTest#admittedRedirectStatuses")
         @DisplayName("Should decide cacheability from the posture alone, never from the status")
         void shouldDecideIndependentlyOfStatus(int status) {
             AuthConfig authenticated = AuthConfig.builder().require(Require.BEARER).build();

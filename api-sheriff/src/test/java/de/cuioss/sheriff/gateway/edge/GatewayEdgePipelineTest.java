@@ -801,6 +801,13 @@ class GatewayEdgePipelineTest {
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .effectiveSecurityFilter(filter)
+                // Resolved, not omitted. A route whose effectiveSecurityHeaders is null makes stage 2a
+                // remove the gateway-owned names and reseed nothing — correct per ADR-0007, but it is
+                // the shape a route takes only when NEITHER its anchor NOR the gateway declares a
+                // block. This fixture's gateway does declare one, so a null here modelled a topology
+                // the suite never runs and left every response through /open without the global HSTS
+                // and CSP the other routes carry.
+                .effectiveSecurityHeaders(globalHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }

@@ -147,7 +147,7 @@ class SecurityHeadersStageTest {
             SecurityHeadersStage stage = new SecurityHeadersStage(allDefault);
             stage.process(request);
 
-            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build());
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build(), List.of());
 
             assertAll("the route block replaces the global block wholesale across both maps",
                     () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS),
@@ -240,6 +240,45 @@ class SecurityHeadersStageTest {
         }
 
         @Test
+        @DisplayName("stage 2a announces the route's match.headers names, whatever answers the request")
+        void routeMatchHeadersAreAnnouncedAtStageTwoA() {
+            // The names were previously merged only by the redirect writer, so a header-matched route
+            // answered by the proxy relay, gRPC, an asset, a short-circuit or a rejection emitted no
+            // Vary at all. The proxy relay is the worst of those: it forwards the UPSTREAM's cache
+            // policy rather than forcing no-store, so a cacheable response could be reused for a
+            // request that selected a different variant of the same route. Announcing at stage 2a
+            // covers every terminal path at once, because they all write this accumulated map.
+            SecurityHeadersStage stage = corsStage(List.of("https://ok.example"), false);
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            stage.process(request);
+
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build(),
+                    List.of("X-Tenant", "X-Channel"));
+
+            assertAll("both matcher names ride the accumulated map, merged onto the CORS Origin",
+                    () -> assertEquals("Origin, X-Tenant, X-Channel", request.responseHeaders().get(VARY)),
+                    () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS),
+                            "the route block still governs the owned headers"));
+        }
+
+        @Test
+        @DisplayName("stage 2a adds no Vary for a route that matches on no header")
+        void noMatchHeadersNoVary() {
+            // THE CONTROL: the announcement follows the matcher, not the stage. Without it every
+            // routed response would claim a variance it does not have, which costs cache hits.
+            SecurityHeadersStage stage = new SecurityHeadersStage(
+                    SecurityHeadersConfig.builder().frameDeny(true).build());
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            stage.process(request);
+
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build(),
+                    List.of());
+
+            assertNull(request.responseHeaders().get(VARY),
+                    "a route selected on the path alone produces one response per address");
+        }
+
+        @Test
         @DisplayName("merges into an existing Vary rather than replacing it")
         void mergesIntoExistingVary() {
             assertAll("the merge rule",
@@ -329,7 +368,7 @@ class SecurityHeadersStageTest {
             assertEquals(GLOBAL_POLICY, request.responseHeaders().get(CSP),
                     "precondition: stage 0 seeded the global policy");
 
-            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build());
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build(), List.of());
 
             assertAll("the anchor block replaces the global block wholesale, policy included",
                     () -> assertNull(request.responseHeaders().get(CSP),
@@ -346,7 +385,7 @@ class SecurityHeadersStageTest {
             stage.process(request);
 
             stage.applyRouteHeaders(request,
-                    SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build());
+                    SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build(), List.of());
 
             assertAll("exactly one policy, the anchor's, is on the response",
                     () -> assertEquals(anchorPolicy, request.responseHeaders().get(CSP)),
@@ -363,7 +402,7 @@ class SecurityHeadersStageTest {
             stage.process(request);
             request.responseHeaders().put("Allow", "GET");
 
-            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build());
+            stage.applyRouteHeaders(request, SecurityHeadersConfig.builder().frameDeny(true).build(), List.of());
 
             assertAll("only the gateway-owned security names are replaced",
                     () -> assertEquals("DENY", request.responseHeaders().get(FRAME_OPTIONS),
@@ -387,7 +426,7 @@ class SecurityHeadersStageTest {
             stage.process(request);
 
             stage.applyRouteHeaders(request, SecurityHeadersConfig.builder()
-                    .hsts(new Hsts(600, false)).contentTypeNosniff(true).build());
+                    .hsts(new Hsts(600, false)).contentTypeNosniff(true).build(), List.of());
 
             assertAll("the route block governs the response from stage 2a on",
                     () -> assertEquals("max-age=600", request.responseHeaders().get(HSTS)),
@@ -415,6 +454,47 @@ class SecurityHeadersStageTest {
          * the four headers across both modes, and the precondition checks both maps were actually
          * populated — an assertion that passes because nothing was seeded proves nothing.
          */
+        /**
+         * THE MODEL GUARD, and it closes a different gap from the one below. That test derives the
+         * seed half and the own half from the code under test, so the two cannot drift apart — but
+         * both could drift away from the CONFIGURATION MODEL together: a fifth header property added
+         * to {@link SecurityHeadersConfig} would bind, validate and be documented while the stage
+         * simply never seeded it, and every assertion here would still pass, because the fixture
+         * below enumerates its four headers by hand.
+         * <p>
+         * {@code HeaderModes} is the set to derive from: it exists to carry exactly one precedence
+         * entry per gateway-owned header, so its record components ARE the owned set as the model
+         * defines it. Comparing the count of headers the stage actually emits for an all-enabled
+         * block against that component count ties the runtime to the model without naming a single
+         * header here.
+         */
+        @Test
+        @DisplayName("seeds exactly as many headers as the model declares modes for")
+        void seedsOneHeaderPerDeclaredMode() {
+            // Arrange — every header the model knows of, enabled, and no CORS block, so the response
+            // maps hold gateway-owned names and nothing else.
+            SecurityHeadersConfig everyHeader = SecurityHeadersConfig.builder()
+                    .hsts(new Hsts(31536000, true))
+                    .contentTypeNosniff(true)
+                    .frameDeny(true)
+                    .contentSecurityPolicy(GLOBAL_POLICY)
+                    .build();
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+
+            // Act
+            new SecurityHeadersStage(everyHeader).process(request);
+
+            // Assert
+            int seeded = request.responseHeaders().size() + request.responseDefaultHeaders().size();
+            int declaredModes = SecurityHeadersConfig.HeaderModes.class.getRecordComponents().length;
+            assertEquals(declaredModes, seeded,
+                    "the stage seeds one header per mode the model declares. A mismatch means a header"
+                            + " property was added to SecurityHeadersConfig (and to HeaderModes) without"
+                            + " the stage learning to emit it — it would bind and validate and never"
+                            + " reach a response — or a mode was declared for something the stage does"
+                            + " not treat as a gateway-owned header");
+        }
+
         @Test
         @DisplayName("removes every gateway-owned name when the route resolves no block at all — whatever stage 0 seeded")
         void removesSecurityNamesWhenRouteHasNoBlock() {
@@ -439,7 +519,7 @@ class SecurityHeadersStageTest {
                     () -> assertFalse(request.responseDefaultHeaders().isEmpty()));
 
             // Act
-            stage.applyRouteHeaders(request, null);
+            stage.applyRouteHeaders(request, null, List.of());
 
             // Assert
             assertAll("a null route block leaves nothing behind but the CORS headers stage 2a never touches",
@@ -462,7 +542,7 @@ class SecurityHeadersStageTest {
             stage.process(request);
             Map<String, String> afterStageZero = Map.copyOf(request.responseHeaders());
 
-            stage.applyRouteHeaders(request, global);
+            stage.applyRouteHeaders(request, global, List.of());
 
             assertEquals(afterStageZero, Map.copyOf(request.responseHeaders()),
                     "an unanchored route resolves the global block, so stage 2a changes nothing");
@@ -473,7 +553,7 @@ class SecurityHeadersStageTest {
         void leavesShortCircuitUntouched() {
             PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
 
-            new SecurityHeadersStage(global).applyRouteHeaders(request, global);
+            new SecurityHeadersStage(global).applyRouteHeaders(request, global, List.of());
 
             assertTrue(request.shortCircuitStatus().isEmpty(), "stage 2a never short-circuits a request");
         }

@@ -794,7 +794,8 @@ public class GatewayEdgeRoute {
             // route-scoped, so the route's resolved security_headers block (anchor before global,
             // wholesale) replaces the global block seeded at stage 0. Everything answered earlier
             // (a stage-1 rejection, an unrouted 404, the CORS preflight) keeps the global block.
-            securityHeadersStage.applyRouteHeaders(request, route.getSecurityHeaders());
+            securityHeadersStage.applyRouteHeaders(request, route.getSecurityHeaders(),
+                    route.getMatcher().matchHeaderNames());
             verbGateStage.process(request);
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
             // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin

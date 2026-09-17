@@ -221,17 +221,36 @@ public final class SecurityHeadersStage {
      * The removed set and the seeded set are the same set by construction: both iterate the single
      * {@code OwnedHeader} definition, so no header can be seeded at stage 0 without also being
      * removed here.
+     * <p>
+     * This is also where a header-matched route announces its cache variance. A route selected on
+     * {@code match.headers} produces a DIFFERENT response per value of those headers, so every
+     * response it can produce must name them in {@code Vary} — not only the redirect answer. Doing it
+     * here, immediately after selection, is what covers the proxy relay, gRPC, WebSocket, asset,
+     * short-circuit, rejection and reserved paths in one place: each of them writes the accumulated
+     * header map, so each inherits the announcement without its own merge. The alternative — adding
+     * the merge at every terminal writer — is the shape that left every non-redirect path silent,
+     * and the proxy relay is the one that matters most, because it forwards the upstream's own cache
+     * policy rather than forcing {@code no-store}.
      *
-     * @param request      the in-flight request context, with a route already selected
-     * @param routeHeaders the route's resolved {@code security_headers} block, {@code null} when neither
-     *                     its anchor nor the gateway declares one
+     * @param request          the in-flight request context, with a route already selected
+     * @param routeHeaders     the route's resolved {@code security_headers} block, {@code null} when
+     *                         neither its anchor nor the gateway declares one
+     * @param matchHeaderNames the request-header names this route's {@code match.headers} matchers
+     *                         read, empty when it matches on no header
      */
-    public void applyRouteHeaders(PipelineRequest request, @Nullable SecurityHeadersConfig routeHeaders) {
+    public void applyRouteHeaders(PipelineRequest request, @Nullable SecurityHeadersConfig routeHeaders,
+            List<String> matchHeaderNames) {
         Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(matchHeaderNames, "matchHeaderNames");
         request.responseHeaders().keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
         request.responseDefaultHeaders().keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
         if (routeHeaders != null) {
             applyResponseHeaders(request, routeHeaders);
+        }
+        // Vary is not an OwnedHeader, so the removal above leaves any stage-0 value (the CORS
+        // reflection's Origin) in place and this merges onto it rather than replacing it.
+        for (String name : matchHeaderNames) {
+            addVary(request, name);
         }
     }
 
