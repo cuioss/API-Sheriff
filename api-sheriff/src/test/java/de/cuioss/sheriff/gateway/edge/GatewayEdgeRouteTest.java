@@ -388,9 +388,9 @@ class GatewayEdgeRouteTest {
 
             // Act
             RouteRuntimeAssembler.SecurityPosture strict =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT);
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, null);
             RouteRuntimeAssembler.SecurityPosture lenient =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT);
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT, null);
 
             // Assert
             assertEquals(SecurityProfile.STRICT, strict.profile(),
@@ -410,13 +410,57 @@ class GatewayEdgeRouteTest {
 
             // Act
             RouteRuntimeAssembler.SecurityPosture posture =
-                    GatewayEdgeRoute.securityPostureFor(noProfile, SecurityProfile.LENIENT);
+                    GatewayEdgeRoute.securityPostureFor(noProfile, SecurityProfile.LENIENT, null);
 
             // Assert
             assertEquals(SecurityProfile.LENIENT, posture.profile(),
                     "a declared block that omits 'profile' still inherits the gateway-wide value");
             assertEquals(SecurityConfiguration.lenient(), posture.configuration(),
                     "an allowlist-only block declares no limit override, so the preset is unchanged");
+        }
+
+        @Test
+        @DisplayName("applies a declared allow_extended_ascii to every route's preset and changes nothing else")
+        void appliesDeclaredExtendedAsciiOverrideToEveryPreset() {
+            // Arrange — both directions: relax the strict preset, tighten the lenient one
+            SecurityFilterConfig limitsOnly = SecurityFilterConfig.builder().maxBodyBytes(2048).build();
+
+            // Act
+            SecurityConfiguration relaxedStrict =
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, true).configuration();
+            SecurityConfiguration tightenedLenient =
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT, false).configuration();
+            SecurityConfiguration relaxedWithLimits =
+                    GatewayEdgeRoute.securityPostureFor(limitsOnly, SecurityProfile.STRICT, true).configuration();
+            SecurityConfiguration omitted =
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, null).configuration();
+
+            // Assert
+            assertAll(
+                    () -> assertTrue(relaxedStrict.allowExtendedAscii(), "true relaxes the strict preset"),
+                    () -> assertFalse(tightenedLenient.allowExtendedAscii(), "false tightens the lenient preset"),
+                    () -> assertTrue(relaxedWithLimits.allowExtendedAscii(),
+                            "a route declaring its own limits still carries the gateway-wide override"),
+                    () -> assertEquals(2048L, relaxedWithLimits.maxBodySize(),
+                            "and still carries its own declared limit"),
+                    () -> assertEquals(SecurityConfiguration.strict(), omitted,
+                            "an omitted key leaves the preset untouched"));
+            assertDiffersFromPresetInExtendedAsciiAlone(SecurityConfiguration.strict(), relaxedStrict);
+            assertDiffersFromPresetInExtendedAsciiAlone(SecurityConfiguration.lenient(), tightenedLenient);
+        }
+
+        private void assertDiffersFromPresetInExtendedAsciiAlone(SecurityConfiguration preset,
+                SecurityConfiguration resolved) {
+            for (RecordComponent component : SecurityConfiguration.class.getRecordComponents()) {
+                if ("allowExtendedAscii".equals(component.getName())) {
+                    continue;
+                }
+                Object presetValue = assertDoesNotThrow(() -> component.getAccessor().invoke(preset));
+                Object resolvedValue = assertDoesNotThrow(() -> component.getAccessor().invoke(resolved));
+                assertEquals(presetValue, resolvedValue,
+                        "component '%s' must stay on the preset — allow_extended_ascii overrides one dimension"
+                                .formatted(component.getName()));
+            }
         }
 
         @Test
@@ -428,7 +472,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             RouteRuntimeAssembler.SecurityPosture posture =
-                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT);
+                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT, null);
 
             // Assert
             assertEquals(SecurityProfile.LENIENT, posture.profile(), "the route's own profile wins");
@@ -444,11 +488,11 @@ class GatewayEdgeRouteTest {
 
             // Act — chain minimal → lenient, then the all-minimal chain
             RouteRuntimeAssembler.SecurityPosture inheritsLenient =
-                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.LENIENT);
+                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.LENIENT, null);
             RouteRuntimeAssembler.SecurityPosture allMinimal =
-                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.MINIMAL);
+                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.MINIMAL, null);
             RouteRuntimeAssembler.SecurityPosture globalMinimalBlockLess =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.MINIMAL);
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.MINIMAL, null);
 
             // Assert
             assertEquals(SecurityProfile.MINIMAL, inheritsLenient.profile(), "the mode itself stays 'minimal'");
@@ -473,7 +517,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration resolved =
-                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT).configuration();
+                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT, null).configuration();
 
             // Assert — the declared dimensions win …
             assertEquals(4096L, resolved.maxBodySize(), "a declared max_body_bytes overrides the preset");
@@ -505,7 +549,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration resolved =
-                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.LENIENT).configuration();
+                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.LENIENT, null).configuration();
 
             // Assert
             assertEquals(11, resolved.maxHeaderCount());
@@ -540,7 +584,7 @@ class GatewayEdgeRouteTest {
         @DisplayName("fails when the cui-http SecurityConfiguration record grows a component the copy does not know")
         void tripwiresOnSecurityConfigurationComponentDrift() {
             // Arrange — the number of components SecurityConfigurations.builderSeededFrom copies
-            int copiedByBuilderSeededFrom = 26;
+            int copiedByBuilderSeededFrom = 27;
 
             // Act
             int declaredComponents = SecurityConfiguration.class.getRecordComponents().length;
@@ -561,7 +605,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration resolved =
-                    GatewayEdgeRoute.securityPostureFor(declared, profile).configuration();
+                    GatewayEdgeRoute.securityPostureFor(declared, profile, null).configuration();
 
             // Assert
             assertEquals(preset, resolved,
@@ -755,7 +799,7 @@ class GatewayEdgeRouteTest {
 
         private GatewayConfig gatewayWithAuthorizationCap(@Nullable Integer cap) {
             return GatewayConfig.builder().version(1)
-                    .securityDefaults(new SecurityDefaultsConfig("strict", cap, null))
+                    .securityDefaults(new SecurityDefaultsConfig("strict", cap, null, null))
                     .build();
         }
 

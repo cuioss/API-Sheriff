@@ -48,6 +48,15 @@ import org.jspecify.annotations.Nullable;
  * takes a request body on {@code GET} — Elasticsearch's {@code _search} being the motivating case.
  * It is a <em>partial</em> relaxation of the framing gate, never a disable: see
  * {@link #effectiveAllowGetWithContentLengthBody()} for the exact boundary.
+ * <p>
+ * <strong>{@code allow_extended_ascii}.</strong> The gateway-wide override of the resolved
+ * profile's extended-ASCII policy. Omitted, the profile decides ({@code strict} rejects,
+ * {@code lenient} admits). Declared, it replaces that single dimension on the baseline and on every
+ * route, and nothing else. {@code true} admits the Latin-1 range (U+00A0-U+00FF) in paths, parameter
+ * values and header values, plus all Unicode above U+00FF in header values; it never admits the C1
+ * controls (U+0080-U+009F), non-ASCII in header names or cookies, or Unicode above U+00FF in a URL —
+ * cui-http rejects those unconditionally. Applied through
+ * {@link SecurityConfigurations#withDeclaredCharacterPolicy}.
  *
  * @param profile the baseline security-filter profile, {@code null} when omitted
  * @param maxAuthorizationHeaderValueLength the {@code Authorization} header-value cap, {@code null}
@@ -58,12 +67,14 @@ import org.jspecify.annotations.Nullable;
  *                                      {@code GET}, {@code null} when omitted — resolve it through
  *                                      {@link #effectiveAllowGetWithContentLengthBody()} rather than
  *                                      reading this component directly
+ * @param allowExtendedAscii whether extended ASCII and non-ASCII header values are admitted,
+ *                           {@code null} when omitted — the resolved profile's preset then decides
  * @author API Sheriff Team
  * @since 1.0
  */
 // cui-rewrite:disable AnnotationNewlineFormat
 public record SecurityDefaultsConfig(@Nullable String profile, @Nullable Integer maxAuthorizationHeaderValueLength,
-@Nullable Boolean allowGetWithContentLengthBody) {
+@Nullable Boolean allowGetWithContentLengthBody, @Nullable Boolean allowExtendedAscii) {
 
     /**
      * The {@code Authorization} header-value cap an omitted

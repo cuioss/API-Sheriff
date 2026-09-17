@@ -41,6 +41,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
@@ -83,6 +84,8 @@ class GatewayEdgePipelineTest {
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
+    private TokenValidator tokenValidator;
+    private RouteTable routeTable;
     private HttpServer upstreamServer;
     private HttpServer frontServer;
     private HttpClient client;
@@ -104,10 +107,10 @@ class GatewayEdgePipelineTest {
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         int upstreamPort = upstreamServer.actualPort();
 
-        TokenValidator tokenValidator = TokenValidator.builder()
+        tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
-        RouteTable routeTable = new RouteTable(List.of(
+        routeTable = new RouteTable(List.of(
                 route("secure", "/secure", Require.BEARER, upstreamPort, HttpMethod.GET),
                 route("echo", "/echo", Require.NONE, upstreamPort, HttpMethod.GET, HttpMethod.POST),
                 minimalModeRoute(upstreamPort)));
@@ -117,6 +120,14 @@ class GatewayEdgePipelineTest {
                 .securityHeaders(corsHeaders())
                 .build();
 
+        frontServer = startFront(gatewayConfig);
+        frontPort = frontServer.actualPort();
+
+        client = vertx.createHttpClient();
+    }
+
+    /** Boots a real edge over the shared route table for {@code gatewayConfig} on its own front server. */
+    private HttpServer startFront(GatewayConfig gatewayConfig) throws Exception {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
@@ -124,12 +135,9 @@ class GatewayEdgePipelineTest {
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
-        frontServer = Awaits.connect(
+        return Awaits.connect(
                 vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the edge front server to start listening");
-        frontPort = frontServer.actualPort();
-
-        client = vertx.createHttpClient();
     }
 
     @AfterEach
@@ -270,18 +278,45 @@ class GatewayEdgePipelineTest {
     @Test
     @DisplayName("profile: minimal disables only the url-parameter validation — the strict route still rejects it")
     void minimalRouteAcceptsParameterValueTheStrictRouteRejects() throws Exception {
-        // Arrange — a '/' inside a parameter value is refused by the url-parameter pipeline
+        // Arrange — a '<' inside a parameter value is refused by the url-parameter pipeline
 
         // Act
-        Response onStrictRoute = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders?return_to=%2Fhome",
+        Response onStrictRoute = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders?return_to=%3Chome",
                 Map.of(), null);
-        Response onMinimalRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed?return_to=%2Fhome",
+        Response onMinimalRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed?return_to=%3Chome",
                 Map.of(), null);
 
         // Assert
         assertEquals(400, onStrictRoute.status(), "the strict-baseline route rejects the parameter value");
         assertEquals(200, onMinimalRoute.status(),
                 "the minimal-mode route accepts it — that is what 'minimal' turns off");
+    }
+
+    @Test
+    @DisplayName("security_defaults.allow_extended_ascii admits a non-ASCII header value the strict baseline rejects")
+    void extendedAsciiOptInAdmitsHeaderValueTheStrictBaselineRejects() throws Exception {
+        // Arrange — two edges over the same routes, differing in the declared key alone. The strict
+        // baseline rejects the value at the pre-route floor, before route selection, which is why the
+        // key is gateway-wide: a per-route relaxation could never reach this check.
+        Map<String, String> nonAsciiHeader = Map.of("X-Display-Name", "José");
+        HttpServer optedInFront = startFront(GatewayConfig.builder()
+                .version(1)
+                .securityHeaders(corsHeaders())
+                .securityDefaults(new SecurityDefaultsConfig(null, null, null, true))
+                .build());
+        try {
+            // Act
+            Response onStrictBaseline = send(frontPort, io.vertx.core.http.HttpMethod.GET, "/echo/orders",
+                    nonAsciiHeader, null);
+            Response onOptedIn = send(optedInFront.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                    "/echo/orders", nonAsciiHeader, null);
+
+            // Assert
+            assertEquals(400, onStrictBaseline.status(), "the strict baseline rejects a non-ASCII header value");
+            assertEquals(200, onOptedIn.status(), "the opted-in gateway admits and forwards the same value");
+        } finally {
+            Awaits.teardown(optedInFront.close(), "the opted-in edge front server to close");
+        }
     }
 
     @Test
@@ -327,8 +362,13 @@ class GatewayEdgePipelineTest {
 
     private Response send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> requestHeaders,
             String body) throws Exception {
+        return send(frontPort, method, uri, requestHeaders, body);
+    }
+
+    private Response send(int port, io.vertx.core.http.HttpMethod method, String uri,
+            Map<String, String> requestHeaders, String body) throws Exception {
         RequestOptions options = new RequestOptions()
-                .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setMethod(method).setURI(uri);
+                .setHost(LoopbackHost.ADDRESS).setPort(port).setMethod(method).setURI(uri);
         CompletableFuture<Response> future = client.request(options)
                 .compose(request -> {
                     requestHeaders.forEach(request::putHeader);

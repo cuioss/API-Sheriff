@@ -80,13 +80,16 @@ class BasicChecksStageTest {
     private static final SecurityConfiguration STRICT = SecurityConfiguration.strict();
     private static final SecurityConfiguration DEFAULTS = SecurityConfiguration.defaults();
 
-    /** An extended-ASCII character: admitted by the builder defaults, refused by {@code strict}. */
+    /** An extended-ASCII character: refused by {@code strict}, admitted once extended ASCII is allowed. */
     private static final String EXTENDED_ASCII = "é";
 
     private final SecurityEventCounter counter = new SecurityEventCounter();
 
     private final BasicChecksStage strictStage = stageWithoutCookieCarveOut(STRICT);
     private final BasicChecksStage defaultStage = stageWithoutCookieCarveOut(DEFAULTS);
+    /** The strict baseline differing in {@code allowExtendedAscii} alone — the matched control. */
+    private final BasicChecksStage extendedAsciiStage = stageWithoutCookieCarveOut(
+            SecurityConfigurations.builderSeededFrom(STRICT).allowExtendedAscii(true).build());
     /** A cookie-mode gateway's stage: the raised cap applies to Cookie header values only. */
     private final BasicChecksStage cookieModeStage = stageWithCookieCarveOut(DEFAULTS);
     /** The same cookie-mode gateway on the strict baseline every undeclared deployment resolves to. */
@@ -363,8 +366,8 @@ class BasicChecksStageTest {
         void authorizationValueStillRefusesExtendedAscii() {
             // Arrange — the ADR-0019 'only the length cap changes' bound: the carve-out pipeline
             // applies every NON-length validator of the baseline it was seeded from. A carve-out
-            // seeded from the builder defaults instead would admit this value, because the builder
-            // defaults permit extended ASCII while strict does not.
+            // seeded from a baseline that permits extended ASCII would admit this value, as the
+            // matched control below shows.
             PipelineRequest request = requestWithHeader("Authorization", "Bearer " + EXTENDED_ASCII + "token");
 
             // Act
@@ -399,8 +402,8 @@ class BasicChecksStageTest {
             PipelineRequest request = requestWithHeader("Authorization", "Bearer " + EXTENDED_ASCII + "token");
 
             // Act + Assert
-            assertDoesNotThrow(() -> defaultStage.process(request),
-                    "the builder-default baseline permits extended ASCII, so the refusal above is "
+            assertDoesNotThrow(() -> extendedAsciiStage.process(request),
+                    "the strict baseline with extended ASCII allowed admits the value, so the refusal above is "
                             + "attributable to the strict seeding and not to the value itself");
         }
     }

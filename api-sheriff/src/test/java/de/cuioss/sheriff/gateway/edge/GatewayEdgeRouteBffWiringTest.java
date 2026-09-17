@@ -247,7 +247,7 @@ class GatewayEdgeRouteBffWiringTest {
             // Act — a reserved user-info request under the same /auth prefix the proxy route claims,
             // carrying an arbitrary query parameter the url-parameter pipeline would reject. The
             // parameter NAME is incidental here — it is not a login parameter and carries no contract.
-            int status = statusOf(USER_INFO_PATH + "?return_to=%2Fhome");
+            int status = statusOf(USER_INFO_PATH + "?return_to=%3Chome");
 
             // Assert — 401 is the user-info handler's own no-session answer. A 400 would mean the
             // request reached route selection and then the route's allowed_paths gate.
