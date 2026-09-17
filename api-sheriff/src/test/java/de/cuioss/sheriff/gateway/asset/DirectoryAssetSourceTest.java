@@ -439,8 +439,12 @@ class DirectoryAssetSourceTest {
     }
 
     @ParameterizedTest(name = "invalid file name ''{0}''")
-    @ValueSource(strings = {"", ".", "..", "../index.html", "sub/index.html", "sub\\index.html", "index\0.html",
-            "index\n.html"})
+    // " " and "\t" are the blank-but-not-empty cases: each passes every other test in the predicate —
+    // neither is "." or "..", neither carries a separator, and a space is not an ISO control
+    // character — so an emptiness test admitted them while requireFileName's contract says blank is
+    // refused. A route configured that way booted and then resolved a substitute nobody serves.
+    @ValueSource(strings = {"", " ", "\t", ".", "..", "../index.html", "sub/index.html", "sub\\index.html",
+            "index\0.html", "index\n.html"})
     @DisplayName("Should refuse an index or fallback that is not a single file-name segment")
     void shouldRefuseInvalidIndexOrFallbackName(String name) {
         assertAll(

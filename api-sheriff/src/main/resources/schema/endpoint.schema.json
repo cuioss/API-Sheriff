@@ -200,7 +200,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["source"],
-                "description": "Optional asset terminal action (ADR-0014). Serves static content through the gateway-owned response envelope instead of proxying. A route carries exactly one of upstream / asset / redirect as its terminal action (enforced in code).",
+                "description": "Optional asset terminal action (ADR-0014). Serves static content through the gateway-owned response envelope instead of proxying. asset and redirect are the two explicit terminal actions and are mutually exclusive; a route declaring neither proxies, to the endpoint base_url unless a route-level upstream block overrides it (enforced in code).",
                 "properties": {
                   "source": {
                     "type": "string",
@@ -229,7 +229,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["location", "status"],
-                "description": "Optional redirect terminal action (ADR-0014 Amendment A1). The gateway answers the request itself with the configured status and Location, without contacting any upstream. A route carries exactly one of upstream / asset / redirect as its terminal action; the open-redirect review of location and the protocol restriction are enforced in code.",
+                "description": "Optional redirect terminal action (ADR-0014 Amendment A1). The gateway answers the request itself with the configured status and Location, without contacting any upstream. redirect and asset are the two explicit terminal actions and are mutually exclusive; a route declaring neither proxies, to the endpoint base_url unless a route-level upstream block overrides it. The open-redirect review of location and the protocol restriction are enforced in code.",
                 "properties": {
                   "location": {
                     "type": "string",
