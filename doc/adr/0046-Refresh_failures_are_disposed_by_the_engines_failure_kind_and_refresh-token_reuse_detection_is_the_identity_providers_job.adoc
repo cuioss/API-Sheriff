@@ -115,16 +115,19 @@ dispatch is swallowed the same way -- both consistent with best-effort.
 The back-off is fixed rather than exponential, bounded in the number of sessions it tracks, read and
 written under the per-session single-flight, and per instance. While the tracked sessions stay below
 that bound it limits both the engine calls and the `ApiSheriff-127` records to one per session per
-window during a provider outage. Once the bound is saturated with unexpired windows, a further
-failing session is not tracked individually; it opens one coarse overflow window instead, and every
-session without its own window makes no engine call and records nothing until that window closes.
-When it closes, exactly one untracked session atomically claims the probe for the next window and
-every other one stays deferred; the claim is released once the provider processes the probe's grant
-or the failing probe can be tracked on its own window, and kept while the bound stays saturated.
-The throttle therefore degrades to one attempt per overflow window for all untracked sessions
-together rather than disappearing under exactly the largest outages. The accepted trade is that a
-session which has not failed itself may see its refresh deferred for up to the fixed back-off while
-the bound is saturated; its still-valid access token is mediated meanwhile.
+window during a provider outage. Once the bound is saturated with unexpired windows (expired ones are
+pruned first), a session without its own window is not tracked individually; one coarse overflow
+window governs all such sessions instead. The first untracked session to arrive at the saturated
+bound atomically claims that window before its engine call, and so does the first one after the
+window elapses; every other untracked session makes no engine call and records nothing until the
+claimed window closes. The claim is released once the provider processes the probe's grant or the
+failing probe can be tracked on its own window, and kept while the bound stays saturated. The
+throttle therefore degrades to one attempt per overflow window for all untracked sessions together
+rather than disappearing under exactly the largest outages. The accepted trade is that a session
+which has not failed itself may see its refresh deferred for up to the fixed back-off while the bound
+is saturated; its still-valid access token is mediated meanwhile. With a healthy provider the same
+claim serialises untracked refreshes to one in flight at a time, only until the saturating windows
+expire and are pruned.
 
 === `on_failure` answers the request; it does not decide the session
 

@@ -413,8 +413,8 @@ class TokenRefreshCoordinatorTest {
     /**
      * The back-off map at its bound: {@link TokenRefreshCoordinator#MAX_BACKOFF_ENTRIES} sessions each
      * hold an unexpired window from a real {@code PRE_REDEMPTION} failure, so a further failing session
-     * cannot be tracked individually and must open the shared overflow window rather than dropping the
-     * throttle. The saturating failures run with the coordinator's logger raised to {@code ERROR} so the
+     * cannot be tracked individually and must claim the shared overflow window before its engine call
+     * rather than dropping the throttle. The saturating failures run with the coordinator's logger raised to {@code ERROR} so the
      * ten thousand expected {@code ApiSheriff-127} records are neither retained nor printed; the level is
      * lowered again before anything this suite asserts about records.
      */
@@ -673,6 +673,107 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, insideWindow.kind()),
                     () -> assertEquals(callsAfterProbe, calls.get(),
                             "no further untracked session reaches the engine inside the retained window"));
+        }
+
+        @Test
+        @DisplayName("Should let exactly one of many concurrent untracked sessions probe the first overflow window at a saturated map")
+        void shouldAdmitOneProbeForFirstOverflowWindow() throws Exception {
+            CountDownLatch othersReturned = new CountDownLatch(PROBE_CONTENDERS - 1);
+            AtomicBoolean holdProbe = new AtomicBoolean();
+            AtomicBoolean holdExpired = new AtomicBoolean();
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+                calls.incrementAndGet();
+                if (holdProbe.get()) {
+                    holdExpired.set(!awaitQuietly(othersReturned));
+                }
+                throw OUTAGE;
+            });
+            saturate(coordinator);
+            Instant insideSaturatingWindows = NOW.plusSeconds(1);
+            List<SessionRecord> contenders = new ArrayList<>();
+            for (int i = 0; i < PROBE_CONTENDERS; i++) {
+                contenders.add(stored("first-window-contender-" + i));
+            }
+            holdProbe.set(true);
+
+            List<RefreshOutcome> outcomes = runConcurrently(coordinator, contenders, insideSaturatingWindows,
+                    othersReturned);
+
+            assertAll("no overflow window was open, yet the untracked sessions together make one attempt",
+                    () -> assertEquals(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + 1, calls.get(),
+                            "exactly one contender claims the first window and reaches the engine (probe hold expired: "
+                                    + holdExpired.get() + ")"),
+                    () -> assertTrue(outcomes.stream().allMatch(o -> o.kind() == RefreshOutcome.Kind.DEFERRED),
+                            "every contender keeps its session with a still-valid access token: " + outcomes),
+                    () -> assertTrue(contenders.stream().allMatch(
+                                    c -> saturationStore.resolve(c.sessionId(), insideSaturatingWindows).isPresent()),
+                            "no contender's session was ended"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
+        }
+
+        @Test
+        @DisplayName("Should prune expired saturating windows on admission so concurrent healthy untracked sessions are not serialised")
+        void shouldNotPinUntrackedSessionsToExpiredSaturation() throws Exception {
+            CountDownLatch allEntered = new CountDownLatch(PROBE_CONTENDERS);
+            AtomicBoolean healthy = new AtomicBoolean();
+            AtomicBoolean holdExpired = new AtomicBoolean();
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+                calls.incrementAndGet();
+                if (!healthy.get()) {
+                    throw OUTAGE;
+                }
+                allEntered.countDown();
+                if (!awaitQuietly(allEntered)) {
+                    holdExpired.set(true);
+                }
+                return rotation();
+            });
+            saturate(coordinator);
+            Instant saturatingWindowsExpired = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
+            List<SessionRecord> contenders = new ArrayList<>();
+            for (int i = 0; i < PROBE_CONTENDERS; i++) {
+                contenders.add(stored("healthy-contender-" + i));
+            }
+            healthy.set(true);
+
+            List<RefreshOutcome> outcomes = runConcurrently(coordinator, contenders, saturatingWindowsExpired,
+                    new CountDownLatch(0));
+
+            assertAll("expired saturating windows no longer throttle anyone",
+                    () -> assertEquals(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + PROBE_CONTENDERS, calls.get(),
+                            "every contender reached the engine at once (entry hold expired: " + holdExpired.get()
+                                    + ")"),
+                    () -> assertTrue(outcomes.stream().allMatch(o -> o.kind() == RefreshOutcome.Kind.REFRESHED),
+                            "every contender refreshed: " + outcomes));
+        }
+
+        /**
+         * Runs one refresh per contender concurrently at {@code at}, counting {@code returned} down as each
+         * one returns, and collects the outcomes with a bounded wait per contender.
+         */
+        private List<RefreshOutcome> runConcurrently(TokenRefreshCoordinator coordinator,
+                List<SessionRecord> contenders, Instant at, CountDownLatch returned) throws Exception {
+            TestLoggerFactory.getTestHandler().clearRecords();
+            List<RefreshOutcome> outcomes = new ArrayList<>();
+            ExecutorService pool = Executors.newFixedThreadPool(contenders.size());
+            try {
+                List<Future<RefreshOutcome>> futures = new ArrayList<>();
+                for (SessionRecord contender : contenders) {
+                    futures.add(pool.submit(() -> {
+                        try {
+                            return refresh(coordinator, contender, at);
+                        } finally {
+                            returned.countDown();
+                        }
+                    }));
+                }
+                for (Future<RefreshOutcome> future : futures) {
+                    outcomes.add(Awaits.connect(future, "a contending untracked refresh to complete"));
+                }
+            } finally {
+                pool.shutdownNow();
+            }
+            return outcomes;
         }
 
         private TokenRefreshCoordinator coordinatorWith(Instant accessExpiry, RefreshExchange exchange) {

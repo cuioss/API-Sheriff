@@ -114,12 +114,15 @@ import org.jspecify.annotations.Nullable;
  * window. The per-session windows are bounded ({@link #MAX_BACKOFF_ENTRIES}); once that bound is
  * saturated, the sessions without their own window share one coarse overflow window instead, so an
  * outage large enough to fill the bound is still throttled — at the cost that such a session may see
- * its refresh deferred for up to the fixed back-off even if it has not failed itself. Once an overflow
- * window elapses, exactly one untracked session claims it atomically and probes the identity provider;
- * every other untracked session is deferred with no engine call and no record, so the untracked
- * sessions together make one attempt per window however many arrive at once. A probe the provider
- * processes, or one that fails but can be tracked on its own window, releases the claim; a probe that
- * fails while the map is still saturated keeps the window in force.
+ * its refresh deferred for up to the fixed back-off even if it has not failed itself. When the bound is
+ * first found saturated with no overflow window open, and again whenever an overflow window elapses,
+ * exactly one untracked session claims the window atomically before any engine call and probes the
+ * identity provider; every other untracked session is deferred with no engine call and no record, so
+ * the untracked sessions together make one attempt per window however many arrive at once. A probe the
+ * provider processes, or one that fails but can be tracked on its own window, releases the claim; a
+ * probe that fails while the map is still saturated keeps the window in force. With a healthy provider
+ * this serialises the untracked refreshes to one in flight at a time while the map stays saturated,
+ * which lasts only until the saturating windows expire and are pruned.
  * <p>
  * <strong>On-failure semantics.</strong> A {@link RefreshOutcome#failed() failed} outcome means the
  * session has already been destroyed; an {@link RefreshOutcome#unavailable() unavailable} outcome
@@ -140,26 +143,29 @@ public final class TokenRefreshCoordinator {
      * and deliberately short: while fewer than {@link #MAX_BACKOFF_ENTRIES} sessions are backing off it
      * bounds the engine calls and the warning records an identity-provider outage produces to one per
      * session per window, and beyond that bound to one per overflow window for all the untracked
-     * sessions together — the single session that claims the elapsed window's probe — while a transient
-     * fault still heals within seconds. Not configurable.
+     * sessions together — the single session that claims the window's probe, the first window at a
+     * saturated map as much as an elapsed one — while a transient fault still heals within seconds. Not
+     * configurable.
      */
     static final Duration PRE_REDEMPTION_RETRY_BACKOFF = Duration.ofSeconds(5);
 
     /**
      * The upper bound on sessions carrying their own pending back-off. Once reached, expired entries are
-     * pruned; when the map is still full, the failing session is not given an entry — instead one coarse
-     * overflow window of {@link #PRE_REDEMPTION_RETRY_BACKOFF} is opened, and every session without its
-     * own entry makes no engine call and records nothing until it closes. When it closes, one untracked
-     * session claims the probe for the next window and every other one keeps waiting; the claim is
-     * released once the identity provider processes a grant or the probe can be tracked on its own window,
-     * and kept while the map stays saturated. The throttle therefore degrades rather than disappears, and
-     * memory stays bounded — one entry per tracked session plus a single instant — under any number of
-     * failing sessions.
+     * pruned; when the map is still full, a session without its own entry is not given one — instead one
+     * coarse overflow window of {@link #PRE_REDEMPTION_RETRY_BACKOFF} governs every such session. The
+     * first untracked session to arrive at the saturated map claims that window atomically before its
+     * engine call, as does the first one after the window elapses; every other untracked session makes no
+     * engine call and records nothing until the claimed window closes. The claim is released once the
+     * identity provider processes a grant or the probe can be tracked on its own window, and kept while the
+     * map stays saturated. The throttle therefore degrades rather than disappears, and memory stays
+     * bounded — one entry per tracked session plus a single instant — under any number of failing sessions.
      * <p>
      * The accepted trade: while the map is saturated, the untracked sessions share that one window, so a
      * session that has not failed itself may also see its refresh deferred for up to the fixed back-off;
      * its still-valid access token is mediated meanwhile, and only an access token that has actually
-     * expired leaves a request without one.
+     * expired leaves a request without one. With a healthy provider the same claim serialises the untracked
+     * refreshes to one in flight at a time — each success releases it at once — and only until the
+     * saturating windows expire and are pruned.
      */
     static final int MAX_BACKOFF_ENTRIES = 10_000;
 
@@ -191,11 +197,12 @@ public final class TokenRefreshCoordinator {
     private final ConcurrentMap<String, Instant> retryNotBefore = new ConcurrentHashMap<>();
     /**
      * The coarse back-off window shared by every session without its own {@link #retryNotBefore} entry,
-     * opened when a failing session could not be recorded because the map held
-     * {@link #MAX_BACKOFF_ENTRIES} unexpired windows. An elapsed window is claimed by moving it, with a
-     * compare-and-set against the exact instance read, to the claiming probe's own window; the claim is
-     * released by a compare-and-set from that claimed instance back to {@link Instant#MIN}.
-     * {@link Instant#MIN} while no window is open — never opened, or released.
+     * in force while the map holds {@link #MAX_BACKOFF_ENTRIES} unexpired windows. Both the first window
+     * at a saturated map ({@link Instant#MIN} read) and an elapsed window are claimed before any engine
+     * call by moving the field, with a compare-and-set against the exact instance read, to the claiming
+     * probe's own window; a probe that fails while the map is still saturated keeps that claim in force as
+     * the window. The claim is released by a compare-and-set from that claimed instance back to
+     * {@link Instant#MIN}. {@link Instant#MIN} while no window is open — never opened, or released.
      */
     private final AtomicReference<Instant> overflowNotBefore = new AtomicReference<>(Instant.MIN);
 
@@ -368,12 +375,15 @@ public final class TokenRefreshCoordinator {
 
     /**
      * Decides whether this attempt may reach the engine. A session holding its own back-off entry is
-     * governed by that entry alone. A session without one proceeds with a single read while no overflow
-     * window is open, and is deferred while an overflow window is still in force. Once an overflow window
-     * has elapsed, exactly one untracked session claims the probe for it — atomically moving the window to
-     * {@code now} plus the back-off, compared against the exact instance just read — and every other
-     * untracked session is deferred with no engine call and no record. A probe that hangs past its claimed
-     * window lets the next session claim the next window, so attempts stay at one per window.
+     * governed by that entry alone. A session without one proceeds while no overflow window is open and
+     * the back-off map is below {@link #MAX_BACKOFF_ENTRIES} — one reference read and one size read — and
+     * is deferred while an overflow window is still in force. When no overflow window is open but the map
+     * is at the bound, expired entries are pruned first; if the map is still saturated, the first window is
+     * claimed exactly like an elapsed one, before any engine call. In both claim cases exactly one untracked
+     * session wins — atomically moving the window to {@code now} plus the back-off, compared against the
+     * exact instance just read — and every other untracked session re-reads the claimed window and is
+     * deferred with no engine call and no record. A probe that hangs past its claimed window lets the next
+     * session claim the next window, so attempts stay at one per window.
      */
     private Admission admit(String sessionId, Instant now) {
         Instant own = retryNotBefore.get(sessionId);
@@ -383,9 +393,14 @@ public final class TokenRefreshCoordinator {
         while (true) {
             Instant window = overflowNotBefore.get();
             if (Instant.MIN.equals(window)) {
-                return Admission.PROCEED;
-            }
-            if (now.isBefore(window)) {
+                if (!saturatedAfterPruning(now)) {
+                    // The healthy path: the per-session windows have room, so nothing throttles this attempt.
+                    return Admission.PROCEED;
+                }
+                // Saturated with unexpired windows and no overflow window open yet: claim the first window
+                // before any engine call, exactly as an elapsed window is claimed below. Instant.MIN is the
+                // constant the field is initialised and released to, so the reference compare matches it.
+            } else if (now.isBefore(window)) {
                 return Admission.BACKING_OFF;
             }
             Instant claim = now.plus(PRE_REDEMPTION_RETRY_BACKOFF);
@@ -394,6 +409,19 @@ public final class TokenRefreshCoordinator {
             }
             // Another session claimed, extended or released the window meanwhile — decide on its new value.
         }
+    }
+
+    /**
+     * Whether the back-off map is still saturated once expired entries are pruned. Pruning runs only at
+     * the bound, so the unsaturated path stays a single size read; at the bound it removes every entry
+     * that is not after {@code now}, which abandoned sessions would otherwise leave behind for good.
+     */
+    private boolean saturatedAfterPruning(Instant now) {
+        if (retryNotBefore.size() < MAX_BACKOFF_ENTRIES) {
+            return false;
+        }
+        retryNotBefore.values().removeIf(entry -> !now.isBefore(entry));
+        return retryNotBefore.size() >= MAX_BACKOFF_ENTRIES;
     }
 
     /**
@@ -419,10 +447,7 @@ public final class TokenRefreshCoordinator {
             // Already tracked: the session's own window moves forward and takes no capacity.
             return false;
         }
-        if (retryNotBefore.size() >= MAX_BACKOFF_ENTRIES) {
-            retryNotBefore.values().removeIf(entry -> !now.isBefore(entry));
-        }
-        if (retryNotBefore.size() < MAX_BACKOFF_ENTRIES) {
+        if (!saturatedAfterPruning(now)) {
             retryNotBefore.put(sessionId, notBefore);
             return false;
         }
