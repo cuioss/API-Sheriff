@@ -388,7 +388,7 @@ class GatewayEdgePipelineTest {
         Map<String, String> nonAsciiHeader = Map.of("X-Display-Name", "José");
         HttpServer optedInFront = startFront(GatewayConfig.builder()
                 .version(1)
-                .securityHeaders(corsHeaders())
+                .securityHeaders(globalHeaders())
                 .securityDefaults(new SecurityDefaultsConfig(null, null, null, true))
                 .build());
         try {
