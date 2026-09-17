@@ -811,7 +811,7 @@ query only when `keep_query` is set. The *open-redirect review* happens once, at
 configuration validator, which is why the request path can be policy-free: a `location` without the
 `allow_external` opt-in must be a single-slash gateway path free of backslashes, encoded slashes,
 dot-segments, whitespace and control characters; with the opt-in it may be an absolute `http`/`https`
-URI with a host and no user-info, and the boot logs `WARN ApiSheriff-127` naming the route. `keep_query`
+URI with a host and no user-info, and the boot logs `WARN ApiSheriff-128` naming the route. `keep_query`
 and `allow_external` cannot be declared together -- the review vets the configured target, never the
 request-supplied query, so the pair is refused rather than carried onto a foreign origin. A redirect
 is refused on every protocol but `http`, and together with an `asset` or `upstream` block. See

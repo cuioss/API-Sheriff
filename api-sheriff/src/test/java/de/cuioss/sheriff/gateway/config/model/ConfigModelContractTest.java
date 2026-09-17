@@ -26,9 +26,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
@@ -1229,6 +1231,64 @@ class ConfigModelContractTest {
             assertAll("unset flags are the secure default",
                     () -> assertFalse(redirect.keepQuery(), "the query is not carried unless opted in"),
                     () -> assertFalse(redirect.allowExternal(), "an external target is not allowed unless opted in"));
+        }
+    }
+
+    // --- The narrowing predicate the anchor-coverage rule depends on ---------
+
+    @Nested
+    @DisplayName("MatchConfig.narrowsBeyondPath and the dimension set it must cover")
+    class NarrowsBeyondPath {
+
+        /** The non-path components of {@link MatchConfig} — the dimensions the predicate must read. */
+        private static final Set<String> NARROWING_COMPONENTS = Set.of("methods", "host", "headers");
+
+        /** The path components, which the predicate deliberately ignores. */
+        private static final Set<String> PATH_COMPONENTS = Set.of("pathPrefix", "path");
+
+        @Test
+        @DisplayName("A matcher constraining nothing but the path does not narrow")
+        void pathOnlyMatcherDoesNotNarrow() {
+            assertAll("neither matcher form narrows on its own",
+                    () -> assertFalse(MatchConfig.builder().pathPrefix("/orders").build().narrowsBeyondPath()),
+                    () -> assertFalse(MatchConfig.builder().path("/orders").build().narrowsBeyondPath()));
+        }
+
+        @Test
+        @DisplayName("Each non-path dimension narrows on its own")
+        void eachDimensionNarrows() {
+            assertAll("every dimension RouteMatcher ANDs with the path",
+                    () -> assertTrue(MatchConfig.builder().pathPrefix("/o")
+                            .methods(List.of(HttpMethod.GET)).build().narrowsBeyondPath(), "methods"),
+                    () -> assertTrue(MatchConfig.builder().pathPrefix("/o")
+                            .host("api.example.org").build().narrowsBeyondPath(), "host"),
+                    () -> assertTrue(MatchConfig.builder().pathPrefix("/o")
+                            .headers(List.of(new MatchConfig.HeaderMatcher("X-K", Boolean.TRUE, null)))
+                            .build().narrowsBeyondPath(), "headers"));
+        }
+
+        /**
+         * THE DRIFT GUARD. {@code narrowsBeyondPath} enumerates the non-path dimensions by hand, and a
+         * dimension added to the record but forgotten there would silently re-open the anchor-coverage
+         * bypass: a route narrowed on the new dimension would again count as covering a namespace it
+         * only partly serves. Deriving the set from the record itself turns that omission into a
+         * failing test at the moment the component is added, which is the only moment anyone is
+         * looking. If this fails because you added a component, decide whether it narrows a match:
+         * extend {@code narrowsBeyondPath} and {@code NARROWING_COMPONENTS}, or add it to
+         * {@code PATH_COMPONENTS} if it is part of the path matcher.
+         */
+        @Test
+        @DisplayName("Every MatchConfig component is classified as narrowing or path")
+        void everyComponentIsClassified() {
+            Set<String> declared = Stream.of(MatchConfig.class.getRecordComponents())
+                    .map(java.lang.reflect.RecordComponent::getName)
+                    .collect(Collectors.toSet());
+            Set<String> classified = new HashSet<>(NARROWING_COMPONENTS);
+            classified.addAll(PATH_COMPONENTS);
+
+            assertEquals(classified, declared,
+                    "a MatchConfig component is neither classified as narrowing nor as part of the path "
+                            + "matcher — narrowsBeyondPath cannot be trusted until it is");
         }
     }
 

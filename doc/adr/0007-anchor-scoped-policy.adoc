@@ -88,7 +88,10 @@ Three lessons condense out:
   anchor's `path_prefix`, and which does not declare that anchor, therefore also fails the boot --
   unless a prefix route declared at the anchor's own `path_prefix` covers the namespace, in which
   case longest-prefix selection gives every address inside it to that member and the broader route
-  is not a bypass. The rule became load-bearing with exact (`match.path`) routes: an anchor whose
+  is not a bypass. Covering means matching the whole namespace, not naming it: a candidate that
+  narrows on a non-path `match` dimension (`match.methods`, `match.host`, `match.headers`) serves
+  only part of it, leaving the complement to the enclosing route, so it is not accepted as coverage.
+  The rule became load-bearing with exact (`match.path`) routes: an anchor whose
   only member is `path: /admin` claims exactly one address, leaving `/admin/` and `/admin/x` to the
   enclosing route and its weaker posture. Exact routes are not judged by it (an exact route serves
   one address, which is the squatter rule's case). `protocol: grpc` routes *are* judged by it --

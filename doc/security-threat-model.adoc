@@ -340,9 +340,9 @@ the router-vs-enforcement desync of this entry expressed in configuration rather
 boot now closes it with the mirror rule: a prefix route whose namespace strictly contains an anchor's
 `path_prefix` without declaring that anchor fails the boot, unless a prefix route declared at the
 anchor's own `path_prefix` covers the namespace -- in which case longest-prefix selection gives that
-member every address inside it *that the member also matches*. So no address in an anchor namespace is
-served by a route outside the anchor, *except* where the covering route narrows on a non-path `match`
-dimension -- the accepted residual recorded below.
+member every address inside it. Coverage requires the member to match its whole namespace and not
+merely to name it: a member narrowing on a non-path `match` dimension is not accepted as covering, so
+no address in an anchor namespace is served by a route outside the anchor.
 
 *The mirror rule reaches every protocol, including `grpc`.* The two declaration-scoped rules waive
 `protocol: grpc` routes, because a service-rooted gRPC method path can never nest inside a gateway
@@ -353,21 +353,17 @@ and the matcher carries no protocol dimension), so a gRPC route declaring a broa
 answer plain HTTP requests inside the swallowed namespace with its own posture. Waiving it there
 would reopen precisely this entry's desync in configuration, so it is not waived.
 
-*Residual risk (accepted) -- a covering route narrowed by a non-path match dimension.* Like the two
-rules it mirrors, the coverage rule is path-geometric: it marks an anchor covered on prefix equality
-alone and reads no other match dimension. The declaring source for what actually narrows a match at
-request time is the route matcher, which ANDs the path with every further dimension it applies --
-`match.methods`, `match.host` and `match.headers` at present; read the matcher rather than this list.
-A covering route narrowed by *any* of them covers only what it matches, so the complement still
-reaches the enclosing route: another host, a verb the covering route omits, or simply a request that
-does not send the header it requires. It is accepted because teaching one of the three
-anchor-containment rules to reason about match dimensions the other two ignore would make the model
-inconsistent for a case that predates exact routes; it is bounded by the covering route being visible
-in the endpoint file, and by the enclosing route still having to satisfy every other anchor rule.
-Note the bound is weakest for `match.headers`: reaching the complement of a host- or method-narrowed
-covering route means changing the `Host` (which the passthrough host guard also sees) or the verb
-(which the enclosing route's own verb gate then judges), whereas the complement of a
-header-narrowed one is reached by simply not sending that header.
+*Coverage requires an unnarrowed member.* The coverage exception was first written path-geometrically
+-- prefix equality alone -- which left the bypass reachable one dimension over: a member declared at
+the anchor prefix but narrowed to `methods: [GET]` marked the namespace covered while every other verb
+matched no anchored route and fell through to the enclosing one, answered under *its* auth and
+`security_headers`. A `host` or `headers` narrowing does the same, and the header case is the easiest
+of the three to reach, since the complement is any request that simply does not send the header.
+The rule therefore tests both halves: the member's normalized match key equals the anchor prefix *and*
+it narrows on no dimension the route matcher ANDs with the path. The matcher is the declaring source
+for what those dimensions are (`match.methods`, `match.host` and `match.headers` at present), and the
+predicate deciding it lives on the match model beside them, with a contract test asserting that every
+component of that model is classified -- so a dimension added later cannot silently reopen this.
 
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the
 normalized path, and anchor prefixes are normalized before the disjointness check -- but the
@@ -1132,7 +1128,7 @@ only the raw query is appended under `keep_query`. The configuration validator r
   1024-character length cap;
 * with the opt-in, it may additionally be an absolute `http`/`https` URI with a non-empty host and no
   user-info; every other scheme (`javascript:`, `data:`, ...) stays refused, and the opt-in is
-  reported at boot by `WARN ApiSheriff-127`, naming the route and never the target;
+  reported at boot by `WARN ApiSheriff-128`, naming the route and never the target;
 * refusal messages echo the value through the injection-safe renderer (CWE-117, see <<gw-12>>).
 
 *Control -- the query is same-origin only.* The review above establishes that the *target* is a value
@@ -1225,7 +1221,7 @@ contact.
 and with it the ability to point clients at another origin. The review proves the target is a
 well-formed `http`/`https` URI; it cannot prove the operator meant that host. The exposure is bounded
 by it being an explicit per-route opt-in, visible in the endpoint file and announced at every boot by
-`ApiSheriff-127`, and by the target -- and now the whole `Location`, since the query hand-off is
+`ApiSheriff-128`, and by the target -- and now the whole `Location`, since the query hand-off is
 refused -- being fixed configuration an attacker cannot influence through the request.
 
 *Assertion.* Every refused spelling above fails the boot with the value escaped in the message; a
@@ -1277,15 +1273,12 @@ precedence or by replacement. The anchor-namespace coverage rule (<<gw-01>>) ref
 configuration at boot, so "a routed response carries exactly its anchor block" extends beyond the
 addresses the anchor's own routes happen to name.
 
-*Residual risk (accepted) -- a covering route narrowed by a non-path match dimension.* That rule is
-path-geometric: it marks an anchor covered on prefix equality alone and reads no other match
-dimension. The route matcher is the declaring source for what narrows a match, and it ANDs the path
-with every further dimension it applies (`match.methods`, `match.host` and `match.headers` at
-present -- read the matcher rather than this list), so a covering route narrowed by *any* of them
-leaves the complement of what it matches to the enclosing route -- and that response carries the
-enclosing route's header block, not the anchor's. The same residual is recorded against the auth
-floor under <<gw-01>>, including why the bound is weakest for `match.headers`; it bounds this
-mechanism's closure identically.
+That closure depends on what the coverage rule accepts as covering, and the rule requires the member
+to match its whole namespace rather than merely to name it: a member narrowed on `match.methods`,
+`match.host` or `match.headers` is not coverage, precisely because the complement it does not match
+would fall through to the enclosing route and carry *that* route's header block. The rule and the
+drift guard on the dimension set are described under <<gw-01>>; they bound this mechanism's closure
+identically.
 
 `content_security_policy` values are refused at boot when blank or carrying a CR, LF or other control
 character, on every block, so the header cannot become an injection vector (<<gw-03>>).

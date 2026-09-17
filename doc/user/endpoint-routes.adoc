@@ -525,7 +525,7 @@ a spelling refused at boot in a configured target is refused at runtime in a rew
 `allow_external: true` additionally admits an *absolute `http` or `https` URI with a non-empty host
 and no user-info* (`https://user@evil.example` disguises the real host and stays refused). Every other
 scheme stays refused. Opting in is legitimate -- a moved site, a hand-off to another application -- but
-it is never silent: the boot logs `WARN ApiSheriff-127` naming the route id (never the target), see
+it is never silent: the boot logs `WARN ApiSheriff-128` naming the route id (never the target), see
 link:../LogMessages.adoc[Log Messages]. A refused `location` fails the boot with a message that echoes
 the value in escaped form, so a hostile value cannot forge log lines.
 

@@ -784,13 +784,18 @@ public class GatewayEdgeRoute {
             }
             routeSelectionStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
+            // Stash the metrics label the moment the route is known, not after the stages below have
+            // agreed to serve it. Every one of them can end the request by throwing — the verb gate's
+            // 405 first among them — and a label written after them would leave those terminal
+            // responses metered under NO_ROUTE, which is both wrong and the opposite of what makes
+            // them worth metering: a route answering 405 is exactly what an operator needs to find.
+            ctx.put(ROUTE_KEY, route.getId());
             // Stage 2a: from here on every response — the 405 of the verb gate included — is
             // route-scoped, so the route's resolved security_headers block (anchor before global,
             // wholesale) replaces the global block seeded at stage 0. Everything answered earlier
             // (a stage-1 rejection, an unrouted 404, the CORS preflight) keeps the global block.
             securityHeadersStage.applyRouteHeaders(request, route.getSecurityHeaders());
             verbGateStage.process(request);
-            ctx.put(ROUTE_KEY, route.getId());
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
             // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin
             // provenance before the session runtime resolves it. A bearer-only gateway has no session

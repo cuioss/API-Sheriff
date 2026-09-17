@@ -41,11 +41,9 @@ Semantics -- deliberately few rules:
   a route sitting outside and *above* an anchor, whose `path_prefix` swallows the anchor's --
   for this rule. A prefix route whose namespace strictly contains an anchor's `path_prefix`,
   and which does not declare that anchor, fails the boot *unless* a route under the anchor
-  covers the namespace: a prefix route whose `path_prefix` is the anchor prefix itself. By longest
-  prefix that covering route wins every address in the namespace *it also matches* -- every address
-  outright when it declares no further `match` dimension -- so a broader route alongside it is the
-  ordinary topology, not a bypass. Where it does declare one, the complement is the residual spelled
-  out at the end of this bullet. Without one, only the addresses the
+  covers the namespace: a prefix route whose `path_prefix` is the anchor prefix itself *and which
+  declares no further `match` dimension*. By longest prefix that covering route wins every address in
+  the namespace, so a broader route alongside it is the ordinary topology, not a bypass. Without one, only the addresses the
   anchor's own routes name are protected and every other address falls through to the broader
   route -- served with *its* auth posture and *its* `security_headers`. The case this closes is
   an anchor whose only member is an exact `match.path` route: `path: /admin` claims exactly
@@ -54,10 +52,11 @@ Semantics -- deliberately few rules:
   from. Exact routes are not judged here -- an exact route serves one address, which is the
   previous rule's case -- but `protocol: grpc` routes *are*: route selection is protocol-blind, so
   a gRPC route declaring a broad `path_prefix` swallows a namespace exactly as an `http` one does.
-  The rule is path-geometric: coverage is decided on prefix equality alone, and no other match
-  dimension is read. A covering route narrowed by *any* further dimension the route matcher
-  applies (`match.methods`, `match.host` and `match.headers` today) therefore covers only what
-  it matches, and the complement still falls through to the broader route.
+  Naming a namespace is not covering it: a candidate narrowed by any further dimension the route
+  matcher applies (`match.methods`, `match.host` and `match.headers` today) serves only part of the
+  namespace, so it does not count as coverage and the enclosing route is refused just as if the
+  anchor had no covering member. Declaring `methods: [GET]` on the covering route is the easiest way
+  to trip this: the anchor looks covered, but a `POST` would have fallen through.
 * *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers` and
   `allowed_methods`. Resolution follows one chain -- *gateway defaults -> anchor -> endpoint ->
   route* -- and every step *replaces the whole block, never merges* (the same rule as

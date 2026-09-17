@@ -873,13 +873,15 @@ public final class ConfigValidator {
      * {@link #validateAnchorNamespaceMembership} for why the exemption's rationale stops at the two
      * declaration-scoped rules.
      * <p>
-     * The rule is path-geometric: {@link #anchorsCoveredByOwnPrefixRoute} marks an anchor covered on
-     * prefix equality alone and reads no other match dimension. The declaring source for what
-     * actually narrows a match at request time is {@code RouteMatcher.matches}, which ANDs the path
-     * with every further dimension it applies ({@code match.methods}, {@code match.host} and
-     * {@code match.headers} at present — read the matcher, not this list). A covering route narrowed
-     * by <em>any</em> of them covers only what it matches, so the complement of that narrowing still
-     * reaches the containing route (recorded as a residual risk under GW-01 in the threat model).
+     * Coverage requires the covering route to match its whole namespace, not merely to name it.
+     * {@link #anchorsCoveredByOwnPrefixRoute} therefore tests prefix equality <em>and</em>
+     * {@link MatchConfig#narrowsBeyondPath()}: a member narrowed on {@code match.methods},
+     * {@code match.host} or {@code match.headers} serves only part of its namespace, and the
+     * complement — a {@code POST} where the member matched {@code GET}, a request from another host —
+     * would fall through to the containing route and be answered under <em>its</em> auth and
+     * {@code security_headers} posture. That is the same bypass this rule exists to refuse, reached
+     * one dimension over, so such a route does not count as coverage and the containing route is
+     * refused as if the anchor had no covering member at all.
      */
     private static void checkRouteContainsUncoveredAnchor(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route, @Nullable String declaredName, Set<String> coveredAnchors, List<ConfigError> errors) {
@@ -908,11 +910,11 @@ public final class ConfigValidator {
      * {@code path_prefix}. Computed once per validation pass and consumed by
      * {@link #checkRouteContainsUncoveredAnchor}.
      * <p>
-     * Coverage is decided on path geometry alone: the two tests below are non-exactness and prefix
-     * equality, and no further dimension of {@code match} is read. A covering route that narrows on
-     * any dimension {@code RouteMatcher.matches} applies beyond the path therefore still counts as
-     * coverage here while serving only part of the namespace at request time — the accepted residual
-     * recorded on {@link #checkRouteContainsUncoveredAnchor}.
+     * Three tests, all required: the route is not exact, it narrows on no dimension beyond the path
+     * ({@link MatchConfig#narrowsBeyondPath()}), and its normalized match key equals the normalized
+     * anchor prefix. The middle test is what makes "covered" mean <em>every</em> address in the
+     * namespace rather than merely every address the member chose to serve — see
+     * {@link #checkRouteContainsUncoveredAnchor} for the bypass it refuses.
      */
     private static Set<String> anchorsCoveredByOwnPrefixRoute(GatewayConfig gateway,
             List<EndpointConfig> endpoints) {
@@ -920,6 +922,9 @@ public final class ConfigValidator {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 if (route.match().isExact()) {
+                    continue;
+                }
+                if (route.match().narrowsBeyondPath()) {
                     continue;
                 }
                 String declaredName = declaredAnchorName(endpoint, route);
