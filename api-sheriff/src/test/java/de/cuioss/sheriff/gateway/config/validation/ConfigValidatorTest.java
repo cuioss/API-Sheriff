@@ -1306,6 +1306,43 @@ class ConfigValidatorTest {
                     () -> "a covered anchor namespace must not refuse a broader sibling route, got: " + errors);
         }
 
+        /**
+         * The covering route from the accepted case above, narrowed on one dimension at a time. Each
+         * value is the {@code match} of a route declared at the anchor's own prefix — so it passes the
+         * prefix-equality half of the coverage test and is rejected solely by the narrowing.
+         */
+        static Stream<Arguments> narrowedCoveringMatchers() {
+            return Stream.of(
+                    Arguments.of("methods", MatchConfig.builder().pathPrefix("/admin")
+                            .methods(List.of(HttpMethod.GET)).build()),
+                    Arguments.of("host", MatchConfig.builder().pathPrefix("/admin")
+                            .host("admin.example.org").build()),
+                    Arguments.of("headers", MatchConfig.builder().pathPrefix("/admin")
+                            .headers(List.of(new MatchConfig.HeaderMatcher("X-Admin", null, "yes"))).build()));
+        }
+
+        @ParameterizedTest(name = "narrowed on {0}")
+        @MethodSource("narrowedCoveringMatchers")
+        @DisplayName("Rule 4b: Should reject when the covering route narrows beyond the path, so it serves only part of the namespace")
+        void shouldRejectWhenCoveringRouteNarrowsBeyondThePath(String dimension, MatchConfig narrowed) {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchor("admin", "/admin", Require.BEARER));
+            EndpointConfig admin = anchoredEndpoint("admin-ep", "ADMIN", "admin", null,
+                    RouteConfig.builder().id("admin-app").anchor("admin").match(narrowed).build());
+            EndpointConfig catchAll = anchoredEndpoint("catch-all-ep", "CATCH", null,
+                    new AuthConfig(Require.NONE, List.of()),
+                    anchoredRoute("catch-all", "/", null));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(admin, catchAll),
+                    topologyWith("ADMIN", "CATCH"));
+
+            // The member names the whole namespace but answers only the part its narrowing admits: a
+            // POST (or a request from another host, or one without the header) matches no anchored
+            // route and is served by the unanchored catch-all under require: none. Naming a namespace
+            // is not covering it, so this must refuse exactly as an uncovered namespace does.
+            assertHasError(errors, "/endpoint/routes",
+                    "contains anchor 'admin' namespace '/admin' without declaring it");
+        }
+
         @Test
         @DisplayName("Rule 4b: Should reject when the anchored prefix route covers only part of the namespace")
         void shouldRejectWhenAnchoredPrefixRouteCoversOnlyASubPath() {
@@ -3256,25 +3293,35 @@ class ConfigValidatorTest {
             return errors.stream().anyMatch(error -> error.message().contains(REWRITE_LOCATION));
         }
 
-        @ParameterizedTest
-        @EnumSource(value = Protocol.class, names = {"GRPC", "WEBSOCKET"})
-        @DisplayName("Should refuse rewrite_location: true on a grpc or websocket route")
-        void shouldRefuseOnGrpcAndWebSocket(Protocol protocol) {
-            List<ConfigError> errors = validateRoute(protocol, true);
-
-            assertHasError(errors, "/endpoint/routes", "route 'rewritten' declares " + REWRITE_LOCATION);
-            assertHasError(errors, "/endpoint/routes",
-                    "its protocol is '" + protocol.name().toLowerCase(Locale.ROOT) + "'");
+        /**
+         * Whether {@code rewrite_location} is refused for this protocol — the expectation half of the
+         * matrix below, as an EXHAUSTIVE switch rather than a hand-written name list. A protocol added
+         * to {@link Protocol} fails to compile here until someone decides which side it belongs on,
+         * where a {@code names = {...}} selector would simply have stopped covering it and left the
+         * validator free to drift with every test still green.
+         */
+        private static boolean rewriteLocationRefused(Protocol protocol) {
+            return switch (protocol) {
+                // The rewrite reads an HTTP Location response header, which neither carries.
+                case GRPC, WEBSOCKET -> true;
+                case HTTP, GRAPHQL -> false;
+            };
         }
 
         @ParameterizedTest
-        @EnumSource(value = Protocol.class, names = {"HTTP", "GRAPHQL"})
-        @DisplayName("Should accept rewrite_location: true on an http or graphql route")
-        void shouldAcceptOnHttpAndGraphql(Protocol protocol) {
+        @EnumSource(Protocol.class)
+        @DisplayName("Should refuse rewrite_location: true on exactly the protocols that cannot carry a Location")
+        void shouldRefuseRewriteLocationPerProtocol(Protocol protocol) {
             List<ConfigError> errors = validateRoute(protocol, true);
 
-            assertFalse(hasRewriteLocationError(errors),
-                    () -> protocol + " routes support the Location rewrite, got: " + errors);
+            if (rewriteLocationRefused(protocol)) {
+                assertHasError(errors, "/endpoint/routes", "route 'rewritten' declares " + REWRITE_LOCATION);
+                assertHasError(errors, "/endpoint/routes",
+                        "its protocol is '" + protocol.name().toLowerCase(Locale.ROOT) + "'");
+            } else {
+                assertFalse(hasRewriteLocationError(errors),
+                        () -> protocol + " routes support the Location rewrite, got: " + errors);
+            }
         }
 
         @Test
@@ -3286,8 +3333,8 @@ class ConfigValidatorTest {
         }
 
         @ParameterizedTest
-        @EnumSource(value = Protocol.class, names = {"GRPC", "WEBSOCKET"})
-        @DisplayName("Should not refuse a grpc or websocket route whose rewrite_location is false or absent")
+        @EnumSource(Protocol.class)
+        @DisplayName("Should not refuse any protocol's route whose rewrite_location is false or absent")
         void shouldNotRefuseWhenToggleOff(Protocol protocol) {
             assertAll("only an enabled toggle is refused",
                     () -> assertFalse(hasRewriteLocationError(validateRoute(protocol, false)),

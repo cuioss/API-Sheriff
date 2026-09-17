@@ -94,6 +94,32 @@ List<HeaderMatcher> headers) {
     }
 
     /**
+     * Returns whether this matcher narrows the match on any dimension beyond the path —
+     * that is, whether there are requests inside its path namespace that it does
+     * <em>not</em> match.
+     * <p>
+     * The dimensions are exactly the non-path components of this record, which is what
+     * {@code RouteMatcher.matches} ANDs with the path test: {@code methods} (empty meaning
+     * every method), {@code host} ({@code null} meaning any host) and {@code headers}
+     * (empty meaning no header constraint). The predicate lives here, beside the data,
+     * rather than in a consumer, so that adding a dimension to this record puts the
+     * decision in front of whoever adds it; {@code MatchConfigTest} pins the component set
+     * so a new one cannot be added while this method silently keeps ignoring it.
+     * <p>
+     * Security-relevant: a route that narrows covers only what it matches, so it cannot
+     * stand for its whole path namespace. {@code ConfigValidator}'s anchor-coverage rule
+     * consults this before accepting a route as closing an anchor namespace — without it,
+     * a {@code methods: [GET]} member would mark the namespace covered while every other
+     * verb fell through to a broader route carrying a different auth posture.
+     *
+     * @return {@code true} when any non-path dimension constrains the match,
+     * {@code false} when the path is the only thing this matcher tests
+     */
+    public boolean narrowsBeyondPath() {
+        return !methods.isEmpty() || host != null || !headers.isEmpty();
+    }
+
+    /**
      * A single header matcher: presence or exact value.
      *
      * @param name    the header name (mandatory)

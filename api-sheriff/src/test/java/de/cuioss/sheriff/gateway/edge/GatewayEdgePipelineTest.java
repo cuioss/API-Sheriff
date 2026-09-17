@@ -130,9 +130,12 @@ class GatewayEdgePipelineTest {
     private int frontPort;
     /** A bearer token the fixture's validator accepts, so a {@code require: bearer} route can be reached. */
     private String validBearerToken;
+    /** Held rather than discarded so a test can read back the labels the edge metered a request under. */
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() throws Exception {
+        meterRegistry = new SimpleMeterRegistry();
         vertx = Vertx.vertx();
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -196,7 +199,7 @@ class GatewayEdgePipelineTest {
     private HttpServer startFront(GatewayConfig gatewayConfig) throws Exception {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry), BffRuntime.inert(),
                 EgressTrustProfiles.unconsulted());
 
         Router router = Router.router(vertx);
@@ -261,6 +264,24 @@ class GatewayEdgePipelineTest {
         // Assert
         assertEquals(405, response.status());
         assertNotNull(response.headers().get("Allow"), "a 405 names the permitted verbs in the Allow header");
+    }
+
+    @Test
+    @DisplayName("meters a verb-gate 405 under the selected route, not under <no-route>")
+    void metersDisallowedVerbUnderItsRoute() throws Exception {
+        // Act — same refusal as above, read through the meter rather than the response
+        assertEquals(405, send(io.vertx.core.http.HttpMethod.DELETE, "/echo/orders", Map.of(), null).status());
+
+        // Assert — the route WAS selected; the verb gate refused afterwards. Metering that under
+        // <no-route> would hide it from the per-route view an operator uses to find a client calling a
+        // route with the wrong verb, and would contradict the label's own contract ("the id stashed at
+        // route selection").
+        assertEquals(1.0, meterRegistry.counter(SheriffMetrics.REQUESTS_TOTAL,
+                        "route", "echo", "method", "DELETE", "status_family", "4xx").count(),
+                "a 405 refused after route selection is metered under that route");
+        assertNull(meterRegistry.find(SheriffMetrics.REQUESTS_TOTAL)
+                        .tag("route", SheriffMetrics.NO_ROUTE).counter(),
+                "no request in this test is unrouted, so the <no-route> series must not exist at all");
     }
 
     @Test
