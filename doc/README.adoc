@@ -17,7 +17,7 @@ This directory holds the design documentation; these documents define *what is b
 
 [IMPORTANT]
 ====
-*0.2.1 is an ALPHA release.* The configuration surface and the APIs described here *may change
+*0.2.2 is an ALPHA release.* The configuration surface and the APIs described here *may change
 without a migration path* -- pre-1.0 rules apply, so breaking changes are made freely and no
 deprecation shim or upgrade tooling is provided. Alpha is a statement about the *stability of the
 surface*, not about code quality: the intended use is evaluation, integration and feedback. The
@@ -79,7 +79,7 @@ Limitations].
 
 | link:fapi_status.adoc[FAPI 2.0 Conformance Status]
 | Where the BFF stands against the FAPI 2.0 Security Profile (Final), requirement by requirement,
-  with first-party evidence. *0.2.1 is not FAPI 2.0 conformant* -- three mandatory client
+  with first-party evidence. *0.2.2 is not FAPI 2.0 conformant* -- three mandatory client
   requirements are unmet. Read this before making any FAPI claim.
 
 | link:fapi_next_steps.adoc[FAPI 2.0 Next Steps]
