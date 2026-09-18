@@ -55,7 +55,11 @@ import org.jspecify.annotations.Nullable;
  */
 public enum SecurityProfile {
 
-    /** The tightest inbound posture, backed by {@link SecurityConfiguration#strict()}. */
+    /**
+     * The tightest inbound posture, backed by {@link SecurityConfiguration#strict()} with exactly one
+     * deviation: decoded line breaks (CR/LF) in url-parameter values are refused — see
+     * {@link #preset()}.
+     */
     STRICT,
 
     /** The relaxed inbound posture, backed by {@link SecurityConfiguration#lenient()}. */
@@ -73,6 +77,17 @@ public enum SecurityProfile {
      * without a {@code profile} — resolves to. Fail-closed by construction.
      */
     public static final SecurityProfile DEFAULT_PROFILE = STRICT;
+
+    /**
+     * The {@link #STRICT} policy: the cui-http {@link SecurityConfiguration#strict()} preset with
+     * {@code allowLineBreaksInParameterValues} switched off. Built once through
+     * {@link SecurityConfigurations#builderSeededFrom(SecurityConfiguration)}, so every other
+     * component stays on the cui-http preset's value.
+     */
+    private static final SecurityConfiguration STRICT_PRESET = SecurityConfigurations
+            .builderSeededFrom(SecurityConfiguration.strict())
+            .allowLineBreaksInParameterValues(false)
+            .build();
 
     /**
      * Parses a configured {@code profile} scalar case-insensitively.
@@ -112,14 +127,22 @@ public enum SecurityProfile {
     }
 
     /**
-     * @return the backing cui-http preset for this mode
+     * Returns the backing cui-http policy for this mode.
+     * <p>
+     * {@link #LENIENT} returns {@link SecurityConfiguration#lenient()} unchanged. {@link #STRICT}
+     * returns {@link SecurityConfiguration#strict()} with <strong>one deliberate deviation</strong>:
+     * {@code allowLineBreaksInParameterValues} is {@code false}, so a url-parameter value that decodes
+     * to CR or LF is refused rather than forwarded upstream. Every other component equals the cui-http
+     * preset. The strict policy is a cached constant, so repeated calls return the same instance.
+     *
+     * @return the backing cui-http policy for this mode
      * @throws IllegalStateException when called on {@link #MINIMAL}, which contributes no limits
      *                               policy — resolve one through
      *                               {@link #limitsProfile(SecurityProfile, SecurityProfile)} first
      */
     public SecurityConfiguration preset() {
         return switch (this) {
-            case STRICT -> SecurityConfiguration.strict();
+            case STRICT -> STRICT_PRESET;
             case LENIENT -> SecurityConfiguration.lenient();
             case MINIMAL -> throw new IllegalStateException(
                     "profile 'minimal' has no cui-http preset; resolve the limits profile via limitsProfile(..)");

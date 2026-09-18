@@ -41,9 +41,10 @@
             <artifactId>cui-java-tools</artifactId>
         </dependency>
         <!-- cui-http: inbound security filtering (de.cuioss.http.security) and the
-             forwarded-header resolver (de.cuioss.http.forwarded); version 3.0, resolved
-             through ${version.cui.http}, which the root pom overrides above the
-             cui-java-bom-managed 2.2 -->
+             forwarded-header resolver (de.cuioss.http.forwarded). The version is managed by
+             cui-java-bom through cui-quarkus-parent (3.1 at time of writing, which carries the
+             allowLineBreaksInParameterValues switch SecurityProfile.STRICT relies on); no
+             override is declared in this reactor -->
         <dependency>
             <groupId>de.cuioss</groupId>
             <artifactId>cui-http</artifactId>
