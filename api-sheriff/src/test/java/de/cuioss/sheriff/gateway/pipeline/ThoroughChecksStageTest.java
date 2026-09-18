@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.RecordComponent;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -106,7 +105,7 @@ class ThoroughChecksStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
-                .queryParameters(Map.of("page", List.of("2")))
+                .queryParameters(List.of(new QueryParameter("page", "2")))
                 .headers(Map.of("x-trace", List.of("abc123")))
                 .build();
         request.canonicalPath("/api/orders");
@@ -280,7 +279,7 @@ class ThoroughChecksStageTest {
         void rejectsParameterValue(SecurityProfile profile) {
             // Arrange
             PipelineRequest request = requestWithParameters(
-                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
+                    List.of(new QueryParameter("return_to", REJECTED_PARAMETER_VALUE)),
                     route(profile, defaultConfiguration));
 
             // Act
@@ -298,7 +297,7 @@ class ThoroughChecksStageTest {
             // Arrange — a parameter NAME carrying a null byte is a classic injection vector and must
             // be rejected, not only the value (symmetry with header-name validation).
             PipelineRequest request = requestWithParameters(
-                    Map.of(REJECTED_PARAMETER_NAME, List.of("ok")),
+                    List.of(new QueryParameter(REJECTED_PARAMETER_NAME, "ok")),
                     route(profile, defaultConfiguration));
 
             // Act
@@ -315,7 +314,7 @@ class ThoroughChecksStageTest {
         void rejectsNameDecodingToDelimiter(String rawName) {
             // Arrange — the name arrives still encoded; only the dedicated name pipeline knows a
             // decoded '=' / '&' / CR has no business in a parameter name
-            PipelineRequest request = requestWithParameters(Map.of(rawName, List.of("1")),
+            PipelineRequest request = requestWithParameters(List.of(new QueryParameter(rawName, "1")),
                     route(SecurityProfile.STRICT, defaultConfiguration));
 
             // Act
@@ -330,7 +329,7 @@ class ThoroughChecksStageTest {
         @DisplayName("a plain parameter name passes the PARAMETER_NAME pipeline")
         void acceptsPlainName() {
             // Arrange
-            PipelineRequest request = requestWithParameters(Map.of("page_size", List.of("20")),
+            PipelineRequest request = requestWithParameters(List.of(new QueryParameter("page_size", "20")),
                     route(SecurityProfile.STRICT, defaultConfiguration));
 
             // Act + Assert
@@ -342,7 +341,7 @@ class ThoroughChecksStageTest {
         @DisplayName("raw wire-form values are decoded once by the pipeline and accepted, never double-decoded")
         void acceptsRawEncodedValue(String rawValue) {
             // Arrange — each of these was a false reject while the pipeline received decoded input
-            PipelineRequest request = requestWithParameters(Map.of("q", List.of(rawValue)),
+            PipelineRequest request = requestWithParameters(List.of(new QueryParameter("q", rawValue)),
                     route(SecurityProfile.STRICT, defaultConfiguration));
 
             // Act + Assert
@@ -353,11 +352,10 @@ class ThoroughChecksStageTest {
         @DisplayName("a bare pair (no '=') has its name validated and no value to validate")
         void validatesBarePairName() {
             // Arrange — a bare pair travels as a null value so it can be forwarded verbatim
-            List<@Nullable String> bare = new ArrayList<>();
-            bare.add(null);
-            PipelineRequest accepted = requestWithParameters(Map.of("flag", bare),
+            PipelineRequest accepted = requestWithParameters(List.of(new QueryParameter("flag", null)),
                     route(SecurityProfile.STRICT, defaultConfiguration));
-            PipelineRequest rejected = requestWithParameters(Map.of(REJECTED_PARAMETER_NAME, bare),
+            PipelineRequest rejected = requestWithParameters(
+                    List.of(new QueryParameter(REJECTED_PARAMETER_NAME, null)),
                     route(SecurityProfile.STRICT, defaultConfiguration));
 
             // Act + Assert
@@ -366,12 +364,31 @@ class ThoroughChecksStageTest {
         }
 
         @Test
+        @DisplayName("every occurrence of a repeated name is validated on its own, wherever it stands")
+        void validatesEachOccurrenceOfRepeatedName() {
+            // Arrange — a=ok&b=ok&a=<bad>: the offending pair is the SECOND 'a', interleaved behind 'b'.
+            // The query is a pair sequence, so no grouping can hide the later occurrence.
+            PipelineRequest request = requestWithParameters(List.of(
+                    new QueryParameter("a", "ok"),
+                    new QueryParameter("b", "ok"),
+                    new QueryParameter("a", REJECTED_PARAMETER_VALUE)),
+                    route(SecurityProfile.STRICT, defaultConfiguration));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, List.of()));
+
+            // Assert
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+
+        @Test
         @DisplayName("validates parameters even when the route config equals the baseline (it is a run, not a re-run)")
         void validatesParametersWithoutDivergence() {
             // Arrange — the divergence guard skips the PATH/HEADER re-run for a baseline-equal route,
             // but parameter validation must still run: stage 1 no longer does it.
             PipelineRequest request = requestWithParameters(
-                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
+                    List.of(new QueryParameter("return_to", REJECTED_PARAMETER_VALUE)),
                     route(SecurityProfile.STRICT, defaultConfiguration));
 
             // Act
@@ -433,8 +450,8 @@ class ThoroughChecksStageTest {
         void acceptsParameterValidationTheModeDisables() {
             // Arrange — both halves of the relocated validation are off under 'minimal'
             PipelineRequest request = requestWithParameters(
-                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE),
-                            REJECTED_PARAMETER_NAME, List.of("ok")),
+                    List.of(new QueryParameter("return_to", REJECTED_PARAMETER_VALUE),
+                            new QueryParameter(REJECTED_PARAMETER_NAME, "ok")),
                     route(SecurityProfile.MINIMAL, defaultConfiguration));
 
             // Act + Assert
@@ -461,7 +478,7 @@ class ThoroughChecksStageTest {
             PipelineRequest divergentPath = requestFor("/api/../etc/passwd",
                     route(SecurityProfile.STRICT, SecurityConfiguration.strict()));
             PipelineRequest badParameters = requestWithParameters(
-                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
+                    List.of(new QueryParameter("return_to", REJECTED_PARAMETER_VALUE)),
                     route(SecurityProfile.STRICT, SecurityConfiguration.strict()));
 
             // Act + Assert
@@ -812,7 +829,7 @@ class ThoroughChecksStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(headers)
                 .build();
         request.canonicalPath("/api/orders");
@@ -824,7 +841,7 @@ class ThoroughChecksStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath(canonicalPath)
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(Map.of())
                 .build();
         request.canonicalPath(canonicalPath);
@@ -832,7 +849,7 @@ class ThoroughChecksStageTest {
         return request;
     }
 
-    private static PipelineRequest requestWithParameters(Map<String, List<@Nullable String>> parameters,
+    private static PipelineRequest requestWithParameters(List<QueryParameter> parameters,
             RouteRuntime route) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)

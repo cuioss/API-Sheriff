@@ -116,7 +116,9 @@ class GatewayEdgeQueryHandoffTest {
                 route("lenient", upstreamPort, "lenient"),
                 route("minimal", upstreamPort, "minimal"),
                 route("denytoken", upstreamPort, null, ForwardConfig.builder().queryDeny(List.of("token")).build()),
-                route("allowx", upstreamPort, null, ForwardConfig.builder().queryAllow(List.of("x")).build())));
+                route("allowx", upstreamPort, null, ForwardConfig.builder().queryAllow(List.of("x")).build()),
+                route("allowab", upstreamPort, null,
+                        ForwardConfig.builder().queryAllow(List.of("a", "b")).build())));
         TokenValidator tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, GatewayConfig.builder().version(1).build(),
@@ -345,6 +347,38 @@ class GatewayEdgeQueryHandoffTest {
                 () -> assertEquals("GET " + UPSTREAM_PATH + "?x=1%3Btoken=abc", response.body(),
                         "only the allow-listed pair crosses, with its ';' encoded"),
                 () -> assertFalse(response.body().contains(";"), "no raw ';' reaches the upstream"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"strict", "allowab", "denytoken"})
+    @DisplayName("interleaved repeated names reach the upstream in the validated order, byte for byte")
+    void interleavedRepeatedNamesForwardInValidatedOrder(String routeId) throws Exception {
+        // Arrange — a name-keyed query would regroup this into a=1&a=3&b=2, a request-target the
+        // gateway never validated. forward-all, an allow list naming both names and a deny list naming
+        // neither must all keep the wire order.
+        String query = "a=1&b=2&a=3";
+
+        // Act
+        Response response = get("/" + routeId + "/orders?" + query);
+
+        // Assert
+        assertAll(routeId,
+                () -> assertEquals(200, response.status()),
+                () -> assertEquals("GET " + UPSTREAM_PATH + "?" + query, response.body(),
+                        "the upstream receives the validated pair sequence unchanged and in order"));
+    }
+
+    @Test
+    @DisplayName("query_deny: [token] drops the denied pair and keeps the interleaved rest in order")
+    void denyListKeepsInterleavedSurvivorsInOrder() throws Exception {
+        // Act
+        Response response = get("/denytoken/orders?a=1&token=x&b=2&a=3&flag");
+
+        // Assert
+        assertAll(
+                () -> assertEquals(200, response.status()),
+                () -> assertEquals("GET " + UPSTREAM_PATH + "?a=1&b=2&a=3&flag", response.body(),
+                        "each surviving pair keeps its inbound position relative to the others"));
     }
 
     @Test

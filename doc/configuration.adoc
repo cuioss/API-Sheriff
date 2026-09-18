@@ -1765,8 +1765,11 @@ unauthenticated route, `minimal`.
 
 *Forward lists match the decoded name.* `forward.query_allow` and `forward.query_deny` entries are
 compared against the *percent-decoded* parameter name, while the pair that crosses keeps its raw
-spelling -- so `%74oken=x` is caught by a `query_deny: [token]` exactly as `token=x` is. See
-link:#_forward[`forward`].
+spelling -- so `%74oken=x` is caught by a `query_deny: [token]` exactly as `token=x` is. Only ASCII
+hex digits form an escape: a name whose escape uses any other digit (a full-width `%７４oken`, say)
+has no decoded name and crosses only a route with neither list. The lists judge each pair on its
+own and never regroup the query, so the pairs that cross keep the order they arrived in --
+`a=1&b=2&a=3` reaches the upstream as `a=1&b=2&a=3`. See link:#_forward[`forward`].
 
 === `auth`
 
@@ -2404,9 +2407,14 @@ a name is.
 Query-parameter names are compared in their *percent-decoded* form (strict UTF-8, `+` read as a
 space), because that is the name the upstream acts on; the pair that crosses keeps its raw spelling
 (link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]). Matching the
-raw spelling instead would let `%74oken=x` evade a `query_deny: [token]`. A name with no well-formed
-decoding crosses only under forward-all: it can neither be admitted by a positive-list nor proven
-absent from a negative one.
+raw spelling instead would let `%74oken=x` evade a `query_deny: [token]`. A percent-escape is formed
+only by two ASCII hex digits, so an escape spelled with full-width or other non-ASCII digits is
+malformed rather than decoded. A name with no well-formed decoding crosses only under forward-all:
+it can neither be admitted by a positive-list nor proven absent from a negative one.
+
+Each pair is judged on its own and the query is never regrouped by name: the pairs that cross keep
+the order they arrived in, interleaved repeated names included, so `a=1&b=2&a=3` under a list that
+keeps both names reaches the upstream as `a=1&b=2&a=3`, not `a=1&a=3&b=2`.
 
 ==== What crosses regardless of the mode
 

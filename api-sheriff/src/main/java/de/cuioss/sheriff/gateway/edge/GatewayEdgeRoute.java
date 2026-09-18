@@ -21,7 +21,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +81,7 @@ import de.cuioss.sheriff.gateway.pipeline.FramingGate;
 import de.cuioss.sheriff.gateway.pipeline.OriginValidationStage;
 import de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.pipeline.ThoroughChecksStage;
@@ -1330,19 +1330,22 @@ public class GatewayEdgeRoute {
      * are skipped, so {@code a=1&&b=2} yields the same pair count Vert.x reports. Names and values are
      * left exactly as they arrived: no percent-decoding and no {@code +}-to-space translation, because
      * decoding here would hand the cui-http pipelines — which decode themselves — an already-decoded
-     * value and would make the forwarded bytes differ from the validated ones. Pairs are grouped by
-     * raw name in first-seen order. A pair without {@code =} is carried as a {@code null} value so the
-     * forward path can emit its bare form ({@code flag}, not {@code flag=}) verbatim.
+     * value and would make the forwarded bytes differ from the validated ones. The pairs are kept as
+     * an ordered sequence in wire order and are <em>never grouped by name</em>: {@code a=1&b=2&a=3}
+     * stays three pairs in that order, so the forward path emits the request-target the filter
+     * validated rather than a regrouped {@code a=1&a=3&b=2}. A pair without {@code =} is carried as a
+     * {@code null} value so the forward path can emit its bare form ({@code flag}, not
+     * {@code flag=}) verbatim.
      *
      * @param rawQuery the raw query without its leading {@code ?}, or {@code null} when the request
      *                 carries none
-     * @return the raw pairs keyed by raw name, insertion-ordered; empty when there is no query
+     * @return the raw pairs in wire order, immutable; empty when there is no query
      */
-    private static Map<String, List<@Nullable String>> rawQueryPairs(@Nullable String rawQuery) {
+    private static List<QueryParameter> rawQueryPairs(@Nullable String rawQuery) {
         if (rawQuery == null || rawQuery.isEmpty()) {
-            return Map.of();
+            return List.of();
         }
-        Map<String, List<@Nullable String>> pairs = new LinkedHashMap<>();
+        List<QueryParameter> pairs = new ArrayList<>();
         for (String segment : rawQuery.split("&", -1)) {
             if (segment.isEmpty()) {
                 continue;
@@ -1350,11 +1353,9 @@ public class GatewayEdgeRoute {
             int separator = segment.indexOf('=');
             String name = separator < 0 ? segment : segment.substring(0, separator);
             String value = separator < 0 ? null : segment.substring(separator + 1);
-            pairs.computeIfAbsent(name, key -> new ArrayList<>()).add(value);
+            pairs.add(new QueryParameter(name, value));
         }
-        Map<String, List<@Nullable String>> immutable = new LinkedHashMap<>();
-        pairs.forEach((name, values) -> immutable.put(name, Collections.unmodifiableList(values)));
-        return Collections.unmodifiableMap(immutable);
+        return List.copyOf(pairs);
     }
 
     private static Map<String, List<String>> toListMap(MultiMap multiMap) {
@@ -1379,8 +1380,9 @@ public class GatewayEdgeRoute {
 
     /**
      * Renders the forwarded query from the validated raw pairs, appending each raw name and raw value
-     * as it arrived, so the upstream receives the pairs the security filter validated (ADR-0047). A
-     * {@code null} value is a bare pair and is rendered as its bare name.
+     * as it arrived and in the order the sequence carries them, so the upstream receives the pairs the
+     * security filter validated, in the order it validated them (ADR-0047). A {@code null} value is a
+     * bare pair and is rendered as its bare name.
      * <p>
      * <strong>The one exception to verbatim: a raw {@code ;} is written as {@code %3B}.</strong> The
      * edge splits pairs on {@code &} only, and {@code query_allow} / {@code query_deny} judge the
@@ -1391,24 +1393,22 @@ public class GatewayEdgeRoute {
      * its forward mode; nothing else in the pair is touched, and the decoded meaning is unchanged
      * ({@code %3B} decodes to {@code ;}), so validated still equals forwarded at the decoded level.
      */
-    private static String renderQuery(Map<String, List<@Nullable String>> query) {
+    private static String renderQuery(List<QueryParameter> query) {
         if (query.isEmpty()) {
             return "";
         }
         StringBuilder rendered = new StringBuilder("?");
         boolean first = true;
-        for (Map.Entry<String, List<@Nullable String>> entry : query.entrySet()) {
-            String name = encodeSemicolons(entry.getKey());
-            for (String value : entry.getValue()) {
-                if (!first) {
-                    rendered.append('&');
-                }
-                rendered.append(name);
-                if (value != null) {
-                    rendered.append('=').append(encodeSemicolons(value));
-                }
-                first = false;
+        for (QueryParameter parameter : query) {
+            if (!first) {
+                rendered.append('&');
             }
+            rendered.append(encodeSemicolons(parameter.name()));
+            String value = parameter.value();
+            if (value != null) {
+                rendered.append('=').append(encodeSemicolons(value));
+            }
+            first = false;
         }
         return rendered.toString();
     }

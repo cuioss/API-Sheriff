@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -138,7 +139,7 @@ class BasicChecksStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api")
-                .queryParameters(Map.of("return_to", List.of("/home")))
+                .queryParameters(List.of(new QueryParameter("return_to", "/home")))
                 .headers(Map.of())
                 .build();
 
@@ -153,9 +154,31 @@ class BasicChecksStageTest {
         // Arrange — the parameter COUNT cap stays in the floor even though the values it bounds are
         // validated post-route: a collection limit is a resource guard, not an injection defence.
         int cap = DEFAULTS.maxParameterCount();
-        Map<String, List<String>> parameters = new LinkedHashMap<>();
+        List<QueryParameter> parameters = new ArrayList<>();
         for (int i = 0; i <= cap; i++) {
-            parameters.put("p" + i, List.of("1"));
+            parameters.add(new QueryParameter("p" + i, "1"));
+        }
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath("/api")
+                .queryParameters(parameters)
+                .build();
+
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> defaultStage.process(request));
+
+        // Assert
+        assertEquals(EventType.PARAMETER_LIMIT_EXCEEDED, thrown.getEventType());
+    }
+
+    @Test
+    @DisplayName("counts every occurrence of a repeated name against the query-parameter cap")
+    void countsRepeatedNameOccurrencesAgainstCap() {
+        // Arrange — one name repeated cap + 1 times: the cap bounds pairs, not distinct names
+        int cap = DEFAULTS.maxParameterCount();
+        List<QueryParameter> parameters = new ArrayList<>();
+        for (int i = 0; i <= cap; i++) {
+            parameters.add(new QueryParameter("p", String.valueOf(i)));
         }
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
@@ -430,7 +453,7 @@ class BasicChecksStageTest {
         return PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(Map.of(name, List.of(value)))
                 .build();
     }
@@ -439,7 +462,7 @@ class BasicChecksStageTest {
         return PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath(path)
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(Map.of())
                 .build();
     }

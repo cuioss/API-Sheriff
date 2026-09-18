@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.List;
 import java.util.Map;
 
 
@@ -83,7 +84,7 @@ class CanonicalPathGuardTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath(rawPath)
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(Map.of())
                 .build();
         request.canonicalPath(canonicalPath);

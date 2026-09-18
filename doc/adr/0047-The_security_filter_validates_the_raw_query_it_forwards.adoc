@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: The per-route security filter receives the query in its raw, still-percent-encoded wire form — names through cui-http's PARAMETER_NAME pipeline, values through PARAMETER_VALUE — and the forward path emits exactly those validated pairs verbatim, so the validated form equals the forwarded form, except that a raw ';' is written as %3B on every route to prevent parameter smuggling (CWE-235); the forward allow/deny lists compare the percent-decoded name while the raw pair crosses, and the reserved BFF parameters read their decoded value from the transport.
+// summary: The per-route security filter receives the query in its raw, still-percent-encoded wire form — names through cui-http's PARAMETER_NAME pipeline, values through PARAMETER_VALUE — and the forward path emits exactly those validated pairs verbatim and in wire order (an ordered pair sequence, never a name-keyed map), so the validated form equals the forwarded form, except that a raw ';' is written as %3B on every route to prevent parameter smuggling (CWE-235); the forward allow/deny lists compare the percent-decoded name while the raw pair crosses, and the reserved BFF parameters read their decoded value from the transport.
 // tags: request-pipeline, security-filter, query-validation, forward-policy, cui-http, canonicalization
 // affects: api-sheriff
 // supersedes:
@@ -59,9 +59,9 @@ form, and the forward path emits exactly the pairs it validated.**
 
 * **The edge splits the raw request-target query, and nothing else.** The query
   is split on `&` and each pair on its *first* `=`. Empty segments are skipped,
-  names and values stay percent-encoded, `+` stays `+`, and pairs are grouped by
-  raw name in first-seen order. A pair without `=` is kept bare, so it is
-  forwarded as `flag`, not rewritten to `flag=`.
+  names and values stay percent-encoded, `+` stays `+`, and the pairs are kept as
+  an *ordered sequence in wire order* — never grouped by name. A pair without `=`
+  is kept bare, so it is forwarded as `flag`, not rewritten to `flag=`.
 * **Names go through `PARAMETER_NAME`, values through `PARAMETER_VALUE`.** The
   per-route stage validates each raw name with cui-http's dedicated
   parameter-name pipeline — which rejects decoded delimiters and line breaks and
@@ -70,24 +70,43 @@ form, and the forward path emits exactly the pairs it validated.**
   built for.
 * **The validated pairs are forwarded verbatim, with one exception.** The HTTP,
   WebSocket and gRPC dispatch paths render the query by appending each raw name
-  and raw value as-is, so the validated form and the forwarded form are the same
-  bytes — except that every raw `;` in a name or value is written as `%3B`. That
+  and raw value as-is, in the order of the sequence, so the validated form and the
+  forwarded form are the same bytes in the same order — except that every raw `;`
+  in a name or value is written as `%3B`. That
   rewrite happens at the single render point, on every route whatever its forward
   mode, and touches nothing else in the pair (see <<semicolon-exception>>).
 * **The forward lists compare the decoded name; the raw pair crosses.**
   `query_allow` and `query_deny` entries are matched against the percent-decoded
   name (strict UTF-8, `+` read as a space), while the pair that crosses keeps its
-  raw spelling. A name without a well-formed decoding crosses only under
-  forward-all: it can neither be admitted by a positive-list nor proven absent
-  from a negative one.
+  raw spelling. The lists walk the sequence pair by pair and drop a pair where it
+  stands, so the surviving pairs keep their relative order. A percent-escape is
+  formed only by two ASCII hex digits (RFC 3986 `HEXDIG`); an escape spelled with
+  any other digit — a full-width `７`, for example — is malformed, not decoded. A
+  name without a well-formed decoding crosses only under forward-all: it can
+  neither be admitted by a positive-list nor proven absent from a negative one.
 * **Consumers that need a meaning read it from the transport.** The reserved BFF
   parameters (`claims`, `returnUrl`, `state`) compare or redirect on the value's
   meaning, so they read the transport's decoded view rather than the pipeline
-  map. The reserved paths still bypass the parameter pipelines (ADR-0019), and the
+  pair sequence. The reserved paths still bypass the parameter pipelines (ADR-0019), and the
   redirect and callback paths already read the raw query string.
 
-The pipeline map therefore has exactly one representation — the wire form — and a
-consumer that wants anything else derives it at the point of use.
+The pipeline query therefore has exactly one representation — the wire-form pair
+sequence — and a consumer that wants anything else derives it at the point of
+use.
+
+[[pair-sequence]]
+=== Why an ordered pair sequence and not a name-keyed map
+
+A map keyed by name cannot represent interleaved repeated names. `a=1&b=2&a=3`
+grouped by name becomes `a → [1, 3], b → [2]`, and rendering that map forwards
+`a=1&a=3&b=2` — a request-target the filter never validated, and one an upstream
+that reads the first or the last occurrence of `a` relative to `b` may interpret
+differently. The query is therefore carried as an ordered sequence of raw
+`(name, value)` pairs from the edge split to the render point: the filter
+validates each pair where it stands, the forward lists judge each pair on its
+own, and the render emits the surviving pairs in the order they arrived. A
+consumer that genuinely needs a lookup by name derives a grouped view from the
+sequence at the point of use; none of the security or forward stages does.
 
 [[semicolon-exception]]
 === The `;` re-encoding: the single exception to verbatim forwarding
@@ -132,7 +151,7 @@ route and every value.
   the injection patterns, and output encoding for their context remains the
   upstream's job. The filter is an input-canonicalization and injection-pattern
   control, not an output-encoding one.
-* The pipeline map is now in a form most Java APIs do not expect. Any new
+* The pipeline query is now in a form most Java APIs do not expect. Any new
   consumer that reads it as decoded text silently gets the encoded spelling; the
   contract is stated on the accessor and here so that the mistake is at least a
   documented one.
@@ -148,6 +167,15 @@ route and every value.
 * **A forward-policy match on the raw name reopens the evasion.** The
   decoded-name comparison is the fail-closed direction and is pinned by tests
   that deny and admit a percent-encoded spelling of a listed name.
+* **A lenient hex-digit test reopens it from the other side.** A digit test that
+  admits non-ASCII digits (Java's `Character.digit`, for instance) decodes
+  `%７４oken` to `token`, so an allow list would admit a name the raw pair does not
+  spell (CWE-20). The decode accepts only `0-9`, `A-F` and `a-f`, and a unit test
+  pins that a full-width-digit escape crosses neither an allow nor a deny list.
+* **Regrouping the query by name breaks validated-equals-forwarded.** A future
+  "convenience" map keyed by name reorders interleaved repeated names. The unit
+  and edge tests pin `a=1&b=2&a=3` forwarding byte for byte under forward-all, an
+  allow list and a deny list.
 * **Dropping the `;` re-encoding reopens parameter smuggling.** A "purer"
   verbatim render would hand a `;`-splitting upstream parameters the gateway never
   judged. The edge test pins `?x=1;token=abc` forwarding as `x=1%3Btoken=abc` under

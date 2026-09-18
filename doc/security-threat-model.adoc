@@ -374,11 +374,16 @@ the transport decoded the query, the parameter pipeline decoded it a second time
 re-encoded a third form -- `q=a%252F` was validated as `a/` while the upstream received `a%252F`. The
 security filter now receives the raw, still-percent-encoded pairs (names through `cui-http`'s
 parameter-name pipeline, values through the parameter-value pipeline, each decoding once) and the
-forward path appends exactly those pairs verbatim, so *the validated form equals the forwarded form*
-and a double encoding is refused as one. The forward policy's `query_allow` / `query_deny` lists are
+forward path appends exactly those pairs verbatim and in the order they arrived -- the query is an
+ordered pair sequence, never a map grouped by name, so `a=1&b=2&a=3` is not regrouped into
+`a=1&a=3&b=2` -- so *the validated form equals the forwarded form* and a double encoding is refused as
+one. The forward policy's `query_allow` / `query_deny` lists are
 the one consumer that needs the decoded name -- the upstream acts on it -- so they compare the
 percent-decoded name while the raw pair crosses: a percent-encoded spelling such as `%74oken` can no
-longer evade a `query_deny: [token]`. The one byte the forward path does *not* pass verbatim is a raw
+longer evade a `query_deny: [token]`. A percent-escape counts only when both digits are ASCII hex
+digits, so an escape spelled with full-width digits (`%７４oken`) is malformed rather than decoded to
+`token`: such a name has no decoded form and crosses neither a positive- nor a negative-list (CWE-20).
+The one byte the forward path does *not* pass verbatim is a raw
 `;`: the edge and the forward lists split pairs on `&` only while `cui-http` admits a raw `;` under
 every profile, so `?x=1;token=abc` is one pair `x` to the gateway but two to an upstream that also
 splits on `;` -- a `token` no list judged (HTTP parameter smuggling, CWE-235). The forward path
@@ -388,8 +393,9 @@ All three properties are pinned: `GatewayEdgeQueryHandoffTest` over a
 live edge (including a leg asserting the transport's decoded value differs from the forwarded raw
 one, and the `;` legs under forward-all, `query_deny` and `query_allow`) and `StrictQueryAcceptanceIT`
 against the native image assert every accepted query reaches the upstream byte for byte -- `;` aside
--- and every refused one reaches it not at all; `ForwardPolicyStageTest` denies and admits a
-percent-encoded spelling of a listed name.
+-- and every refused one reaches it not at all, with interleaved repeated names kept in wire order;
+`ForwardPolicyStageTest` denies and admits a percent-encoded spelling of a listed name, withholds a
+full-width-digit escape under both lists, and keeps interleaved repeated names in inbound order.
 
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the
 normalized path, and anchor prefixes are normalized before the disjointness check -- but the

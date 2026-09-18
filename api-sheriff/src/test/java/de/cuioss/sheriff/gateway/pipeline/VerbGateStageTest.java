@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 
 
@@ -72,7 +73,7 @@ class VerbGateStageTest {
         return PipelineRequest.builder()
                 .method(method)
                 .requestPath("/orders")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(Map.of())
                 .build();
     }

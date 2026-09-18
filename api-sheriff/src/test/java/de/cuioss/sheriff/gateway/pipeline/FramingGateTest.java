@@ -279,7 +279,7 @@ class FramingGateTest {
         return PipelineRequest.builder()
                 .method(method)
                 .requestPath("/orders")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(headers)
                 .declaredContentLength(contentLength)
                 .bodyPresent(bodyPresent)

@@ -20,8 +20,6 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -39,6 +37,7 @@ import de.cuioss.http.forwarded.ResolvedForwarding;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -432,22 +431,25 @@ public final class ForwardPolicyStage {
      * both lists (it can be neither admitted by a positive-list nor proven absent from a negative
      * one) and crosses only under forward-all.
      * <p>
+     * <strong>Pair by pair, never grouped.</strong> The inbound query is an ordered sequence of raw
+     * pairs, and the filter walks it pair by pair, keeping each surviving pair where it stood. It never
+     * groups by name, so interleaved repeated names ({@code a=1&b=2&a=3}) cross in exactly the order
+     * the security filter validated them.
+     * <p>
      * Parameter-name matching is <strong>case-sensitive</strong> on both modes, unlike the header
      * copy. Query-parameter names are case-sensitive in HTTP and the positive-list has always
      * matched them exactly; making only the deny side case-insensitive would let a route's two
      * lists disagree about what a name is.
      */
-    private static Map<String, List<@Nullable String>> copyQueryByMode(PipelineRequest request,
-            ForwardConfig forwardConfig) {
+    private static List<QueryParameter> copyQueryByMode(PipelineRequest request, ForwardConfig forwardConfig) {
         List<String> allow = forwardConfig.queryAllow();
         List<String> deny = forwardConfig.queryDeny();
         Set<String> allowed = allow == null ? null : Set.copyOf(allow);
         Set<String> denied = deny == null ? Set.of() : Set.copyOf(deny);
-        Map<String, List<@Nullable String>> query = new LinkedHashMap<>();
-        for (Map.Entry<String, List<@Nullable String>> entry : request.queryParameters().entrySet()) {
-            List<@Nullable String> values = entry.getValue();
-            if (!values.isEmpty() && crosses(entry.getKey(), allowed, denied)) {
-                query.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(values)));
+        List<QueryParameter> query = new ArrayList<>();
+        for (QueryParameter parameter : request.queryParameters()) {
+            if (crosses(parameter.name(), allowed, denied)) {
+                query.add(parameter);
             }
         }
         return query;
@@ -474,8 +476,9 @@ public final class ForwardPolicyStage {
 
     /**
      * Percent-decodes a raw query-parameter name with form semantics ({@code +} is a space) and a
-     * strict UTF-8 decode: a truncated or non-hex escape, or a byte sequence that is not valid UTF-8,
-     * yields no decoded name rather than a replacement-character approximation.
+     * strict UTF-8 decode: a truncated escape, an escape that is not two ASCII hex digits, or a byte
+     * sequence that is not valid UTF-8, yields no decoded name rather than a replacement-character
+     * approximation.
      *
      * @param rawName the raw, still-encoded parameter name
      * @return the decoded name, or empty when {@code rawName} is not a well-formed encoding
@@ -489,8 +492,8 @@ public final class ForwardPolicyStage {
      * space).
      *
      * @param rawName the raw, still-encoded parameter name
-     * @return the encoded bytes, or empty when {@code rawName} carries a truncated or non-hex escape or
-     *         a raw non-ASCII character
+     * @return the encoded bytes, or empty when {@code rawName} carries a truncated escape, an escape
+     *         that is not two ASCII hex digits, or a raw non-ASCII character
      */
     private static Optional<ByteBuffer> percentDecodeFormBytes(String rawName) {
         byte[] bytes = new byte[rawName.length()];
@@ -519,19 +522,51 @@ public final class ForwardPolicyStage {
 
     /**
      * The byte value of the percent-escape starting at {@code percentIndex}.
+     * <p>
+     * Only the ASCII hex digits {@code 0-9}, {@code A-F} and {@code a-f} form an escape — see
+     * {@link #asciiHexDigit(char)}. An escape spelled with any other digit ({@code %} followed by the
+     * full-width U+FF17 U+FF14, for example) yields no byte, so the name carrying it has no decoded
+     * form and is withheld under both lists.
      *
      * @param rawName      the raw, still-encoded parameter name
      * @param percentIndex the index of the {@code %}
      * @return the escaped byte as {@code 0..255}, or {@code -1} when the escape is truncated or not
-     *         two hex digits
+     *         two ASCII hex digits
      */
     private static int escapedByte(String rawName, int percentIndex) {
         if (percentIndex + 2 >= rawName.length()) {
             return -1;
         }
-        int high = Character.digit(rawName.charAt(percentIndex + 1), 16);
-        int low = Character.digit(rawName.charAt(percentIndex + 2), 16);
+        int high = asciiHexDigit(rawName.charAt(percentIndex + 1));
+        int low = asciiHexDigit(rawName.charAt(percentIndex + 2));
         return high < 0 || low < 0 ? -1 : (high << 4) | low;
+    }
+
+    /**
+     * The value of one ASCII hex digit.
+     * <p>
+     * Deliberately not {@link Character#digit(char, int)}: that method also admits the non-ASCII
+     * Unicode digits (the full-width digits U+FF10 to U+FF19 and the other {@code Nd} digits, plus the
+     * full-width Latin letters). With it, {@code %} followed by the full-width U+FF17 U+FF14 and then
+     * {@code oken} would decode here to {@code token} and be admitted by {@code query_allow: [token]},
+     * although that escape is no escape at all under RFC 3986 — the list would judge a name the raw
+     * pair does not spell (CWE-20). RFC 3986 defines {@code HEXDIG} as ASCII only.
+     *
+     * @param character the candidate digit
+     * @return {@code 0..15} for {@code 0-9}, {@code A-F} or {@code a-f}; {@code -1} for every other
+     *         character
+     */
+    private static int asciiHexDigit(char character) {
+        if (character >= '0' && character <= '9') {
+            return character - '0';
+        }
+        if (character >= 'A' && character <= 'F') {
+            return character - 'A' + 10;
+        }
+        if (character >= 'a' && character <= 'f') {
+            return character - 'a' + 10;
+        }
+        return -1;
     }
 
     /**
@@ -560,10 +595,11 @@ public final class ForwardPolicyStage {
      * @param headers the outbound header set, merged in the stage's pinned order (mode-filtered
      *                client headers, the gateway-understood protocol set, {@code set_headers}, the
      *                regenerated forwarding headers, and the mediated bearer)
-     * @param query   the outbound query parameters (mode-filtered client parameters only) in their raw,
-     *                still-encoded wire form and inbound order; a {@code null} value is a bare pair
+     * @param query   the outbound query pairs (mode-filtered client pairs only) in their raw,
+     *                still-encoded wire form, as an ordered sequence in inbound wire order —
+     *                interleaved repeated names included; a {@code null} value is a bare pair
      */
-    public record Result(Map<String, String> headers, Map<String, List<@Nullable String>> query) {
+    public record Result(Map<String, String> headers, List<QueryParameter> query) {
 
         /**
          * Canonical constructor defensively copying the collections; the query keeps its inbound
@@ -571,7 +607,7 @@ public final class ForwardPolicyStage {
          */
         public Result {
             headers = Map.copyOf(headers);
-            query = Collections.unmodifiableMap(new LinkedHashMap<>(query));
+            query = List.copyOf(query);
         }
     }
 }

@@ -187,8 +187,10 @@ public final class ThoroughChecksStage {
      * ({@link PipelineFactory#createParameterNamePipeline}), which rejects a name that decodes to a
      * pair delimiter or a line break and enforces {@code maxParameterNameLength}; each raw VALUE goes
      * through the {@code PARAMETER_VALUE} pipeline. Because the forward path emits these same raw
-     * pairs verbatim, what this stage validated is exactly what reaches the upstream. A bare pair
-     * (no {@code =}, carried as a {@code null} value) has only its name to validate.
+     * pairs verbatim and in the same wire order, what this stage validated is exactly what reaches
+     * the upstream. Every pair is judged on its own, so a repeated name is validated once per
+     * occurrence. A bare pair (no {@code =}, carried as a {@code null} value) has only its name to
+     * validate.
      * <p>
      * Reserved BFF paths never reach this stage: they terminate in {@code handleReservedPath} before
      * route selection, which is what makes the ADR-0019 reserved-path relaxation structural rather
@@ -198,12 +200,11 @@ public final class ThoroughChecksStage {
         RoutePipelines pipelines = pipelinesFor(routeConfig);
         HttpSecurityValidator valuePipeline = pipelines.pipelines().urlParameterPipeline();
         try {
-            for (Map.Entry<String, List<@Nullable String>> parameter : request.queryParameters().entrySet()) {
-                pipelines.parameterNamePipeline().validate(parameter.getKey());
-                for (String value : parameter.getValue()) {
-                    if (value != null) {
-                        valuePipeline.validate(value);
-                    }
+            for (QueryParameter parameter : request.queryParameters()) {
+                pipelines.parameterNamePipeline().validate(parameter.name());
+                String value = parameter.value();
+                if (value != null) {
+                    valuePipeline.validate(value);
                 }
             }
         } catch (UrlSecurityException violation) {

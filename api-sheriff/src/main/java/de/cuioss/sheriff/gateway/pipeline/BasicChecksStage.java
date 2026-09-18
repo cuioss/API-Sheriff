@@ -148,7 +148,7 @@ public final class BasicChecksStage {
     }
 
     private void enforceCollectionLimits(PipelineRequest request) {
-        long paramCount = request.queryParameters().values().stream().mapToLong(List::size).sum();
+        long paramCount = request.queryParameters().size();
         if (paramCount > configuration.maxParameterCount()) {
             throw new GatewayException(EventType.PARAMETER_LIMIT_EXCEEDED,
                     "Query-parameter count %d exceeds cap %d".formatted(paramCount, configuration.maxParameterCount()));

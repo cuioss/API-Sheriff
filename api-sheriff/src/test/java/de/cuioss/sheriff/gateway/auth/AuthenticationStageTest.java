@@ -195,7 +195,7 @@ class AuthenticationStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/app/orders")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
                         "accept", List.of("application/json")))
                 .build();
@@ -216,7 +216,7 @@ class AuthenticationStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(headers)
                 .build();
         request.canonicalPath("/api/orders");
