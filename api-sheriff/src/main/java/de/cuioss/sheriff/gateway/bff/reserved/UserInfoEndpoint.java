@@ -47,6 +47,13 @@ import org.jspecify.annotations.Nullable;
  * server-held session metadata <strong>only</strong> — raw access / refresh / ID tokens never appear
  * in any view.
  * <p>
+ * <strong>Claim contract — native JSON types.</strong> Every disclosed claim keeps the JSON type it
+ * has in the validated ID token: an object stays a JSON object, an array a JSON array, and a number,
+ * boolean or string keeps that type. Numeric date claims such as {@code exp}, {@code iat} and
+ * {@code auth_time} are therefore disclosed as JSON numbers, and a {@code groups} claim as a JSON
+ * array — never as the string rendering of either. The production seam binds the
+ * {@link ClaimSource} to {@link IdTokenClaimProjection}, which produces exactly those shapes.
+ * <p>
  * <strong>Allowlist cap (secure default closed).</strong> Every response is filtered through the
  * operator-owned {@link ClaimAllowlistFilter}: a claim outside {@code allowed_claims} can never be
  * disclosed even when it is present in the validated ID token, and an <em>explicitly</em>-requested
@@ -193,10 +200,16 @@ public final class UserInfoEndpoint {
 
     /**
      * The validated-claim resolution seam. The session runtime binds it to the engine's ID-token
-     * parsing so the endpoint discloses <em>validated</em> ID-token claims; a test binds it to a fixed
-     * claim map. Keeping the token parsing behind the seam both decouples the endpoint from the engine
-     * and enforces the invariant that the endpoint never touches raw token material — it receives only
-     * an already-validated, already-parsed claim map.
+     * validation followed by {@link IdTokenClaimProjection}, so the endpoint discloses
+     * <em>validated</em> ID-token claims in their native JSON types; a test binds it to a fixed claim
+     * map. Keeping the token parsing behind the seam both decouples the endpoint from the engine and
+     * enforces the invariant that the endpoint never touches raw token material — it receives only an
+     * already-validated, already-parsed claim map.
+     * <p>
+     * <strong>Value contract.</strong> Each value is the claim's native JSON shape — a {@link Map}
+     * for an object, a {@link List} for an array, a {@link Number}, a {@link Boolean} or a
+     * {@link String} — so numeric date claims such as {@code exp}, {@code iat} and {@code auth_time}
+     * are numbers, not strings.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -208,7 +221,8 @@ public final class UserInfoEndpoint {
          * Resolves the validated ID-token claims backing the given session's disclosure.
          *
          * @param session the resolved live session
-         * @return the validated ID-token claims, keyed by claim name (never raw token material)
+         * @return the validated ID-token claims, keyed by claim name, each value in its native JSON
+         *         type (never raw token material)
          */
         Map<String, Object> claims(SessionRecord session);
     }

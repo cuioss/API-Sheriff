@@ -18,9 +18,7 @@ package de.cuioss.sheriff.gateway.quarkus;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -49,6 +47,7 @@ import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ClaimAllowlistFilter;
+import de.cuioss.sheriff.gateway.bff.reserved.IdTokenClaimProjection;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
@@ -83,7 +82,6 @@ import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.virtual.threads.VirtualThreads;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -384,13 +382,15 @@ public class BffRuntimeProducer {
                 challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),
                 pendingStore, bindingCookieCodec, gatewayOrigin);
 
-        // D11 user-info fold — validated ID-token claims through the engine, capped by the allowlist.
+        // D11 user-info fold — validated ID-token claims through the engine, projected to their native
+        // JSON types, capped by the allowlist.
         OidcConfig.UserInfo userInfo = oidc.userInfo();
         ClaimAllowlistFilter claimFilter = new ClaimAllowlistFilter(
                 userInfo == null ? List.of() : userInfo.allowedClaims(),
                 userInfo == null ? List.of() : userInfo.defaultView());
         UserInfoEndpoint userInfoEndpoint = new UserInfoEndpoint(sessionBinding, claimFilter,
-                sessionRecord -> toClaimMap(idBridge.validateRefreshedIdToken(sessionRecord.idToken()).getClaims()));
+                sessionRecord -> IdTokenClaimProjection.project(
+                        idBridge.validateRefreshedIdToken(sessionRecord.idToken())));
 
         // D12 login-initiation fold — the browser-facing start mirror of the callback.
         LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionBinding,
@@ -667,19 +667,6 @@ public class BffRuntimeProducer {
                 },
                 endSessionEndpoint, postLogoutRedirectUri, finalRedirect, LOGOUT_STATE_TTL);
         return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);
-    }
-
-    private static Map<String, Object> toClaimMap(Map<String, ClaimValue> claims) {
-        Map<String, Object> converted = new LinkedHashMap<>();
-        claims.forEach((name, value) -> {
-            if (value != null && !value.isNotPresentForClaimValueType()) {
-                String original = value.getOriginalString();
-                if (original != null && !original.isBlank()) {
-                    converted.put(name, original);
-                }
-            }
-        });
-        return converted;
     }
 
     /**
