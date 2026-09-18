@@ -16,7 +16,12 @@
 package de.cuioss.sheriff.gateway.auth;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
@@ -28,12 +33,15 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.jwks.JwksLoader;
+import de.cuioss.sheriff.token.validation.jwks.JwksLoaderFactory;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
 
 /**
  * CDI producer of the gateway's single shared {@link TokenValidator}, built once from the
@@ -46,6 +54,12 @@ import jakarta.inject.Inject;
  * {@link de.cuioss.sheriff.token.validation.IssuerConfig}: an {@code http} JWKS source becomes an
  * {@link HttpJwksLoaderConfig}, a {@code file} source becomes a JWKS file path. Validation is fully
  * offline once the key material has loaded.
+ * <p>
+ * <strong>The gateway owns each issuer's loader.</strong> Every issuer's library loader is wrapped in
+ * a {@link RetryingJwksLoader} installed through the library's public
+ * {@code IssuerConfigBuilder.jwksLoader(..)} seam, so the gateway — not the library — records whether
+ * a key set has actually been loaded. The same loaders back the {@link IssuerKeySetStatus} bean
+ * produced alongside the validator, which is the non-fetching per-issuer view readiness reads.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -72,6 +86,12 @@ public class TokenValidatorProducer {
      * construction, exactly as the edge's counterpart is bound at client construction.
      */
     private final boolean jwksVerifyHostname;
+    /**
+     * The per-issuer key-set view over the loaders of the validator assembled by
+     * {@link #gatewayTokenValidator()}, published by that assembly and read by
+     * {@link #issuerKeySetStatus(TokenValidator)}.
+     */
+    private final AtomicReference<IssuerKeySetStatus> keySetStatus = new AtomicReference<>();
 
     /**
      * @param gatewayConfig        the bound gateway document carrying the {@code token_validation}
@@ -108,8 +128,8 @@ public class TokenValidatorProducer {
      * {@link #gatewayTokenValidator()} until the first business method is called on that proxy.
      * This method therefore invokes a method on the injected proxy ({@link Object#toString()}) to
      * force contextual-instance creation at boot, which runs the full assembly path
-     * ({@code gatewayTokenValidator} → {@code toValidationIssuer} → {@code applyJwks} →
-     * {@code toHttpJwksLoaderConfig} → {@code trustProfileResolver.resolve}) and aborts startup on a
+     * ({@code gatewayTokenValidator} → {@code toJwksLoader} → the first {@link RetryingJwksLoader}
+     * delegate → {@code toHttpJwksLoaderConfig} → {@code trustProfileResolver.resolve}) and aborts startup on a
      * misconfiguration.
      *
      * @param event     the Quarkus startup event
@@ -133,7 +153,7 @@ public class TokenValidatorProducer {
      *                          {@code jwks.tls_profile} while
      *                          {@code egress_tls.jwks_verify_hostname} is {@code false}. Both
      *                          {@code tls_profile} conditions are reached only from the
-     *                          {@code http} branch of {@code applyJwks}: a {@code file} source
+     *                          {@code http} branch of the loader factory: a {@code file} source
      *                          opens no TLS connection, so neither the profile resolution nor the
      *                          hostname-posture collision exists on that leg
      */
@@ -147,13 +167,53 @@ public class TokenValidatorProducer {
                     "token_validation is required to build the bearer-token validator");
         }
         List<de.cuioss.sheriff.token.validation.IssuerConfig> issuers = new ArrayList<>();
+        Map<String, Supplier<IssuerKeySetStatus.KeySetState>> keySets = new LinkedHashMap<>();
         for (IssuerConfig issuer : config.issuers()) {
-            issuers.add(toValidationIssuer(issuer));
+            RetryingJwksLoader loader = toJwksLoader(issuer);
+            issuers.add(toValidationIssuer(issuer, loader));
+            keySets.put(issuer.name(), loader::keySetState);
         }
-        return TokenValidator.builder().issuerConfigs(issuers).build();
+        TokenValidator validator = TokenValidator.builder().issuerConfigs(issuers).build();
+        keySetStatus.set(new IssuerKeySetStatus(keySets));
+        return validator;
     }
 
-    private de.cuioss.sheriff.token.validation.IssuerConfig toValidationIssuer(IssuerConfig issuer) {
+    /**
+     * Produces the non-fetching per-issuer key-set view over the loaders of the gateway validator.
+     * <p>
+     * The validator parameter is touched first to force its assembly — the view is published by that
+     * assembly, so it never exists without the loaders it reads. {@link Singleton} (no client proxy)
+     * because the view is immutable and fixed once the validator is built.
+     *
+     * @param validator the gateway validator proxy whose assembly publishes the view
+     * @return the per-issuer key-set view, in configuration order
+     */
+    @Produces
+    @Singleton
+    public IssuerKeySetStatus issuerKeySetStatus(@GatewayValidator TokenValidator validator) {
+        // Any method call on the proxy forces contextual-instance creation, exactly as onStartup does.
+        validator.toString();
+        return Objects.requireNonNull(keySetStatus.get(), "gateway validator assembled without a key-set view");
+    }
+
+    /**
+     * Builds the gateway-owned loader for one issuer. The first delegate is created here, eagerly, so
+     * every boot refusal of the JWKS source (a missing url or file path, an unresolvable
+     * {@code tls_profile}, a {@code tls_profile} together with {@code jwks_verify_hostname: false}, an
+     * unsupported source) still aborts assembly. Every later delegate the wrapper builds reads a
+     * <em>fresh</em> loader configuration from the same factory.
+     */
+    private RetryingJwksLoader toJwksLoader(IssuerConfig issuer) {
+        IssuerConfig.Jwks jwks = issuer.jwks();
+        if (jwks == null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    ISSUER_PREFIX + issuer.name() + "' declares no jwks source");
+        }
+        return new RetryingJwksLoader(issuer.name(), delegateFactory(issuer, jwks));
+    }
+
+    private de.cuioss.sheriff.token.validation.IssuerConfig toValidationIssuer(IssuerConfig issuer,
+            RetryingJwksLoader loader) {
         de.cuioss.sheriff.token.validation.IssuerConfig.IssuerConfigBuilder builder =
                 de.cuioss.sheriff.token.validation.IssuerConfig.builder().issuerIdentifier(issuer.issuer());
         // Audience is optional in the gateway config model (IssuerConfig#audience). token-sheriff
@@ -167,30 +227,28 @@ public class TokenValidatorProducer {
         } else {
             builder.audienceValidationDisabled(true);
         }
-        IssuerConfig.Jwks jwks = issuer.jwks();
-        if (jwks == null) {
-            throw new GatewayException(EventType.CONFIG_INVALID,
-                    ISSUER_PREFIX + issuer.name() + "' declares no jwks source");
-        }
-        applyJwks(builder, issuer, jwks);
-        return builder.build();
+        return builder.jwksLoader(loader).build();
     }
 
-    private void applyJwks(de.cuioss.sheriff.token.validation.IssuerConfig.IssuerConfigBuilder builder,
-            IssuerConfig issuer, IssuerConfig.Jwks jwks) {
+    /**
+     * The factory of fresh library loaders for one issuer's JWKS source: an {@code http} source builds
+     * an HTTP loader over a freshly built {@link HttpJwksLoaderConfig} on every call, a {@code file}
+     * source a file loader over the declared path.
+     */
+    private Supplier<JwksLoader> delegateFactory(IssuerConfig issuer, IssuerConfig.Jwks jwks) {
         if (SOURCE_HTTP.equals(jwks.source())) {
-            builder.httpJwksLoaderConfig(toHttpJwksLoaderConfig(issuer, jwks));
-        } else if (SOURCE_FILE.equals(jwks.source())) {
+            return () -> JwksLoaderFactory.createHttpLoader(toHttpJwksLoaderConfig(issuer, jwks));
+        }
+        if (SOURCE_FILE.equals(jwks.source())) {
             String file = jwks.file();
             if (file == null) {
                 throw new GatewayException(EventType.CONFIG_INVALID,
                         ISSUER_PREFIX + issuer.name() + "' jwks source 'file' declares no file path");
             }
-            builder.jwksFilePath(file);
-        } else {
-            throw new GatewayException(EventType.CONFIG_INVALID,
-                    ISSUER_PREFIX + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
+            return () -> JwksLoaderFactory.createFileLoader(file);
         }
+        throw new GatewayException(EventType.CONFIG_INVALID,
+                ISSUER_PREFIX + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
     }
 
     /**
