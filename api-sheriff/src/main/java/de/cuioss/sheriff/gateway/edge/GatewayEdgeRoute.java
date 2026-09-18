@@ -1418,7 +1418,7 @@ public class GatewayEdgeRoute {
      * other byte untouched (see {@link #renderQuery}).
      */
     private static String encodeSemicolons(String raw) {
-        return raw.indexOf(';') < 0 ? raw : raw.replace(";", "%3B");
+        return raw.replace(";", "%3B");
     }
 
     private static Optional<HttpMethod> parseMethod(String name) {
