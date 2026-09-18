@@ -1338,7 +1338,7 @@ public class GatewayEdgeRoute {
      *                 carries none
      * @return the raw pairs keyed by raw name, insertion-ordered; empty when there is no query
      */
-    static Map<String, List<@Nullable String>> rawQueryPairs(@Nullable String rawQuery) {
+    private static Map<String, List<@Nullable String>> rawQueryPairs(@Nullable String rawQuery) {
         if (rawQuery == null || rawQuery.isEmpty()) {
             return Map.of();
         }
@@ -1383,7 +1383,7 @@ public class GatewayEdgeRoute {
      * ones the security filter validated (ADR-0047). A {@code null} value is a bare pair and is
      * rendered as its bare name.
      */
-    static String renderQuery(Map<String, List<@Nullable String>> query) {
+    private static String renderQuery(Map<String, List<@Nullable String>> query) {
         if (query.isEmpty()) {
             return "";
         }

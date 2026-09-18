@@ -345,7 +345,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         }
     }
 
-    static void closeDelegate(JwksLoader delegate) {
+    private static void closeDelegate(JwksLoader delegate) {
         if (delegate instanceof HttpJwksLoader httpLoader) {
             httpLoader.close();
         }

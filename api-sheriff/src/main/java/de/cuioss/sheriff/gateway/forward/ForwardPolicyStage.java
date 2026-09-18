@@ -478,7 +478,7 @@ public final class ForwardPolicyStage {
      * @param rawName the raw, still-encoded parameter name
      * @return the decoded name, or empty when {@code rawName} is not a well-formed encoding
      */
-    static Optional<String> decodeQueryName(String rawName) {
+    private static Optional<String> decodeQueryName(String rawName) {
         byte[] bytes = new byte[rawName.length()];
         int length = 0;
         int index = 0;
