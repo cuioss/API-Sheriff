@@ -217,13 +217,14 @@ if [[ "$KC_MGMT_SCHEME" == "https" ]]; then
 fi
 
 # Bring up Keycloak FIRST and wait until it is READY before starting the gateway. The api-sheriff
-# native app eagerly loads the Keycloak issuers' JWKS at boot; if it starts before Keycloak can
-# answer, that initial load fails (ConnectException) and — with a long background-refresh interval —
-# the issuer stays unhealthy for the whole test run, so every mediated login's token validation
-# fails with "No healthy issuer configuration found". Under CI's shared-CPU contention Keycloak is
-# slower to answer than the gateway's brief initial-retry window, which made this flake. Gating the
-# gateway start on a ready Keycloak removes the race. (docker compose up -d keycloak starts Keycloak
-# and its own dependencies only; the gateway and remaining infra are started afterwards.)
+# native app starts loading the Keycloak issuers' JWKS at boot and reports readiness DOWN until every
+# issuer's key set has loaded (ADR-0027 Amendment A1). A gateway started before Keycloak answers
+# retries the fetch on a bounded backoff (1 s doubling, capped at 30 s), so it recovers — but the
+# layer-2 readiness assertion below is a SINGLE SHOT taken right after the gateways report healthy,
+# and a key set still waiting out a backoff at that moment fails it. Gating the gateway start on a
+# ready Keycloak makes each gateway's first fetch succeed within a moment of boot, long before the
+# baked health check first reports healthy. (docker compose up -d keycloak starts Keycloak and its
+# own dependencies only; the gateway and remaining infra are started afterwards.)
 echo "🐳 Starting Keycloak first (the Quarkus $MODE gateway starts only after Keycloak is ready)..."
 (cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d keycloak)
 
@@ -338,8 +339,8 @@ capture_gateway_diagnostics() {
 # Layer 2 (semantics) is the assertion the baked probe deliberately cannot make. That probe is a bare
 # TCP accept on the management port — it must be, because the management scheme is deployment-bound
 # (ADR-0025) — so it proves the interface is listening, not that GatewayReadinessCheck reported UP:
-# the configuration document bound and, where a token_validation block is configured, the
-# @GatewayValidator-qualified TokenValidator resolved. A single-shot readiness probe per instance,
+# the configuration document bound and, where a token_validation block is configured, every
+# configured issuer's JWKS key set loaded. A single-shot readiness probe per instance,
 # addressed beneath that instance's derived management root path, closes exactly that gap. Every
 # instance is asserted, not just the primary one: the suites drive the
 # TLS ports directly — MtlsHandshakeIT, the Bff*Cookie*IT suites (BffCookieStatelessnessIT drives BOTH
@@ -349,7 +350,9 @@ capture_gateway_diagnostics() {
 #
 # Single-shot with no retry budget is correct precisely BECAUSE layer 1 already waited: by the time
 # this runs the instance has been reported healthy by the runtime, so a non-UP readiness answer is a
-# real defect, and retrying would only delay reporting it. That is also why the scheme still comes
+# real defect, and retrying would only delay reporting it. That holds only while Keycloak is ready
+# before the gateways start (see the Keycloak gate above): readiness also waits for each issuer's
+# key set, which the TCP-accept health check cannot see (ADR-0031 records the residual). That is also why the scheme still comes
 # from each service's management-scheme label rather than from its name — the plain-management
 # instance is asserted over http:// with NO -k, and if it ever needs -k the plain-management opt-out
 # has silently stopped working and THAT is the bug, not the probe.

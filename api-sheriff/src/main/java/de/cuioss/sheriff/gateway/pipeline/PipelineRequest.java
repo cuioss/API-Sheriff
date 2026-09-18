@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.pipeline;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -52,7 +53,7 @@ public final class PipelineRequest {
 
     private final HttpMethod method;
     private final String requestPath;
-    private final Map<String, List<String>> queryParameters;
+    private final Map<String, List<@Nullable String>> queryParameters;
     private final Map<String, List<String>> headers;
     private final @Nullable String host;
     private final @Nullable String peerAddress;
@@ -70,7 +71,8 @@ public final class PipelineRequest {
     private PipelineRequest(Builder builder) {
         this.method = Objects.requireNonNull(builder.method, "method");
         this.requestPath = Objects.requireNonNull(builder.requestPath, "requestPath");
-        this.queryParameters = Map.copyOf(builder.queryParameters);
+        // Insertion-ordered (not Map.copyOf) so the forwarded query keeps the inbound pair order.
+        this.queryParameters = Collections.unmodifiableMap(new LinkedHashMap<>(builder.queryParameters));
         this.headers = normalizeHeaders(builder.headers);
         this.host = builder.host;
         this.peerAddress = builder.peerAddress;
@@ -112,9 +114,20 @@ public final class PipelineRequest {
     }
 
     /**
-     * @return the inbound query parameters keyed by name (values in inbound order), empty when none
+     * The inbound query parameters in their <strong>raw, still-percent-encoded wire form</strong>
+     * (ADR-0047): names and values are exactly the bytes of the request-target query, split on
+     * {@code &} and on each pair's first {@code =}, with no percent-decoding and no {@code +}-to-space
+     * translation. This is the form the security filter validates and the forward path emits
+     * verbatim, so what was validated is exactly what is forwarded. A pair without {@code =} carries a
+     * {@code null} value, so its bare form survives forwarding.
+     * <p>
+     * A consumer that needs a <em>decoded</em> value (the reserved BFF parameters, for example)
+     * reads it from the transport, never from this map.
+     *
+     * @return the raw inbound query pairs keyed by raw name, in first-seen order with values in
+     *         inbound order; empty when there is no query
      */
-    public Map<String, List<String>> queryParameters() {
+    public Map<String, List<@Nullable String>> queryParameters() {
         return queryParameters;
     }
 
@@ -338,7 +351,7 @@ public final class PipelineRequest {
 
         private @Nullable HttpMethod method;
         private @Nullable String requestPath;
-        private Map<String, List<String>> queryParameters = Map.of();
+        private Map<String, List<@Nullable String>> queryParameters = Map.of();
         private Map<String, List<String>> headers = Map.of();
         private @Nullable String host;
         private @Nullable String peerAddress;
@@ -367,10 +380,14 @@ public final class PipelineRequest {
         }
 
         /**
-         * @param queryParameters the inbound query parameters, keyed by name
+         * @param queryParameters the inbound query pairs in their raw, still-percent-encoded wire
+         *                        form, keyed by raw name in first-seen order; a {@code null} value
+         *                        marks a bare pair without {@code =}. The security filter validates
+         *                        exactly these pairs and the forward path emits them verbatim
+         *                        (ADR-0047) — never pass decoded values here
          * @return this builder
          */
-        public Builder queryParameters(Map<String, List<String>> queryParameters) {
+        public Builder queryParameters(Map<String, List<@Nullable String>> queryParameters) {
             this.queryParameters = queryParameters;
             return this;
         }

@@ -31,6 +31,14 @@ CERT_VALIDITY=365
 TEMP_KEYSTORE="${CERT_DIR}/temp-keystore.p12"
 TEMP_PASSWORD="temp-$(date +%s)"
 
+# The truststore behind gateway.yaml's `jwks.tls_profile: sample-idp`, bound by
+# sample-idp-trust.properties. Both values below MUST match that file: it names this store's
+# container-side path and its password. The store holds exactly ONE entry — the certificate generated
+# here, which Keycloak serves — so the JWKS fetch trusts the sample IdP and nothing else. It contains
+# no private key; the password only guards the store's integrity.
+TRUSTSTORE="${CERT_DIR}/sample-idp-truststore.p12"
+TRUSTSTORE_PASSWORD="sample-idp-trust"
+
 # Remove the intermediate keystore on EVERY exit path, not just the success one. Under `set -e` a
 # failing keytool or openssl aborts the script before the explicit cleanup at the end, which would
 # otherwise strand a PKCS#12 file holding the private key in a directory an operator is told to
@@ -41,8 +49,9 @@ trap 'rm -f "${TEMP_KEYSTORE}"' EXIT
 echo "Generating SAMPLE self-signed TLS material for the API Sheriff compose sample..."
 echo "  Directory: ${CERT_DIR}"
 
-# Start from a clean slate so a re-run never leaves a half-replaced pair behind.
-rm -f "${CERT_DIR}/localhost.crt" "${CERT_DIR}/localhost.key" "${TEMP_KEYSTORE}"
+# Start from a clean slate so a re-run never leaves a half-replaced set behind. The truststore goes
+# too: a store still holding the PREVIOUS certificate would make the JWKS fetch reject the new one.
+rm -f "${CERT_DIR}/localhost.crt" "${CERT_DIR}/localhost.key" "${TRUSTSTORE}" "${TEMP_KEYSTORE}"
 
 echo "  Generating key pair and self-signed certificate..."
 keytool -genkeypair \
@@ -73,6 +82,19 @@ openssl pkcs12 -in "${TEMP_KEYSTORE}" \
   -nocerts \
   -out "${CERT_DIR}/localhost.key"
 
+# The gateway verifies Keycloak's certificate on the JWKS fetch with full chain AND hostname
+# validation — nothing here relaxes either. It can succeed only because this store anchors the exact
+# self-signed certificate Keycloak serves, and that certificate's SAN names `keycloak`, the host the
+# gateway dials. Same keytool pattern as the integration-test stack's generate-truststore.sh.
+echo "  Building the sample-idp truststore (the certificate only, no key)..."
+keytool -importcert \
+  -alias sample-idp \
+  -file "${CERT_DIR}/localhost.crt" \
+  -keystore "${TRUSTSTORE}" \
+  -storetype PKCS12 \
+  -storepass "${TRUSTSTORE_PASSWORD}" \
+  -noprompt
+
 # BOTH files are world-readable, and the key deliberately so. Read this before "tightening" it:
 #
 # The two containers that mount this directory run as DIFFERENT non-root uids — the gateway as
@@ -93,14 +115,18 @@ openssl pkcs12 -in "${TEMP_KEYSTORE}" \
 # material, so the mode it is created with is the mode the container actually sees.)
 chmod 644 "${CERT_DIR}/localhost.crt"
 chmod 644 "${CERT_DIR}/localhost.key"
+# The truststore holds only the public certificate, so world-read costs nothing and is required for
+# the same uid-mismatch reason as above.
+chmod 644 "${TRUSTSTORE}"
 
 # No explicit keystore removal here — the EXIT trap armed above owns that, on this path and on every
 # failure path alike. A second copy would only be a second thing to keep in step.
 
 echo ""
-echo "Done. Generated (both git-ignored):"
-echo "  localhost.crt  the certificate, mounted into api-sheriff and keycloak"
-echo "  localhost.key  the private key  — sample only, never leaves this machine"
+echo "Done. Generated (all git-ignored):"
+echo "  localhost.crt              the certificate, mounted into api-sheriff and keycloak"
+echo "  localhost.key              the private key  — sample only, never leaves this machine"
+echo "  sample-idp-truststore.p12  the gateway's JWKS trust anchor for Keycloak (certificate only)"
 echo ""
 echo "Valid ${CERT_VALIDITY} days. Subject: ${CERT_DNAME}"
 echo "SAN: ${CERT_SAN}"

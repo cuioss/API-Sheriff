@@ -112,9 +112,10 @@ Keycloak carries a TCP-accept probe, `bash -c 'echo -n > /dev/tcp/127.0.0.1/9000
 forced: the Keycloak image ships neither curl nor wget, so a probe naming either would fail
 permanently and be indistinguishable from a service that never came up. `bash` is present, so
 `/dev/tcp` is the available primitive. It is deliberately *accept-level only* -- it proves the
-management listener is bound, not that the realm finished importing. That is sufficient for its one
-job, which is ordering the gateway's start behind the identity provider's; the gateway's own eager
-key-set load at boot is what makes that ordering load-bearing rather than cosmetic.
+management listener is bound, not that the realm finished importing. It has one job, ordering the
+gateway's start behind the identity provider's, and it does that job only roughly: the gateway can
+still start while the realm imports, miss its first key-set fetch and sit out a retry backoff. That
+residual is why layer 2 below polls instead of asking once.
 
 `scripts/start-sample.sh` is the actual readiness gate, and it is bound by
 link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031].
@@ -127,13 +128,27 @@ here, because that is the right condition for each of this sample's three servic
 stack scopes its own `--wait` to the gateway service names, because its model also carries backends
 for which "healthy" would mean something else.)
 
-*Layer 2 -- semantics.* One single-shot readiness `GET` per derived target, addressed beneath that
+*Layer 2 -- semantics.* A bounded readiness poll per derived target, addressed beneath that
 target's derived management root path. Layer 1's signal is
 a bare TCP accept -- it must be, because the management scheme is deployment-bound under
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] --
 so it proves the interface is listening, not that the gateway reported `READY`. This assertion closes
-exactly that gap, and needs no retry budget precisely because layer 1 already blocked on health: a
-non-`UP` answer here is a real defect, and retrying would only delay reporting it.
+exactly that gap. It is a *bounded wait* here rather than the integration stack's single shot, and
+the difference is the stack, not the rule: readiness also waits for the issuer's JWKS key set, and
+this sample orders its gateway only behind an accept-level Keycloak probe, so the first key-set fetch
+can land during the realm import and be retried on the gateway's backoff (one second doubling, capped
+at 30 s). ADR-0031 names exactly this case and prescribes this remedy. The budget, 90 one-second
+attempts, outlasts that backoff's 61 s climb to the cap (1 + 2 + 4 + 8 + 16 + 30 s); a target still
+not `UP` when it is spent is a real defect and fails the gate with the same diagnostics as layer 1.
+
+The key set loading at all depends on trust, which the sample binds explicitly. Keycloak serves the
+generated self-signed certificate, which no default trust store contains, so the issuer in
+`gateway.yaml` names `jwks.tls_profile: sample-idp`, and `docker/certificates/sample-idp-trust.properties`
+-- loaded through `QUARKUS_CONFIG_LOCATIONS`, the same mechanism the integration stack uses for its
+`benchmark-idp` profile -- binds it to `sample-idp-truststore.p12`, which `generate-certificates.sh`
+builds from that one certificate. Before that binding existed the fetch failed certificate validation
+and readiness could never reach `UP`; no poll budget fixes that, which is why the two changes belong
+together.
 
 Layer 2 derives its whole probe target from `docker compose config --format json`:
 
@@ -178,12 +193,12 @@ ADR-0031's negative list is binding here, and each item is a real failure mode:
   layer 2 is not redundant with it. `curl -sf` is equally load-bearing in that assertion: without
   `-f`, curl exits 0 on the 503 the readiness endpoint returns while starting, so the gate would pass
   as soon as the port *accepted*.
-* *One bound, with a recorded origin -- and no retry budget behind it.* The script owns exactly one
-  number, `--wait-timeout 120`, roughly 13x headroom over the worst measured time-to-ready of 9.14s
-  recorded in link:integration-test-topology.adoc[the integration-test topology document]. The
-  readiness assertion behind that wait has no budget at all, because layer 1 already did the waiting.
-  Re-measure before shrinking the bound -- one that is too small turns a slow machine into a spurious
-  failure, which is worse than waiting.
+* *Two bounds, each with a recorded origin.* The script owns `--wait-timeout 120`, roughly 13x
+  headroom over the worst measured time-to-ready of 9.14s recorded in
+  link:integration-test-topology.adoc[the integration-test topology document], and `READY_ATTEMPTS=90`
+  for the readiness poll behind it, derived from the gateway's JWKS retry backoff as described under
+  layer 2. Re-derive either before shrinking it -- a bound that is too small turns a slow machine into
+  a spurious failure, which is worse than waiting.
 * *An empty target set is a hard failure.* Discovering no labelled service exits non-zero rather
   than passing, because a gate that probes nothing and reports success is a vacuous green.
 

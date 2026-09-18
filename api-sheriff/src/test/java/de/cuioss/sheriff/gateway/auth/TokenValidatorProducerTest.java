@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.commons.transport.EgressPolicy;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
@@ -760,6 +761,82 @@ class TokenValidatorProducerTest {
             // Act & Assert — forcing assembly of a validly-configured validator must not fail startup
             assertDoesNotThrow(() -> producer.onStartup(null, validator),
                     "forcing eager assembly of a valid validator must not abort startup");
+        }
+    }
+
+    /**
+     * The per-issuer key-set view produced alongside the validator: it covers every configured
+     * issuer, is backed by the same loaders the validator uses, and exposes no URL.
+     */
+    @Nested
+    @DisplayName("IssuerKeySetStatus — produced alongside the validator")
+    class KeySetStatusProduction {
+
+        @TempDir
+        Path jwksDir;
+
+        @Test
+        @DisplayName("lists every configured issuer and turns LOADED once the validator's loaders have loaded")
+        void listsEveryConfiguredIssuer() throws Exception {
+            // Arrange — two offline file issuers, so the load needs no network
+            Path jwks = Files.writeString(jwksDir.resolve("jwks.json"), InMemoryKeyMaterialHandler.createDefaultJwks());
+            IssuerConfig.Jwks fileSource = IssuerConfig.Jwks.builder().source("file").file(jwks.toString()).build();
+            GatewayConfig config = GatewayConfig.builder()
+                    .version(1)
+                    .tokenValidation(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("first").issuer(ISSUER).jwks(fileSource).build(),
+                            IssuerConfig.builder().name("second").issuer("https://second.example").jwks(fileSource)
+                                    .build())))
+                    .build();
+            TokenValidatorProducer producer = new TokenValidatorProducer(config,
+                    new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()));
+
+            // Act
+            TokenValidator validator = producer.gatewayTokenValidator();
+            IssuerKeySetStatus status = producer.issuerKeySetStatus(validator);
+
+            // Assert
+            assertEquals(2, status.configuredCount(), "every configured issuer is listed");
+            Awaits.until(status::allLoaded, "both file issuers to report a loaded key set", 10);
+            assertEquals(2, status.loadedCount());
+            assertTrue(status.toString().contains("configured=2"));
+        }
+
+        @Test
+        @DisplayName("an http issuer's boot refusal still aborts assembly through the wrapper")
+        void bootRefusalSurvivesTheWrapper() {
+            // Arrange — the same missing-url refusal failsForUnusableJwksSource pins, asserted on the
+            // status producer path too: the view never exists without an assembled validator
+            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+                    .name("primary")
+                    .issuer(ISSUER)
+                    .jwks(IssuerConfig.Jwks.builder().source("http").build())
+                    .build());
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, producer::gatewayTokenValidator);
+
+            // Assert
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("the view is not produced from an unassembled validator")
+        void refusesUnassembledValidator() {
+            // Arrange — a validator from a different producer: this producer never assembled one
+            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+                    .name("primary")
+                    .issuer(ISSUER)
+                    .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
+                    .build());
+            TokenValidator foreign = producerFor(IssuerConfig.builder()
+                    .name("other")
+                    .issuer(ISSUER)
+                    .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
+                    .build()).gatewayTokenValidator();
+
+            // Act + Assert
+            assertThrows(NullPointerException.class, () -> producer.issuerKeySetStatus(foreign));
         }
     }
 

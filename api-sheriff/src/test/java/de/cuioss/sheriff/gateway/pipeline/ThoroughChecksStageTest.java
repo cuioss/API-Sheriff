@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.RecordComponent;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -54,13 +55,13 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ThoroughChecksStageTest {
 
     /**
-     * A parameter value the url-parameter pipeline rejects under every non-minimal preset: {@code <}
-     * lies outside the RFC 3986 {@code query} grammar. (A path separator no longer qualifies — the
-     * {@code query} production admits {@code /}, {@code :} and {@code @}.)
+     * A raw, wire-form parameter value the url-parameter pipeline rejects under every non-minimal
+     * preset: {@code %252F} is a double-encoded slash, which the pipeline detects because it receives
+     * the still-encoded form and decodes it once itself (ADR-0047).
      */
-    private static final String REJECTED_PARAMETER_VALUE = "<home";
-    /** A parameter name the url-parameter pipeline rejects (an embedded null byte). */
-    private static final String REJECTED_PARAMETER_NAME = "evil\0name";
+    private static final String REJECTED_PARAMETER_VALUE = "%252F";
+    /** A raw, wire-form parameter name the parameter-name pipeline rejects (an encoded null byte). */
+    private static final String REJECTED_PARAMETER_NAME = "evil%00name";
 
     /** The {@code Authorization} carve-out budget, as an omitted configuration key resolves it. */
     private static final int AUTHORIZATION_CAP =
@@ -306,6 +307,62 @@ class ThoroughChecksStageTest {
 
             // Assert
             assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+
+        @ParameterizedTest(name = "rejects the raw name {0}")
+        @ValueSource(strings = {"a%3Db", "a%26b", "a%0Db"})
+        @DisplayName("the PARAMETER_NAME pipeline rejects a raw name that decodes to a delimiter or a line break")
+        void rejectsNameDecodingToDelimiter(String rawName) {
+            // Arrange — the name arrives still encoded; only the dedicated name pipeline knows a
+            // decoded '=' / '&' / CR has no business in a parameter name
+            PipelineRequest request = requestWithParameters(Map.of(rawName, List.of("1")),
+                    route(SecurityProfile.STRICT, defaultConfiguration));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, List.of()));
+
+            // Assert
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("a plain parameter name passes the PARAMETER_NAME pipeline")
+        void acceptsPlainName() {
+            // Arrange
+            PipelineRequest request = requestWithParameters(Map.of("page_size", List.of("20")),
+                    route(SecurityProfile.STRICT, defaultConfiguration));
+
+            // Act + Assert
+            assertDoesNotThrow(() -> stage.process(request, List.of()));
+        }
+
+        @ParameterizedTest(name = "accepts the raw value {0}")
+        @ValueSource(strings = {"Max%20M%C3%BCller", "2026-09-15T10%3A00%3A00Z", "a%2Fb", "100%25", "a+b"})
+        @DisplayName("raw wire-form values are decoded once by the pipeline and accepted, never double-decoded")
+        void acceptsRawEncodedValue(String rawValue) {
+            // Arrange — each of these was a false reject while the pipeline received decoded input
+            PipelineRequest request = requestWithParameters(Map.of("q", List.of(rawValue)),
+                    route(SecurityProfile.STRICT, defaultConfiguration));
+
+            // Act + Assert
+            assertDoesNotThrow(() -> stage.process(request, List.of()));
+        }
+
+        @Test
+        @DisplayName("a bare pair (no '=') has its name validated and no value to validate")
+        void validatesBarePairName() {
+            // Arrange — a bare pair travels as a null value so it can be forwarded verbatim
+            List<@Nullable String> bare = new ArrayList<>();
+            bare.add(null);
+            PipelineRequest accepted = requestWithParameters(Map.of("flag", bare),
+                    route(SecurityProfile.STRICT, defaultConfiguration));
+            PipelineRequest rejected = requestWithParameters(Map.of(REJECTED_PARAMETER_NAME, bare),
+                    route(SecurityProfile.STRICT, defaultConfiguration));
+
+            // Act + Assert
+            assertDoesNotThrow(() -> stage.process(accepted, List.of()));
+            assertThrows(GatewayException.class, () -> stage.process(rejected, List.of()));
         }
 
         @Test
@@ -775,7 +832,8 @@ class ThoroughChecksStageTest {
         return request;
     }
 
-    private static PipelineRequest requestWithParameters(Map<String, List<String>> parameters, RouteRuntime route) {
+    private static PipelineRequest requestWithParameters(Map<String, List<@Nullable String>> parameters,
+            RouteRuntime route) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")

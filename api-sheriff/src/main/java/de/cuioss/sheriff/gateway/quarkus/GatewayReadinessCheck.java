@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
@@ -59,27 +60,34 @@ import org.eclipse.microprofile.health.Readiness;
  *       configuration aborts startup, so the application would never reach readiness with an
  *       unbound config);</li>
  *   <li><strong>JWKS</strong> — when a {@code token_validation} block is configured, the gateway's
- *       own {@link GatewayValidator}-qualified {@link TokenValidator} resolves successfully. Building
- *       that validator requires every configured issuer to declare a usable JWKS source, so a
- *       resolution failure ({@link GatewayException}) marks the probe {@code DOWN} — reporting a
- *       fixed status token, never the cause, which is logged instead (see
- *       {@link #ERROR_VALIDATION_UNAVAILABLE}).
+ *       own {@link GatewayValidator}-qualified {@link TokenValidator} resolves AND every configured
+ *       issuer has a loaded key set. JWKS fetching is lazy and asynchronous, so a resolved validator
+ *       alone proves nothing about the keys: the probe additionally reads the
+ *       {@link IssuerKeySetStatus} — a <em>non-fetching</em> per-issuer view over the gateway-owned
+ *       loaders, so polling the probe never causes a JWKS request. When every issuer is loaded the
+ *       probe reports {@code jwks: ready} and {@code UP}. Otherwise it reports {@code DOWN} with
+ *       {@code jwks: loading} (no load attempt has produced a key set yet) or
+ *       {@code jwks: unavailable} (at least one issuer's last attempt failed), together with the
+ *       bounded count {@code issuers_loaded} beside {@code issuers}. A validator whose assembly
+ *       fails ({@link GatewayException}) is reported {@code DOWN} through the same renderer with a
+ *       fixed status token (see {@link #ERROR_VALIDATION_UNAVAILABLE}). No DOWN payload names an
+ *       issuer, a URL, a hostname or a cause; causes reach the operator through the log.
  *       A gateway with no {@code token_validation} block needs no bearer validation, so JWKS is
  *       reported {@code not-applicable} and does not gate readiness.</li>
  *   <li><strong>Issuer reachability (mode: server)</strong> — when the gateway runs a BFF
  *       {@code oidc.session.mode: server} deployment, the OIDC issuer must be reachable for the
  *       gateway to mediate and validate the confidential-client tokens. This reuses the same
- *       JWKS-backed validation health check above (resolving the {@link GatewayValidator}
- *       {@link TokenValidator} reaches every configured issuer's JWKS): a server-mode probe adds
- *       an {@code oidc=server} datum and reports the issuer as {@code reachable} /
- *       {@code unreachable} alongside the JWKS status, so a server-mode probe surfaces issuer
- *       reachability explicitly. A server-mode deployment that configures no
- *       {@code token_validation} block has no validation health check to reuse, so issuer
- *       reachability is reported {@code unverified} — the confidential-client engine reaches the
- *       issuer lazily on the first login and does not gate boot readiness.</li>
+ *       JWKS verdict above: a server-mode probe adds an {@code oidc=server} datum and reports the
+ *       issuer as {@code reachable} when every key set is loaded and {@code unreachable} whenever the
+ *       probe is {@code DOWN}. A server-mode deployment that configures no {@code token_validation}
+ *       block has no JWKS verdict to reuse, so issuer reachability is reported {@code unverified} —
+ *       the confidential-client engine reaches the issuer lazily on the first login and does not
+ *       gate boot readiness.</li>
  * </ul>
- * The validator is resolved lazily through an {@link Instance} so a misconfigured JWKS source
- * yields a clean {@code DOWN} response rather than failing this probe's own construction.
+ * The validator and the key-set view are resolved lazily through {@link Instance}s, together and
+ * only on the {@code token_validation} leg: the view is published by the validator's assembly, so a
+ * gateway without bearer validation never needs it, and a misconfigured JWKS source yields a clean
+ * {@code DOWN} response rather than failing this probe's own construction.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -95,7 +103,14 @@ public class GatewayReadinessCheck implements HealthCheck {
     private static final String DATA_CONFIG_VERSION = "config_version";
     private static final String DATA_JWKS = "jwks";
     private static final String DATA_ISSUERS = "issuers";
+    private static final String DATA_ISSUERS_LOADED = "issuers_loaded";
     private static final String DATA_ERROR = "error";
+
+    private static final String JWKS_READY = "ready";
+    /** At least one issuer has no key set yet and none of the pending issuers' attempts has failed. */
+    private static final String JWKS_LOADING = "loading";
+    /** At least one issuer's most recent load attempt failed, or the validator could not be built. */
+    private static final String JWKS_UNAVAILABLE = "unavailable";
     private static final String DATA_OIDC = "oidc";
     private static final String DATA_ISSUER_REACHABILITY = "issuer_reachability";
 
@@ -119,24 +134,31 @@ public class GatewayReadinessCheck implements HealthCheck {
 
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> gatewayValidator;
+    private final Instance<IssuerKeySetStatus> issuerKeySetStatus;
 
     /**
-     * @param gatewayConfig    the bound, boot-validated gateway document
-     * @param gatewayValidator the lazily-resolved gateway bearer-token validator
+     * @param gatewayConfig      the bound, boot-validated gateway document
+     * @param gatewayValidator   the lazily-resolved gateway bearer-token validator
+     * @param issuerKeySetStatus the lazily-resolved, non-fetching per-issuer key-set view published by
+     *                           the validator's assembly; resolved only when {@code token_validation}
+     *                           is configured
      */
     @Inject
     public GatewayReadinessCheck(GatewayConfig gatewayConfig,
-            @GatewayValidator Instance<TokenValidator> gatewayValidator) {
+            @GatewayValidator Instance<TokenValidator> gatewayValidator,
+            Instance<IssuerKeySetStatus> issuerKeySetStatus) {
         this.gatewayConfig = gatewayConfig;
         this.gatewayValidator = gatewayValidator;
+        this.issuerKeySetStatus = issuerKeySetStatus;
     }
 
     /**
      * {@inheritDoc}
      *
      * @return {@code UP} when the configuration is bound and — if bearer validation is configured —
-     *         the JWKS-backed validator resolves; {@code DOWN} carrying a fixed, non-disclosing status
-     *         token otherwise (the failure cause is logged, never returned)
+     *         the JWKS-backed validator resolves and every configured issuer has a loaded key set;
+     *         {@code DOWN} carrying fixed, non-disclosing status tokens and counts otherwise (any
+     *         failure cause is logged, never returned)
      */
     @Override
     public HealthCheckResponse call() {
@@ -165,56 +187,65 @@ public class GatewayReadinessCheck implements HealthCheck {
             return builder.withData(DATA_JWKS, "not-applicable").up().build();
         }
 
-        int issuerCount = tokenValidation.issuers().size();
-        builder.withData(DATA_ISSUERS, issuerCount);
+        builder.withData(DATA_ISSUERS, tokenValidation.issuers().size());
+        IssuerKeySetStatus keySets;
         try {
             gatewayValidator.get();
-            builder.withData(DATA_JWKS, "ready");
+            keySets = issuerKeySetStatus.get();
+        } catch (GatewayException | CreationException failure) {
+            // The CONSTRUCTION-FAILURE leg — not reached in the shipped eager-boot topology, and
+            // deliberately retained. TokenValidatorProducer.onStartup forces the validator (and with
+            // it the key-set view) into existence at StartupEvent, so a construction-failing JWKS
+            // source aborts boot non-zero and this probe is never called. The eager-boot coupling is
+            // a fail-CLOSED security property (ADR-0027): a misconfigured issuer must abort startup
+            // rather than let the gateway serve traffic and fail at the first bearer request.
+            //
+            // Kept because removing the catch would not remove the failure path, only move its
+            // rendering OUT of this class: an escaping exception would be rendered by SmallRye's own
+            // check-failure handling, outside the gateway's control and without the fixed-token
+            // redaction below, on a payload served by an interface that may be plain HTTP. The
+            // redaction is therefore defence-in-depth against a future relaxation of eager assembly.
+            //
+            // The LIVE key-set leg below IS reachable: a validator that assembled cleanly still has
+            // no keys until each issuer's asynchronous first fetch succeeds, and that leg shares the
+            // same DOWN renderer. The operator gets the cause through the log; the wire gets a fixed
+            // token. See ERROR_VALIDATION_UNAVAILABLE for why the raw message must not travel here.
+            LOGGER.warn(failure, ConfigLogMessages.WARN.READINESS_VALIDATION_UNAVAILABLE);
+            builder.withData(DATA_ERROR, ERROR_VALIDATION_UNAVAILABLE);
+            return down(builder, JWKS_UNAVAILABLE, serverMode);
+        }
+
+        // One read of the loaded count drives both the datum and the verdict, so the payload can
+        // never report UP beside an issuers_loaded below issuers. Every read is non-fetching.
+        int loaded = keySets.loadedCount();
+        builder.withData(DATA_ISSUERS_LOADED, loaded);
+        if (loaded == keySets.configuredCount()) {
+            builder.withData(DATA_JWKS, JWKS_READY);
             if (serverMode) {
                 builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_REACHABLE);
             }
             return builder.up().build();
-        } catch (GatewayException | CreationException failure) {
-            // NOT REACHED IN THE SHIPPED EAGER-BOOT TOPOLOGY, AND DELIBERATELY RETAINED.
-            //
-            // TokenValidatorProducer.onStartup forces the @ApplicationScoped validator into
-            // existence at StartupEvent (via a method call on the injected proxy), so boot already
-            // performs whatever gatewayValidator.get() would do here. Verified empirically against
-            // the distroless image, and there is no third outcome: a construction-FAILING JWKS
-            // aborts boot non-zero, so the management port never listens and this probe is never
-            // called; a construction-SUCCEEDING but lazily-unreachable JWKS reports UP, because the
-            // fetch is lazy. Readiness therefore flips at the same moment liveness does (ADR-0027).
-            //
-            // Kept rather than deleted as dead code, for three reasons:
-            //  (1) Removing the catch does not remove the failure path, it only moves the rendering
-            //      OUT of this class -- an escaping exception would be rendered by SmallRye's own
-            //      check-failure handling instead, outside the gateway's control and without the
-            //      fixed-token redaction below. That is precisely the disclosure this probe closed,
-            //      on a payload served by an interface that may legitimately be plain HTTP.
-            //  (2) It is the designated seam for closing the gap ADR-0027 section 4 records as open:
-            //      giving this probe a LIVE loader-status read (so an unreachable JWKS endpoint, a
-            //      stalled rotation or an expired key take readiness DOWN) needs exactly this DOWN
-            //      branch. Deleting it would mean re-adding it.
-            //  (3) The eager-boot coupling it depends on is a fail-CLOSED security property worth
-            //      more than probe independence: a misconfigured issuer must abort startup rather
-            //      than let the gateway serve traffic and fail at the first bearer request. So the
-            //      alternative disposition -- relaxing onStartup so readiness can report DOWN
-            //      independently of liveness -- is deliberately NOT taken; it would trade a boot
-            //      refusal for a runtime rejection.
-            //
-            // Consequence to state plainly: the readiness-detail redaction is defence-in-depth
-            // against a future relaxation of eager assembly, NOT closure of a live exposure.
-            //
-            // The operator gets the cause through the log; the wire gets a fixed token. See
-            // ERROR_VALIDATION_UNAVAILABLE for why the raw message must not travel on this payload.
-            LOGGER.warn(failure, ConfigLogMessages.WARN.READINESS_VALIDATION_UNAVAILABLE);
-            builder.withData(DATA_JWKS, "unavailable")
-                    .withData(DATA_ERROR, ERROR_VALIDATION_UNAVAILABLE);
-            if (serverMode) {
-                builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_UNREACHABLE);
-            }
-            return builder.down().build();
         }
+        return down(builder, keySets.failedCount() > 0 ? JWKS_UNAVAILABLE : JWKS_LOADING, serverMode);
+    }
+
+    /**
+     * The single DOWN renderer both the construction-failure leg and the live key-set leg use: a fixed
+     * {@code jwks} status token and, in server mode, an {@code unreachable} issuer — never an issuer
+     * name, URL, hostname or cause.
+     *
+     * @param builder    the response builder carrying the data gathered so far
+     * @param jwksStatus the fixed {@code jwks} status token
+     * @param serverMode whether issuer reachability is part of the payload
+     * @return the {@code DOWN} response
+     */
+    private static HealthCheckResponse down(HealthCheckResponseBuilder builder, String jwksStatus,
+            boolean serverMode) {
+        builder.withData(DATA_JWKS, jwksStatus);
+        if (serverMode) {
+            builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_UNREACHABLE);
+        }
+        return builder.down().build();
     }
 
     /**

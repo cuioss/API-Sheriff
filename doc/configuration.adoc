@@ -1722,6 +1722,52 @@ validation pipeline has decoded and normalized the path, so encoding tricks (`%2
 UTF-8, doubled slashes) cannot bypass the allowlist. `/api/orders/{id}` matches
 `/api/orders/42` but neither `/api/orders` nor `/api/orders/42/items`.
 
+[[_query_validation_raw_form]]
+==== Query parameters: validated in their raw form, forwarded unchanged
+
+The per-route url-parameter validation judges the query in its *raw, still-percent-encoded wire
+form*, exactly as the client sent it, and the upstream receives *exactly the pairs that were
+validated* -- the same bytes, never decoded and never re-encoded, with the single `;` exception below
+(link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]):
+
+* The query is split on `&`, and each pair on its first `=`. Names and values stay percent-encoded,
+  `+` stays `+`, and a pair without `=` stays bare.
+* Each *name* is validated by `cui-http`'s parameter-*name* pipeline -- which refuses a name that
+  decodes to a pair delimiter (`a%3Db`, `a%26b`) or a line break, and applies the name length cap --
+  and each *value* by the parameter-*value* pipeline. Both pipelines decode once, themselves.
+* The accepted pairs are appended to the upstream request-target verbatim on the HTTP, WebSocket and
+  gRPC paths. A double encoding such as `%252F` is therefore judged -- and refused -- as the double
+  encoding it is, and never reaches an upstream under a different spelling.
+* *The one exception: a raw `;` is forwarded as `%3B`*, in any name or value, on every route and
+  under every profile. The gateway and the `forward` lists split pairs on `&` only, but some
+  upstreams also split on `;`, so `?x=1;token=abc` would otherwise smuggle a `token` parameter past
+  a `query_deny: [token]` (HTTP parameter smuggling, CWE-235). The decoded meaning is unchanged, and
+  every other byte still crosses verbatim.
+
+Because the pipeline sees the form it was built for, legitimate values are no longer refused for
+their encoding: a space (`%20` or `+`), a non-ASCII letter (`M%C3%BCller`), an encoded colon in a
+timestamp and a literal `%` sent as `%25` all pass. A value that *decodes* to a character such as
+`<`, `>` or `"` is judged by the decoded-form rules and the injection patterns rather than by its
+spelling; output encoding for its context remains the upstream's job.
+
+*Line breaks in parameter values.* `strict` refuses a parameter value that decodes to CR or LF
+(`%0D`, `%0A`). This is the one component in which the gateway's `strict` deviates from
+`cui-http`'s own strict preset, which admits decoded CR, LF and TAB in values as a form-data
+carve-out. `lenient` keeps the `cui-http` default and admits them; `minimal` does not run the
+url-parameter validation at all (see link:#_the_minimal_mode[The `minimal` mode]) and forwards the
+raw pairs verbatim.
+
+*Known residual false positive under `strict`.* The injection patterns match on the *decoded*
+value, so a legitimate value whose decoded form starts with `javascript:`, `vbscript:`, `data:` or
+`file:` -- `q=data%3A%20x`, for instance -- or that matches a path-traversal pattern is refused
+`400`. A route that must accept such values declares `profile: lenient` or, on a public
+unauthenticated route, `minimal`.
+
+*Forward lists match the decoded name.* `forward.query_allow` and `forward.query_deny` entries are
+compared against the *percent-decoded* parameter name, while the pair that crosses keeps its raw
+spelling -- so `%74oken=x` is caught by a `query_deny: [token]` exactly as `token=x` is. See
+link:#_forward[`forward`].
+
 === `auth`
 
 Whether authentication is required is defined *per endpoint file*: `endpoint.auth` is
@@ -1796,6 +1842,44 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
 
 The BFF variants do *not* read this block: they validate the tokens they retrieve against the
 issuer configured in link:#_oidc[`oidc`].
+
+[[_jwks_readiness]]
+==== Key-set loading and readiness
+
+The validator is *assembled* at boot, and a misconfigured JWKS source -- a missing `url`, an
+unresolvable `tls_profile` -- still aborts startup. The key sets themselves are *fetched*
+asynchronously, so a gateway can finish booting before an identity provider answers. Two behaviours
+cover that window:
+
+* *Readiness is `DOWN` while any configured issuer has no key set.* The readiness check reports
+  `jwks: loading` (no attempt has produced a key set yet) or `jwks: unavailable` (an issuer's most
+  recent attempt failed), together with the bounded counts `issuers` and `issuers_loaded`. It turns
+  `UP` with `jwks: ready` once every issuer has a key set. The payload never names an issuer, a URL
+  or a host, and reading it never triggers a fetch. An orchestrator therefore holds traffic back
+  from a gateway that could not validate a single token rather than routing requests to it.
+* *A failed load is retried fast.* A load attempt is not a single request: the HTTP client beneath
+  the token library retries the fetch itself, with a jittered backoff of roughly 1, 2, 4 and 8
+  seconds across five tries (logged as `HTTP-112`), so an attempt against an unreachable provider
+  reports failure only after about 17 seconds. The gateway's own retry starts from that point: the
+  next attempt follows 1 second after a failed one and the delay doubles per attempt, capped at 30
+  seconds and never above the issuer's refresh interval, so a late identity provider is picked up
+  within seconds of an attempt ending rather than after a whole refresh interval -- and a provider
+  that appears while an attempt is still retrying internally is picked up by that attempt. Retries
+  are driven by a scheduler only -- never by bearer requests or by the readiness probe -- with at most
+  one attempt in flight per issuer. Each scheduled retry logs `WARN ApiSheriff-129`, and a gateway
+  retry that finally loads the key set logs `INFO ApiSheriff-18` (see
+  link:LogMessages.adoc[Log messages]); a key set loaded by the very first attempt logs neither. Once
+  a key set is loaded, the regular background refresh keeps it current.
+
+Until an issuer's key set loads, a bearer token from that issuer is rejected `401`. A `file`-sourced
+issuer loads from disk and normally reports `ready` immediately.
+
+*Readiness reports key-set availability, not key-set freshness.* Once an issuer's key set has loaded,
+a later background-refresh failure keeps the loaded keys in service and readiness stays `UP` -- the
+held keys still validate the tokens they signed. An identity provider that becomes unreachable after
+boot, or a stalled key rotation, is therefore not visible through readiness; alert on it separately
+(link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
+Amendment A1]).
 
 [[_jwks_trust_profiles]]
 ==== Trust profiles (`jwks.tls_profile`)
@@ -1967,7 +2051,11 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
 | `user_info.path`
 | Gateway-served *user-info* endpoint returning the curated identity view assembled from the
   session's tokens -- never a passthrough of the raw ID/userinfo claims. Registered as a
-  reserved gateway path when present; omit it and no user-info endpoint is exposed.
+  reserved gateway path when present; omit it and no user-info endpoint is exposed. Every
+  disclosed claim keeps the JSON type it has in the validated ID token -- arrays, objects, numbers
+  and booleans are not flattened to strings, and numeric date claims such as `exp`, `iat` and
+  `auth_time` are JSON numbers. See link:user/bff-session.adoc#_serve_a_curated_identity_view_to_the_spa[Serve
+  a curated identity view to the SPA] for an example response.
 
 | `user_info.allowed_claims`
 | The operator claim *allowlist* bounding what `user_info.path` may ever disclose. The secure
@@ -2313,6 +2401,13 @@ Query-parameter names match *case-sensitively* on both modes -- query names are 
 in HTTP, and making only one side insensitive would let a route's two lists disagree about what
 a name is.
 
+Query-parameter names are compared in their *percent-decoded* form (strict UTF-8, `+` read as a
+space), because that is the name the upstream acts on; the pair that crosses keeps its raw spelling
+(link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]). Matching the
+raw spelling instead would let `%74oken=x` evade a `query_deny: [token]`. A name with no well-formed
+decoding crosses only under forward-all: it can neither be admitted by a positive-list nor proven
+absent from a negative one.
+
 ==== What crosses regardless of the mode
 
 Three gateway-owned sets bound every mode, and they are what makes the forward-all baseline safe
@@ -2410,7 +2505,8 @@ the alias base path unchanged. *Remainder* is the request path after stripping t
 path parameters survive the mapping: `/api/orders/42` on `path_prefix: /api/orders` with
 `upstream.path: /orders` behind `APP1=https://app1.internal:8443/app1` reaches
 `https://app1.internal:8443/app1/orders/42`. The query parameters the route's
-link:#_forward[`forward`] mode admits are appended unchanged. Worked examples and the migration from
+link:#_forward[`forward`] mode admits are appended unchanged, in the raw spelling the security
+filter validated (see link:#_query_validation_raw_form[Query parameters]). Worked examples and the migration from
 the former replace semantics are in
 link:user/endpoint-routes.adoc#_upstream_path[Endpoint Routes -- Upstream path].
 
@@ -2959,7 +3055,8 @@ disabled list keeps running.
 *Disabled under `minimal` -- exactly these two, and nothing else:*
 
 . The *url-parameter name and value validation* (the post-route run under the route's own
-  configuration).
+  configuration). The raw pairs still cross verbatim -- the route's `forward` mode decides which --
+  exactly as on a validating route.
 . The *per-route pipeline re-run* -- the second pass of the path and header pipelines that a route
   whose configuration diverges from the gateway baseline would otherwise perform.
 

@@ -471,13 +471,17 @@ iterated the extension's own issuer list -- empty here -- and so never reached t
 loaders, and the collector failed before publishing a single meter. JWKS readiness is reported by the
 gateway's own `GatewayReadinessCheck`, against the validator that is actually on the request path.
 
-Read that `jwks` datum for what it is: a *boot-time* constructibility fact, not a live signal. The
-validator is forced into existence at startup and cached, so the probe reports `ready` for the
-process lifetime -- an IdP whose JWKS endpoint later goes unreachable, a stalled key rotation, or an
-expired signing key do *not* take readiness DOWN. Monitor those from the IdP side; do not infer them
-from a green readiness probe. The comment block above `quarkus.arc.exclude-types` in
-`application.properties` carries the full reasoning, including why the extension *dependency* itself
-stays.
+Read that `jwks` datum for what it is: whether *every configured issuer has a loaded key set*. The
+probe reads a non-fetching per-issuer state kept by the gateway's own JWKS loaders, so it reports
+`DOWN` (`jwks: loading` / `unavailable`) while any issuer's key set has not loaded yet -- a gateway
+that booted before its IdP answered is not ready -- and `ready` once every issuer has one; a failed
+fetch is retried within seconds on a bounded backoff (see
+link:../configuration.adoc#_jwks_readiness[Key-set loading and readiness]). It is an *availability*
+signal, not a *freshness* one: once a key set has loaded, an IdP whose JWKS endpoint later goes
+unreachable, a stalled key rotation, or an expired signing key do *not* take readiness DOWN. Monitor
+those from the IdP side; do not infer them from a green readiness probe. The comment block above
+`quarkus.arc.exclude-types` in `application.properties` carries the full reasoning for the exclusion,
+including why the extension *dependency* itself stays.
 ====
 
 === Inbound filter modes

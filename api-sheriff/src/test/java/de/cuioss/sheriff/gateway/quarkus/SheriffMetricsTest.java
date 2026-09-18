@@ -24,20 +24,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.lang.annotation.Annotation;
 import java.time.Duration;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
+import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.token.validation.TokenValidator;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -189,11 +192,16 @@ class SheriffMetricsTest {
     @DisplayName("GatewayReadinessCheck reflects config, JWKS status, and server-mode issuer reachability")
     class Readiness {
 
+        private static final String PRIMARY_ISSUER = "corp-main";
+        private static final String SECONDARY_ISSUER = "corp-partner";
+        /** The key-set view of a {@code token_validation} block with no issuers: vacuously all loaded. */
+        private static final IssuerKeySetStatus NO_ISSUERS = IssuerKeySetStatus.of(Map.of());
+
         @Test
         @DisplayName("UP with jwks=not-applicable when no token_validation is configured")
         void upWhenNoTokenValidation() {
             GatewayConfig config = configWith(null, null, null);
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
+            GatewayReadinessCheck check = notApplicableCheck(config);
 
             HealthCheckResponse response = check.call();
 
@@ -210,7 +218,7 @@ class SheriffMetricsTest {
         void upWhenValidatorResolves() {
             GatewayConfig config = configWith(null,
                     new TokenValidationConfig(List.of()), null);
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
+            GatewayReadinessCheck check = checkWith(config, NO_ISSUERS);
 
             HealthCheckResponse response = check.call();
 
@@ -227,7 +235,7 @@ class SheriffMetricsTest {
             GatewayConfig config = configWith(null,
                     new TokenValidationConfig(List.of()), null);
             GatewayException failure = new GatewayException(EventType.CONFIG_INVALID, "no usable jwks source");
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.failing(failure));
+            GatewayReadinessCheck check = failingCheck(config, failure);
 
             HealthCheckResponse response = check.call();
 
@@ -250,8 +258,7 @@ class SheriffMetricsTest {
             GatewayException failure = new GatewayException(EventType.CONFIG_INVALID,
                     "no usable jwks source at https://idp.internal.example.com/realms/main"
                             + "/protocol/openid-connect/certs using truststore /etc/sheriff/trust/corporate-ca.pem");
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config,
-                    FakeValidatorInstance.failing(failure));
+            GatewayReadinessCheck check = failingCheck(config, failure);
 
             // Act
             HealthCheckResponse response = check.call();
@@ -276,7 +283,7 @@ class SheriffMetricsTest {
         void serverModeUpReportsIssuerReachable() {
             GatewayConfig config = configWith(null,
                     new TokenValidationConfig(List.of()), serverMode());
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
+            GatewayReadinessCheck check = checkWith(config, NO_ISSUERS);
 
             HealthCheckResponse response = check.call();
 
@@ -293,7 +300,7 @@ class SheriffMetricsTest {
             GatewayConfig config = configWith(null,
                     new TokenValidationConfig(List.of()), serverMode());
             GatewayException failure = new GatewayException(EventType.CONFIG_INVALID, "issuer JWKS unreachable");
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.failing(failure));
+            GatewayReadinessCheck check = failingCheck(config, failure);
 
             HealthCheckResponse response = check.call();
 
@@ -308,7 +315,7 @@ class SheriffMetricsTest {
         @DisplayName("server mode without token_validation reports issuer_reachability=unverified but stays UP")
         void serverModeWithoutValidationReportsUnverified() {
             GatewayConfig config = configWith(null, null, serverMode());
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
+            GatewayReadinessCheck check = notApplicableCheck(config);
 
             HealthCheckResponse response = check.call();
 
@@ -324,11 +331,176 @@ class SheriffMetricsTest {
         void configVersionSurfaced() {
             GatewayConfig config = configWith(new Metadata("2026-07-19"),
                     null, null);
-            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
+            GatewayReadinessCheck check = notApplicableCheck(config);
 
             HealthCheckResponse response = check.call();
 
             assertEquals("2026-07-19", response.getData().orElseThrow().get("config_version"));
+        }
+
+        @Test
+        @DisplayName("UP with jwks=ready and issuers_loaded=issuers when every configured issuer has a key set")
+        void upWhenEveryIssuerHasKeySet() {
+            GatewayConfig config = configWith(null, twoIssuers(), null);
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.LOADED));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("ready", data.get("jwks"));
+            assertEquals(2L, data.get("issuers"));
+            assertEquals(2L, data.get("issuers_loaded"));
+        }
+
+        @Test
+        @DisplayName("DOWN with jwks=loading and bounded counts while one issuer has no key set yet")
+        void downWhileOneIssuerIsStillLoading() {
+            GatewayConfig config = configWith(null, twoIssuers(), null);
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.NOT_LOADED));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("loading", data.get("jwks"));
+            assertEquals(2L, data.get("issuers"));
+            assertEquals(1L, data.get("issuers_loaded"));
+            assertNull(data.get("error"), "a live key-set DOWN is not a validator construction failure");
+            assertNull(data.get("issuer_reachability"), "a non-server-mode probe carries no issuer_reachability datum");
+            assertNothingDisclosed(data);
+        }
+
+        @Test
+        @DisplayName("DOWN with jwks=unavailable when one issuer's last load attempt failed")
+        void downWhenOneIssuerFailedToLoad() {
+            GatewayConfig config = configWith(null, twoIssuers(), null);
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.FAILED, KeySetState.LOADED));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("unavailable", data.get("jwks"));
+            assertEquals(2L, data.get("issuers"));
+            assertEquals(1L, data.get("issuers_loaded"));
+            assertNothingDisclosed(data);
+        }
+
+        @Test
+        @DisplayName("a failed issuer outranks a still-loading one: jwks=unavailable, issuers_loaded=0")
+        void failedOutranksLoading() {
+            GatewayConfig config = configWith(null, twoIssuers(), null);
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.NOT_LOADED, KeySetState.FAILED));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("unavailable", data.get("jwks"));
+            assertEquals(0L, data.get("issuers_loaded"));
+        }
+
+        @Test
+        @DisplayName("server mode reports issuer_reachability=unreachable while an issuer has no key set")
+        void serverModeKeySetDownReportsIssuerUnreachable() {
+            GatewayConfig config = configWith(null, twoIssuers(), serverMode());
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.NOT_LOADED));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("server", data.get("oidc"));
+            assertEquals("loading", data.get("jwks"));
+            assertEquals("unreachable", data.get("issuer_reachability"));
+            assertNothingDisclosed(data);
+        }
+
+        @Test
+        @DisplayName("server mode reports issuer_reachability=reachable once every issuer has a key set")
+        void serverModeKeySetUpReportsIssuerReachable() {
+            GatewayConfig config = configWith(null, twoIssuers(), serverMode());
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.LOADED));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("ready", data.get("jwks"));
+            assertEquals("reachable", data.get("issuer_reachability"));
+        }
+
+        @Test
+        @DisplayName("the key-set view is resolved only after the validator, so a validator failure never reaches it")
+        void validatorFailureShortCircuitsKeySetResolution() {
+            // Arrange — the key-set instance throws an exception the probe does NOT catch, so resolving
+            // it would fail this test rather than render a response.
+            GatewayConfig config = configWith(null, twoIssuers(), null);
+            GatewayException failure = new GatewayException(EventType.CONFIG_INVALID, "no usable jwks source");
+
+            // Act
+            HealthCheckResponse response = failingCheck(config, failure).call();
+
+            // Assert
+            assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("validation-unavailable", data.get("error"));
+            assertNull(data.get("issuers_loaded"), "no key-set count exists when the validator never assembled");
+        }
+
+        /**
+         * Negative control over the whole payload: no datum may carry an issuer's name, identifier,
+         * JWKS URL or host, whatever the state it reports.
+         */
+        private void assertNothingDisclosed(Map<String, Object> data) {
+            for (Map.Entry<String, Object> datum : data.entrySet()) {
+                String rendered = String.valueOf(datum.getValue());
+                for (String disclosive : List.of(PRIMARY_ISSUER, SECONDARY_ISSUER, "idp.internal.example.com",
+                        "realms", "openid-connect", "https://")) {
+                    assertFalse(rendered.contains(disclosive),
+                            () -> "readiness datum '%s' disclosed '%s': %s"
+                                    .formatted(datum.getKey(), disclosive, rendered));
+                }
+            }
+        }
+
+        private TokenValidationConfig twoIssuers() {
+            return new TokenValidationConfig(
+                    List.of(issuer(PRIMARY_ISSUER, "main"), issuer(SECONDARY_ISSUER, "partner")));
+        }
+
+        private IssuerConfig issuer(String name, String realm) {
+            String base = "https://idp.internal.example.com/realms/" + realm;
+            IssuerConfig.Jwks jwks = new IssuerConfig.Jwks("http",
+                    base + "/protocol/openid-connect/certs", null, List.of(), null);
+            return new IssuerConfig(name, base, null, jwks);
+        }
+
+        /** @return the key-set view of {@link #twoIssuers()} with the given states, in order */
+        private IssuerKeySetStatus keySets(KeySetState primary, KeySetState secondary) {
+            Map<String, KeySetState> states = new LinkedHashMap<>();
+            states.put(PRIMARY_ISSUER, primary);
+            states.put(SECONDARY_ISSUER, secondary);
+            return IssuerKeySetStatus.of(states);
+        }
+
+        /** A probe whose validator resolves and whose key-set view is {@code keySets}. */
+        private GatewayReadinessCheck checkWith(GatewayConfig config, IssuerKeySetStatus keySets) {
+            return new GatewayReadinessCheck(config, FakeInstance.resolving(null), FakeInstance.resolving(keySets));
+        }
+
+        /** A probe whose validator resolution throws {@code failure}; the key-set view must stay unresolved. */
+        private GatewayReadinessCheck failingCheck(GatewayConfig config, RuntimeException failure) {
+            return new GatewayReadinessCheck(config, FakeInstance.failing(failure), FakeInstance.mustNotResolve());
+        }
+
+        /**
+         * A probe for a gateway without {@code token_validation}: neither the validator nor the key-set
+         * view may be resolved on that leg.
+         */
+        private GatewayReadinessCheck notApplicableCheck(GatewayConfig config) {
+            return new GatewayReadinessCheck(config, FakeInstance.mustNotResolve(), FakeInstance.mustNotResolve());
         }
 
         private OidcConfig serverMode() {
@@ -345,53 +517,67 @@ class SheriffMetricsTest {
     }
 
     /**
-     * Minimal {@link Instance} test double: {@link #get()} either returns a resolved (unused)
-     * validator or throws the supplied failure, exercising the readiness UP / DOWN branches without
-     * a CDI container. Only {@code get()} is consumed by {@link GatewayReadinessCheck}; the remaining
-     * contract methods are unsupported.
+     * Minimal {@link Instance} test double: {@link #get()} either returns the supplied value or throws
+     * the supplied failure, exercising the readiness UP / DOWN branches without a CDI container. Only
+     * {@code get()} is consumed by {@link GatewayReadinessCheck}; the remaining contract methods are
+     * unsupported.
+     *
+     * @param <T> the resolved bean type
      */
-    private static final class FakeValidatorInstance implements Instance<TokenValidator> {
+    private static final class FakeInstance<T> implements Instance<T> {
 
-        private final RuntimeException failure;
+        private final @Nullable T value;
+        private final @Nullable RuntimeException failure;
 
-        private FakeValidatorInstance(RuntimeException failure) {
+        private FakeInstance(@Nullable T value, @Nullable RuntimeException failure) {
+            this.value = value;
             this.failure = failure;
         }
 
-        static FakeValidatorInstance resolving() {
-            return new FakeValidatorInstance(null);
+        /** @return an instance whose resolution succeeds with {@code value} */
+        static <T> FakeInstance<T> resolving(@Nullable T value) {
+            return new FakeInstance<>(value, null);
         }
 
-        static FakeValidatorInstance failing(RuntimeException failure) {
-            return new FakeValidatorInstance(failure);
+        /** @return an instance whose resolution throws {@code failure} */
+        static <T> FakeInstance<T> failing(RuntimeException failure) {
+            return new FakeInstance<>(null, failure);
+        }
+
+        /**
+         * @return an instance the probe must never resolve: its failure is neither a
+         *         {@link GatewayException} nor a {@code CreationException}, so the probe does not catch
+         *         it and a resolution fails the calling test outright
+         */
+        static <T> FakeInstance<T> mustNotResolve() {
+            return new FakeInstance<>(null, new IllegalStateException("this instance must not be resolved"));
         }
 
         @Override
-        public TokenValidator get() {
+        public T get() {
             if (failure != null) {
                 throw failure;
             }
-            // The readiness check only asserts that resolution does not throw; the value is unused.
-            return null;
+            return value;
         }
 
         @Override
-        public Iterator<TokenValidator> iterator() {
+        public Iterator<T> iterator() {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public Instance<TokenValidator> select(Annotation... qualifiers) {
+        public Instance<T> select(Annotation... qualifiers) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public <U extends TokenValidator> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
+        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public <U extends TokenValidator> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
+        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
             throw new UnsupportedOperationException();
         }
 
@@ -406,17 +592,17 @@ class SheriffMetricsTest {
         }
 
         @Override
-        public void destroy(TokenValidator instance) {
+        public void destroy(T instance) {
             // no-op
         }
 
         @Override
-        public Handle<TokenValidator> getHandle() {
+        public Handle<T> getHandle() {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public Iterable<? extends Handle<TokenValidator>> handles() {
+        public Iterable<? extends Handle<T>> handles() {
             throw new UnsupportedOperationException();
         }
     }
