@@ -289,11 +289,16 @@ Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
   pipeline; it auto-increments on each violation, and its counts feed the gateway metrics.
 
 *The query is validated in the form it is forwarded in.* The post-route stage receives the query
-pairs raw and still percent-encoded, split from the request-target itself, validates names and
-values with `cui-http`'s parameter-name and parameter-value pipelines (each decoding once), and the
-forward path appends exactly those pairs verbatim -- so what the filter judged and what the upstream
-receives are the same bytes
-(link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]). The `strict`
+pairs raw and still percent-encoded, split from the request-target itself on `&` and kept as an
+ordered pair sequence in wire order -- never grouped by name -- and validates names and values with
+`cui-http`'s parameter-name and parameter-value pipelines (each decoding once). The forward path
+appends exactly those pairs, in the same order, so interleaved repeated names such as `a=1&b=2&a=3`
+reach the upstream as validated and what the filter judged and what the upstream receives are the
+same bytes -- with one exception: every raw `;` in a forwarded name or value is written as `%3B`, on
+every route, so an upstream that also splits on `;` cannot read a second parameter out of a pair the
+gateway judged as one (CWE-235). The rewrite is lossless at the decoded level, so the validated form
+still equals the forwarded form there
+(link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc#semicolon-exception[ADR-0047]). The `strict`
 profile is the `cui-http` strict preset with one component changed: a parameter value decoding to CR
 or LF is refused.
 
