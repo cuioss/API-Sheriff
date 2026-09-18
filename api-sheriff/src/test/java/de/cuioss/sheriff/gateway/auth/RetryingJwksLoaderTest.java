@@ -38,6 +38,8 @@ import java.util.function.Supplier;
 
 import de.cuioss.http.client.adapter.RetryConfig;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
@@ -372,6 +374,33 @@ class RetryingJwksLoaderTest {
             awaitLog(TestLogLevel.WARN, "JWKS key set for issuer '" + ISSUER_NAME + "' not loaded — retrying in 50 ms");
             awaitLog(TestLogLevel.WARN, "JWKS key set for issuer '" + ISSUER_NAME + "' not loaded — retrying in 100 ms");
             awaitLog(TestLogLevel.INFO, "JWKS key set for issuer '" + ISSUER_NAME + "' loaded after 2 retry attempt(s)");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a retry whose delegate cannot be built counts as a failed attempt and the sequence continues")
+        void refusedRebuildIsAFailedAttempt() throws Exception {
+            // Arrange — the endpoint fails the first load; the first retry's rebuild is refused with
+            // the gateway's own config-assembly failure; the second retry builds and loads
+            failuresBeforeSuccess.set(1);
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME, () -> {
+                if (builds.incrementAndGet() == 2) {
+                    throw new GatewayException(EventType.CONFIG_INVALID, "simulated tls_profile resolution failure");
+                }
+                return JwksLoaderFactory.createHttpLoader(httpConfig());
+            }, REFRESH_INTERVAL, FAST, scheduler);
+
+            // Act
+            initialise(loader);
+            Awaits.until(() -> loader.keySetState() == KeySetState.LOADED, "key set loaded by the second retry",
+                    Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert
+            assertEquals(3, builds.get(), "the first delegate, the refused rebuild and the successful one");
+            assertEquals(2, server.getRequestCount(), "the refused rebuild issued no fetch");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            awaitLog(TestLogLevel.WARN, "JWKS key set for issuer '" + ISSUER_NAME + "' not loaded — retrying in 100 ms");
             loader.close();
         }
 

@@ -30,6 +30,7 @@ import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.commons.transport.JwksType;
 import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
@@ -266,8 +267,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         JwksLoader fresh;
         try {
             fresh = Objects.requireNonNull(delegateFactory.get(), "delegate");
-        } catch (RuntimeException failure) {
-            // The factory refused (a transient resolution failure): count it as a failed attempt.
+        } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
+            // The factory refused: the gateway's own loader-config assembly (url, tls_profile
+            // resolution) reports GatewayException, the library's config builder and loader
+            // construction report IllegalArgumentException / IllegalStateException. Count it as a
+            // failed attempt and keep retrying — never let it escape onto the scheduler thread,
+            // which would silently end the retry sequence.
             LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built for retry %s", issuerName, retry);
             scheduleRetry(retry + 1);
             return;
