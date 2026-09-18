@@ -403,7 +403,7 @@ class RetryingJwksLoaderTest {
             // Arrange — the shared scheduler and the production first-retry delay of one second
             failuresBeforeSuccess.set(1);
             try (RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
-                    () -> JwksLoaderFactory.createHttpLoader(httpConfig()), REFRESH_INTERVAL)) {
+                         () -> JwksLoaderFactory.createHttpLoader(httpConfig()), REFRESH_INTERVAL)) {
                 long start = System.nanoTime();
 
                 // Act
