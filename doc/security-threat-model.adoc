@@ -391,10 +391,10 @@ therefore writes every raw `;` in a forwarded name or value as `%3B`, on every r
 meaning is unchanged, so the validated form still equals the forwarded form at the decoded level.
 All three properties are pinned: `GatewayEdgeQueryHandoffTest` over a
 live edge (including a leg asserting the transport's decoded value differs from the forwarded raw
-one, and the `;` legs under forward-all, `query_deny` and `query_allow`) and `StrictQueryAcceptanceIT`
-against the native image assert every accepted query reaches the upstream byte for byte -- `;` aside
--- and every refused one reaches it not at all, with interleaved repeated names kept in wire order;
-`ForwardPolicyStageTest` denies and admits a percent-encoded spelling of a listed name, withholds a
+one, the `;` legs under forward-all, `query_deny` and `query_allow`, and legs keeping interleaved
+repeated names in wire order) and `StrictQueryAcceptanceIT` against the native image assert every
+accepted query reaches the upstream byte for byte -- `;` aside -- and every refused one reaches it
+not at all; `ForwardPolicyStageTest` denies and admits a percent-encoded spelling of a listed name, withholds a
 full-width-digit escape under both lists, and keeps interleaved repeated names in inbound order.
 
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the

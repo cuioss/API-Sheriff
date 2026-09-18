@@ -953,8 +953,8 @@ public class GatewayEdgeRoute {
 
     /**
      * Reads the first <em>decoded</em> value of a reserved-path query parameter ({@code claims},
-     * {@code returnUrl}, {@code state}) from the transport. The pipeline map carries the raw,
-     * still-encoded pairs (ADR-0047), which is the wrong form for these consumers: they compare or
+     * {@code returnUrl}, {@code state}) from the transport. The pipeline query carries the raw,
+     * still-encoded pair sequence (ADR-0047), which is the wrong form for these consumers: they compare or
      * redirect on the value's meaning, so they read Vert.x's decoded view instead.
      */
     private static @Nullable String firstQueryParam(RoutingContext ctx, String name) {
