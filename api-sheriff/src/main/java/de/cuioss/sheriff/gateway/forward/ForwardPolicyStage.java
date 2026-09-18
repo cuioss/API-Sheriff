@@ -481,21 +481,29 @@ public final class ForwardPolicyStage {
      * @return the decoded name, or empty when {@code rawName} is not a well-formed encoding
      */
     private static Optional<String> decodeQueryName(String rawName) {
+        return percentDecodeFormBytes(rawName).flatMap(ForwardPolicyStage::decodeStrictUtf8);
+    }
+
+    /**
+     * The byte sequence a raw query-parameter name encodes, with form semantics ({@code +} is a
+     * space).
+     *
+     * @param rawName the raw, still-encoded parameter name
+     * @return the encoded bytes, or empty when {@code rawName} carries a truncated or non-hex escape or
+     *         a raw non-ASCII character
+     */
+    private static Optional<ByteBuffer> percentDecodeFormBytes(String rawName) {
         byte[] bytes = new byte[rawName.length()];
         int length = 0;
         int index = 0;
         while (index < rawName.length()) {
             char character = rawName.charAt(index);
             if (character == '%') {
-                if (index + 2 >= rawName.length()) {
+                int escaped = escapedByte(rawName, index);
+                if (escaped < 0) {
                     return Optional.empty();
                 }
-                int high = Character.digit(rawName.charAt(index + 1), 16);
-                int low = Character.digit(rawName.charAt(index + 2), 16);
-                if (high < 0 || low < 0) {
-                    return Optional.empty();
-                }
-                bytes[length++] = (byte) ((high << 4) | low);
+                bytes[length++] = (byte) escaped;
                 index += 3;
             } else if (character < 0x80) {
                 // Form semantics: '+' is a space; every other ASCII character stands for itself.
@@ -506,11 +514,39 @@ public final class ForwardPolicyStage {
                 return Optional.empty();
             }
         }
+        return Optional.of(ByteBuffer.wrap(bytes, 0, length));
+    }
+
+    /**
+     * The byte value of the percent-escape starting at {@code percentIndex}.
+     *
+     * @param rawName      the raw, still-encoded parameter name
+     * @param percentIndex the index of the {@code %}
+     * @return the escaped byte as {@code 0..255}, or {@code -1} when the escape is truncated or not
+     *         two hex digits
+     */
+    private static int escapedByte(String rawName, int percentIndex) {
+        if (percentIndex + 2 >= rawName.length()) {
+            return -1;
+        }
+        int high = Character.digit(rawName.charAt(percentIndex + 1), 16);
+        int low = Character.digit(rawName.charAt(percentIndex + 2), 16);
+        return high < 0 || low < 0 ? -1 : (high << 4) | low;
+    }
+
+    /**
+     * Decodes bytes as strict UTF-8: a malformed or unmappable sequence yields no string rather than a
+     * replacement-character approximation.
+     *
+     * @param bytes the bytes to decode
+     * @return the decoded string, or empty when {@code bytes} is not valid UTF-8
+     */
+    private static Optional<String> decodeStrictUtf8(ByteBuffer bytes) {
         try {
             return Optional.of(StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(bytes, 0, length))
+                    .decode(bytes)
                     .toString());
         } catch (CharacterCodingException _) {
             return Optional.empty();
