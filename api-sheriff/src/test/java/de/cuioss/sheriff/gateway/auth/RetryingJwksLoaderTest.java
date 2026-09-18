@@ -93,17 +93,8 @@ class RetryingJwksLoaderTest {
     private final AtomicInteger failuresBeforeSuccess = new AtomicInteger();
 
     @BeforeEach
-    void startScheduler() {
+    void startSchedulerAndServer() throws IOException {
         scheduler = Executors.newSingleThreadScheduledExecutor();
-    }
-
-    @AfterEach
-    void stopScheduler() {
-        scheduler.shutdownNow();
-    }
-
-    @BeforeEach
-    void startServer() throws IOException {
         server = new MockWebServer();
         server.setDispatcher(new Dispatcher() {
             @Override
@@ -121,7 +112,9 @@ class RetryingJwksLoaderTest {
     }
 
     @AfterEach
-    void stopServer() {
+    void stopServerAndScheduler() {
+        // Stop the scheduler first so no retry can dial the server while it is closing.
+        scheduler.shutdownNow();
         server.close();
     }
 
@@ -166,7 +159,7 @@ class RetryingJwksLoaderTest {
             try {
                 LogAsserts.assertLogMessagePresentContaining(level, part);
                 return true;
-            } catch (AssertionError notYet) {
+            } catch (AssertionError _) {
                 return false;
             }
         }, level + " log containing '" + part + "'", Awaits.CONNECT_CEILING_SECONDS);
@@ -409,9 +402,8 @@ class RetryingJwksLoaderTest {
         void productionTimingRecoversFarBelowRefreshInterval() throws Exception {
             // Arrange — the shared scheduler and the production first-retry delay of one second
             failuresBeforeSuccess.set(1);
-            RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
-                    () -> JwksLoaderFactory.createHttpLoader(httpConfig()), REFRESH_INTERVAL);
-            try {
+            try (RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
+                    () -> JwksLoaderFactory.createHttpLoader(httpConfig()), REFRESH_INTERVAL)) {
                 long start = System.nanoTime();
 
                 // Act
@@ -424,8 +416,6 @@ class RetryingJwksLoaderTest {
                 assertTrue(elapsed.compareTo(Duration.ofSeconds(AWAIT_SECONDS)) < 0,
                         () -> "recovery took " + elapsed + ", the refresh interval is " + REFRESH_INTERVAL);
                 assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
-            } finally {
-                loader.close();
             }
         }
 
