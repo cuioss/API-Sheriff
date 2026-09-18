@@ -409,8 +409,8 @@ fi
 # ---- 4. Gate layer 2: assert readiness semantics ------------------------------------------------
 # The poll budget, in one-second attempts. It must outlast the gateway's JWKS retry backoff (1 s
 # doubling, capped at 30 s): a first fetch that lands while Keycloak is still importing its realm is
-# retried after 1, 2, 4, 8, 16 and then 30 s, so 90 attempts cover the whole climb to the cap plus a
-# capped retry on top. The budget bounds the wait; it never widens what counts as ready.
+# retried after 1, 2, 4, 8, 16 and then 30 s, so 90 attempts cover that 61 s climb to the cap with the
+# rest as slack. The budget bounds the wait; it never widens what counts as ready.
 READY_ATTEMPTS=90
 
 while read -r SERVICE SCHEME PORT ROOT; do

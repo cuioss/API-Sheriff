@@ -138,7 +138,7 @@ the difference is the stack, not the rule: readiness also waits for the issuer's
 this sample orders its gateway only behind an accept-level Keycloak probe, so the first key-set fetch
 can land during the realm import and be retried on the gateway's backoff (one second doubling, capped
 at 30 s). ADR-0031 names exactly this case and prescribes this remedy. The budget, 90 one-second
-attempts, outlasts that backoff's whole climb to the cap with a capped retry to spare; a target still
+attempts, outlasts that backoff's 61 s climb to the cap (1 + 2 + 4 + 8 + 16 + 30 s); a target still
 not `UP` when it is spent is a real defect and fails the gate with the same diagnostics as layer 1.
 
 The key set loading at all depends on trust, which the sample binds explicitly. Keycloak serves the

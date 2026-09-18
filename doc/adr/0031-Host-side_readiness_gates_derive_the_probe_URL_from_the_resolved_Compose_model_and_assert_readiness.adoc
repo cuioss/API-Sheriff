@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: A host-side bring-up gate restates neither scheme, published port nor management context path -- it derives all three from the resolved Compose model via the service's management-scheme and management-root-path labels -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a single-shot readiness assertion behind it, which needs no retry budget because the waiting already happened.
+// summary: A host-side bring-up gate restates neither scheme, published port nor management context path -- it derives all three from the resolved Compose model via the service's management-scheme and management-root-path labels -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a readiness assertion behind it -- a single shot in the integration stack, a bounded poll in the operator sample.
 // tags: readiness, bring-up, integration-tests, compose-model, probe-derivation, container-health
 // affects: integration-tests, demo-client
 // supersedes:
@@ -85,12 +85,12 @@ unscoped on purpose -- each of its three services is either health-checked or
 correctly satisfied by "running" -- and that is a property of that stack, not a
 different rule.
 
-**Delegate the waiting to the image's container health check; the host keeps only a
+**Delegate the waiting to the image's container health check; the host keeps a
 bound.** *(Amends the original "Derive the retry budget from measurement, and record
 the measurement". The rule below replaces it for the two stacks named in the scope
 note; see that note for where the original still governs.)*
 
-There is no host-side retry budget. The waiting is performed by
+The waiting is performed by
 `compose up --wait`, which blocks on the `HEALTHCHECK` baked into the gateway
 image, so the cadence that used to live as a host-side loop -- `--interval`,
 `--retries`, `--start-period` -- is declared once, in the Dockerfile, and is an
@@ -99,7 +99,7 @@ Compose `healthcheck:` key does not extend the image's declaration; it *override
 it, which is why a copy is a mirror to be kept in step rather than a second
 authority.
 
-The host retains exactly one number, and it is a bound rather than a budget: the
+For this wait the host retains a bound rather than a budget: the
 `--wait-timeout`. It is 180s for the integration stack and 120s for the operator
 sample, both derived from the same measured worst-case time-to-live of 9.14s
 recorded in the integration-test topology document -- roughly a 20x and a 13x
@@ -109,7 +109,7 @@ sample brings up one gateway and two supporting services. Neither is consumed on
 healthy run, so the headroom costs nothing; both must survive a loaded CI runner,
 which is why they are sized against a measured figure rather than an observed one.
 
-The readiness assertion behind that wait needs no budget at all, and this is the
+For the integration stack, the readiness assertion behind that wait needs no budget at all, and this is the
 substantive simplification. A retry budget exists to absorb the interval between
 "asked too early" and "ready". By the time the assertion runs, the runtime has
 already reported the instance healthy -- so a non-UP readiness answer is not an
@@ -137,7 +137,7 @@ sample therefore takes the remedy the risk below names and runs a *bounded readi
 wait* in place of the single shot -- the same fail-closed `health/ready` probe,
 repeated at one-second intervals up to a budget of 90 attempts. That budget has a
 recorded origin rather than a round-number one: it outlasts the backoff's whole climb
-to its 30-second cap (1 + 2 + 4 + 8 + 16 + 30 s) with a capped retry to spare. It
+to its 30-second cap (1 + 2 + 4 + 8 + 16 + 30 = 61 s), with the rest as slack. It
 bounds the wait and never widens what counts as ready, and the integration stack,
 which does supply the ordering guarantee, keeps the single shot.
 
@@ -181,7 +181,7 @@ original form.
   `compose up --wait`, `depends_on: condition: service_healthy`, an orchestrator's
   liveness probe, a `docker ps` health column -- is reading liveness however
   "healthy" reads. Readiness remains asserted in exactly two places: the host-side
-  single shot against `health/ready` beneath the deployment's configured management
+  assertion against `health/ready` beneath the deployment's configured management
   root path -- `/q/health/ready` on a stock image, but derived from the
   `de.cuioss.sheriff.management-root-path` label rather than assumed, per the decision
   above -- and `GatewayReadinessCheck` itself. A reader
@@ -197,8 +197,8 @@ original form.
   materially safer than a duplicated literal -- both stay correct when the model
   changes -- but the `--wait-timeout` value is a genuine duplicate: the two can be
   re-tuned apart, and only a shared library would make them one. The amendment
-  shrinks this rather than removing it -- one bound per script instead of a whole
-  retry budget per script -- and the third script, demo-client's, still carries the
+  shrinks this rather than removing it -- one bound per script in the integration stack, a bound and a
+  derived poll budget in the operator sample -- and the third script, demo-client's, still carries the
   original budget.
 * **The single-shot assertion now races the key-set fetch, bounded by the stack.**
   Readiness waits for every issuer's JWKS key set, which a liveness-shaped health check

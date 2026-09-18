@@ -124,12 +124,12 @@ every consumer inherits.
 * **The health state is liveness, not readiness.** A bare accept says the port is
   bound, not that the instance can serve. Everything reading container health is
   reading liveness however "healthy" reads; readiness stays asserted in the
-  readiness endpoint itself and in the host-side single-shot assertion described by
+  readiness endpoint itself and in the host-side readiness assertion described by
   ADR-0031. A reader who takes a healthy container as a ready one has drawn a
   conclusion the signal does not support. *(Amendment note: the gap between the two is
   no longer only a moment of boot. Readiness now also waits for every issuer's JWKS key
-  set -- ADR-0027 Amendment A1 -- so a container is healthy and not ready for as long as
-  its identity provider is unreachable. The decision is unchanged; the consequence it
+  set -- ADR-0027 Amendment A1 -- so a container is healthy and not ready until
+  its identity provider has served a key set. The decision is unchanged; the consequence it
   already stated has simply become larger.)*
 * **The application binary now carries a second role, so its command line is a
   contract.** Every future argument must be distinguishable from the probe token.
