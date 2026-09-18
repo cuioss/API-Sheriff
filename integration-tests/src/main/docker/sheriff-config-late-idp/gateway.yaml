@@ -1,0 +1,74 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the LATE-IdP readiness gateway that JwksLateIdpReadinessIT starts as a
+# one-off `docker run` container (AS-10). It is NOT a compose service: the compose readiness gate
+# waits for every api-sheriff* service to report UP, and this instance is DOWN by design until the
+# test starts its identity provider.
+#
+# It is a STANDALONE document, not an overlay of the shared sheriff-config directory. The test mounts
+# it as /app/sheriff-config/gateway.yaml together with exactly one shared endpoint file,
+# sheriff-config/endpoints/assets-secure.yaml, and no topology.properties. The shared endpoints tree
+# could not be mounted whole: its proxy routes name upstream aliases and anchors this deliberately
+# minimal document does not carry, and the gateway runs on a dedicated network where none of those
+# upstreams exists. The bearer-gated directory asset route needs neither — it serves the mounted
+# /app/assets directory — so an accepted bearer token answers 200 without any upstream at all.
+#
+# ONE issuer, and it is the late one. Readiness reports DOWN while ANY configured issuer has no key
+# set, so a second issuer — an offline file-sourced one in particular — would be irrelevant to the
+# verdict at best and would muddy what the DOWN-to-UP transition proves at worst.
+#
+# THE LATE IdP. The issuer's JWKS URL points at `api-sheriff:8443`, which on the test's dedicated
+# network is the network alias of a TLS nginx proxy (late-idp/nginx.conf) in front of the compose
+# Keycloak's certs endpoint. The test CREATES the proxy container but does not START it until it has
+# observed readiness DOWN, so at boot the name does not resolve and every load attempt fails. The
+# alias is `api-sheriff` rather than `keycloak` for two reasons: the IT certificate's SAN list names
+# only localhost, keycloak and api-sheriff, so hostname verification needs one of those names and no
+# new key material is minted; and the proxy is ALSO attached to the compose network, where it must
+# resolve the real `keycloak` service unambiguously — a proxy aliased `keycloak` itself could resolve
+# its own upstream to itself.
+#
+# The `issuer` value is the integration realm's pinned frontend issuer, exactly as in the base
+# document, so a token minted by the compose Keycloak validates here once the key set loads.
+#
+# REFRESH INTERVAL. The gateway.yaml model exposes no JWKS refresh-interval key, so this issuer runs
+# the token library's default. The fast retry does not depend on it: the gateway-owned loader retries
+# a failed load after 1 s, doubling per attempt and capped at 30 s (never above the refresh interval),
+# which is what lets the test bound the DOWN-to-UP transition at seconds rather than at an interval.
+version: 1
+metadata:
+  config_version: "integration-test-late-issuer"
+allowed_methods: ["GET"]
+# The strict preset is the shipped default; it is pinned here for the same reason the base document
+# pins it — the suite measures a declared posture, not whatever the omitted-key default drifts to.
+# max_authorization_header_value_length carries the base document's carve-out: a Keycloak-minted
+# access token plus the `Bearer ` prefix measures above the strict preset's 1024-character header-value
+# cap, so without it the bearer leg of the test would be rejected 400 at the pre-route floor before
+# bearer validation ever ran, and would prove nothing about the recovered key set.
+security_defaults:
+  profile: strict
+  max_authorization_header_value_length: 8192
+anchors:
+  # The bearer-gated asset surface the mounted assets-secure endpoint rides (ADR-0014). access:
+  # authenticated enforces the bearer floor BEFORE the directory source is resolved, so a token this
+  # gateway cannot validate is rejected 401 and never reads a file.
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: late-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://api-sheriff:8443/realms/integration/protocol/openid-connect/certs
+        # The proxy's address is a site-local bridge address on the dedicated network, which
+        # token-sheriff's SSRF egress guard refuses unless the host is named here. Host-exact: it names
+        # the one host this issuer's own jwks.url fetches from, as EgressAllowlistActivationWiringTest
+        # requires of every http-sourced issuer.
+        allowed_egress_hosts: ["api-sheriff"]
+        # The proxy serves the IT's self-signed localhost certificate; the benchmark-idp profile binds
+        # the stack's trust store, bound by the mounted benchmark-idp-trust.properties.
+        tls_profile: benchmark-idp
