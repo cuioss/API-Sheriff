@@ -218,7 +218,8 @@ descriptor rather than through a client.
 
 `sheriff-config-late-idp/gateway.yaml` is outside the `×N` notation too, but for a different
 reason: it is independently authored, yet every limit-shaped key it declares is a key the matrix
-already indexes, carried at the base document's value. It declares exactly three:
+already indexes -- the anchor method list and the header-value carve-out at the base document's
+value, the global method list and the egress host differing by design. It declares exactly three:
 `allowed_methods` (global `["GET"]`, and `["GET", "HEAD"]` on its single `assets-secure` anchor --
 the base's anchor value), `security_defaults.max_authorization_header_value_length: 8192` (the *G1*
 carve-out, at the base's value) and one issuer's `jwks.allowed_egress_hosts` (the *G2* allowlist,
