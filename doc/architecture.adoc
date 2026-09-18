@@ -987,11 +987,15 @@ scheduler rather than by requests or probes, so an identity provider that comes 
 is picked up within seconds. Readiness reports key-set *availability*, not *freshness*: once a key set
 has loaded, a later refresh failure keeps the held keys in service and readiness `UP` (see
 link:configuration.adoc#_jwks_readiness[Key-set loading and readiness]). A deployment with no
-`token_validation` block has no key set to wait for. In that case a BFF `mode: server` deployment
-reports its `issuer_reachability` datum as `unverified` rather than asserted, because it reaches its
-issuer lazily on the first login and that does not gate boot readiness; a bearer-only deployment
-emits no `issuer_reachability` datum at all. Where a server-mode deployment does configure
-`token_validation`, `issuer_reachability` follows the key-set verdict.
+`token_validation` block has no key set to wait for. A BFF `mode: server` deployment adds an
+`oidc: server` datum and an `issuer_reachability` datum that is *always* `unverified`, whether or not
+it configures `token_validation` and whether the probe is `UP` or `DOWN`; a bearer-only deployment
+emits no `issuer_reachability` datum at all. The probe holds no live reachability signal and sends no
+network request, and key-set state is not one: a loaded key set survives later refresh failures, so
+it would claim `reachable` for an issuer that has since gone offline, and a missing one would claim
+`unreachable` for an issuer that answered with unusable keys. What the key-set state does prove is
+reported by `jwks` and `issuers_loaded`, which alone drive the verdict. A server-mode deployment
+reaches its issuer lazily on the first login, which does not gate boot readiness.
 
 The *construction-failure* leg of the probe is, in the shipped topology, unreachable rather than a
 routine outcome. `TokenValidatorProducer.onStartup` forces the same eager contextual-instance

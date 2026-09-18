@@ -1884,6 +1884,14 @@ boot, or a stalled key rotation, is therefore not visible through readiness; ale
 (link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
 Amendment A1]).
 
+*Readiness does not verify issuer reachability.* A BFF `oidc.session.mode: server` deployment adds
+`oidc: server` and `issuer_reachability: unverified` to the payload -- on `UP` and `DOWN` alike, with
+or without `token_validation`. The value is fixed because the probe has no live reachability signal
+and sends no request of its own, and the key-set state above cannot stand in for one: a loaded key
+set stays loaded through later refresh failures, and a missing one says nothing about the network.
+Read `jwks` and `issuers_loaded` for what readiness does know; a bearer-only deployment carries no
+`issuer_reachability` datum.
+
 [[_jwks_trust_profiles]]
 ==== Trust profiles (`jwks.tls_profile`)
 

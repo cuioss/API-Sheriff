@@ -49,12 +49,15 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
  * names named in {@code architecture.adoc} § Metrics (including the BFF session-lifecycle counter),
  * and {@link GatewayReadinessCheck} reflects configuration, JWKS status, and — for a BFF
- * {@code mode: server} deployment — issuer reachability.
+ * {@code mode: server} deployment — an {@code issuer_reachability} datum that is always
+ * {@code unverified}, because cached key-set state is not a reachability signal.
  */
 class SheriffMetricsTest {
 
@@ -189,7 +192,7 @@ class SheriffMetricsTest {
     }
 
     @Nested
-    @DisplayName("GatewayReadinessCheck reflects config, JWKS status, and server-mode issuer reachability")
+    @DisplayName("GatewayReadinessCheck reflects config and JWKS status, and never claims issuer reachability")
     class Readiness {
 
         private static final String PRIMARY_ISSUER = "corp-main";
@@ -279,8 +282,8 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("server mode UP reports oidc=server and issuer_reachability=reachable when the issuer JWKS resolves")
-        void serverModeUpReportsIssuerReachable() {
+        @DisplayName("server mode UP reports oidc=server and issuer_reachability=unverified, never reachable")
+        void serverModeUpReportsIssuerUnverified() {
             GatewayConfig config = configWith(null,
                     new TokenValidationConfig(List.of()), serverMode());
             GatewayReadinessCheck check = checkWith(config, NO_ISSUERS);
@@ -291,12 +294,13 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("server", data.get("oidc"));
             assertEquals("ready", data.get("jwks"));
-            assertEquals("reachable", data.get("issuer_reachability"));
+            assertEquals("unverified", data.get("issuer_reachability"),
+                    "a resolved key set is not evidence the issuer is reachable now");
         }
 
         @Test
-        @DisplayName("server mode DOWN reports issuer_reachability=unreachable when the issuer JWKS is unreachable")
-        void serverModeDownReportsIssuerUnreachable() {
+        @DisplayName("server mode construction-failure DOWN reports issuer_reachability=unverified, never unreachable")
+        void serverModeDownReportsIssuerUnverified() {
             GatewayConfig config = configWith(null,
                     new TokenValidationConfig(List.of()), serverMode());
             GatewayException failure = new GatewayException(EventType.CONFIG_INVALID, "issuer JWKS unreachable");
@@ -308,7 +312,8 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("server", data.get("oidc"));
             assertEquals("unavailable", data.get("jwks"));
-            assertEquals("unreachable", data.get("issuer_reachability"));
+            assertEquals("unverified", data.get("issuer_reachability"),
+                    "a validator that failed to build says nothing about the issuer's network reachability");
         }
 
         @Test
@@ -402,8 +407,8 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("server mode reports issuer_reachability=unreachable while an issuer has no key set")
-        void serverModeKeySetDownReportsIssuerUnreachable() {
+        @DisplayName("server mode stays DOWN while an issuer has no key set, with issuer_reachability=unverified")
+        void serverModeKeySetDownReportsIssuerUnverified() {
             GatewayConfig config = configWith(null, twoIssuers(), serverMode());
             GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.NOT_LOADED));
 
@@ -413,13 +418,14 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("server", data.get("oidc"));
             assertEquals("loading", data.get("jwks"));
-            assertEquals("unreachable", data.get("issuer_reachability"));
+            assertEquals("unverified", data.get("issuer_reachability"),
+                    "a missing key set is not evidence the issuer is unreachable");
             assertNothingDisclosed(data);
         }
 
         @Test
-        @DisplayName("server mode reports issuer_reachability=reachable once every issuer has a key set")
-        void serverModeKeySetUpReportsIssuerReachable() {
+        @DisplayName("server mode is UP once every issuer has a key set, and still reports issuer_reachability=unverified")
+        void serverModeKeySetUpReportsIssuerUnverified() {
             GatewayConfig config = configWith(null, twoIssuers(), serverMode());
             GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.LOADED));
 
@@ -428,7 +434,24 @@ class SheriffMetricsTest {
             assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("ready", data.get("jwks"));
-            assertEquals("reachable", data.get("issuer_reachability"));
+            assertEquals("unverified", data.get("issuer_reachability"),
+                    "a loaded key set survives later refresh failures, so it cannot prove reachability");
+        }
+
+        @ParameterizedTest(name = "second issuer {0}")
+        @EnumSource(KeySetState.class)
+        @DisplayName("server mode never reports a reachability verdict, whatever the key-set state")
+        void serverModeNeverReportsReachabilityVerdict(KeySetState state) {
+            // Arrange
+            GatewayConfig config = configWith(null, twoIssuers(), serverMode());
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, state));
+
+            // Act
+            Map<String, Object> data = check.call().getData().orElseThrow();
+
+            // Assert
+            assertEquals("unverified", data.get("issuer_reachability"),
+                    "cached key-set state must not be reported as a reachability verdict");
         }
 
         @Test

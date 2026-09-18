@@ -75,14 +75,16 @@ import org.eclipse.microprofile.health.Readiness;
  *       A gateway with no {@code token_validation} block needs no bearer validation, so JWKS is
  *       reported {@code not-applicable} and does not gate readiness.</li>
  *   <li><strong>Issuer reachability (mode: server)</strong> — when the gateway runs a BFF
- *       {@code oidc.session.mode: server} deployment, the OIDC issuer must be reachable for the
- *       gateway to mediate and validate the confidential-client tokens. This reuses the same
- *       JWKS verdict above: a server-mode probe adds an {@code oidc=server} datum and reports the
- *       issuer as {@code reachable} when every key set is loaded and {@code unreachable} whenever the
- *       probe is {@code DOWN}. A server-mode deployment that configures no {@code token_validation}
- *       block has no JWKS verdict to reuse, so issuer reachability is reported {@code unverified} —
- *       the confidential-client engine reaches the issuer lazily on the first login and does not
- *       gate boot readiness.</li>
+ *       {@code oidc.session.mode: server} deployment, the probe adds an {@code oidc=server} datum and
+ *       an {@code issuer_reachability} datum that is <em>always</em> {@code unverified}. The probe
+ *       has no live reachability signal and deliberately sends no network request, and the key-set
+ *       state is not one: once an issuer's key set has loaded it stays loaded through later refresh
+ *       failures, so a loaded key set would claim {@code reachable} for an issuer that has since gone
+ *       offline, and a missing one would claim {@code unreachable} for an issuer that answered with
+ *       unusable keys. What the key-set state <em>does</em> prove is reported by the {@code jwks}
+ *       and {@code issuers_loaded} data above, which drive the verdict unchanged. The
+ *       confidential-client engine reaches the issuer lazily on the first login, which does not gate
+ *       boot readiness.</li>
  * </ul>
  * The validator and the key-set view are resolved lazily through {@link Instance}s, together and
  * only on the {@code token_validation} leg: the view is published by the validator's assembly, so a
@@ -116,8 +118,10 @@ public class GatewayReadinessCheck implements HealthCheck {
 
     /** The readiness payload's mode label — the same canonical spelling the config model owns. */
     private static final String MODE_SERVER = OidcConfig.Session.MODE_SERVER;
-    private static final String ISSUER_REACHABLE = "reachable";
-    private static final String ISSUER_UNREACHABLE = "unreachable";
+    /**
+     * The only value the {@code issuer_reachability} datum carries: readiness holds no live
+     * reachability signal, and cached key-set state is not one (see the class Javadoc).
+     */
     private static final String ISSUER_UNVERIFIED = "unverified";
 
     /**
@@ -170,20 +174,18 @@ public class GatewayReadinessCheck implements HealthCheck {
             builder.withData(DATA_CONFIG_VERSION, configVersion);
         }
 
-        boolean serverMode = isServerSessionMode();
-        if (serverMode) {
-            builder.withData(DATA_OIDC, MODE_SERVER);
+        if (isServerSessionMode()) {
+            // Reachability is never inferred from key-set state: a loaded key set survives later refresh
+            // failures and a missing one says nothing about the network. With no live signal to report,
+            // the datum says so, on UP and DOWN alike.
+            builder.withData(DATA_OIDC, MODE_SERVER)
+                    .withData(DATA_ISSUER_REACHABILITY, ISSUER_UNVERIFIED);
         }
 
         TokenValidationConfig tokenValidation = gatewayConfig.tokenValidation();
         if (tokenValidation == null) {
             // No bearer validation configured, so there is no JWKS-backed validation health check to
-            // reuse. A server-mode deployment reaches its issuer lazily through the confidential-client
-            // engine on the first login, which does not gate boot readiness — so issuer reachability is
-            // reported unverified rather than gating the probe DOWN.
-            if (serverMode) {
-                builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_UNVERIFIED);
-            }
+            // reuse, and nothing here gates readiness.
             return builder.withData(DATA_JWKS, "not-applicable").up().build();
         }
 
@@ -212,7 +214,7 @@ public class GatewayReadinessCheck implements HealthCheck {
             // token. See ERROR_VALIDATION_UNAVAILABLE for why the raw message must not travel here.
             LOGGER.warn(failure, ConfigLogMessages.WARN.READINESS_VALIDATION_UNAVAILABLE);
             builder.withData(DATA_ERROR, ERROR_VALIDATION_UNAVAILABLE);
-            return down(builder, JWKS_UNAVAILABLE, serverMode);
+            return down(builder, JWKS_UNAVAILABLE);
         }
 
         // One read of the loaded count drives both the datum and the verdict, so the payload can
@@ -220,37 +222,28 @@ public class GatewayReadinessCheck implements HealthCheck {
         int loaded = keySets.loadedCount();
         builder.withData(DATA_ISSUERS_LOADED, loaded);
         if (loaded == keySets.configuredCount()) {
-            builder.withData(DATA_JWKS, JWKS_READY);
-            if (serverMode) {
-                builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_REACHABLE);
-            }
-            return builder.up().build();
+            return builder.withData(DATA_JWKS, JWKS_READY).up().build();
         }
-        return down(builder, keySets.failedCount() > 0 ? JWKS_UNAVAILABLE : JWKS_LOADING, serverMode);
+        return down(builder, keySets.failedCount() > 0 ? JWKS_UNAVAILABLE : JWKS_LOADING);
     }
 
     /**
      * The single DOWN renderer both the construction-failure leg and the live key-set leg use: a fixed
-     * {@code jwks} status token and, in server mode, an {@code unreachable} issuer — never an issuer
-     * name, URL, hostname or cause.
+     * {@code jwks} status token beside whatever fixed data the caller already gathered — never an
+     * issuer name, URL, hostname or cause. It adds no reachability claim; a server-mode payload keeps
+     * the {@code unverified} datum recorded before either leg ran.
      *
      * @param builder    the response builder carrying the data gathered so far
      * @param jwksStatus the fixed {@code jwks} status token
-     * @param serverMode whether issuer reachability is part of the payload
      * @return the {@code DOWN} response
      */
-    private static HealthCheckResponse down(HealthCheckResponseBuilder builder, String jwksStatus,
-            boolean serverMode) {
-        builder.withData(DATA_JWKS, jwksStatus);
-        if (serverMode) {
-            builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_UNREACHABLE);
-        }
-        return builder.down().build();
+    private static HealthCheckResponse down(HealthCheckResponseBuilder builder, String jwksStatus) {
+        return builder.withData(DATA_JWKS, jwksStatus).down().build();
     }
 
     /**
      * @return {@code true} when the gateway runs a BFF {@code oidc.session.mode: server} deployment,
-     *         so issuer reachability is reported as part of readiness
+     *         so the {@code oidc} and {@code issuer_reachability} data are part of readiness
      */
     private boolean isServerSessionMode() {
         // The SHARED predicate on the config model, identical to the one boot validation, the edge
