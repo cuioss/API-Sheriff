@@ -305,7 +305,10 @@ without touching the eager-boot disposition.
 * *A failed load is retried fast and bounded.* A load attempt that produces no key set schedules the
   next one after one second, doubling per attempt, capped at thirty seconds and never above the
   issuer's refresh interval. Retries run on one shared scheduler, strictly sequentially per issuer, so
-  neither request traffic nor the probe can multiply them.
+  neither request traffic nor the probe can multiply them. This schedule sits *above* the HTTP
+  client's own retry of each fetch: an attempt against an unreachable provider reports failure only
+  after that inner backoff (roughly 1, 2, 4 and 8 seconds, about 17 seconds in all) is spent, so the
+  gateway's first retry follows the first attempt's end, not the boot, by one second.
 
 *What is unchanged.* The exclusion of the extension's unqualified beans stands exactly as decided,
 and so does the eager-boot, fail-closed assembly: a misconfigured JWKS source still aborts startup,

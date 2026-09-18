@@ -71,16 +71,27 @@ import org.junit.jupiter.api.Test;
  * <ol>
  *   <li><em>DOWN while the provider is absent</em> — the readiness payload reports {@code DOWN} with
  *       {@code jwks} {@code loading} or {@code unavailable} and {@code issuers_loaded} below
- *       {@code issuers}, names no issuer, URL or host, and the log carries {@code WARN ApiSheriff-129}
- *       (a retry was scheduled). The same token that is accepted later is rejected {@code 401} here,
- *       which is the matched control for the acceptance leg: the acceptance is caused by the loaded
- *       key set, not by a route that admits anything.</li>
- *   <li><em>UP within {@value #RECOVERY_BOUND_SECONDS}s of the provider appearing</em> — the retry is
- *       capped at 30 s, so this bound holds by the retry schedule alone. The gateway's configuration
- *       model exposes no refresh-interval key, so the issuer runs the token library's default interval,
- *       which a recovery that waited for the background refresh would have to sit out.
- *       {@code INFO ApiSheriff-18} ("loaded after N retry attempt(s)") is asserted beside the verdict,
- *       so the recovery is attributed to the retry path rather than inferred from timing alone.</li>
+ *       {@code issuers}, and names no issuer, URL or host. The same token that is accepted later is
+ *       rejected {@code 401} here, which is the matched control for the acceptance leg: the
+ *       acceptance is caused by the loaded key set, not by a route that admits anything.</li>
+ *   <li><em>The first load attempt gives up and the gateway schedules its own retry</em> — the log
+ *       carries {@code WARN ApiSheriff-129}. This is awaited for
+ *       {@value #RETRY_SCHEDULED_TIMEOUT_SECONDS}s, not for a few seconds, because a load attempt is
+ *       not one HTTP request: the HTTP client beneath the token library retries the {@code GET}
+ *       itself ({@code HTTP-112}, "GET request failed on attempt N, retrying after ..."), with a
+ *       jittered backoff of roughly 1, 2, 4 and 8 seconds across five attempts. The attempt reports
+ *       failure — and the gateway logs {@code ApiSheriff-129} — only once that inner budget of about
+ *       17 seconds is spent. The provider is started only <em>after</em> this record, which is what
+ *       makes the recovery below a recovery of the gateway's retry path: a provider started while the
+ *       first attempt is still retrying internally would be picked up by that attempt, with no
+ *       gateway retry and no {@code ApiSheriff-18} to attribute it by.</li>
+ *   <li><em>UP within {@value #RECOVERY_BOUND_SECONDS}s of the provider appearing</em> — see the
+ *       constant for how the bound is derived from the two nested retry schedules. The gateway's
+ *       configuration model exposes no refresh-interval key, so the issuer runs the token library's
+ *       default interval, which a recovery that waited for the background refresh would have to sit
+ *       out. {@code INFO ApiSheriff-18} ("loaded after N retry attempt(s)") is asserted beside the
+ *       verdict, so the recovery is attributed to the retry path rather than inferred from timing
+ *       alone.</li>
  *   <li><em>The provider's token is accepted</em> — a Keycloak-issued bearer token reaches the
  *       bearer-gated route and is answered {@code 200}. This is what proves the library's recovery path
  *       works through the gateway-owned loader: a key set that loaded without the issuer being
@@ -141,8 +152,23 @@ class JwksLateIdpReadinessIT {
     private static final long BOOT_TIMEOUT_SECONDS = 90L;
 
     /**
-     * Upper bound for readiness to turn {@code UP} once the provider has started: the 30 s retry cap
-     * plus margin for the attempt itself and a loaded CI runner.
+     * Upper bound for the first load attempt to give up and {@code ApiSheriff-129} to appear, counted
+     * from the first {@code DOWN} answer. A load attempt ends only once the HTTP client's own retries
+     * are spent: five {@code GET}s separated by a jittered backoff of roughly 1, 2, 4 and 8 seconds —
+     * observed on CI as 1072, 2013, 3888 and 8202 ms, about 17 s in total — plus the time each failed
+     * {@code GET} itself takes. Twice that budget plus margin for a loaded runner.
+     */
+    private static final long RETRY_SCHEDULED_TIMEOUT_SECONDS = 60L;
+
+    /**
+     * Upper bound for readiness to turn {@code UP} once the provider has started. Two retry schedules
+     * are nested, and the worst case sums them: the provider appears just after a gateway retry's
+     * first {@code GET} failed, so that attempt waits out its remaining inner backoff (at most the
+     * ~17 s budget above) before it can report failure, and the next gateway retry then waits its own
+     * delay, capped at 30 s, before its first {@code GET} succeeds. Because the provider is started as
+     * soon as the first {@code ApiSheriff-129} is seen, the realistic case is far shorter — the first
+     * gateway retry is scheduled 1 s out, and the provider is normally reachable by that retry's first
+     * or second {@code GET}.
      */
     private static final long RECOVERY_BOUND_SECONDS = 60L;
 
@@ -175,11 +201,14 @@ class JwksLateIdpReadinessIT {
             Response down = awaitReadiness(gateway, managementOrigin, response -> true, BOOT_TIMEOUT_SECONDS,
                     "the late gateway's management interface to answer");
             assertReportsDown(gateway, down);
-            awaitLogRecord(gateway, RETRY_SCHEDULED_RECORD,
-                    "a failed load must schedule a retry, announced by WARN " + RETRY_SCHEDULED_RECORD);
             assertEquals(401, securedAssetStatus(applicationOrigin, bearer), () -> "matched control: with no key "
                     + "set loaded the gateway cannot validate the provider's token, so it must be rejected 401. "
                     + gatewayLog(gateway));
+            awaitLogRecord(gateway, RETRY_SCHEDULED_RECORD, RETRY_SCHEDULED_TIMEOUT_SECONDS,
+                    "once the first load attempt has spent the HTTP client's own retries it must fail and the "
+                            + "gateway must schedule its retry, announced by WARN " + RETRY_SCHEDULED_RECORD);
+            assertReportsDown(gateway, awaitReadiness(gateway, managementOrigin, response -> true,
+                    BOOT_TIMEOUT_SECONDS, "the late gateway's readiness after the failed first attempt"));
 
             // Act (2) — the provider appears
             docker("start the late provider", "start", proxy);
@@ -196,7 +225,7 @@ class JwksLateIdpReadinessIT {
                             () -> up.asString()),
                     () -> assertTrue(recoverySeconds <= RECOVERY_BOUND_SECONDS,
                             () -> "recovery took " + recoverySeconds + "s"));
-            awaitLogRecord(gateway, LOADED_AFTER_RETRY_RECORD,
+            awaitLogRecord(gateway, LOADED_AFTER_RETRY_RECORD, LOG_TIMEOUT_SECONDS,
                     "the recovery must be closed by INFO " + LOADED_AFTER_RETRY_RECORD
                             + " — a key set loaded by the retry, not by the library's background refresh");
 
@@ -293,17 +322,19 @@ class JwksLateIdpReadinessIT {
 
     /**
      * Polls the gateway's merged container output until it carries {@code record}.
+     *
+     * @param timeoutSeconds how long the record may take to appear
      */
     @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded wait for a container log line
-    private static void awaitLogRecord(String gateway, String record, String why) {
-        long deadline = System.nanoTime() + Duration.ofSeconds(LOG_TIMEOUT_SECONDS).toNanos();
+    private static void awaitLogRecord(String gateway, String record, long timeoutSeconds, String why) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(timeoutSeconds).toNanos();
         while (System.nanoTime() < deadline) {
             if (docker("read the gateway log", "logs", gateway).contains(record)) {
                 return;
             }
             sleepPollInterval();
         }
-        fail(why + ". " + gatewayLog(gateway));
+        fail(why + " (waited " + timeoutSeconds + "s). " + gatewayLog(gateway));
     }
 
     /**

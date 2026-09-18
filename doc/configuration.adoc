@@ -1857,12 +1857,18 @@ cover that window:
   `UP` with `jwks: ready` once every issuer has a key set. The payload never names an issuer, a URL
   or a host, and reading it never triggers a fetch. An orchestrator therefore holds traffic back
   from a gateway that could not validate a single token rather than routing requests to it.
-* *A failed load is retried fast.* The first retry follows after 1 second and the delay doubles per
-  attempt, capped at 30 seconds and never above the issuer's refresh interval, so a late identity
-  provider is picked up within seconds rather than after a whole refresh interval. Retries are
-  driven by a scheduler only -- never by bearer requests or by the readiness probe -- with at most one
-  attempt in flight per issuer. Each scheduled retry logs `WARN ApiSheriff-129`, and the attempt that
-  finally loads the key set logs `INFO ApiSheriff-18` (see link:LogMessages.adoc[Log messages]). Once
+* *A failed load is retried fast.* A load attempt is not a single request: the HTTP client beneath
+  the token library retries the fetch itself, with a jittered backoff of roughly 1, 2, 4 and 8
+  seconds across five tries (logged as `HTTP-112`), so an attempt against an unreachable provider
+  reports failure only after about 17 seconds. The gateway's own retry starts from that point: the
+  next attempt follows 1 second after a failed one and the delay doubles per attempt, capped at 30
+  seconds and never above the issuer's refresh interval, so a late identity provider is picked up
+  within seconds of an attempt ending rather than after a whole refresh interval -- and a provider
+  that appears while an attempt is still retrying internally is picked up by that attempt. Retries
+  are driven by a scheduler only -- never by bearer requests or by the readiness probe -- with at most
+  one attempt in flight per issuer. Each scheduled retry logs `WARN ApiSheriff-129`, and a gateway
+  retry that finally loads the key set logs `INFO ApiSheriff-18` (see
+  link:LogMessages.adoc[Log messages]); a key set loaded by the very first attempt logs neither. Once
   a key set is loaded, the regular background refresh keeps it current.
 
 Until an issuer's key set loads, a bearer token from that issuer is rejected `401`. A `file`-sourced
