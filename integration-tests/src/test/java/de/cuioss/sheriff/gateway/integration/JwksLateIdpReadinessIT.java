@@ -258,23 +258,37 @@ class JwksLateIdpReadinessIT {
         String lastObservation = "no answer yet";
         while (System.nanoTime() < deadline) {
             try {
-                Response response = given()
-                        .relaxedHTTPSValidation()
-                        .baseUri(managementOrigin)
-                        .basePath("")
-                        .when()
-                        .get(BaseIntegrationTest.managementRootPath() + "/health/ready");
+                Response response = readiness(managementOrigin);
                 if (accepted.test(response)) {
                     return response;
                 }
                 lastObservation = response.statusCode() + " " + response.asString();
-            } catch (RuntimeException notAnsweringYet) {
+            } catch (IOException notAnsweringYet) {
                 lastObservation = notAnsweringYet.toString();
             }
             sleepPollInterval();
         }
         return fail("timed out after " + timeoutSeconds + "s waiting for " + what + ". Last observation: "
                 + lastObservation + " " + gatewayLog(gateway));
+    }
+
+    /**
+     * One readiness request against the management interface.
+     *
+     * @throws IOException while the interface is not answering yet. RestAssured runs on Groovy and
+     *                     rethrows the HTTP client's connection-level failure — a refused connection,
+     *                     a reset, an unanswered request, an aborted TLS handshake, all
+     *                     {@link IOException}s — without declaring it; declaring it here is what lets
+     *                     the poll catch exactly that family rather than every runtime failure
+     */
+    @SuppressWarnings("java:S1130") // NOSONAR java:S1130 - RestAssured rethrows IOException undeclared (Groovy)
+    private static Response readiness(String managementOrigin) throws IOException {
+        return given()
+                .relaxedHTTPSValidation()
+                .baseUri(managementOrigin)
+                .basePath("")
+                .when()
+                .get(BaseIntegrationTest.managementRootPath() + "/health/ready");
     }
 
     /**
@@ -425,7 +439,9 @@ class JwksLateIdpReadinessIT {
     private static String dockerQuietly(String... arguments) {
         try {
             return runDocker(arguments).output();
-        } catch (RuntimeException failure) {
+        } catch (UncheckedIOException | IllegalStateException failure) {
+            // Exactly the two failures runDocker raises: the process could not be started or read,
+            // or the wait was interrupted.
             return "<docker " + String.join(" ", arguments) + " failed: " + failure + ">";
         }
     }
