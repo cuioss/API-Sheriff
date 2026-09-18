@@ -25,14 +25,20 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 
 import de.cuioss.http.client.adapter.RetryConfig;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
@@ -42,6 +48,9 @@ import de.cuioss.sheriff.token.validation.jwks.JwksLoader;
 import de.cuioss.sheriff.token.validation.jwks.JwksLoaderFactory;
 import de.cuioss.sheriff.token.validation.jwks.key.KeyInfo;
 import de.cuioss.sheriff.token.validation.test.InMemoryKeyMaterialHandler;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import mockwebserver3.Dispatcher;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
@@ -55,12 +64,15 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Tests for {@link RetryingJwksLoader}: the gateway-owned loader records whether a key set was
- * loaded, reports {@link LoaderStatus#OK} exactly then, and answers every status read without a
- * network request.
+ * loaded, reports {@link LoaderStatus#OK} exactly then, answers every status read without a network
+ * request, and retries a failed load on a bounded exponential backoff driven by its scheduler alone.
  * <p>
  * The HTTP legs run the real library loader against a local JWKS endpoint on
- * {@link LoopbackHost#ADDRESS}; no test double framework is involved.
+ * {@link LoopbackHost#ADDRESS}; no test double framework is involved. Except for the one leg that pins
+ * the production timing, every loader runs its retries on a per-test scheduler, so no retry outlives
+ * its test.
  */
+@EnableTestLogger
 @DisplayName("RetryingJwksLoader — gateway-owned, non-fetching per-issuer key-set state")
 class RetryingJwksLoaderTest {
 
@@ -68,9 +80,25 @@ class RetryingJwksLoaderTest {
     private static final String ISSUER = "https://issuer.example";
     private static final String JWKS_PATH = "/jwks";
     private static final long AWAIT_SECONDS = 10;
+    private static final Duration REFRESH_INTERVAL = Duration.ofSeconds(3600);
+    /** A first-retry delay no test outlives: the retry is scheduled but never runs. */
+    private static final Duration NEVER_WITHIN_TEST = Duration.ofHours(1);
+    /** A first-retry delay short enough for a retry sequence to complete within a test. */
+    private static final Duration FAST = Duration.ofMillis(50);
 
     private MockWebServer server;
+    private ScheduledExecutorService scheduler;
     private final AtomicInteger failuresBeforeSuccess = new AtomicInteger();
+
+    @BeforeEach
+    void startScheduler() {
+        scheduler = Executors.newSingleThreadScheduledExecutor();
+    }
+
+    @AfterEach
+    void stopScheduler() {
+        scheduler.shutdownNow();
+    }
 
     @BeforeEach
     void startServer() throws IOException {
@@ -106,8 +134,40 @@ class RetryingJwksLoaderTest {
                 .build();
     }
 
+    /** An HTTP loader whose first retry is scheduled far beyond the test. */
     private RetryingJwksLoader httpLoader() {
-        return new RetryingJwksLoader(ISSUER_NAME, () -> JwksLoaderFactory.createHttpLoader(httpConfig()));
+        return httpLoader(NEVER_WITHIN_TEST, REFRESH_INTERVAL);
+    }
+
+    private RetryingJwksLoader httpLoader(Duration initialRetryDelay, Duration refreshInterval) {
+        return new RetryingJwksLoader(ISSUER_NAME, () -> JwksLoaderFactory.createHttpLoader(httpConfig()),
+                refreshInterval, initialRetryDelay, scheduler);
+    }
+
+    private RetryingJwksLoader loader(Supplier<JwksLoader> delegateFactory) {
+        return new RetryingJwksLoader(ISSUER_NAME, delegateFactory, REFRESH_INTERVAL, NEVER_WITHIN_TEST, scheduler);
+    }
+
+    /**
+     * Blocks until every task the test scheduler would have run within {@code horizon} has run: the
+     * scheduler is single-threaded and runs delayed tasks in deadline order, so a barrier due after
+     * {@code horizon} completes only once every earlier-due task has completed or was cancelled.
+     */
+    private void drainScheduler(Duration horizon) throws Exception {
+        scheduler.schedule(() -> null, horizon.toMillis(), TimeUnit.MILLISECONDS)
+                .get(AWAIT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /** Polls until a log line at {@code level} contains {@code part}; the retry logs off-thread. */
+    private static void awaitLog(TestLogLevel level, String part) throws TimeoutException {
+        Awaits.until(() -> {
+            try {
+                LogAsserts.assertLogMessagePresentContaining(level, part);
+                return true;
+            } catch (AssertionError notYet) {
+                return false;
+            }
+        }, level + " log containing '" + part + "'", Awaits.CONNECT_CEILING_SECONDS);
     }
 
     private static LoaderStatus initialise(RetryingJwksLoader loader) throws Exception {
@@ -161,6 +221,37 @@ class RetryingJwksLoaderTest {
             assertNotEquals(LoaderStatus.OK, status, "a failed load is never reported OK");
             assertEquals(KeySetState.FAILED, loader.keySetState());
             assertNotEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            assertTrue(loader.retryPending(), "a failed first load schedules a retry");
+        }
+
+        @Test
+        @DisplayName("a successful first load schedules no retry")
+        void successfulFirstLoadSchedulesNoRetry() throws Exception {
+            // Arrange
+            RetryingJwksLoader loader = httpLoader();
+
+            // Act
+            initialise(loader);
+
+            // Assert
+            assertFalse(loader.retryPending());
+        }
+
+        @Test
+        @DisplayName("a repeated init starts no second load and reports the current status")
+        void repeatedInitStartsNothing() throws Exception {
+            // Arrange
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            RetryingJwksLoader loader = httpLoader();
+            initialise(loader);
+            int requestsAfterInit = server.getRequestCount();
+
+            // Act
+            LoaderStatus second = initialise(loader);
+
+            // Assert
+            assertNotEquals(LoaderStatus.OK, second);
+            assertEquals(requestsAfterInit, server.getRequestCount(), "a second init must not fetch");
         }
 
         @Test
@@ -209,8 +300,7 @@ class RetryingJwksLoaderTest {
         void fileSourceLoads() throws Exception {
             // Arrange
             Path jwks = Files.writeString(directory.resolve("jwks.json"), InMemoryKeyMaterialHandler.createDefaultJwks());
-            RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
-                    () -> JwksLoaderFactory.createFileLoader(jwks.toString()));
+            RetryingJwksLoader loader = loader(() -> JwksLoaderFactory.createFileLoader(jwks.toString()));
 
             // Act
             LoaderStatus status = initialise(loader);
@@ -231,7 +321,7 @@ class RetryingJwksLoaderTest {
         @DisplayName("a load that completes exceptionally is recorded as FAILED and reported as ERROR")
         void exceptionalLoadIsFailed() throws Exception {
             // Arrange
-            RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME, FailingLoader::new);
+            RetryingJwksLoader loader = loader(FailingLoader::new);
 
             // Act
             LoaderStatus status = initialise(loader);
@@ -245,7 +335,7 @@ class RetryingJwksLoaderTest {
         @DisplayName("an outcome reported for a delegate that is no longer current is ignored")
         void staleOutcomeIsIgnored() {
             // Arrange
-            RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME, FailingLoader::new);
+            RetryingJwksLoader loader = loader(FailingLoader::new);
 
             // Act
             loader.recordOutcome(new FailingLoader(), LoaderStatus.OK);
@@ -253,6 +343,162 @@ class RetryingJwksLoaderTest {
             // Assert
             assertEquals(KeySetState.NOT_LOADED, loader.keySetState(),
                     "a foreign delegate's success must not mark the current one loaded");
+        }
+    }
+
+    @Nested
+    @DisplayName("fast retry of a failed load")
+    class FastRetry {
+
+        @Test
+        @DisplayName("a failed first load is retried until the key set loads, then reports OK")
+        void failedLoadIsRetriedUntilLoaded() throws Exception {
+            // Arrange — the endpoint fails twice, then serves the key set
+            failuresBeforeSuccess.set(2);
+            RetryingJwksLoader loader = httpLoader(FAST, REFRESH_INTERVAL);
+
+            // Act
+            LoaderStatus first = initialise(loader);
+            Awaits.until(() -> loader.keySetState() == KeySetState.LOADED, "key set loaded by retry",
+                    Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert
+            assertNotEquals(LoaderStatus.OK, first, "the first load failed");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus(), "a key set loaded by a retry reports OK");
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
+                    "the retried delegate answers key lookups through the wrapper");
+            assertEquals(3, server.getRequestCount(), "one fetch per attempt: the first load and two retries");
+            assertFalse(loader.retryPending(), "retries stop at the first loaded key set");
+            awaitLog(TestLogLevel.WARN, "JWKS key set for issuer '" + ISSUER_NAME + "' not loaded — retrying in 50 ms");
+            awaitLog(TestLogLevel.WARN, "JWKS key set for issuer '" + ISSUER_NAME + "' not loaded — retrying in 100 ms");
+            awaitLog(TestLogLevel.INFO, "JWKS key set for issuer '" + ISSUER_NAME + "' loaded after 2 retry attempt(s)");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("with the production timing the key set arrives within seconds, far below the refresh interval")
+        void productionTimingRecoversFarBelowRefreshInterval() throws Exception {
+            // Arrange — the shared scheduler and the production first-retry delay of one second
+            failuresBeforeSuccess.set(1);
+            RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
+                    () -> JwksLoaderFactory.createHttpLoader(httpConfig()), REFRESH_INTERVAL);
+            try {
+                long start = System.nanoTime();
+
+                // Act
+                initialise(loader);
+                Awaits.until(() -> loader.keySetState() == KeySetState.LOADED, "key set loaded by retry",
+                        Awaits.CONNECT_CEILING_SECONDS);
+
+                // Assert — recovered after the one-second first retry, not after the 3600 s refresh interval
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+                assertTrue(elapsed.compareTo(Duration.ofSeconds(AWAIT_SECONDS)) < 0,
+                        () -> "recovery took " + elapsed + ", the refresh interval is " + REFRESH_INTERVAL);
+                assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            } finally {
+                loader.close();
+            }
+        }
+
+        @Test
+        @DisplayName("reads during an outage never fetch: only the scheduler does")
+        void readsDuringOutageIssueNoFetch() throws Exception {
+            // Arrange — the retry is scheduled but cannot fire within the test
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            RetryingJwksLoader loader = httpLoader();
+            initialise(loader);
+            int requestsAfterInit = server.getRequestCount();
+
+            // Act — a burst of the reads request threads, the issuer cache and readiness perform
+            for (int i = 0; i < 100; i++) {
+                loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID);
+                loader.getLoaderStatus();
+                loader.keySetState();
+            }
+
+            // Assert
+            assertEquals(requestsAfterInit, server.getRequestCount(), "request traffic must never trigger a fetch");
+            assertTrue(loader.retryPending(), "the one scheduled retry is still the only pending attempt");
+        }
+
+        @Test
+        @DisplayName("close cancels a pending retry, so it never fetches again")
+        void closeCancelsPendingRetry() throws Exception {
+            // Arrange
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            RetryingJwksLoader loader = httpLoader(FAST, REFRESH_INTERVAL);
+            initialise(loader);
+            assertTrue(loader.retryPending(), "precondition: a retry is scheduled");
+            int requestsAfterInit = server.getRequestCount();
+
+            // Act
+            loader.close();
+            drainScheduler(FAST.multipliedBy(4));
+
+            // Assert — the cancelled retry was due long before the barrier and never ran
+            assertFalse(loader.retryPending());
+            assertEquals(requestsAfterInit, server.getRequestCount(), "a closed loader never fetches");
+        }
+
+        @Test
+        @DisplayName("the retry delay never exceeds the issuer's refresh interval")
+        void retryDelayIsBoundedByRefreshInterval() throws Exception {
+            // Arrange — a refresh interval shorter than the second backoff step
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            RetryingJwksLoader loader = httpLoader(FAST, Duration.ofMillis(80));
+
+            // Act
+            initialise(loader);
+
+            // Assert — 50 ms, then 80 ms instead of the doubled 100 ms
+            awaitLog(TestLogLevel.WARN, "retrying in 50 ms");
+            awaitLog(TestLogLevel.WARN, "retrying in 80 ms");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("without a refresh interval the retry delay is capped at thirty seconds")
+        void retryDelayWithoutRefreshIntervalIsCappedAtThirtySeconds() throws Exception {
+            // Arrange — a first-retry delay above the cap and no refresh interval to bound it
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
+                    () -> JwksLoaderFactory.createHttpLoader(httpConfig()), Duration.ZERO, Duration.ofMinutes(1),
+                    scheduler);
+
+            // Act
+            initialise(loader);
+
+            // Assert
+            awaitLog(TestLogLevel.WARN, "retrying in 30000 ms");
+            loader.close();
+        }
+    }
+
+    @Nested
+    @DisplayName("backoff schedule")
+    class Backoff {
+
+        @Test
+        @DisplayName("the delay starts at the initial delay, doubles per retry and is capped")
+        void delayDoublesAndIsCapped() {
+            Duration initial = RetryingJwksLoader.INITIAL_RETRY_DELAY;
+            Duration cap = RetryingJwksLoader.MAX_RETRY_DELAY;
+
+            assertEquals(Duration.ofSeconds(1), RetryingJwksLoader.backoffDelay(1, initial, cap));
+            assertEquals(Duration.ofSeconds(2), RetryingJwksLoader.backoffDelay(2, initial, cap));
+            assertEquals(Duration.ofSeconds(4), RetryingJwksLoader.backoffDelay(3, initial, cap));
+            assertEquals(Duration.ofSeconds(8), RetryingJwksLoader.backoffDelay(4, initial, cap));
+            assertEquals(Duration.ofSeconds(16), RetryingJwksLoader.backoffDelay(5, initial, cap));
+            assertEquals(Duration.ofSeconds(30), RetryingJwksLoader.backoffDelay(6, initial, cap));
+            assertEquals(Duration.ofSeconds(30), RetryingJwksLoader.backoffDelay(1_000, initial, cap),
+                    "a long outage stays at the cap and never overflows");
+        }
+
+        @Test
+        @DisplayName("a cap below the initial delay wins from the first retry")
+        void capBelowInitialWins() {
+            assertEquals(Duration.ofMillis(500),
+                    RetryingJwksLoader.backoffDelay(1, Duration.ofSeconds(1), Duration.ofMillis(500)));
         }
     }
 

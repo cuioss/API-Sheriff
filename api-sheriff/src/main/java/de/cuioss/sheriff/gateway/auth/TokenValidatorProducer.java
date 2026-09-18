@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.auth;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +43,7 @@ import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import org.jspecify.annotations.Nullable;
 
 /**
  * CDI producer of the gateway's single shared {@link TokenValidator}, built once from the
@@ -128,9 +130,9 @@ public class TokenValidatorProducer {
      * {@link #gatewayTokenValidator()} until the first business method is called on that proxy.
      * This method therefore invokes a method on the injected proxy ({@link Object#toString()}) to
      * force contextual-instance creation at boot, which runs the full assembly path
-     * ({@code gatewayTokenValidator} → {@code toJwksLoader} → the first {@link RetryingJwksLoader}
-     * delegate → {@code toHttpJwksLoaderConfig} → {@code trustProfileResolver.resolve}) and aborts startup on a
-     * misconfiguration.
+     * ({@code gatewayTokenValidator} → {@code toJwksLoader} → {@code toHttpJwksLoaderConfig} →
+     * {@code trustProfileResolver.resolve} → the first {@link RetryingJwksLoader} delegate) and aborts
+     * startup on a misconfiguration.
      *
      * @param event     the Quarkus startup event
      * @param validator the produced gateway validator proxy, whose first method call forces eager
@@ -197,11 +199,14 @@ public class TokenValidatorProducer {
     }
 
     /**
-     * Builds the gateway-owned loader for one issuer. The first delegate is created here, eagerly, so
-     * every boot refusal of the JWKS source (a missing url or file path, an unresolvable
-     * {@code tls_profile}, a {@code tls_profile} together with {@code jwks_verify_hostname: false}, an
-     * unsupported source) still aborts assembly. Every later delegate the wrapper builds reads a
-     * <em>fresh</em> loader configuration from the same factory.
+     * Builds the gateway-owned loader for one issuer. The loader configuration and the first delegate
+     * are created here, eagerly, so every boot refusal of the JWKS source (a missing url or file path,
+     * an unresolvable {@code tls_profile}, a {@code tls_profile} together with
+     * {@code jwks_verify_hostname: false}, an unsupported source) still aborts assembly. The first
+     * delegate consumes that eagerly built configuration; every later delegate the wrapper builds for a
+     * retry reads a <em>fresh</em> one. An {@code http} source bounds the wrapper's retry delay by the
+     * configuration's refresh interval; a {@code file} source has no refresh and is bounded by the
+     * wrapper's own cap only.
      */
     private RetryingJwksLoader toJwksLoader(IssuerConfig issuer) {
         IssuerConfig.Jwks jwks = issuer.jwks();
@@ -209,7 +214,28 @@ public class TokenValidatorProducer {
             throw new GatewayException(EventType.CONFIG_INVALID,
                     ISSUER_PREFIX + issuer.name() + "' declares no jwks source");
         }
-        return new RetryingJwksLoader(issuer.name(), delegateFactory(issuer, jwks));
+        if (SOURCE_HTTP.equals(jwks.source())) {
+            HttpJwksLoaderConfig first = toHttpJwksLoaderConfig(issuer, jwks);
+            AtomicReference<@Nullable HttpJwksLoaderConfig> unconsumed = new AtomicReference<>(first);
+            Supplier<JwksLoader> factory = () -> {
+                HttpJwksLoaderConfig config = unconsumed.getAndSet(null);
+                return JwksLoaderFactory.createHttpLoader(
+                        config != null ? config : toHttpJwksLoaderConfig(issuer, jwks));
+            };
+            return new RetryingJwksLoader(issuer.name(), factory,
+                    Duration.ofSeconds(first.getRefreshIntervalSeconds()));
+        }
+        if (SOURCE_FILE.equals(jwks.source())) {
+            String file = jwks.file();
+            if (file == null) {
+                throw new GatewayException(EventType.CONFIG_INVALID,
+                        ISSUER_PREFIX + issuer.name() + "' jwks source 'file' declares no file path");
+            }
+            return new RetryingJwksLoader(issuer.name(), () -> JwksLoaderFactory.createFileLoader(file),
+                    Duration.ZERO);
+        }
+        throw new GatewayException(EventType.CONFIG_INVALID,
+                ISSUER_PREFIX + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
     }
 
     private de.cuioss.sheriff.token.validation.IssuerConfig toValidationIssuer(IssuerConfig issuer,
@@ -228,27 +254,6 @@ public class TokenValidatorProducer {
             builder.audienceValidationDisabled(true);
         }
         return builder.jwksLoader(loader).build();
-    }
-
-    /**
-     * The factory of fresh library loaders for one issuer's JWKS source: an {@code http} source builds
-     * an HTTP loader over a freshly built {@link HttpJwksLoaderConfig} on every call, a {@code file}
-     * source a file loader over the declared path.
-     */
-    private Supplier<JwksLoader> delegateFactory(IssuerConfig issuer, IssuerConfig.Jwks jwks) {
-        if (SOURCE_HTTP.equals(jwks.source())) {
-            return () -> JwksLoaderFactory.createHttpLoader(toHttpJwksLoaderConfig(issuer, jwks));
-        }
-        if (SOURCE_FILE.equals(jwks.source())) {
-            String file = jwks.file();
-            if (file == null) {
-                throw new GatewayException(EventType.CONFIG_INVALID,
-                        ISSUER_PREFIX + issuer.name() + "' jwks source 'file' declares no file path");
-            }
-            return () -> JwksLoaderFactory.createFileLoader(file);
-        }
-        throw new GatewayException(EventType.CONFIG_INVALID,
-                ISSUER_PREFIX + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
     }
 
     /**

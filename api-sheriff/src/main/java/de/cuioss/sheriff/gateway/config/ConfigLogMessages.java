@@ -89,6 +89,20 @@ public final class ConfigLogMessages {
                 .identifier(17)
                 .template("Effective default trust source — legs holding a raw JDK TrustManager: %s; legs resolving through the Quarkus TLS registry: %s")
                 .build();
+
+        /**
+         * An issuer's JWKS key set was loaded by a retry after one or more failed load attempts, so
+         * the issuer's tokens can be validated again and readiness no longer counts it as missing.
+         * <p>
+         * The pair to {@link WARN#JWKS_KEY_SET_RETRY}: that record announces every scheduled retry,
+         * this one closes the episode. The template carries the configured issuer <em>name</em> and
+         * the retry count only — never the JWKS URL, a host or any key material.
+         */
+        public static final LogRecord JWKS_KEY_SET_LOADED_AFTER_RETRY = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(18)
+                .template("JWKS key set for issuer '%s' loaded after %s retry attempt(s)")
+                .build();
     }
 
     /**
@@ -408,6 +422,25 @@ public final class ConfigLogMessages {
                 .prefix(PREFIX)
                 .identifier(128)
                 .template("Route '%s' declares redirect.allow_external: true — its Location may send clients to another origin. Confirm the target is intended; remove allow_external to confine the redirect to a gateway path")
+                .build();
+
+        /**
+         * A load attempt of an issuer's JWKS key set completed without a key set, so the gateway
+         * schedules another attempt after the stated delay.
+         * <p>
+         * The delay starts at one second and doubles per attempt, capped at thirty seconds and never
+         * above the issuer's refresh interval, so a late identity provider is picked up within seconds
+         * rather than after a whole refresh interval. Until then the issuer's tokens cannot be
+         * validated and readiness reports {@code DOWN}. Retries are driven by a scheduler only, never
+         * by request or probe traffic.
+         * <p>
+         * The template carries the configured issuer <em>name</em> and the delay only — never the JWKS
+         * URL, a host, the failure cause or any key material.
+         */
+        public static final LogRecord JWKS_KEY_SET_RETRY = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(129)
+                .template("JWKS key set for issuer '%s' not loaded — retrying in %s ms")
                 .build();
     }
 
