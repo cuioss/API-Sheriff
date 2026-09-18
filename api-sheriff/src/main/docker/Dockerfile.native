@@ -23,7 +23,7 @@
 #   3. --start-period is sized from a measured boot time — worst-case time-to-live 9.14s, recorded in
 #      doc/development/integration-test-topology.adoc, so roughly 2x headroom — which is a property
 #      of the built executable rather than of any one stack.
-FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:4371c090347b1a78a52bcf38c2e7195e7ad588c597af2664dad957fc7acb58cb
+FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:d2976e943b1007589287b055792e6969b7665a989101c59987f1d2bf4238a7b5
 
 # Both supplied by the build (docker compose build.args.APP_VERSION / build.args.APP_REVISION). The
 # `dev` defaults are deliberate and honest: a locally or PR-built image is never published, and a
