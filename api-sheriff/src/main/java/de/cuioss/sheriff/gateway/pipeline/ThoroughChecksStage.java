@@ -56,9 +56,10 @@ import org.jspecify.annotations.Nullable;
  * runs for {@code strict} and {@code lenient} and is skipped only under {@code minimal}:
  * <ul>
  *   <li><strong>url-parameter name + value validation.</strong> Relocated here from the pre-route
- *       {@code BasicChecksStage} so it runs under the ROUTE's configuration; it validates the
- *       parameter name as well as each value. It runs unconditionally for a non-{@code minimal} route
- *       because it is now the only run, not a re-run.</li>
+ *       {@code BasicChecksStage} so it runs under the ROUTE's configuration; it validates the raw,
+ *       still-encoded parameter name through the {@code PARAMETER_NAME} pipeline and each raw value
+ *       through the {@code PARAMETER_VALUE} pipeline (ADR-0047). It runs unconditionally for a
+ *       non-{@code minimal} route because it is now the only run, not a re-run.</li>
  *   <li><strong>Divergent pipeline re-run.</strong> When the route carries a
  *       {@link SecurityConfiguration} that differs from the stage-1 default, the path and header
  *       pipelines are re-run under it; a route whose config equals the default is skipped (stage 1
@@ -177,22 +178,32 @@ public final class ThoroughChecksStage {
 
     /**
      * Validates every query-parameter NAME and value under the route's configuration. Relocated from
-     * the pre-route {@code BasicChecksStage}: cui-http exposes no dedicated URL-parameter-name
-     * pipeline to this project, so the url-parameter pipeline is reused against the key — closing the
-     * name-validation gap with the same rigor applied to values, mirroring the header validation that
-     * stays in the pre-route floor.
+     * the pre-route {@code BasicChecksStage}.
+     * <p>
+     * <strong>The input is the raw, still-percent-encoded wire form</strong> (ADR-0047): the pairs
+     * arrive exactly as the request-target carried them, which is the form both cui-http pipelines
+     * are built for — they check the wire characters and decode once themselves. Each raw NAME goes
+     * through the dedicated {@code PARAMETER_NAME} pipeline
+     * ({@link PipelineFactory#createParameterNamePipeline}), which rejects a name that decodes to a
+     * pair delimiter or a line break and enforces {@code maxParameterNameLength}; each raw VALUE goes
+     * through the {@code PARAMETER_VALUE} pipeline. Because the forward path emits these same raw
+     * pairs verbatim, what this stage validated is exactly what reaches the upstream. A bare pair
+     * (no {@code =}, carried as a {@code null} value) has only its name to validate.
      * <p>
      * Reserved BFF paths never reach this stage: they terminate in {@code handleReservedPath} before
      * route selection, which is what makes the ADR-0019 reserved-path relaxation structural rather
      * than predicate-driven.
      */
     private void validateParameters(PipelineRequest request, SecurityConfiguration routeConfig) {
-        PipelineFactory.PipelineSet pipelines = pipelinesFor(routeConfig).pipelines();
+        RoutePipelines pipelines = pipelinesFor(routeConfig);
+        HttpSecurityValidator valuePipeline = pipelines.pipelines().urlParameterPipeline();
         try {
-            for (Map.Entry<String, List<String>> parameter : request.queryParameters().entrySet()) {
-                pipelines.urlParameterPipeline().validate(parameter.getKey());
+            for (Map.Entry<String, List<@Nullable String>> parameter : request.queryParameters().entrySet()) {
+                pipelines.parameterNamePipeline().validate(parameter.getKey());
                 for (String value : parameter.getValue()) {
-                    pipelines.urlParameterPipeline().validate(value);
+                    if (value != null) {
+                        valuePipeline.validate(value);
+                    }
                 }
             }
         } catch (UrlSecurityException violation) {
@@ -236,13 +247,15 @@ public final class ThoroughChecksStage {
     }
 
     /**
-     * Builds the per-route pipeline triple: the route's own common pipeline set plus the two
-     * carve-out header-value validators derived from it. Cached per route configuration, so the
-     * carve-out derivation is a boot-shaped cost rather than a per-request one.
+     * Builds the per-route pipelines: the route's own common pipeline set, the dedicated
+     * {@code PARAMETER_NAME} pipeline, and the two carve-out header-value validators derived from the
+     * route configuration. Cached per route configuration, so every derivation is a boot-shaped cost
+     * rather than a per-request one.
      */
     private RoutePipelines buildPipelines(SecurityConfiguration routeConfig) {
         PipelineFactory.PipelineSet routePipelines =
                 PipelineFactory.createCommonPipelines(routeConfig, eventCounter);
+        HttpSecurityValidator parameterName = PipelineFactory.createParameterNamePipeline(routeConfig, eventCounter);
         HttpSecurityValidator authorization =
                 carveOutValuePipeline(routeConfig, authorizationCarveOutBudget, routePipelines);
         // A gateway that is not an active cookie-mode BFF supplies no cookie budget, so its Cookie /
@@ -251,7 +264,7 @@ public final class ThoroughChecksStage {
         HttpSecurityValidator cookie = cookieCarveOutBudget == null
                 ? routePipelines.headerValuePipeline()
                 : carveOutValuePipeline(routeConfig, cookieCarveOutBudget, routePipelines);
-        return new RoutePipelines(routePipelines, authorization, cookie);
+        return new RoutePipelines(routePipelines, parameterName, authorization, cookie);
     }
 
     /**
@@ -294,12 +307,13 @@ public final class ThoroughChecksStage {
     }
 
     /**
-     * The three-way header-name dispatch, mirroring the pre-route floor: {@code Authorization} and
+     * The per-route pipelines: the common set, the dedicated query-parameter-name pipeline, and the
+     * three-way header-name dispatch, mirroring the pre-route floor: {@code Authorization} and
      * {@code Cookie} / {@code Set-Cookie} each resolve to their own carve-out pipeline, everything
      * else to the route's own header-value pipeline. The two carve-out names are disjoint, so the
      * order of the branches carries no precedence decision.
      */
-    private record RoutePipelines(PipelineFactory.PipelineSet pipelines,
+    private record RoutePipelines(PipelineFactory.PipelineSet pipelines, HttpSecurityValidator parameterNamePipeline,
     HttpSecurityValidator authorization, HttpSecurityValidator cookie) {
 
         HttpSecurityValidator valuePipelineFor(String name) {

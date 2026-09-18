@@ -15,12 +15,19 @@
  */
 package de.cuioss.sheriff.gateway.forward;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
@@ -49,6 +56,13 @@ import org.jspecify.annotations.Nullable;
  *       declared. A declared-empty list is not the same as an absent one: {@code query_allow: []}
  *       is a positive-list admitting nothing, while an absent {@code query_allow} is forward-all.
  *       Declaring both lists for one dimension is refused at boot.</li>
+ *   <li><strong>Query lists match the decoded name; the raw pair crosses.</strong> The query
+ *       arrives in its raw, still-percent-encoded wire form and crosses byte-for-byte as the security
+ *       filter validated it (ADR-0047), but {@code query_allow} / {@code query_deny} compare the
+ *       percent-decoded name. That is the fail-closed direction: the upstream decodes
+ *       {@code %74oken} to {@code token}, so comparing raw spellings would let a percent-encoded
+ *       name evade a deny entry. A name with no well-formed decoding crosses only under
+ *       forward-all.</li>
  *   <li><strong>The gateway-owned never-forward set.</strong> Whatever mode a route resolves, the
  *       {@link ConnectionHeaders#REQUEST_STRIP} names are withheld from the upstream — this is what
  *       makes the forward-all baseline safe. {@code Authorization} is the single re-admittable
@@ -405,33 +419,100 @@ public final class ForwardPolicyStage {
      * except the {@code query_deny} names (an absent deny list denying nothing — the forward-all
      * baseline).
      * <p>
+     * <strong>Match on the decoded name, forward the raw pair.</strong> The request carries its
+     * query in the raw, still-percent-encoded wire form (ADR-0047), and that raw pair is what crosses
+     * — unchanged, so the upstream receives exactly what the security filter validated. The
+     * {@code query_allow} / {@code query_deny} entries, however, are compared with the
+     * <em>percent-decoded</em> name ({@code +} read as a space, form semantics). Matching the raw
+     * spelling would be fail-open: the upstream decodes {@code %74oken} to {@code token}, so a deny
+     * of {@code token} that compared raw names would let {@code %74oken=x} through. A name that is
+     * not a well-formed UTF-8 percent-encoding has no decoded name to compare; it is withheld under
+     * both lists (it can be neither admitted by a positive-list nor proven absent from a negative
+     * one) and crosses only under forward-all.
+     * <p>
      * Parameter-name matching is <strong>case-sensitive</strong> on both modes, unlike the header
      * copy. Query-parameter names are case-sensitive in HTTP and the positive-list has always
      * matched them exactly; making only the deny side case-insensitive would let a route's two
      * lists disagree about what a name is.
      */
-    private static Map<String, List<String>> copyQueryByMode(PipelineRequest request, ForwardConfig forwardConfig) {
-        Map<String, List<String>> query = new LinkedHashMap<>();
+    private static Map<String, List<@Nullable String>> copyQueryByMode(PipelineRequest request,
+            ForwardConfig forwardConfig) {
         List<String> allow = forwardConfig.queryAllow();
-        if (allow != null) {
-            for (String name : allow) {
-                List<String> values = request.queryParameters().get(name);
-                if (values != null && !values.isEmpty()) {
-                    query.put(name, List.copyOf(values));
-                }
-            }
-            return Map.copyOf(query);
-        }
         List<String> deny = forwardConfig.queryDeny();
+        Set<String> allowed = allow == null ? null : Set.copyOf(allow);
         Set<String> denied = deny == null ? Set.of() : Set.copyOf(deny);
-        for (Map.Entry<String, List<String>> entry : request.queryParameters().entrySet()) {
-            List<String> values = entry.getValue();
-            if (values.isEmpty() || denied.contains(entry.getKey())) {
-                continue;
+        Map<String, List<@Nullable String>> query = new LinkedHashMap<>();
+        for (Map.Entry<String, List<@Nullable String>> entry : request.queryParameters().entrySet()) {
+            List<@Nullable String> values = entry.getValue();
+            if (!values.isEmpty() && crosses(entry.getKey(), allowed, denied)) {
+                query.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(values)));
             }
-            query.put(entry.getKey(), List.copyOf(values));
         }
-        return Map.copyOf(query);
+        return query;
+    }
+
+    /**
+     * Whether a raw query-parameter name crosses under the route's query forward mode, compared on
+     * its percent-decoded form.
+     *
+     * @param rawName the raw, still-encoded parameter name
+     * @param allowed the positive-list, or {@code null} when the route declares none
+     * @param denied  the negative-list, empty under forward-all
+     */
+    private static boolean crosses(String rawName, @Nullable Set<String> allowed, Set<String> denied) {
+        if (allowed == null && denied.isEmpty()) {
+            return true;
+        }
+        Optional<String> decoded = decodeQueryName(rawName);
+        if (decoded.isEmpty()) {
+            return false;
+        }
+        return allowed != null ? allowed.contains(decoded.get()) : !denied.contains(decoded.get());
+    }
+
+    /**
+     * Percent-decodes a raw query-parameter name with form semantics ({@code +} is a space) and a
+     * strict UTF-8 decode: a truncated or non-hex escape, or a byte sequence that is not valid UTF-8,
+     * yields no decoded name rather than a replacement-character approximation.
+     *
+     * @param rawName the raw, still-encoded parameter name
+     * @return the decoded name, or empty when {@code rawName} is not a well-formed encoding
+     */
+    static Optional<String> decodeQueryName(String rawName) {
+        byte[] bytes = new byte[rawName.length()];
+        int length = 0;
+        int index = 0;
+        while (index < rawName.length()) {
+            char character = rawName.charAt(index);
+            if (character == '%') {
+                if (index + 2 >= rawName.length()) {
+                    return Optional.empty();
+                }
+                int high = Character.digit(rawName.charAt(index + 1), 16);
+                int low = Character.digit(rawName.charAt(index + 2), 16);
+                if (high < 0 || low < 0) {
+                    return Optional.empty();
+                }
+                bytes[length++] = (byte) ((high << 4) | low);
+                index += 3;
+            } else if (character < 0x80) {
+                // Form semantics: '+' is a space; every other ASCII character stands for itself.
+                bytes[length++] = character == '+' ? (byte) ' ' : (byte) character;
+                index++;
+            } else {
+                // A raw non-ASCII character is not a wire-form query byte; there is no decoding to trust.
+                return Optional.empty();
+            }
+        }
+        try {
+            return Optional.of(StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes, 0, length))
+                    .toString());
+        } catch (CharacterCodingException _) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -441,16 +522,18 @@ public final class ForwardPolicyStage {
      * @param headers the outbound header set, merged in the stage's pinned order (mode-filtered
      *                client headers, the gateway-understood protocol set, {@code set_headers}, the
      *                regenerated forwarding headers, and the mediated bearer)
-     * @param query   the outbound query parameters (mode-filtered client parameters only)
+     * @param query   the outbound query parameters (mode-filtered client parameters only) in their raw,
+     *                still-encoded wire form and inbound order; a {@code null} value is a bare pair
      */
-    public record Result(Map<String, String> headers, Map<String, List<String>> query) {
+    public record Result(Map<String, String> headers, Map<String, List<@Nullable String>> query) {
 
         /**
-         * Canonical constructor defensively copying the collections.
+         * Canonical constructor defensively copying the collections; the query keeps its inbound
+         * pair order.
          */
         public Result {
             headers = Map.copyOf(headers);
-            query = Map.copyOf(query);
+            query = Collections.unmodifiableMap(new LinkedHashMap<>(query));
         }
     }
 }
