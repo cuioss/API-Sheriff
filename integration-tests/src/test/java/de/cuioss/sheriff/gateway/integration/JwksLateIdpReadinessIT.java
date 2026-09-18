@@ -86,7 +86,7 @@ import org.junit.jupiter.api.Test;
  *       first attempt is still retrying internally would be picked up by that attempt, with no
  *       gateway retry and no {@code ApiSheriff-18} to attribute it by.</li>
  *   <li><em>UP within {@value #RECOVERY_BOUND_SECONDS}s of the provider appearing</em> — see the
- *       constant for how the bound is derived from the two nested retry schedules. The gateway's
+ *       constant for how the bound is derived. The gateway's
  *       configuration model exposes no refresh-interval key, so the issuer runs the token library's
  *       default interval, which a recovery that waited for the background refresh would have to sit
  *       out. {@code INFO ApiSheriff-18} ("loaded after N retry attempt(s)") is asserted beside the
@@ -161,11 +161,12 @@ class JwksLateIdpReadinessIT {
     private static final long RETRY_SCHEDULED_TIMEOUT_SECONDS = 60L;
 
     /**
-     * Upper bound for readiness to turn {@code UP} once the provider has started. Two retry schedules
-     * are nested, and the worst case sums them: the provider appears just after a gateway retry's
-     * first {@code GET} failed, so that attempt waits out its remaining inner backoff (at most the
-     * ~17 s budget above) before it can report failure, and the next gateway retry then waits its own
-     * delay, capped at 30 s, before its first {@code GET} succeeds. Because the provider is started as
+     * Upper bound for readiness to turn {@code UP} once the provider has started. A provider that
+     * appears while an attempt is still retrying internally is picked up by that attempt's next
+     * {@code GET}, so the worst case is the provider appearing just after an attempt's <em>last</em>
+     * inner {@code GET} failed: recovery then waits out the next gateway retry delay (at most 30 s,
+     * capped at the refresh interval) plus that retry's first {@code GET}, leaving the bound generous
+     * slack. Because the provider is started as
      * soon as the first {@code ApiSheriff-129} is seen, the realistic case is far shorter — the first
      * gateway retry is scheduled 1 s out, and the provider is normally reachable by that retry's first
      * or second {@code GET}.
