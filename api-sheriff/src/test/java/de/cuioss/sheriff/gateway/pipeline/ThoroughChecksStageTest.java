@@ -369,9 +369,9 @@ class ThoroughChecksStageTest {
             // Arrange — a=ok&b=ok&a=<bad>: the offending pair is the SECOND 'a', interleaved behind 'b'.
             // The query is a pair sequence, so no grouping can hide the later occurrence.
             PipelineRequest request = requestWithParameters(List.of(
-                    new QueryParameter("a", "ok"),
-                    new QueryParameter("b", "ok"),
-                    new QueryParameter("a", REJECTED_PARAMETER_VALUE)),
+                            new QueryParameter("a", "ok"),
+                            new QueryParameter("b", "ok"),
+                            new QueryParameter("a", REJECTED_PARAMETER_VALUE)),
                     route(SecurityProfile.STRICT, defaultConfiguration));
 
             // Act
