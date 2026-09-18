@@ -378,11 +378,18 @@ forward path appends exactly those pairs verbatim, so *the validated form equals
 and a double encoding is refused as one. The forward policy's `query_allow` / `query_deny` lists are
 the one consumer that needs the decoded name -- the upstream acts on it -- so they compare the
 percent-decoded name while the raw pair crosses: a percent-encoded spelling such as `%74oken` can no
-longer evade a `query_deny: [token]`. Both properties are pinned: `GatewayEdgeQueryHandoffTest` over a
+longer evade a `query_deny: [token]`. The one byte the forward path does *not* pass verbatim is a raw
+`;`: the edge and the forward lists split pairs on `&` only while `cui-http` admits a raw `;` under
+every profile, so `?x=1;token=abc` is one pair `x` to the gateway but two to an upstream that also
+splits on `;` -- a `token` no list judged (HTTP parameter smuggling, CWE-235). The forward path
+therefore writes every raw `;` in a forwarded name or value as `%3B`, on every route; the decoded
+meaning is unchanged, so the validated form still equals the forwarded form at the decoded level.
+All three properties are pinned: `GatewayEdgeQueryHandoffTest` over a
 live edge (including a leg asserting the transport's decoded value differs from the forwarded raw
-one) and `StrictQueryAcceptanceIT` against the native image assert every accepted query reaches the
-upstream byte for byte and every refused one reaches it not at all; `ForwardPolicyStageTest` denies
-and admits a percent-encoded spelling of a listed name.
+one, and the `;` legs under forward-all, `query_deny` and `query_allow`) and `StrictQueryAcceptanceIT`
+against the native image assert every accepted query reaches the upstream byte for byte -- `;` aside
+-- and every refused one reaches it not at all; `ForwardPolicyStageTest` denies and admits a
+percent-encoded spelling of a listed name.
 
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the
 normalized path, and anchor prefixes are normalized before the disjointness check -- but the

@@ -1137,6 +1137,39 @@ class ForwardPolicyStageTest {
             assertEquals(List.of("z", "flag", "a"), List.copyOf(result.query().keySet()), "inbound order is kept");
             assertEquals(bare, result.query().get("flag"), "the bare pair keeps its null value");
         }
+
+        @Test
+        @DisplayName("query_deny: [token] never yields a 'token' parameter out of x=1;token=abc")
+        void denyNeverYieldsTokenOutOfSemicolonPair() {
+            // Arrange — the edge splits on '&' only, so the whole pair arrives as one name 'x'
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(Map.of("x", List.of("1;token=abc")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("token")).build(), false);
+
+            // Assert — the ';' stays inside the one judged pair; the edge renders it as %3B
+            assertAll("the stage judges '&'-split pairs only",
+                    () -> assertFalse(result.query().containsKey("token"), "no separate 'token' parameter exists"),
+                    () -> assertEquals(List.of("1;token=abc"), result.query().get("x"),
+                            "the ';' remains part of the value of the one pair 'x'"));
+        }
+
+        @Test
+        @DisplayName("query_allow: [x] keeps x=1;token=abc as the single pair 'x'")
+        void allowKeepsSemicolonPairAsOnePair() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(Map.of("x", List.of("1;token=abc")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryAllow(List.of("x")).build(), false);
+
+            // Assert
+            assertEquals(Set.of("x"), result.query().keySet(), "only the allow-listed pair crosses");
+        }
     }
 
     /**

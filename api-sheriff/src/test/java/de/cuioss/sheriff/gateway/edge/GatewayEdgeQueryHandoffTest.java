@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import java.lang.annotation.Annotation;
@@ -32,6 +33,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -112,7 +114,9 @@ class GatewayEdgeQueryHandoffTest {
         RouteTable routeTable = new RouteTable(List.of(
                 route("strict", upstreamPort, null),
                 route("lenient", upstreamPort, "lenient"),
-                route("minimal", upstreamPort, "minimal")));
+                route("minimal", upstreamPort, "minimal"),
+                route("denytoken", upstreamPort, null, ForwardConfig.builder().queryDeny(List.of("token")).build()),
+                route("allowx", upstreamPort, null, ForwardConfig.builder().queryAllow(List.of("x")).build())));
         TokenValidator tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, GatewayConfig.builder().version(1).build(),
@@ -271,6 +275,79 @@ class GatewayEdgeQueryHandoffTest {
     }
 
     @Test
+    @DisplayName("strict forwards a raw ';' in a value as %3B, so the upstream sees no separate 'token'")
+    void strictEncodesSemicolonInValue() throws Exception {
+        // Act — the edge splits on '&' only: this is ONE pair 'x' whose value is '1;token=abc'
+        Response response = get("/strict/orders?x=1;token=abc");
+
+        // Assert
+        assertAll(
+                () -> assertEquals(200, response.status(), "cui-http admits a raw ';' under strict"),
+                () -> assertEquals("GET " + UPSTREAM_PATH + "?x=1%3Btoken=abc", response.body(),
+                        "the ';' crosses as %3B, so a ';'-splitting upstream cannot read a smuggled 'token'"));
+    }
+
+    @Test
+    @DisplayName("a raw ';' in a parameter name is refused by strict and forwarded as %3B where admitted")
+    void semicolonInNameIsEncodedWhereAdmitted() throws Exception {
+        // Act — strict's parameter-name pipeline refuses a ';' name; 'minimal' skips that validation,
+        // so it is the route on which such a name actually reaches the render path
+        Response strict = get("/strict/orders?a;b=1");
+        int strictHits = upstreamHits.get();
+        Response minimal = get("/minimal/orders?a;b=1");
+
+        // Assert
+        assertAll(
+                () -> assertEquals(400, strict.status(), "strict refuses a ';' in a parameter name"),
+                () -> assertEquals(0, strictHits, "the refused name never reaches the upstream"),
+                () -> assertEquals(200, minimal.status(), "'minimal' turns the url-parameter validation off"),
+                () -> assertEquals("GET " + UPSTREAM_PATH + "?a%3Bb=1", minimal.body(),
+                        "the name's ';' is encoded on every route; the rest of the pair is untouched"));
+    }
+
+    @Test
+    @DisplayName("a query without ';' is still forwarded byte for byte")
+    void queryWithoutSemicolonStaysVerbatim() throws Exception {
+        // Arrange — the %3B rewrite is the single exception; every other byte stays verbatim
+        String query = "a=%41b&flag&c=x%2By+z";
+
+        // Act
+        Response response = get("/strict/orders?" + query);
+
+        // Assert
+        assertEquals("GET " + UPSTREAM_PATH + "?" + query, response.body(),
+                "no ';' present, so the validated raw query crosses unchanged");
+    }
+
+    @Test
+    @DisplayName("query_deny: [token] — x=1;token=abc forwards no separate 'token' parameter")
+    void denyListCannotBeSmuggledPastWithSemicolon() throws Exception {
+        // Act
+        Response response = get("/denytoken/orders?x=1;token=abc");
+
+        // Assert
+        assertAll(
+                () -> assertEquals(200, response.status()),
+                () -> assertEquals("GET " + UPSTREAM_PATH + "?x=1%3Btoken=abc", response.body(),
+                        "the pair crosses as one encoded pair; 'token' is never a parameter of its own"),
+                () -> assertFalse(response.body().contains(";"), "no raw ';' reaches the upstream"));
+    }
+
+    @Test
+    @DisplayName("query_allow: [x] — the forwarded query carries %3B, never a raw ';'")
+    void allowListForwardsEncodedSemicolon() throws Exception {
+        // Act
+        Response response = get("/allowx/orders?x=1;token=abc&other=2");
+
+        // Assert
+        assertAll(
+                () -> assertEquals(200, response.status()),
+                () -> assertEquals("GET " + UPSTREAM_PATH + "?x=1%3Btoken=abc", response.body(),
+                        "only the allow-listed pair crosses, with its ';' encoded"),
+                () -> assertFalse(response.body().contains(";"), "no raw ';' reaches the upstream"));
+    }
+
+    @Test
     @DisplayName("path validation still rejects an encoded separator before any route is selected")
     void pathValidationStillRejectsEncodedSeparator() throws Exception {
         // Act — no route matches this path, so a 400 rather than a 404 proves the pre-route floor fired
@@ -320,12 +397,24 @@ class GatewayEdgeQueryHandoffTest {
      *                declaring no block — which inherits the gateway-wide default, {@code strict}
      */
     private static ResolvedRoute route(String id, int upstreamPort, @Nullable String profile) {
+        return route(id, upstreamPort, profile, null);
+    }
+
+    /**
+     * A public HTTP route at {@code /{id}} dialing the echo upstream under a declared forward block.
+     *
+     * @param profile the route's declared {@code security_filter.profile}, or {@code null} for strict
+     * @param forward the route's {@code forward} block, or {@code null} for forward-all
+     */
+    private static ResolvedRoute route(String id, int upstreamPort, @Nullable String profile,
+            @Nullable ForwardConfig forward) {
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveForward(forward)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""));
         if (profile != null) {
             builder.effectiveSecurityFilter(SecurityFilterConfig.builder().profile(profile).build());

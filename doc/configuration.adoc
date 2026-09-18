@@ -1727,7 +1727,7 @@ UTF-8, doubled slashes) cannot bypass the allowlist. `/api/orders/{id}` matches
 
 The per-route url-parameter validation judges the query in its *raw, still-percent-encoded wire
 form*, exactly as the client sent it, and the upstream receives *exactly the pairs that were
-validated* -- the same bytes, never decoded and never re-encoded
+validated* -- the same bytes, never decoded and never re-encoded, with the single `;` exception below
 (link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]):
 
 * The query is split on `&`, and each pair on its first `=`. Names and values stay percent-encoded,
@@ -1738,6 +1738,11 @@ validated* -- the same bytes, never decoded and never re-encoded
 * The accepted pairs are appended to the upstream request-target verbatim on the HTTP, WebSocket and
   gRPC paths. A double encoding such as `%252F` is therefore judged -- and refused -- as the double
   encoding it is, and never reaches an upstream under a different spelling.
+* *The one exception: a raw `;` is forwarded as `%3B`*, in any name or value, on every route and
+  under every profile. The gateway and the `forward` lists split pairs on `&` only, but some
+  upstreams also split on `;`, so `?x=1;token=abc` would otherwise smuggle a `token` parameter past
+  a `query_deny: [token]` (HTTP parameter smuggling, CWE-235). The decoded meaning is unchanged, and
+  every other byte still crosses verbatim.
 
 Because the pipeline sees the form it was built for, legitimate values are no longer refused for
 their encoding: a space (`%20` or `+`), a non-ASCII letter (`M%C3%BCller`), an encoded colon in a

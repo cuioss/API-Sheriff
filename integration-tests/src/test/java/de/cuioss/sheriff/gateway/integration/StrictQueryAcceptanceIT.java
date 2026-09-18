@@ -170,6 +170,25 @@ class StrictQueryAcceptanceIT extends BaseIntegrationTest {
     }
 
     @Test
+    @DisplayName("strict forwards a raw ';' as %3B, so the upstream sees no separate 'token' (CWE-235)")
+    void strictEncodesSemicolonInValue() {
+        // Arrange — mirrors strictEncodesSemicolonInValue in GatewayEdgeQueryHandoffTest: the edge
+        // splits on '&' only, so this is ONE pair 'x' whose value is '1;token=abc'
+
+        // Act
+        var response = getStrict("x=1;token=abc", 200);
+
+        // Assert
+        assertAll(
+                () -> assertTrue(response.path("url").toString().endsWith(UPSTREAM_PATH + "?x=1%3Btoken=abc"),
+                        "the ';' crosses as %3B, the single exception to verbatim forwarding; echoed url: "
+                                + response.path("url")),
+                () -> assertEquals("1;token=abc", response.path("args.x[0]"),
+                        "the upstream decodes one pair 'x' carrying the ';' as data"),
+                () -> assertNull(response.path("args.token"), "no smuggled 'token' parameter reaches the upstream"));
+    }
+
+    @Test
     @DisplayName("header validation still rejects a header value over the strict cap")
     void headerValidationStillRejectsOversizedValue() {
         // Act

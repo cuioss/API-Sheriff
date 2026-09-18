@@ -62,7 +62,9 @@ import org.jspecify.annotations.Nullable;
  *       percent-decoded name. That is the fail-closed direction: the upstream decodes
  *       {@code %74oken} to {@code token}, so comparing raw spellings would let a percent-encoded
  *       name evade a deny entry. A name with no well-formed decoding crosses only under
- *       forward-all.</li>
+ *       forward-all. The lists judge {@code &}-split pairs only, so a raw {@code ;} inside a pair
+ *       stays part of that pair here; the edge renders it as {@code %3B} on every route, so a
+ *       {@code ;}-splitting upstream cannot read a second, unjudged parameter out of it.</li>
  *   <li><strong>The gateway-owned never-forward set.</strong> Whatever mode a route resolves, the
  *       {@link ConnectionHeaders#REQUEST_STRIP} names are withheld from the upstream — this is what
  *       makes the forward-all baseline safe. {@code Authorization} is the single re-admittable

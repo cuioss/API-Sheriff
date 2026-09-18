@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: The per-route security filter receives the query in its raw, still-percent-encoded wire form — names through cui-http's PARAMETER_NAME pipeline, values through PARAMETER_VALUE — and the forward path emits exactly those validated pairs verbatim, so the validated form equals the forwarded form; the forward allow/deny lists compare the percent-decoded name while the raw pair crosses, and the reserved BFF parameters read their decoded value from the transport.
+// summary: The per-route security filter receives the query in its raw, still-percent-encoded wire form — names through cui-http's PARAMETER_NAME pipeline, values through PARAMETER_VALUE — and the forward path emits exactly those validated pairs verbatim, so the validated form equals the forwarded form, except that a raw ';' is written as %3B on every route to prevent parameter smuggling (CWE-235); the forward allow/deny lists compare the percent-decoded name while the raw pair crosses, and the reserved BFF parameters read their decoded value from the transport.
 // tags: request-pipeline, security-filter, query-validation, forward-policy, cui-http, canonicalization
 // affects: api-sheriff
 // supersedes:
@@ -68,10 +68,12 @@ form, and the forward path emits exactly the pairs it validated.**
   enforces the name length cap — and each raw value with the parameter-value
   pipeline. Both pipelines decode once, themselves, which is the input they were
   built for.
-* **The validated pairs are forwarded verbatim.** The HTTP, WebSocket and gRPC
-  dispatch paths render the query by appending each raw name and raw value as-is.
-  There is no re-encoding step on the forward path, so the validated form and the
-  forwarded form are the same bytes.
+* **The validated pairs are forwarded verbatim, with one exception.** The HTTP,
+  WebSocket and gRPC dispatch paths render the query by appending each raw name
+  and raw value as-is, so the validated form and the forwarded form are the same
+  bytes — except that every raw `;` in a name or value is written as `%3B`. That
+  rewrite happens at the single render point, on every route whatever its forward
+  mode, and touches nothing else in the pair (see <<semicolon-exception>>).
 * **The forward lists compare the decoded name; the raw pair crosses.**
   `query_allow` and `query_deny` entries are matched against the percent-decoded
   name (strict UTF-8, `+` read as a space), while the pair that crosses keeps its
@@ -86,6 +88,27 @@ form, and the forward path emits exactly the pairs it validated.**
 
 The pipeline map therefore has exactly one representation — the wire form — and a
 consumer that wants anything else derives it at the point of use.
+
+[[semicolon-exception]]
+=== The `;` re-encoding: the single exception to verbatim forwarding
+
+The edge splits pairs on `&` only, and `query_allow` / `query_deny` judge the
+decoded name of each `&`-split pair. cui-http's query character set admits a raw
+`;` under every profile, so `?x=1;token=abc` is one pair named `x` to the gateway:
+it passes `query_deny: [token]` and, under strict, the value pipeline. An upstream
+that also splits on `;` — as some frameworks and legacy stacks still do — reads a
+second parameter `token=abc` that no list and no filter ever judged. That is HTTP
+parameter smuggling (CWE-235), and forwarding the raw pair verbatim would open it.
+Before this ADR the forward path re-encoded through `URLEncoder`, which wrote `;`
+as `%3B`, so verbatim forwarding without this exception would be a regression.
+
+The forward path therefore writes every raw `;` of a forwarded name or value as
+`%3B`. The rewrite is lossless at the decoded level — `%3B` decodes to `;` — so
+the pair the upstream decodes is the pair the filter validated; only its spelling
+differs, in one character, in the direction that keeps one pair one pair. Every
+other byte of the pair still crosses verbatim. Strict's parameter-name pipeline
+already refuses a `;` in a name; the rewrite is what covers a name on a `minimal`
+route and every value.
 
 == Consequences
 
@@ -125,6 +148,11 @@ consumer that wants anything else derives it at the point of use.
 * **A forward-policy match on the raw name reopens the evasion.** The
   decoded-name comparison is the fail-closed direction and is pinned by tests
   that deny and admit a percent-encoded spelling of a listed name.
+* **Dropping the `;` re-encoding reopens parameter smuggling.** A "purer"
+  verbatim render would hand a `;`-splitting upstream parameters the gateway never
+  judged. The edge test pins `?x=1;token=abc` forwarding as `x=1%3Btoken=abc` under
+  forward-all, `query_deny` and `query_allow`, and the native IT pins the same case
+  against go-httpbin.
 
 == Alternatives Considered
 

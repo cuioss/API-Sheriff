@@ -1379,9 +1379,17 @@ public class GatewayEdgeRoute {
 
     /**
      * Renders the forwarded query from the validated raw pairs, appending each raw name and raw value
-     * exactly as it arrived — no re-encoding — so the upstream receives byte-identical pairs to the
-     * ones the security filter validated (ADR-0047). A {@code null} value is a bare pair and is
-     * rendered as its bare name.
+     * as it arrived, so the upstream receives the pairs the security filter validated (ADR-0047). A
+     * {@code null} value is a bare pair and is rendered as its bare name.
+     * <p>
+     * <strong>The one exception to verbatim: a raw {@code ;} is written as {@code %3B}.</strong> The
+     * edge splits pairs on {@code &} only, and {@code query_allow} / {@code query_deny} judge the
+     * decoded name of each {@code &}-split pair, while cui-http admits a raw {@code ;} under every
+     * profile. An upstream that also splits on {@code ;} would otherwise read {@code x=1;token=abc} as
+     * a second parameter {@code token} the gateway never judged — HTTP parameter smuggling (CWE-235).
+     * Encoding it keeps the pair one pair on the upstream too. Every route takes this path, whatever
+     * its forward mode; nothing else in the pair is touched, and the decoded meaning is unchanged
+     * ({@code %3B} decodes to {@code ;}), so validated still equals forwarded at the decoded level.
      */
     private static String renderQuery(Map<String, List<@Nullable String>> query) {
         if (query.isEmpty()) {
@@ -1390,18 +1398,27 @@ public class GatewayEdgeRoute {
         StringBuilder rendered = new StringBuilder("?");
         boolean first = true;
         for (Map.Entry<String, List<@Nullable String>> entry : query.entrySet()) {
+            String name = encodeSemicolons(entry.getKey());
             for (String value : entry.getValue()) {
                 if (!first) {
                     rendered.append('&');
                 }
-                rendered.append(entry.getKey());
+                rendered.append(name);
                 if (value != null) {
-                    rendered.append('=').append(value);
+                    rendered.append('=').append(encodeSemicolons(value));
                 }
                 first = false;
             }
         }
         return rendered.toString();
+    }
+
+    /**
+     * Rewrites every raw {@code ;} of a forwarded query name or value as {@code %3B}, leaving every
+     * other byte untouched (see {@link #renderQuery}).
+     */
+    private static String encodeSemicolons(String raw) {
+        return raw.indexOf(';') < 0 ? raw : raw.replace(";", "%3B");
     }
 
     private static Optional<HttpMethod> parseMethod(String name) {
