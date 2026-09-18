@@ -86,10 +86,22 @@ The stack serves TLS everywhere, and *no key material is committed*. Generate it
 ./deployment/compose-sample/docker/certificates/generate-certificates.sh
 ----
 
-This writes a self-signed `localhost.crt` and `localhost.key` next to the script. Both are
+This writes a self-signed `localhost.crt` and `localhost.key` next to the script, plus
+`sample-idp-truststore.p12`, a truststore holding that one certificate and no key. All three are
 git-ignored. The certificate names `localhost`, `keycloak`, `api-sheriff` and `demo-api` in its SAN
 list, because the gateway reaches the identity provider by its compose service name and a
 certificate without that name would fail hostname verification on the token-key fetch.
+
+The truststore is how the gateway comes to trust Keycloak at all. The issuer in
+`docker/sheriff-config/gateway.yaml` names the trust profile `jwks.tls_profile: sample-idp`, and the
+committed `docker/certificates/sample-idp-trust.properties` binds that name to the generated store;
+the compose file loads it through `QUARKUS_CONFIG_LOCATIONS`. Without that binding the token-key
+fetch would fail certificate validation against the self-signed identity provider, and the gateway
+would never report ready. Nothing is relaxed to make it work: chain and hostname are both verified,
+against exactly the one certificate Keycloak serves.
+
+If you generated the material before the truststore existed, run the script again -- the bring-up
+refuses to start with an incomplete set and says so.
 
 === 2. Start it
 
@@ -100,9 +112,13 @@ certificate without that name would fail hostname verification on the token-key 
 
 The script preflights the image, brings the three services up, and then gates on the stack being
 genuinely usable rather than merely started. The gate has two layers: it waits on each service's own
-health signal -- for the gateway, the `HEALTHCHECK` baked into its image -- and then asserts
-readiness with a single request to the readiness endpoint, composed beneath the management context
-path the compose file publishes as the `de.cuioss.sheriff.management-root-path` label. The script
+health signal -- for the gateway, the `HEALTHCHECK` baked into its image -- and then polls the
+readiness endpoint with a bounded budget, composed beneath the management context path the compose
+file publishes as the `de.cuioss.sheriff.management-root-path` label. It polls rather than asking
+once because readiness includes the identity provider's token keys: Keycloak's own health signal
+only proves its port accepts, so the gateway can start while the realm is still importing and has to
+retry its first key fetch. The budget covers that retry; a gateway still not ready when it runs out
+fails the gate. The script
 restates that path nowhere; it derives it, because the path is build-time fixed in the image and a
 gateway built with a different one serves its probes elsewhere
 (link:context-path.adoc[The Context Path]). The second layer is not redundant with the
@@ -425,6 +441,13 @@ The sample is deliberately loud about being a sample. Every item below is a plac
 | Supplies certificate and key from its own PKI, with ownership matched to the runtime uid, mounted
   at the same two paths. The gateway does not care where they came from.
 
+| *The `sample-idp` trust binding* -- `sample-idp-trust.properties` points the profile at the
+  generated truststore, which anchors the sample's own self-signed certificate, under a sample
+  password.
+| Binds the profile (under this name or its own) to a truststore holding its identity provider's CA,
+  supplied by the deployment with a password that is not in a repository. `gateway.yaml` keeps
+  naming only the logical profile.
+
 | *The Keycloak realm client secret* -- `CHANGE-ME-BEFORE-PRODUCTION` in
   `docker/keycloak/sample-realm.json`.
 | Registers its own confidential client and supplies the secret from the deployment, never from a
@@ -549,4 +572,6 @@ exactly what it always was.
 . Replace the identity provider with your own, updating the issuer URL, the JWKS URL and the
   `allowed_egress_hosts` entry in `docker/sheriff-config/gateway.yaml` together -- the issuer value
   must match the `iss` your tokens actually carry, or every request fails with a 401 that looks like
-  a signature problem and is not.
+  a signature problem and is not. Rebind the `jwks.tls_profile` it names to your provider's CA at the
+  same time: the gateway refuses to boot on a profile it cannot load, and it will not report ready
+  until it has fetched the provider's keys over a verified connection.

@@ -49,8 +49,9 @@ as failure, so a service answering "not ready" while starting does not clear the
 gate at port-accept time.
 
 This rule survived the amendment below unchanged, and is in fact the reason the
-amendment is safe. The single-shot readiness assertion both bring-up scripts now
-run *is* this rule: it hits the readiness endpoint, with the client configured to
+amendment is safe. The readiness assertion both bring-up scripts now run -- a single
+shot in the integration stack, a bounded wait in the operator sample (see the nuance
+under the third rule) -- *is* this rule: it hits the readiness endpoint, with the client configured to
 fail closed on a non-2xx answer. What changed is only where the *waiting* happens,
 never what is finally asserted.
 
@@ -130,8 +131,15 @@ each gateway's first key-set fetch succeeds within a moment of boot, and the ima
 health check first reports healthy only after its own `--interval` of ten seconds, by
 which time even a first fetch that failed has been retried several times on the
 gateway's one-second-doubling backoff. The operator sample orders its gateway only
-behind an *accept-level* Keycloak health check, which is a weaker guarantee. The
-margin is recorded as a risk below rather than assumed permanent.
+behind an *accept-level* Keycloak health check, which is a weaker guarantee: the
+gateway can start while the realm is still importing and sit out a backoff step. The
+sample therefore takes the remedy the risk below names and runs a *bounded readiness
+wait* in place of the single shot -- the same fail-closed `health/ready` probe,
+repeated at one-second intervals up to a budget of 90 attempts. That budget has a
+recorded origin rather than a round-number one: it outlasts the backoff's whole climb
+to its 30-second cap (1 + 2 + 4 + 8 + 16 + 30 s) with a capped retry to spare. It
+bounds the wait and never widens what counts as ready, and the integration stack,
+which does supply the ordering guarantee, keeps the single shot.
 
 **Scope note.** These amendments describe the integration stack's
 `start-integration-container.sh` and the operator sample's `start-sample.sh`.
@@ -201,7 +209,12 @@ original form.
   shortened health-check interval turns the single shot into a failure: a spurious one
   where the key set is merely late, a correct one where it can never load. Where the
   key set is merely late, the remedy is a bounded readiness *wait* in place of the
-  single shot, never a relaxation of what readiness asserts.
+  single shot, never a relaxation of what readiness asserts. The operator sample has
+  taken that remedy (see the nuance above). It also met the other half of this risk: it
+  named no JWKS trust profile, so its key set could never load against the self-signed
+  sample identity provider. The fix there was to bind a trust profile to the generated
+  certificate, not to wait longer -- no budget turns a key set that cannot load into a
+  ready gateway.
 * The image's health-check cadence and any Compose `healthcheck:` block mirroring it
   are two spellings of one contract, and Compose resolves the conflict by *replacing*
   rather than merging. A drifted mirror is therefore not a documentation defect but a
