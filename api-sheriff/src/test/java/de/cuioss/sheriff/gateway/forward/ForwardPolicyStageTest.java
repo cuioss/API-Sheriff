@@ -1144,9 +1144,8 @@ class ForwardPolicyStageTest {
             // Arrange — '%' followed by FULLWIDTH DIGIT SEVEN and FULLWIDTH DIGIT FOUR, then 'oken'.
             // Character.digit would read the two as hex 7 and 4 and decode the name to 'token'; RFC 3986
             // HEXDIG is ASCII only, so the escape is malformed and the name has no decoded form at all.
-            String fullWidthToken = FULL_WIDTH_TOKEN;
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = queryRequest(pair(fullWidthToken, "secret"), pair("page", "2"));
+            PipelineRequest request = queryRequest(pair(FULL_WIDTH_TOKEN, "secret"), pair("page", "2"));
             ForwardConfig forward = "allow".equals(mode)
                     ? ForwardConfig.builder().queryAllow(List.of("token", "page")).build()
                     : ForwardConfig.builder().queryDeny(List.of("token")).build();
@@ -1156,7 +1155,7 @@ class ForwardPolicyStageTest {
 
             // Assert
             assertAll(mode,
-                    () -> assertFalse(namesOf(result).contains(fullWidthToken),
+                    () -> assertFalse(namesOf(result).contains(FULL_WIDTH_TOKEN),
                             "a name with no decoded form is withheld under an allow AND a deny list"),
                     () -> assertEquals(List.of("page"), namesOf(result),
                             "the well-formed pair is still judged normally"));
@@ -1166,15 +1165,14 @@ class ForwardPolicyStageTest {
         @DisplayName("an escape spelled with non-ASCII hex digits still crosses under forward-all")
         void fullWidthDigitEscapeCrossesUnderForwardAll() {
             // Arrange
-            String fullWidthToken = FULL_WIDTH_TOKEN;
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = queryRequest(pair(fullWidthToken, "secret"));
+            PipelineRequest request = queryRequest(pair(FULL_WIDTH_TOKEN, "secret"));
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
 
             // Assert
-            assertEquals(List.of(pair(fullWidthToken, "secret")), result.query(),
+            assertEquals(List.of(pair(FULL_WIDTH_TOKEN, "secret")), result.query(),
                     "forward-all compares no names, so the raw pair crosses unchanged");
         }
 
