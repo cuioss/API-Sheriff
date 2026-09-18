@@ -488,8 +488,8 @@ no bound at all.
 
 The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
 `--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than the
-whole set, which is why the two differ. That leaves one bound duplicated per script instead of a whole retry
-budget per script, and ADR-0031 records the residual duplication rather than claiming it away.
+whole set, which is why the two differ. The sample also carries a derived readiness poll budget, and
+ADR-0031 records the residual duplication rather than claiming it away.
 
 === The demo bring-up does *not* gate this way
 

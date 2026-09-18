@@ -162,9 +162,9 @@ original form.
 * A deliberate per-instance exception is expressed as data on the service rather
   than as a branch in the probe, so one loop covers every instance.
 * The bound is auditable: its origin is a recorded measurement, not a convention.
-* The probe cadence is an image-level artifact, so every consumer of the image --
+* The liveness cadence is an image-level artifact, so every consumer of the image --
   the integration stack, the operator sample, an orchestrator -- inherits one
-  declaration instead of re-deriving a host-side budget of its own.
+  `HEALTHCHECK` declaration instead of re-deriving it.
 
 === Negative
 
