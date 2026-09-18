@@ -115,12 +115,23 @@ already reported the instance healthy -- so a non-UP readiness answer is not an
 early ask, it is a defect, and retrying would only delay reporting it. Single-shot
 is therefore not a shortcut; it is what the layering makes correct.
 
-One nuance belongs to the rationale rather than the rule. When a readiness check
-reports a *boot-time constructibility* fact read from a cached instance, the
-network cost sits in boot, ahead of readiness, not inside the probe. That is why
-readiness lands at effectively the same moment liveness does on this gateway, and
-why delegating the wait to a liveness-shaped container check costs no additional
-delay over the host-side readiness loop it replaced.
+One nuance belongs to the rationale rather than the rule, and it has moved. When
+this layering was adopted, the gateway's readiness check reported a *boot-time
+constructibility* fact read from a cached instance, so readiness landed at
+effectively the same moment liveness did. It no longer does: readiness is now `DOWN`
+until every configured issuer has a loaded JWKS key set
+(link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
+Amendment A1]), and that key set arrives asynchronously after boot. The single shot
+therefore stays correct only for a reason the *stack* supplies rather than the
+probe: the identity provider must be serving its key set before the gateway's
+health check first reports healthy. The integration stack supplies it -- it starts
+Keycloak first and waits for Keycloak's own readiness before any gateway starts, so
+each gateway's first key-set fetch succeeds within a moment of boot, and the image's
+health check first reports healthy only after its own `--interval` of ten seconds, by
+which time even a first fetch that failed has been retried several times on the
+gateway's one-second-doubling backoff. The operator sample orders its gateway only
+behind an *accept-level* Keycloak health check, which is a weaker guarantee. The
+margin is recorded as a risk below rather than assumed permanent.
 
 **Scope note.** These amendments describe the integration stack's
 `start-integration-container.sh` and the operator sample's `start-sample.sh`.
@@ -181,6 +192,16 @@ original form.
   shrinks this rather than removing it -- one bound per script instead of a whole
   retry budget per script -- and the third script, demo-client's, still carries the
   original budget.
+* **The single-shot assertion now races the key-set fetch, bounded by the stack.**
+  Readiness waits for every issuer's JWKS key set, which a liveness-shaped health check
+  cannot see. The single shot therefore holds only while the identity provider serves
+  its key set -- over a chain the gateway trusts -- before the health check's first
+  report. A stack that starts a gateway before its identity provider is serving, a
+  gateway configured with an issuer whose JWKS it cannot fetch or cannot trust, or a
+  shortened health-check interval turns the single shot into a failure: a spurious one
+  where the key set is merely late, a correct one where it can never load. Where the
+  key set is merely late, the remedy is a bounded readiness *wait* in place of the
+  single shot, never a relaxation of what readiness asserts.
 * The image's health-check cadence and any Compose `healthcheck:` block mirroring it
   are two spellings of one contract, and Compose resolves the conflict by *replacing*
   rather than merging. A drifted mirror is therefore not a documentation defect but a

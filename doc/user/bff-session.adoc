@@ -104,6 +104,36 @@ Disclosure is *closed by default*: list exactly the claims you are willing to re
 `allowed_claims`, and set `default_view` (a subset) for the no-claims-requested case. A claim
 absent from `allowed_claims` is never returned.
 
+*Every disclosed claim keeps the JSON type it has in the validated ID token.* An array stays an
+array, an object stays an object, and numbers and booleans stay numbers and booleans; only claims
+that are strings in the token are strings in the response. The claims are read from the payload of
+the ID token the gateway has just validated, so the view never carries a value the token does not.
+Two consequences are worth planning for in the SPA:
+
+* *Date claims are numbers.* Under `claims`, `exp`, `iat` and `auth_time` are the token's numeric
+  epoch seconds, not strings. The separate `session` member is the gateway's own bookkeeping, not a
+  token claim: its `expires_at` and `auth_time` are ISO-8601 timestamp strings.
+* *Multi-valued claims are arrays.* A `groups` claim arrives as a JSON array you can iterate, never
+  as a string rendering of one.
+
+`allowed_claims` caps disclosure whatever the claim's type: a structured claim outside the list is
+never returned, and explicitly requesting one is refused `403`. With
+`allowed_claims: [sub, name, email, groups]`, a request for `?claims=sub,groups` answers:
+
+[source,json]
+----
+{
+  "claims": {
+    "sub": "8f2c0c1e-4b0a-4a57-9d0e-2f1f6f3a9b21",
+    "groups": ["orders-readers", "support"]
+  },
+  "session": {
+    "expires_at": "2026-09-18T11:00:00Z",
+    "auth_time": "2026-09-18T10:00:00Z"
+  }
+}
+----
+
 == CSRF for a cross-origin SPA
 
 Every `require: session` route enforces origin verification on unsafe methods (non-GET/HEAD/OPTIONS)

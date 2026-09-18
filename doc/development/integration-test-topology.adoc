@@ -317,8 +317,8 @@ failure here.
 The management interface's liveness endpoint is deliberately *not* what layer 2 asserts. Liveness
 answers as soon as the process
 is up, which is strictly earlier than the point at which the suite may drive the instance -- an
-instance that is live but not ready would serve the suite's first request against a validator that is
-not yet bound.
+instance that is live but not ready would serve the suite's first request against a validator whose
+issuers have no key set yet, and reject every bearer token.
 
 Layer 1 *is* a liveness signal, which is the whole reason layer 2 is not redundant with it. Read the
 two together: the gate waits on liveness and passes on readiness.
@@ -339,29 +339,45 @@ gateway's root path, not Keycloak's.
 
 The probe reports two facts: the configuration document is bound (which proves the boot-time
 load-and-validate pipeline succeeded, since an invalid configuration aborts startup), and -- when a
-`token_validation` block is configured -- the `@GatewayValidator`-qualified `TokenValidator`
-resolves.
+`token_validation` block is configured -- *every configured issuer has a loaded JWKS key set*.
 
-Be precise about the second one, because it reads stronger than it is. It is a *boot-time
-constructibility* fact, not a live JWKS signal. The validator is forced into existence at startup
-and the probe afterwards reads the cached instance, so it performs no JWKS fetch per probe.
+Be precise about the second one. The `@GatewayValidator`-qualified `TokenValidator` is forced into
+existence at startup, which proves every issuer declared a usable JWKS source; the key sets
+themselves are fetched asynchronously by the gateway's own per-issuer loaders, and the probe reads
+their *non-fetching* state. While any issuer has no key set, readiness is `DOWN` with
+`jwks: loading` or `jwks: unavailable` and the counts `issuers` / `issuers_loaded`; a failed fetch is
+retried on a bounded backoff (1 s, doubling, capped at 30 s), so the instance turns `UP` within
+seconds of its identity provider answering
+(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
+Amendment A1]). The probe performs no JWKS fetch per probe.
 
-The consequence is worth stating plainly, because it is the thing most likely to be assumed wrong:
+*This is why the stack waits for Keycloak's own readiness before it starts any gateway.* The
+gateway instances here name Keycloak realms as issuers, so an instance started ahead of
+Keycloak would report `DOWN` until the backoff caught up -- and layer 2 below is a single shot.
+Started after it, each instance's first fetch succeeds within a moment of boot, well before the baked
+health check first reports healthy.
+
+`JwksLateIdpReadinessIT` pins the late-IdP path against the native image with a one-off gateway
+that is *not* one of the compose instances above -- it is `DOWN` by design until the test starts its
+identity provider, which the readiness gate here would refuse. It asserts `DOWN` without the
+provider, `UP` within a minute of it appearing, and that the provider's token is then accepted.
+
+What readiness still does not cover is worth stating plainly, because it is the thing most likely to
+be assumed wrong:
 
 [IMPORTANT]
 ====
-An IdP whose JWKS endpoint becomes unreachable *after* boot, a stalled key rotation, and an expired
-signing key do *not* take readiness `DOWN`. They surface as `401`s on the request path and as fetch
-errors in the container's stdout. Diagnose that class of failure from the container log, never from
-a green readiness probe.
+Readiness reports key-set *availability*, not *freshness*. Once an issuer's key set has loaded, an
+IdP whose JWKS endpoint becomes unreachable *after* that, a stalled key rotation, and an expired
+signing key do *not* take readiness `DOWN` -- the held keys stay in service. They surface as `401`s on
+the request path and as fetch errors in the container's stdout. Diagnose that class of failure from
+the container log, never from a green readiness probe.
 ====
 
-That narrowness is a known and accepted consequence of the exclusion decision recorded in
-link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]:
-the token-validation extension's two unqualified health probes were removed from the bean set
-rather than configured into a green state, because they observe an issuer namespace this gateway
-never populates. The live per-issuer loader signal they would have carried is an open gap in the
-gateway's own probe, not something the exclusion removed.
+The token-validation extension's two unqualified health probes stay excluded from the bean set
+(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]),
+because they observe an issuer namespace this gateway never populates; the per-issuer signal is
+carried by the gateway's own probe instead.
 
 [#baked-container-check]
 === The baked container check: what it proves, and what it deliberately does not
@@ -388,7 +404,7 @@ management interface, and nothing beyond it.
 
 *What it deliberately does not prove:* readiness. Nothing is written to or read from the socket, so
 the probe cannot observe `GatewayReadinessCheck` -- neither the configuration document being bound,
-nor the `@GatewayValidator`-qualified `TokenValidator` resolving.
+nor every issuer's JWKS key set being loaded.
 
 That blindness is a design constraint, not an omission. The management interface's scheme is
 deployment-bound under
@@ -442,10 +458,21 @@ leaving the table looking exactly as authoritative. The headroom argument below 
 the six instances actually measured.
 
 The live-to-ready delta is *0.00s on every instance* -- below the prober's own 100 ms resolution.
-That is not luck; it is what the previous section describes. Because the `jwks` datum is settled at
-boot and cached, readiness flips at the same moment liveness does. That is also why delegating the
-waiting to a liveness-shaped container check costs no additional delay over the host-side readiness
-loop it replaced: there is no live-to-ready interval left for layer 2 to have to sit through.
+When the run was taken, the `jwks` datum was a boot-time fact cached at startup, so readiness flipped
+at the same moment liveness did, and delegating the waiting to a liveness-shaped container check cost
+no additional delay over the host-side readiness loop it replaced.
+
+*That reason no longer holds on its own, and the table predates the change.* Readiness now also
+waits for every issuer's JWKS key set (see <<readiness-contract,the section above>>), which arrives
+asynchronously after boot, so a live-to-ready delta now exists: the latency of the first key-set
+fetch against an already-ready Keycloak. It is not re-measured here and no figure is invented for it.
+What keeps layer 2's single shot sound is the ordering rather than a zero delta: Keycloak is ready
+before any gateway starts, and the baked health check first reports healthy only after its
+`--interval` of ten seconds, which a fetch against a ready IdP -- or a first fetch that failed and was
+retried on the one-second-doubling backoff -- does not approach. A stack that broke that ordering
+would need a bounded readiness *wait* in layer 2 rather than a single shot
+(link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031]
+records the residual).
 
 *The bound is `--wait-timeout 180`, and the image's `--start-period` is 20s -- both retained on that
 evidence.* The headroom is stated as a factor against the worst observed figure: the worst
@@ -456,8 +483,8 @@ and costs a broken one only the time until it gives up. Neither is to be shrunk 
 figures -- CI runners are slower than the machine measured here. Note what the 9.14s bounds: it is
 measured from the `compose up -d` call, so it covers absolute container start through ready, which is
 what `--wait-timeout` must also cover because `compose up --wait` counts from that same call. It is
-not a live-to-ready figure -- that delta is 0.00s (see above) and would justify almost no bound at
-all.
+not a live-to-ready figure -- that delta was 0.00s when measured (see above) and would justify almost
+no bound at all.
 
 The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
 `--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than the

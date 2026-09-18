@@ -44,10 +44,11 @@ API Sheriff is not implementing these controls from scratch -- two audited libra
 large parts of the catalogue, and the residual gateway work is exactly the part they
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
 of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
-`cui-http` 3.0 -- overridden in the root `pom.xml` above the parent-managed 2.2 -- and
-`TokenSheriff` 0.9.5, the release whose JWKS-loader and client-configuration builders both carry the
-hostname-verification passthrough the gateway binds its two identity-provider back-channels through
-(see <<gw-06>>).
+`cui-http` 3.1 -- managed by `cui-java-bom` through `cui-quarkus-parent`, with no override in this
+repository; 3.1 is the release carrying the parameter-value line-break switch the `strict` profile
+sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.6, whose JWKS-loader and client-configuration builders
+both carry the hostname-verification passthrough the gateway binds its two identity-provider
+back-channels through (see <<gw-06>>).
 
 *`cui-http` (inbound filtering + forwarded resolution) provides:* per-component path
 canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes
@@ -365,10 +366,29 @@ for what those dimensions are (`match.methods`, `match.host` and `match.headers`
 predicate deciding it lives on the match model beside them, with a contract test asserting that every
 component of that model is classified -- so a dimension added later cannot silently reopen this.
 
+*The query is held to the same one-form rule, in the other direction.* A path is canonicalized
+because routing and enforcement must agree on it; a query is forwarded, so what the filter judged and
+what the upstream receives must be the same bytes. Before
+link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047] they were not:
+the transport decoded the query, the parameter pipeline decoded it a second time, and the forward path
+re-encoded a third form -- `q=a%252F` was validated as `a/` while the upstream received `a%252F`. The
+security filter now receives the raw, still-percent-encoded pairs (names through `cui-http`'s
+parameter-name pipeline, values through the parameter-value pipeline, each decoding once) and the
+forward path appends exactly those pairs verbatim, so *the validated form equals the forwarded form*
+and a double encoding is refused as one. The forward policy's `query_allow` / `query_deny` lists are
+the one consumer that needs the decoded name -- the upstream acts on it -- so they compare the
+percent-decoded name while the raw pair crosses: a percent-encoded spelling such as `%74oken` can no
+longer evade a `query_deny: [token]`. Both properties are pinned: `GatewayEdgeQueryHandoffTest` over a
+live edge (including a leg asserting the transport's decoded value differs from the forwarded raw
+one) and `StrictQueryAcceptanceIT` against the native image assert every accepted query reaches the
+upstream byte for byte and every refused one reaches it not at all; `ForwardPolicyStageTest` denies
+and admits a percent-encoded spelling of a listed name.
+
 *Status:* PARTIAL. Pipeline stage 1 validates the raw path and stages 2-3 act on the
 normalized path, and anchor prefixes are normalized before the disjointness check -- but the
 *invariant* is not stated explicitly anywhere, nor is the divergence tested. The assertion
-below is the outstanding hardening item (see Gaps).
+below is the outstanding hardening item (see Gaps). The query half above is delivered and tested and
+does not hold this entry at PARTIAL.
 
 *Assertion.* For every encoded-traversal / encoded-slash / mixed-encoding / trailing-slash /
 matrix-param variant of a protected path: the request is either rejected at B2 or is
@@ -379,7 +399,9 @@ fails the boot, and the same configuration with a prefix route at the anchor pre
 (`ConfigValidatorTest.AnchorRules`, rule 4b -- including the partial-coverage case, where an anchored
 route on a sub-path only is not coverage). The same pair holds with the enclosing route declared
 `protocol: grpc` (`ConfigValidatorTest.GrpcNamespaceExemption`), alongside the controls proving the
-two declaration-scoped directions are still waived for it.
+two declaration-scoped directions are still waived for it. A query accepted by the filter reaches the
+upstream byte for byte, a refused one (including the double encoding `%252F`) reaches it not at all,
+and a percent-encoded spelling of a name on a route's `query_deny` list is withheld.
 
 [#gw-02]
 === GW-02 -- HTTP request smuggling / desync
@@ -455,6 +477,18 @@ scoped to a configured upstream that is already inside the gateway's trust bound
 to client-supplied input. Never let a client `Connection:` header steer stripping of framing or
 trust headers.
 
+*Line breaks in query-parameter values under `strict`.* A parameter value that decodes to CR or LF
+is forwarded to an upstream that may splice it into a log line, a header or another line-oriented
+protocol. `cui-http` admits decoded CR, LF and TAB in parameter values under every preset by default
+-- a form-data textarea carve-out -- so the gateway's `strict` profile turns that carve-out off:
+`SecurityProfile.STRICT` is the `cui-http` strict preset with exactly one component changed
+(`allowLineBreaksInParameterValues(false)`), and a value carrying `%0D` or `%0A` is refused `400`
+before it reaches the upstream. `lenient` keeps the library default, and `minimal` runs no
+parameter validation at all; both are documented as such (see
+link:configuration.adoc#_query_validation_raw_form[the configuration reference]). Because the
+filter now judges the raw form it forwards (<<gw-01>>), the refusal covers exactly the bytes the
+upstream would have received.
+
 The hop-by-hop and trust-header lists are *gateway-owned and enumerated in full per direction*,
 never derived from a sibling list and never taken from what a client names
 (link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
@@ -490,7 +524,10 @@ and the every-mode regeneration skip are pipeline stage 5 and are pinned exhaust
 own tests; the hop-by-hop-abuse-cannot-strip-framing property (the GW-02 tie-in) is not
 asserted, which is the one leg keeping this row off COVERED.
 
-*Assertion.* CR/LF in a header value is rejected; a client `Connection: X-Forwarded-For` (or
+*Assertion.* CR/LF in a header value is rejected; a query-parameter value decoding to CR or LF is
+rejected on a `strict` route and never forwarded, while a `lenient` route still admits it (the
+matched control, pinned by `GatewayEdgeQueryHandoffTest` and `SecurityProfileTest`); a client
+`Connection: X-Forwarded-For` (or
 `Content-Length`) does not cause the gateway to drop the regenerated forwarding header or the
 framing header; a client-sent `X-Forwarded-For`, `Cookie` or `Authorization` never reaches the
 upstream on a forward-all route; response headers are validated before write.
@@ -1475,18 +1512,42 @@ are ignored (they appear nowhere in its key resolution; embedded `jwk` is active
 that blocks internal/metadata ranges on the initial fetch *and every background refresh*
 (DNS-rebinding-safe, GW-05 tie-in); it caches with a TTL, keeps a bounded rotation grace
 window, and `getKeyInfo(kid)` never triggers an on-demand fetch -- so a flood of unknown
-`kid`s cannot drive a fetch storm. Its Quarkus JWKS-readiness health check already gates the
-ITs. Gateway residual: keep the secure egress defaults; widen only via `allowedEgressHost` for
-a trusted IdP -- surfaced in `gateway.yaml` as the per-issuer
+`kid`s cannot drive a fetch storm. Gateway residual: keep the secure egress defaults; widen only
+via `allowedEgressHost` for a trusted IdP -- surfaced in `gateway.yaml` as the per-issuer
 `token_validation.issuers[].jwks.allowed_egress_hosts` list (see <<gw-05>>), which defaults to
 the secure policy when absent or empty.
 
-*Status:* COVERED (validation lib, fail-closed, SSRF-guarded). Nothing for the gateway to
-build.
+*Key-set availability is the gateway's -- readiness and a bounded retry.* The library's own
+JWKS-readiness health check does not serve this gateway: its extension beans are excluded
+(link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]),
+and its loader status is not truthful after a failed first fetch -- an HTTP loader whose first fetch
+failed never reports `OK`, even once a background refresh has installed keys, and its issuer cache
+re-admits an issuer only on `OK`. A gateway that booted before its identity provider answered
+therefore reported ready while it could validate no token, and retried the fetch only after a whole
+refresh interval. The gateway now installs its own loader for every issuer through the library's
+public loader seam. The wrapper records the outcome of each load attempt itself and reports `OK`
+exactly when a key set is loaded, which also repairs the library's re-admission path. Readiness is
+`DOWN` while any configured issuer has no key set, with a non-disclosing payload -- a fixed `jwks`
+status token and the bounded counts `issuers` / `issuers_loaded`, never an issuer name, URL or host --
+so an orchestrator holds traffic back from an instance that would reject every bearer token. A failed
+load is retried after 1 s, doubling per attempt and capped at 30 s (never above the refresh
+interval), driven by a scheduler only: neither bearer requests nor the readiness probe can trigger a
+fetch, and at most one attempt is in flight per issuer, so the retry cannot be turned into a fetch
+storm. Each scheduled retry logs `WARN ApiSheriff-129` and a recovery logs `INFO ApiSheriff-18`,
+both carrying the issuer's configured name only. The upstream defect -- no `UNDEFINED` to `OK`
+transition -- is reported to the library rather than depended on.
+
+*Status:* COVERED (validation lib, fail-closed, SSRF-guarded; key-set availability owned by the
+gateway's loader wrapper and readiness check).
 
 *Assertion.* A token-supplied `jku`/`x5u` is ignored; JWKS is fetched only from the
 configured endpoint; a flood of unknown-`kid` tokens does not cause unbounded outbound
-fetches; rotation across overlapping keys keeps validation working.
+fetches; rotation across overlapping keys keeps validation working. Readiness is `DOWN` while an
+issuer has no key set and names no issuer, URL or host; a status read issues no fetch; a failed
+first fetch is retried on the bounded backoff and the key set arrives well inside the refresh
+interval (`RetryingJwksLoaderTest`, `SheriffMetricsTest`); against the native image, a gateway whose
+identity provider appears only after boot reports `DOWN`, turns `UP` within a minute of the provider
+appearing, and then accepts that provider's token (`JwksLateIdpReadinessIT`).
 
 [#bff-08]
 === BFF-08 -- Refresh-token rotation / reuse-detection under concurrency
@@ -1723,9 +1784,9 @@ outstanding hardening work (next section).
 |===
 | ID | Control (short) | Owner | Status
 
-| <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash) | cui-http (canonical path) + gateway pipeline invariant | PARTIAL
+| <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
 | <<gw-02>> | Reject ambiguous HTTP framing | Gateway/web-server (cui-http out of scope) | GAP
-| <<gw-03>> | Header CR/LF reject; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`ConnectionHeaders`, ADR-0037) | PARTIAL
+| <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
@@ -1743,7 +1804,7 @@ outstanding hardening work (next section).
 | <<bff-04>> | `nonce` validated + single-use | Engine `IdTokenValidationBridge` + gateway pending-authorization record | COVERED
 | <<bff-05>> | Single-IdP; `iss` verification | Design + engine `IssValidator` | ELIMINATED
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
-| <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch | Validation lib (`EgressPolicy`) | COVERED
+| <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch; readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
 | <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway) | Engine (RP-initiated) + gateway (back-channel receiver) | COVERED
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
