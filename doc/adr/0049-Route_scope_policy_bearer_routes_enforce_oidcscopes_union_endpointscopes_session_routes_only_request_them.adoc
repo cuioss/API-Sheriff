@@ -1,0 +1,151 @@
+= ADR-0049: Route scope policy: bearer routes enforce oidc.scopes union endpoint.scopes, session routes only request them
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Every route derives one scope set at boot, neededScopes = oidc.scopes ∪ endpoint.scopes, and each auth posture consumes it differently; a bearer route rejects a validated token missing any member (oidc.scopes included, so a client_credentials token lacking them is refused) with 403 insufficient_scope per RFC 6750 before upstream contact; a session route uses the set only to decide what its login requests and never pre-checks a live session, leaving insufficient scope to the upstream; a none route ignores it, and endpoint.scopes on an endpoint whose every route is none is a boot error; a bearer check on endpoint.scopes alone is rejected because request and check would read different sets, and a session pre-check with re-login is deferred until a live session can be widened.
+// tags: auth, scopes, bearer, bff, oidc, insufficient-scope
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+A gateway route carries OAuth scopes from two sources. The gateway-wide `oidc.scopes` are what every
+login asks the identity provider for. An endpoint can add more with `endpoint.scopes`, a list
+declared next to `auth` rather than inside it. At boot `RouteTableBuilder` combines the two into one
+set per route:
+
+----
+neededScopes(route) = oidc.scopes ∪ endpoint.scopes
+----
+
+The set is additive. An endpoint cannot remove a gateway-wide scope, and a route that overrides
+`auth` still needs its endpoint's scopes.
+
+A single set still leaves open what it *means* on a route, because the three authentication postures
+relate to a token in different ways:
+
+* A *bearer* route receives a token minted elsewhere, often by a client the gateway never sees log
+  in, `client_credentials` callers included. The gateway can only inspect the token it is given.
+* A *session* route holds a token the gateway obtained itself, through a login it drove. The
+  gateway decided what that login requested, but the session outlives the route that started it and
+  is later presented to other routes.
+* A *none* route has no token.
+
+Scope handling can fail in three ways. It can *over-request*: every login asks for every scope any
+endpoint could need, so the token relayed everywhere is over-privileged. It can *under-check*: a
+route that needs a scope forwards a token lacking it and relies on an upstream that may not check.
+Or requesting and checking can *drift*: they read different sets, so a token obtained by the
+gateway's own login fails the gateway's own check, or a token the check accepts was never requested
+with the scopes the route declares. This ADR settles how each posture uses the one set so that none
+of the three happens where the gateway can prevent it.
+
+== Decision
+
+*One scope set is derived per route at boot. A bearer route enforces it, a session route only
+requests it, and a none route ignores it.*
+
+* *`require: bearer` enforces the full set.* `AuthenticationStage` compares the validated token's
+  scopes against `neededScopes`. A token missing any member is refused with `403` and the RFC 6750
+  challenge `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, before any
+  upstream is contacted. The challenge lists only the missing scopes, sorted and taken from boot
+  configuration, never from the token. The set includes `oidc.scopes`, so a bearer token lacking the
+  gateway-wide scopes is refused too, a `client_credentials` token among them. That tightening is
+  deliberate: the gateway-wide scopes are a requirement of every authenticated route, not a
+  default that only the gateway's own logins observe. An empty set skips the check.
+* *`require: session` uses the set only to decide what a login requests.* A navigation to a session
+  route without a session starts a login whose authorization request carries exactly that route's
+  `neededScopes`. A `/auth/login?returnUrl=` login requests the set of the route the return target
+  lands on (see ADR-0048 for how the per-request set reaches the engine). A *live* session is never
+  checked against a route's set. If its token lacks a scope a later route needs, the upstream answers
+  with its own insufficient-scope response.
+* *`require: none` does not use the set.* An endpoint that declares `endpoint.scopes` while every one
+  of its routes resolves to `require: none` is a configuration error and is refused at boot, because
+  the declared scopes could never take effect.
+
+The `auth` block has no scope list of its own. The schema refuses one, so there is exactly one place
+to declare endpoint scopes and one derivation that reads it.
+
+== Consequences
+
+=== Positive
+
+* Bearer checks and login requests cannot drift apart. Both read the same boot-derived
+  `neededScopes`, so a token obtained through a login for a route passes that route's check by
+  construction, and no route checks a scope that no login would ever request.
+* Under-checking is closed on bearer routes. A token missing a needed scope never reaches the
+  upstream, and the refusal is a standards-conformant challenge a client can act on.
+* Login requests are minimized. An endpoint's extra scopes are requested only by logins for that
+  endpoint, not by every login.
+* A declaration that could never take effect, scopes on an endpoint with only `none` routes, fails
+  at boot instead of silently doing nothing.
+
+=== Negative
+
+* *`client_credentials` callers must request the gateway-wide scopes.* A machine client whose token
+  was granted only its own scopes is refused on every bearer route of a gateway that declares
+  `oidc.scopes`. Operators have to register those scopes for such clients at the identity provider.
+* *Session routes do not enforce scopes at the gateway.* A session established on a route needing
+  fewer scopes reaches a route needing more with a token that lacks them, and the insufficient-scope
+  decision is left to the upstream.
+
+=== Risks
+
+* *Session-wide scope growth is accepted.* Scopes requested when a session is established stay with
+  the session for its whole life, and the token relayed to every session route carries all of them.
+  A session that logged in through a scoped endpoint therefore presents that endpoint's scopes to
+  every other session-route upstream. The exposure is limited by the identity provider granting only
+  the requested scopes and by `token_relay: false` on origins that need no token. It is tracked as
+  BFF-15 in the threat model.
+
+== Alternatives Considered
+
+*Check bearer tokens against `endpoint.scopes` only.* Leaving `oidc.scopes` out of the bearer check
+would let tokens without the gateway-wide scopes through, `client_credentials` tokens included. Then
+the set a login requests (`oidc.scopes ∪ endpoint.scopes`) and the set a bearer route checks
+(`endpoint.scopes`) would differ, which is exactly the drift the single derivation exists to prevent.
+The gateway-wide scopes would become a requirement that a caller can bypass by presenting a token
+minted elsewhere. Rejected.
+
+*Pre-check live sessions and re-login for missing scopes.* A session route could compare the
+session's granted set against `neededScopes` and, on a shortfall, redirect the browser to a new login
+that requests the wider set. That would close the session-side under-check. But it needs a way to
+widen a *live* session: a new login replaces the session rather than adding to it, and RFC 6749 §6
+forbids a refresh grant from widening the original scope. Without that mechanism the pre-check could
+only refuse, turning every scope mismatch into a hard failure with no recovery path. Deferred until
+widening a live session is designed, not rejected.
+
+*Narrow the token per endpoint.* The gateway could relay each session route a token restricted to
+that route's scopes, through a scope-restricted refresh grant or RFC 8693 token exchange. That would
+remove session-wide scope growth, but it adds a token-endpoint round trip per route or per-route
+token caching, and it needs identity-provider support that cannot be assumed. Out of scope for this
+decision. Session-wide growth remains the accepted residual above.
+
+All three alternatives move the check away from the single boot-derived set, or add a second
+mechanism next to it. The decision keeps one set and varies only what each posture is in a position
+to do with it: a bearer route can inspect the token it received, while a session route can only
+shape what its own login asks for.
+
+== References
+
+* link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: how a login and a refresh carry the per-route scope set through the unchanged engine
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel posture every scoped login configuration carries
+* link:../security-threat-model.adoc#bff-10[Threat model BFF-10] (token leakage) and link:../security-threat-model.adoc#bff-15[BFF-15] (scope over-request, under-check and session-wide scope growth)
+* link:../user/endpoint-routes.adoc#_endpoint_scopes[Endpoint routes: Endpoint scopes]: the operator-facing contract for `endpoint.scopes`
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/AuthenticationStage.java`: the bearer `insufficient_scope` check
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java`: the boot-time `neededScopes` derivation
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java`: the boot refusal of `endpoint.scopes` on an endpoint whose every route is `require: none`

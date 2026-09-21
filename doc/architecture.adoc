@@ -409,7 +409,10 @@ materializes each route's `neededScopes = oidc.scopes ∪ endpoint.scopes` once 
   exactly `A`, never the static `oidc.scopes`.
 
 There is *no session-route scope pre-check*: a live session is mediated without comparing its token
-to `neededScopes`. The engine reads `scope` only from its client configuration, so the per-request
+to `neededScopes`. Why bearer routes enforce the set while session routes only request it is
+recorded in
+link:adr/0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049].
+The engine reads `scope` only from its client configuration, so the per-request
 set rides a per-scope-set configuration on the unchanged engine
 (link:adr/0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]).
 
