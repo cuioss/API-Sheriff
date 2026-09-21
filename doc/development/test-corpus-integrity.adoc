@@ -1813,6 +1813,53 @@ It belongs here rather than in the classification table because the taxonomy is 
 assertion *strength* and this is a question about timing margin. Any claim about the site's flakiness
 should be settled against this shape rather than against its assertion.
 
+[[websocket-handshake-flakiness]]
+==== `WebSocketRelayStageTest.preservesSecurityHeadersOnHandshakeFailure` was never recorded flaky
+
+A standing claim reached this plan that this method is unstable. It is settled here because it had
+been carried from plan to plan as narrative rather than as a citation, and each carry made it read
+more established than it was.
+
+*It has no artifact in the tree, MEASURED at `3abc370`.* A case-insensitive literal search for
+`flaky` over the module-attributed inventory returns *6 occurrences across 3 files* --
+`demo-client/playwright.config.js`, `integration-tests/.../BffCookieSessionIT.java` and
+`doc/variants/README.adoc` -- and *none of them names this method or its class*. `@Disabled` returns
+*exactly one occurrence*, in `doc/quality-report/test-quality.adoc`, and *none in code*. The method
+is live, un-quarantined, and recorded as flaky nowhere in the repository.
+
+*It has no CI signal either, MEASURED 2026-09-21.* The *30* most recent `Maven Build` runs
+(2026-09-17T18:30Z through 2026-09-21T13:50Z, across `main`, merge-queue and pull-request events)
+carry *28 `success` and 2 `failure` conclusions*. The two failures are *the same commit* (`e98614e`)
+observed twice -- once on its `push` event and once on its `pull_request` event -- and in *both* the
+failing job is `build / sonar-build`: the test-executing `build (25)` and `build (26)` jobs were
+green on every one of the 30. So the api-sheriff unit suite executed *60* times in that window (two
+JDKs per run) with no test failure at all.
+
+*The class demonstrably ran, which is the part a zero needs.* In the most recent `main` run
+(`35608221222`, `main` at `36ccc2e`) `WebSocketRelayStageTest` reports
+`Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.648 s`. The class declares ten
+top-level `@Test` methods plus three inside its `@Nested` admission-release class, so 13 is the whole
+class and this method is inside the count. Read that line where it actually appears: it is attributed
+to the *nested* container's display name, while the *outer* class container reports `Tests run: 0` --
+the exact artifact `build-gate-discipline.adoc` warns produces a false "not covered in CI" reading
+for this very class. Grepping the class display name alone would have returned the zero.
+
+*The verdict, and its limits.* The method is routed *out* of the known-flaky reading: nothing in the
+tree or in 30 runs of CI supports it. That is a *zero-reproduction result reported with its `N`*,
+never an all-clear, and two limits travel with it:
+
+* *The Linux lane is the authority only for the 30-second stall signature*, which it has never
+  reproduced. It is not the authority for macOS behaviour, and the macOS-local wildcard-ephemeral-bind
+  condition is exactly the case a green Linux lane cannot clear.
+* *The class sits in the live-socket population that condition acts on.* `WebSocketRelayStageTest` is
+  one of the eleven classes constructing a live `Vertx.vertx()`, and the reading recorded against that
+  population is a *uniform per-attempt hazard* rather than particular fixtures being special -- so no
+  method in the class is exempt by name, including this one. What is settled is that *this method* was
+  never among the recorded occurrences; what is not settled is the hazard the class carries.
+
+Nothing was widened, quarantined or otherwise softened to reach this verdict, and no test or
+production file was modified by it: both are explicitly forbidden for this condition.
+
 ==== `LogMessagesCatalogueTest`'s mirror is half closed
 
 The existing <<mirror-finding>> entry records that this test does not reconcile the declared records
