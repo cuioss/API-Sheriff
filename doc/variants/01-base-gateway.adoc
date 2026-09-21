@@ -28,14 +28,14 @@ deferred.
 
 The client presents its own `Authorization: Bearer` token. API Sheriff applies the
 `cui-http` security filter, validates the token offline against cached JWKS (no synchronous
-call to the identity provider), enforces the route's required scopes, and forwards the
+call to the identity provider), checks the route's needed scopes, and forwards the
 permitted request to the upstream with the configured forwarding header (`X-Forwarded-*` by
 default; see link:../adr/0003-forwarded-headers.adoc[ADR-0003]).
 
 image::../resources/diagrams/base-bearer-sequence.svg[Client sends a bearer token; the gateway filters, validates offline, and forwards to the upstream, align=center]
 
 A request that fails filtering is rejected with `400`; a missing or invalid token yields
-`401`; a valid token lacking a required scope yields `403`. In every rejection case the
+`401`; a valid token lacking a needed scope yields `403 insufficient_scope`. In every rejection case the
 upstream is never called.
 
 == Responsibilities
@@ -58,8 +58,12 @@ upstream is never called.
   thread-safe. A single validator is created at startup from the configured issuer(s).
 
 | Scope enforcement
-| `AccessTokenContent.providesScopes(required)`; a missing scope maps to `403` and a
-  `SCOPE_MISSING` event.
+| The route's boot-derived `neededScopes` -- `endpoint.scopes`, united with `oidc.scopes` when the
+  gateway also declares an `oidc` block -- is checked against the validated token. A missing scope
+  maps to `403` and a `SCOPE_MISSING` event, with the RFC 6750 challenge
+  `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` naming only the missing
+  scopes; the upstream is not contacted. An empty set skips the check. See
+  link:../configuration.adoc#_endpoint_scopes[`endpoint.scopes`].
 
 | Forwarding
 | A per-route filter *inside* an already-authorised route, not an admission gate: each of headers
@@ -88,7 +92,8 @@ upstream is never called.
 endpoint:
   id: app1
   base_url: APP1
-  auth: { require: bearer, required_scopes: [orders.read] }   # default for all routes here
+  auth: { require: bearer }        # default for all routes here
+  scopes: [orders.read]            # every route here needs this scope (additive, outside auth)
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders, methods: [GET, POST] }
@@ -151,7 +156,8 @@ Per request on a bearer route:
       // 2-arg forms and omit URI/method). URI + method are REQUIRED when a DPoP proof is
       // present: DpopProofValidator hard-fails htu/htm validation without them
   AccessTokenContent token = validator.createAccessToken(request)   // offline, cached JWKS
-  token.providesScopes(route.requiredScopes)           // 403 if missing
+  missing = token.determineMissingScopes(route.neededScopes)   // neededScopes = oidc.scopes ∪ endpoint.scopes
+  if missing not empty -> 403, WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"
   -> forward upstream
 
 On failure:

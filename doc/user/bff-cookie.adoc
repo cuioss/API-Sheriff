@@ -41,7 +41,7 @@ oidc:
   client_id: api-sheriff
   client_secret: ${SHERIFF_CLIENT_SECRET}     # must be an ${ENV_VAR} reference
   redirect_uri: https://gw.example.com/auth/callback   # registered exactly at the IdP
-  scopes: [openid, profile, orders.read]      # include every scope a route requires
+  scopes: [openid, profile]                   # requested on every login; endpoints add their own
   session:
     mode: cookie                              # sealed cookie, no store (this variant)
     cookie_name: __Host-sheriff               # optional; must stay a __Host- name -- see "Session cookie name"
@@ -225,6 +225,17 @@ issues less -- and, where those do not cover it, the
 link:../variants/02-bff-session.adoc[server-session variant], where token size is irrelevant because
 nothing crosses to the browser.
 
+*The seal also carries the session's active scope set.* To refresh with the scopes the IdP actually
+granted -- rather than narrowing the session back to `oidc.scopes` -- the session remembers that set
+(see link:bff-session.adoc#scopes[Scopes]), and in this variant the session is the cookie. The set
+travels as a tenth length-prefixed field: the scope names sorted and joined by single spaces, so it
+costs 2 bytes of framing plus the names themselves, before deflate. For a handful of short scope names
+that is a few dozen bytes of the budget. It grows with the scope set the login requested: a login on
+a route whose endpoint declares its own `scopes` seals `oidc.scopes` plus those names, and keeps them
+for the life of the session, so a deployment with many long `endpoint.scopes` names spends the margin
+above faster. The budget check covers the field like any other -- an oversize seal is still refused,
+never truncated.
+
 The measurement, and the four routes weighed before this one shipped, are recorded in
 link:../development/bff-cookie.adoc[the contributor guide]. Note what the 4019 bar is: the floor
 every browser guarantees, not a limit measured in any particular browser.
@@ -320,6 +331,13 @@ format is refused at an explicit version gate *before* decryption: the version b
 compared before any cipher is constructed. The version an accepted cookie carries is authenticated in
 turn -- AES-GCM binds it into the associated data -- but that happens after the gate, not at it. So a
 retired format is never mis-parsed, and there is deliberately no acceptance path.
+
+*Adding the active scope set also forces a re-login, without a version bump.* The payload grew from
+nine fields to ten while `FORMAT_VERSION` stayed *3*. A cookie sealed before the change still passes
+the version gate and unseals, but its payload no longer matches the strict ten-field shape, so it is
+treated as no session (logged once as `ApiSheriff-113` with disposition `payload-format`):
+navigations are redirected to login and API calls answer `401`. The effect on
+an upgrade is the same as a format bump -- plan the deploy as one.
 
 == Operate
 

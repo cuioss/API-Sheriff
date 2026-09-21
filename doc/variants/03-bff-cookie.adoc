@@ -62,7 +62,8 @@ and the gateway holds no per-user state.
 | AES-256-GCM (authenticated encryption) over a *packed and deflated* plaintext. The payload is the
   token set -- access token, refresh token, the raw ID token (needed as `id_token_hint` at logout --
   without it in the cookie, the stateless gateway could not drive RP-initiated logout), and minimal
-  metadata -- framed as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
+  metadata, including the session's active scope set (the scopes the IdP granted, which every
+  refresh requests) -- framed as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
   plus nonce and auth tag form the cookie value. Framing by declared length rather than by a
   separator is what removes the per-field base64 armouring the earlier format needed, and deflation
   is what turns that saving into fitting the budget. Compress-then-encrypt is safe in this
@@ -121,7 +122,9 @@ Both work exactly as in the link:02-bff-session.adoc#_transparent_token_refresh[
 variant] -- refresh with rotation on near-expiry, refresh failures disposed per kind, reuse
 detection left to the identity provider's strict rotation, and RFC 9470 step-up on upstream
 challenge -- with one difference: the refreshed token is re-sealed
-into a *new cookie* (`Set-Cookie` on the response) rather than written to a store.
+into a *new cookie* (`Set-Cookie` on the response) rather than written to a store. The refresh
+requests the session's active scope set, and the re-sealed cookie carries the set the response
+granted, so a session that logged in on a scoped route keeps its endpoint scopes across refreshes.
 
 *The refresh token's cost in the seal is measured, not open.* Holding it makes the session a
 three-token payload -- the largest shape this variant carries -- and under the shipped packaging
@@ -206,7 +209,7 @@ oidc:
   client_id: api-sheriff
   client_secret: ${SHERIFF_CLIENT_SECRET}
   redirect_uri: https://gw.example.com/auth/callback
-  scopes: [openid, profile, orders.read]   # must include every scope a route requires
+  scopes: [openid, profile]      # requested on every login; endpoints add their own (additive)
   session:
     mode: cookie                 # encrypted cookie, no store (this variant)
     cookie_name: __Host-sheriff
@@ -221,7 +224,10 @@ oidc:
 endpoint:
   id: app1
   base_url: APP1
-  auth: { require: session, required_scopes: [orders.read] }  # default for all routes here
+  auth: { require: session }     # default for all routes here; add token_relay: false to
+                                 #   require the login without relaying the token upstream
+  scopes: [orders.read]          # a login for these routes requests oidc.scopes ∪ [orders.read];
+                                 #   a live session is never checked against it
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }
