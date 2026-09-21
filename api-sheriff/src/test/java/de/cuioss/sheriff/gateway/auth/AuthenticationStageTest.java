@@ -191,7 +191,7 @@ class AuthenticationStageTest {
 
         // Assert — "absent-oidc-scope" sorts before "gateway:…"
         assertEquals("Bearer error=\"insufficient_scope\", scope=\"" + ABSENT_OIDC_SCOPE + " "
-                        + ABSENT_ENDPOINT_SCOPE + "\"",
+                + ABSENT_ENDPOINT_SCOPE + "\"",
                 request.responseHeaders().get(WWW_AUTHENTICATE));
     }
 

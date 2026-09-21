@@ -61,7 +61,7 @@ class ReturnTargetScopesTest {
     private final ReturnTargetScopes resolver = new ReturnTargetScopes(new RouteTable(List.of(
             route("special", MatchConfig.builder().path("/api/special").build(), Require.SESSION, SPECIAL_SCOPES),
             route("tenant", MatchConfig.builder().pathPrefix("/tenant")
-                    .headers(List.of(new MatchConfig.HeaderMatcher("X-Tenant", null, "acme"))).build(),
+                            .headers(List.of(new MatchConfig.HeaderMatcher("X-Tenant", null, "acme"))).build(),
                     Require.SESSION, HEADER_SCOPES),
             route("public", MatchConfig.builder().pathPrefix("/public").build(), Require.NONE, PUBLIC_SCOPES),
             route("app", MatchConfig.builder().pathPrefix("/app").build(), Require.SESSION, APP_SCOPES),
