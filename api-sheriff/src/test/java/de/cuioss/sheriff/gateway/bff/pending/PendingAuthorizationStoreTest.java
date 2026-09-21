@@ -293,7 +293,7 @@ class PendingAuthorizationStoreTest {
 
         @ParameterizedTest(name = "control-character return URL \"{0}\" is rejected")
         @ValueSource(strings = {"/\t/evil.example.com", "/\n/evil.example.com", "/\r/evil.example.com",
-                "/\t\t/evil.example.com", "/app\u0000", "https://gw.example.com/\t/app"})
+                "/\t\t/evil.example.com", "/app\0", "https://gw.example.com/\t/app"})
         @DisplayName("Should reject a return URL carrying a control character (browsers strip tab/newline)")
         void shouldRejectControlCharacters(String returnUrl) {
             assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN),
