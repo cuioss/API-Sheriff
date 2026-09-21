@@ -1821,9 +1821,12 @@ been carried from plan to plan as narrative rather than as a citation, and each 
 more established than it was.
 
 *It has no artifact in the tree, MEASURED at `3abc370`.* A case-insensitive literal search for
-`flaky` over the module-attributed inventory returns *6 occurrences across 3 files* --
+`flaky` over the module-attributed inventory returns *6 result rows across 3 files* --
 `demo-client/playwright.config.js`, `integration-tests/.../BffCookieSessionIT.java` and
-`doc/variants/README.adoc` -- and *none of them names this method or its class*. `@Disabled` returns
+`doc/variants/README.adoc` -- the row count is inflated by the duplicated `api-sheriff-parent` /
+`demo-client-maven` / `demo-client-npm` module attribution that doubles or triples every sweep in
+this document; each file's own `match_count` is `1`, so the real occurrence count is *3*, one per
+file. In none of the three does the match name this method or its class. `@Disabled` returns
 *exactly one occurrence*, in `doc/quality-report/test-quality.adoc`, and *none in code*. The method
 is live, un-quarantined, and recorded as flaky nowhere in the repository.
 
