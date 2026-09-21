@@ -17,7 +17,11 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+
+import java.util.List;
+import java.util.Set;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 
@@ -62,5 +66,37 @@ class BffUserInfoIT extends BaseIntegrationTest {
                 "the curated default view must disclose the session user's preferred_username");
         assertNull(response.path("claims.client_secret"),
                 "the fold must never disclose a claim outside the operator allowlist");
+    }
+
+    /**
+     * Regression pin for AS-7: a list-valued ID-token claim is disclosed as a native JSON array.
+     * <p>
+     * {@code groups} is allowlisted in the mounted {@code oidc.user_info} config and emitted into the ID
+     * token by the integration realm's group-membership mapper as a list ({@code ["test-group"]}). Before
+     * the fix the claim projection rendered it through {@code toString()}, so the fold answered the
+     * string {@code "[test-group]"} — a value no JSON consumer can iterate. This test runs against the
+     * native image, where that defect was observed, and fails on the string form.
+     */
+    @Test
+    @DisplayName("the user-info fold discloses a list-valued claim as a native JSON array (AS-7)")
+    void userInfoDisclosesGroupsAsJsonArray() {
+        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+
+        var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header("Accept", "application/json")
+                .queryParam("claims", "groups")
+                .when()
+                .get("/auth/userinfo")
+                .then()
+                .statusCode(200)
+                .extract();
+
+        Object groups = response.path("claims.groups");
+        List<?> groupList = assertInstanceOf(List.class, groups,
+                "claims.groups must be a JSON array, not the toString() projection \"[test-group]\"");
+        assertEquals(List.of("test-group"), groupList,
+                "the array must carry the realm group the integration-user is a member of");
+        assertEquals(Set.of("groups"), response.jsonPath().getMap("claims").keySet(),
+                "an explicit claims=groups selection must disclose exactly that claim");
     }
 }

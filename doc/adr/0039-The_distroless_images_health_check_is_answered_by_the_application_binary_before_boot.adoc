@@ -124,9 +124,13 @@ every consumer inherits.
 * **The health state is liveness, not readiness.** A bare accept says the port is
   bound, not that the instance can serve. Everything reading container health is
   reading liveness however "healthy" reads; readiness stays asserted in the
-  readiness endpoint itself and in the host-side single-shot assertion described by
+  readiness endpoint itself and in the host-side readiness assertion described by
   ADR-0031. A reader who takes a healthy container as a ready one has drawn a
-  conclusion the signal does not support.
+  conclusion the signal does not support. *(Amendment note: the gap between the two is
+  no longer only a moment of boot. Readiness now also waits for every issuer's JWKS key
+  set -- ADR-0027 Amendment A1 -- so a container is healthy and not ready until
+  its identity provider has served a key set. The decision is unchanged; the consequence it
+  already stated has simply become larger.)*
 * **The application binary now carries a second role, so its command line is a
   contract.** Every future argument must be distinguishable from the probe token.
   The whole-token match is what keeps that cost at zero, and it is the property to
@@ -216,7 +220,7 @@ fully initialised cannot answer a question about whether initialisation has fini
 == References
 
 * link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] -- the deployment-bound management scheme that makes the probe necessarily protocol-blind
-* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027] -- readiness reports a boot-time constructibility fact, which is why liveness and readiness land at effectively the same moment on this gateway
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027] -- what readiness reports. Since its Amendment A1 readiness waits for every configured issuer's JWKS key set, so liveness and readiness no longer land at the same moment: a healthy container whose identity provider is not yet serving is live and *not* ready, which widens the gap the Negative consequence below describes
 * link:0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031] -- the host-side consumer of this health state, and the two places readiness is actually asserted
 * link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032] -- the artifact-purity rule behind compiling the port in rather than adding a configuration surface for it
 * link:../development/integration-test-topology.adoc[Integration-Test Topology] -- the measured boot time the `--start-period` is sized from

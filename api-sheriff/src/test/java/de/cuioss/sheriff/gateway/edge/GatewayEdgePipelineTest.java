@@ -365,18 +365,22 @@ class GatewayEdgePipelineTest {
     @Test
     @DisplayName("profile: minimal disables only the url-parameter validation — the strict route still rejects it")
     void minimalRouteAcceptsParameterValueTheStrictRouteRejects() throws Exception {
-        // Arrange — a '<' inside a parameter value is refused by the url-parameter pipeline
+        // Arrange — a double-encoded slash (%252F) in a raw parameter value is refused by the
+        // url-parameter pipeline, which sees the wire form and detects the double encoding. A decoded
+        // '<' no longer separates the two routes: once the raw value is handed over it is judged by
+        // meaning, not by spelling (ADR-0047).
+        String query = "?return_to=%252F";
 
         // Act
-        Response onStrictRoute = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders?return_to=%3Chome",
-                Map.of(), null);
-        Response onMinimalRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed?return_to=%3Chome",
-                Map.of(), null);
+        Response onStrictRoute = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders" + query, Map.of(), null);
+        Response onMinimalRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed" + query, Map.of(), null);
 
         // Assert
         assertEquals(400, onStrictRoute.status(), "the strict-baseline route rejects the parameter value");
         assertEquals(200, onMinimalRoute.status(),
                 "the minimal-mode route accepts it — that is what 'minimal' turns off");
+        assertTrue(onMinimalRoute.body().contains(query),
+                "the minimal route forwards the raw pair verbatim, never re-encoded: " + onMinimalRoute.body());
     }
 
     @Test

@@ -12,12 +12,15 @@
 #      baked HEALTHCHECK for api-sheriff, Keycloak's declared one, and plain "running" for the demo
 #      upstream, which declares none. Unscoped is correct here — that is the right meaning for each
 #      of the three services this sample runs.
-#   4. ASSERT — gate layer 2: one single-shot readiness probe per derived target, addressed beneath
-#      that target's derived management root path. The baked probe is a bare TCP accept on the
-#      management port — it must be, because the management scheme is deployment-bound (ADR-0025) —
-#      so it proves the interface is listening, not that the gateway reported READY. This assertion
-#      closes that gap, and needs no retry budget precisely because step 3 already blocked on health:
-#      a non-UP answer here is a real defect, and retrying would only delay reporting it.
+#   4. ASSERT — gate layer 2: a BOUNDED readiness poll per derived target, addressed beneath that
+#      target's derived management root path. The baked probe is a bare TCP accept on the management
+#      port — it must be, because the management scheme is deployment-bound (ADR-0025) — so it proves
+#      the interface is listening, not that the gateway reported READY. Readiness also waits for the
+#      issuer's JWKS key set, and that fetch races Keycloak: the IdP's own health probe is accept-level
+#      only, so the gateway can start while the realm is still importing, miss the first fetch and sit
+#      out a retry backoff (capped at 30 s). A single-shot probe would report that race as a defect,
+#      so this layer polls with a fixed budget instead — and a target still not UP when the budget is
+#      spent IS the defect, reported with the same diagnostics as layer 1.
 #
 # The readiness contract itself is still derived, never restated (ADR-0031): WHICH services to probe
 # comes from the de.cuioss.sheriff.management-scheme label, WHICH scheme from that label's value,
@@ -210,11 +213,17 @@ fi
 # the gateway mount it read-only, so without it Keycloak crash-loops and the readiness gate below
 # burns its whole budget against a stack that was never going to come up. Checking for it here turns
 # that into one line naming the one-time command that fixes it.
+#
+# The truststore is checked too, and separately named: material generated BEFORE the sample bound the
+# `sample-idp` trust profile has the certificate pair but no store, and the gateway then refuses to
+# boot on an unloadable profile. Re-running the generator produces all three together.
 if [[ ! -f "${SAMPLE_DIR}/docker/certificates/localhost.crt" \
-   || ! -f "${SAMPLE_DIR}/docker/certificates/localhost.key" ]]; then
-    echo "❌ The sample's TLS material is missing."
-    echo "   docker/certificates/localhost.crt and localhost.key are generated, never committed."
-    echo "   Generate them once, then re-run this script:"
+   || ! -f "${SAMPLE_DIR}/docker/certificates/localhost.key" \
+   || ! -f "${SAMPLE_DIR}/docker/certificates/sample-idp-truststore.p12" ]]; then
+    echo "❌ The sample's TLS material is missing or incomplete."
+    echo "   docker/certificates/localhost.crt, localhost.key and sample-idp-truststore.p12 are"
+    echo "   generated, never committed. Generate them (again, if you have an older set), then"
+    echo "   re-run this script:"
     echo "     ./docker/certificates/generate-certificates.sh"
     exit 1
 fi
@@ -398,6 +407,12 @@ if ! "${COMPOSE_CMD[@]}" up -d --wait --wait-timeout 120; then
 fi
 
 # ---- 4. Gate layer 2: assert readiness semantics ------------------------------------------------
+# The poll budget, in one-second attempts. It must outlast the gateway's JWKS retry backoff (1 s
+# doubling, capped at 30 s): a first fetch that lands while Keycloak is still importing its realm is
+# retried after 1, 2, 4, 8, 16 and then 30 s, so 90 attempts cover that 61 s climb to the cap with the
+# rest as slack. The budget bounds the wait; it never widens what counts as ready.
+READY_ATTEMPTS=90
+
 while read -r SERVICE SCHEME PORT ROOT; do
     [[ -z "$SERVICE" ]] && continue
     MGMT_URL="${SCHEME}://localhost:${PORT}"
@@ -406,7 +421,7 @@ while read -r SERVICE SCHEME PORT ROOT; do
     READY_URL="${MGMT_URL}${ROOT}/health/ready"
 
     # -f is load-bearing: the readiness endpoint answers 503 when the gateway is not READY, and
-    # WITHOUT -f curl exits 0 on that 503 — so this assertion would pass on a gateway that is merely
+    # WITHOUT -f curl exits 0 on that 503 — so this poll would clear on a gateway that is merely
     # listening. -k is applied from the DERIVED scheme, so a plain-HTTP management interface is probed
     # without it and no branch on the service name is needed.
     READY_OPTS=(-sf --connect-timeout 2 --max-time 5)
@@ -414,11 +429,18 @@ while read -r SERVICE SCHEME PORT ROOT; do
         READY_OPTS+=(-k)
     fi
 
-    if ! curl "${READY_OPTS[@]}" "${READY_URL}" > /dev/null 2>&1; then
-        echo "❌ ${SERVICE} reported healthy but ${READY_URL} is not UP"
-        capture_sample_diagnostics "$SERVICE" "$MGMT_URL" "$ROOT"
-        exit 1
-    fi
+    echo "⏳ Waiting for ${SERVICE} to report READY (up to ${READY_ATTEMPTS} attempts)..."
+    for ((attempt = 1; attempt <= READY_ATTEMPTS; attempt++)); do
+        if curl "${READY_OPTS[@]}" "${READY_URL}" > /dev/null 2>&1; then
+            break
+        fi
+        if (( attempt == READY_ATTEMPTS )); then
+            echo "❌ ${SERVICE} reported healthy but ${READY_URL} was not UP within ${READY_ATTEMPTS} attempts"
+            capture_sample_diagnostics "$SERVICE" "$MGMT_URL" "$ROOT"
+            exit 1
+        fi
+        sleep 1
+    done
     echo "✅ ${SERVICE} is ready!"
 done <<< "$TARGETS"
 

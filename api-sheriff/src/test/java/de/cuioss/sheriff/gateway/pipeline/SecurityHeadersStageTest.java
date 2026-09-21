@@ -577,7 +577,7 @@ class SecurityHeadersStageTest {
         return PipelineRequest.builder()
                 .method(method)
                 .requestPath("/api")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(headers)
                 .build();
     }

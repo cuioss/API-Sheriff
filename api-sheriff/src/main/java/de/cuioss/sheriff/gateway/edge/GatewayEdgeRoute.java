@@ -15,12 +15,12 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -81,6 +81,7 @@ import de.cuioss.sheriff.gateway.pipeline.FramingGate;
 import de.cuioss.sheriff.gateway.pipeline.OriginValidationStage;
 import de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.pipeline.ThoroughChecksStage;
@@ -914,8 +915,8 @@ public class GatewayEdgeRoute {
         // map-collapsed query string the BFF-13 duplicate-parameter defence re-parses.
         String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? readFormBody(ctx) : null;
         BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
-                ctx.request().query(), cookieHeader, firstQueryParam(request, CLAIMS_PARAM),
-                firstQueryParam(request, RETURN_URL_PARAM), firstQueryParam(request, STATE_PARAM), rawFormBody, method);
+                ctx.request().query(), cookieHeader, firstQueryParam(ctx, CLAIMS_PARAM),
+                firstQueryParam(ctx, RETURN_URL_PARAM), firstQueryParam(ctx, STATE_PARAM), rawFormBody, method);
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
         renderReserved(ctx, request, response);
     }
@@ -950,9 +951,14 @@ public class GatewayEdgeRoute {
         setCookieHeaders.forEach(cookie -> response.headers().add(SET_COOKIE_HEADER, cookie));
     }
 
-    private static @Nullable String firstQueryParam(PipelineRequest request, String name) {
-        List<String> values = request.queryParameters().get(name);
-        return values == null || values.isEmpty() ? null : values.getFirst();
+    /**
+     * Reads the first <em>decoded</em> value of a reserved-path query parameter ({@code claims},
+     * {@code returnUrl}, {@code state}) from the transport. The pipeline query carries the raw,
+     * still-encoded pair sequence (ADR-0047), which is the wrong form for these consumers: they compare or
+     * redirect on the value's meaning, so they read Vert.x's decoded view instead.
+     */
+    private static @Nullable String firstQueryParam(RoutingContext ctx, String name) {
+        return ctx.request().getParam(name);
     }
 
     /**
@@ -1287,7 +1293,7 @@ public class GatewayEdgeRoute {
         return PipelineRequest.builder()
                 .method(method)
                 .requestPath(rawPath)
-                .queryParameters(toListMap(raw.params()))
+                .queryParameters(rawQueryPairs(raw.query()))
                 .headers(toListMap(raw.headers()))
                 .host(authorityHost(raw))
                 .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
@@ -1316,6 +1322,42 @@ public class GatewayEdgeRoute {
         return authority == null ? null : authority.host();
     }
 
+    /**
+     * Splits the raw request-target query into its still-percent-encoded pairs — the form the
+     * security filter validates and the forward path emits verbatim (ADR-0047).
+     * <p>
+     * The query is split on {@code &} and each pair on its <em>first</em> {@code =}; empty segments
+     * are skipped, so {@code a=1&&b=2} yields the same pair count Vert.x reports. Names and values are
+     * left exactly as they arrived: no percent-decoding and no {@code +}-to-space translation, because
+     * decoding here would hand the cui-http pipelines — which decode themselves — an already-decoded
+     * value and would make the forwarded bytes differ from the validated ones. The pairs are kept as
+     * an ordered sequence in wire order and are <em>never grouped by name</em>: {@code a=1&b=2&a=3}
+     * stays three pairs in that order, so the forward path emits the request-target the filter
+     * validated rather than a regrouped {@code a=1&a=3&b=2}. A pair without {@code =} is carried as a
+     * {@code null} value so the forward path can emit its bare form ({@code flag}, not
+     * {@code flag=}) verbatim.
+     *
+     * @param rawQuery the raw query without its leading {@code ?}, or {@code null} when the request
+     *                 carries none
+     * @return the raw pairs in wire order, immutable; empty when there is no query
+     */
+    private static List<QueryParameter> rawQueryPairs(@Nullable String rawQuery) {
+        if (rawQuery == null || rawQuery.isEmpty()) {
+            return List.of();
+        }
+        List<QueryParameter> pairs = new ArrayList<>();
+        for (String segment : rawQuery.split("&", -1)) {
+            if (segment.isEmpty()) {
+                continue;
+            }
+            int separator = segment.indexOf('=');
+            String name = separator < 0 ? segment : segment.substring(0, separator);
+            String value = separator < 0 ? null : segment.substring(separator + 1);
+            pairs.add(new QueryParameter(name, value));
+        }
+        return List.copyOf(pairs);
+    }
+
     private static Map<String, List<String>> toListMap(MultiMap multiMap) {
         Map<String, List<String>> map = new LinkedHashMap<>();
         for (String name : multiMap.names()) {
@@ -1336,26 +1378,47 @@ public class GatewayEdgeRoute {
         }
     }
 
-    private static String renderQuery(Map<String, List<String>> query) {
+    /**
+     * Renders the forwarded query from the validated raw pairs, appending each raw name and raw value
+     * as it arrived and in the order the sequence carries them, so the upstream receives the pairs the
+     * security filter validated, in the order it validated them (ADR-0047). A {@code null} value is a
+     * bare pair and is rendered as its bare name.
+     * <p>
+     * <strong>The one exception to verbatim: a raw {@code ;} is written as {@code %3B}.</strong> The
+     * edge splits pairs on {@code &} only, and {@code query_allow} / {@code query_deny} judge the
+     * decoded name of each {@code &}-split pair, while cui-http admits a raw {@code ;} under every
+     * profile. An upstream that also splits on {@code ;} would otherwise read {@code x=1;token=abc} as
+     * a second parameter {@code token} the gateway never judged — HTTP parameter smuggling (CWE-235).
+     * Encoding it keeps the pair one pair on the upstream too. Every route takes this path, whatever
+     * its forward mode; nothing else in the pair is touched, and the decoded meaning is unchanged
+     * ({@code %3B} decodes to {@code ;}), so validated still equals forwarded at the decoded level.
+     */
+    private static String renderQuery(List<QueryParameter> query) {
         if (query.isEmpty()) {
             return "";
         }
         StringBuilder rendered = new StringBuilder("?");
         boolean first = true;
-        for (Map.Entry<String, List<String>> entry : query.entrySet()) {
-            for (String value : entry.getValue()) {
-                if (!first) {
-                    rendered.append('&');
-                }
-                rendered.append(encode(entry.getKey())).append('=').append(encode(value));
-                first = false;
+        for (QueryParameter parameter : query) {
+            if (!first) {
+                rendered.append('&');
             }
+            rendered.append(encodeSemicolons(parameter.name()));
+            String value = parameter.value();
+            if (value != null) {
+                rendered.append('=').append(encodeSemicolons(value));
+            }
+            first = false;
         }
         return rendered.toString();
     }
 
-    private static String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    /**
+     * Rewrites every raw {@code ;} of a forwarded query name or value as {@code %3B}, leaving every
+     * other byte untouched (see {@link #renderQuery}).
+     */
+    private static String encodeSemicolons(String raw) {
+        return raw.replace(";", "%3B");
     }
 
     private static Optional<HttpMethod> parseMethod(String name) {

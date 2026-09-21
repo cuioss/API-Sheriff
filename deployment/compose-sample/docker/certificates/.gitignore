@@ -1,10 +1,15 @@
 # NO KEY MATERIAL IS EVER COMMITTED.
 #
-# generate-certificates.sh is the source of truth for everything in this directory; the artifacts it
-# produces are local, disposable and — in the case of the key — secret. Ignoring them by pattern
-# rather than by name means a future addition (a truststore, a client bundle) is covered the moment
-# it appears, instead of the first time someone remembers to add it here.
+# generate-certificates.sh is the source of truth for every certificate, key and store in this
+# directory; the artifacts it produces are local, disposable and — in the case of the key — secret.
+# Ignoring them by pattern rather than by name means a future addition (a client bundle) is covered
+# the moment it appears, instead of the first time someone remembers to add it here.
+#
+# The ONE committed file besides the script is sample-idp-trust.properties: configuration that binds
+# the `sample-idp` trust profile to the generated truststore. It names paths, carries no key material,
+# and matches none of the patterns below.
 *.crt
 *.key
-# Covers the script's own intermediate keystore too, including a run interrupted before cleanup.
+# Covers the generated sample-idp truststore and the script's own intermediate keystore, including a
+# run interrupted before cleanup.
 *.p12

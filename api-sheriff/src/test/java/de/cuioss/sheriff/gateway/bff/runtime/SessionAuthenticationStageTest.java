@@ -454,7 +454,7 @@ class SessionAuthenticationStageTest {
         void rejectsUnselectedRoute() {
             SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin());
             PipelineRequest request = PipelineRequest.builder()
-                    .method(HttpMethod.GET).requestPath("/app").queryParameters(Map.of()).headers(Map.of()).build();
+                    .method(HttpMethod.GET).requestPath("/app").queryParameters(List.of()).headers(Map.of()).build();
 
             assertThrows(IllegalStateException.class, () -> stage.process(request));
         }
@@ -567,7 +567,7 @@ class SessionAuthenticationStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/app/orders")
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(headers)
                 .build();
         request.canonicalPath("/app/orders");

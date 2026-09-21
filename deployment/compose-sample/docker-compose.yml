@@ -221,6 +221,14 @@ services:
       # says https and why the readiness probe passes -k against the self-signed bundle.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # The trust material behind gateway.yaml's `jwks.tls_profile: sample-idp`. gateway.yaml names
+      # only the logical profile; this properties file binds it to the generated truststore holding
+      # the sample certificate Keycloak serves. Without it the gateway refuses to boot (a named but
+      # unbound profile is a startup error, never a silent fallback to default trust) — and without
+      # the profile at all, the JWKS fetch would fail certificate validation against the self-signed
+      # IdP and readiness would stay DOWN. Loaded from the already-mounted certificates/ volume, the
+      # same mechanism the integration-test stack uses for its benchmark-idp profile.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/sample-idp-trust.properties
       # NOTE: QUARKUS_HTTP_SSL_PORT is deliberately ABSENT. The integration stack sets it to move the
       # terminated listener off 8443 because its gateway.yaml declares a passthrough_sni block that
       # claims the public port for the SNI front listener. This sample declares no passthrough_sni,
@@ -230,9 +238,12 @@ services:
       # are never written by the gateway; a writable mount would be surface for no benefit.
       - ./docker/sheriff-config:/app/sheriff-config:ro
       - ./docker/certificates:/app/certificates:ro
-    # The gateway eagerly loads the issuer's key set at boot. Starting it before Keycloak accepts
-    # connections makes that load fail, and the issuer then stays unhealthy for the whole run — so
-    # this gate is load-bearing, not cosmetic.
+    # The gateway loads the issuer's key set at boot and reports readiness DOWN until it has. A fetch
+    # that fails because Keycloak is not answering yet is retried on a bounded backoff (1 s doubling,
+    # capped at 30 s), so an early start recovers — but it recovers late. Ordering the gateway behind
+    # Keycloak's health keeps the first fetch close to succeeding. That health probe is accept-level
+    # only (see keycloak above), so the realm may still be importing when the gateway starts;
+    # scripts/start-sample.sh therefore polls readiness with a bounded budget instead of probing once.
     depends_on:
       keycloak:
         condition: service_healthy

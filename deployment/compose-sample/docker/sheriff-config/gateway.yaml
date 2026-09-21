@@ -87,8 +87,17 @@ token_validation:
         # host-exact — no wildcard — and names ONLY this one trusted IdP. Widen it for no other
         # reason than adding a genuinely trusted issuer.
         allowed_egress_hosts: ["keycloak"]
-        # NOTE FOR A REAL DEPLOYMENT: this sample's Keycloak serves the same self-signed certificate
-        # the gateway does, so the JWKS fetch trusts it only because both sides share the generated
-        # bundle. Against an IdP with its own CA, bind a trust profile here (`tls_profile: <name>`)
-        # and supply the concrete trust anchors from the deployment — this document names the
-        # logical profile, never the store path or its password.
+        # WHICH trust anchors the JWKS fetch verifies Keycloak's certificate against. This sample's
+        # Keycloak serves a SELF-SIGNED certificate (docker/certificates/generate-certificates.sh),
+        # which no default trust store contains — so without a named profile the fetch fails PKIX
+        # path building, the key set never loads, and readiness stays DOWN for the whole run.
+        #
+        # This document names the LOGICAL profile only, never the store path or its password. The
+        # deployment binds it: docker-compose.yml points QUARKUS_CONFIG_LOCATIONS at
+        # docker/certificates/sample-idp-trust.properties, which maps `sample-idp` to the generated
+        # truststore holding exactly the sample certificate. A named profile REPLACES default trust
+        # for this client rather than adding to it, and a profile left unbound, anchor-free or
+        # trust-all is refused at boot — so this line can only ever narrow what the fetch accepts.
+        #
+        # For a real deployment keep the name (or pick your own) and bind it to your IdP's CA.
+        tls_profile: sample-idp

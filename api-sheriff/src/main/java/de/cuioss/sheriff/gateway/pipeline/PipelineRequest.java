@@ -52,7 +52,7 @@ public final class PipelineRequest {
 
     private final HttpMethod method;
     private final String requestPath;
-    private final Map<String, List<String>> queryParameters;
+    private final List<QueryParameter> queryParameters;
     private final Map<String, List<String>> headers;
     private final @Nullable String host;
     private final @Nullable String peerAddress;
@@ -70,7 +70,9 @@ public final class PipelineRequest {
     private PipelineRequest(Builder builder) {
         this.method = Objects.requireNonNull(builder.method, "method");
         this.requestPath = Objects.requireNonNull(builder.requestPath, "requestPath");
-        this.queryParameters = Map.copyOf(builder.queryParameters);
+        // An ordered pair sequence (never a name-keyed map) so the forwarded query keeps the inbound
+        // pair order, interleaved repeated names included.
+        this.queryParameters = List.copyOf(builder.queryParameters);
         this.headers = normalizeHeaders(builder.headers);
         this.host = builder.host;
         this.peerAddress = builder.peerAddress;
@@ -112,9 +114,23 @@ public final class PipelineRequest {
     }
 
     /**
-     * @return the inbound query parameters keyed by name (values in inbound order), empty when none
+     * The inbound query parameters in their <strong>raw, still-percent-encoded wire form</strong>
+     * (ADR-0047): names and values are exactly the bytes of the request-target query, split on
+     * {@code &} and on each pair's first {@code =}, with no percent-decoding and no {@code +}-to-space
+     * translation. This is the form the security filter validates and the forward path emits
+     * verbatim, so what was validated is exactly what is forwarded. A pair without {@code =} carries a
+     * {@code null} value, so its bare form survives forwarding.
+     * <p>
+     * The pairs form an <strong>ordered sequence in wire order</strong>, never a map grouped by name:
+     * {@code a=1&b=2&a=3} stays three pairs in exactly that order, so the upstream receives the
+     * request-target the gateway validated rather than a regrouped {@code a=1&a=3&b=2}.
+     * <p>
+     * A consumer that needs a <em>decoded</em> value (the reserved BFF parameters, for example)
+     * reads it from the transport, never from this sequence.
+     *
+     * @return the raw inbound query pairs in wire order, immutable; empty when there is no query
      */
-    public Map<String, List<String>> queryParameters() {
+    public List<QueryParameter> queryParameters() {
         return queryParameters;
     }
 
@@ -338,7 +354,7 @@ public final class PipelineRequest {
 
         private @Nullable HttpMethod method;
         private @Nullable String requestPath;
-        private Map<String, List<String>> queryParameters = Map.of();
+        private List<QueryParameter> queryParameters = List.of();
         private Map<String, List<String>> headers = Map.of();
         private @Nullable String host;
         private @Nullable String peerAddress;
@@ -367,10 +383,15 @@ public final class PipelineRequest {
         }
 
         /**
-         * @param queryParameters the inbound query parameters, keyed by name
+         * @param queryParameters the inbound query pairs in their raw, still-percent-encoded wire
+         *                        form, in wire order (interleaved repeated names kept where they
+         *                        arrived); a {@code null} value marks a bare pair without {@code =}.
+         *                        The security filter validates exactly these pairs and the forward
+         *                        path emits them verbatim, in this order (ADR-0047) — never pass
+         *                        decoded values here
          * @return this builder
          */
-        public Builder queryParameters(Map<String, List<String>> queryParameters) {
+        public Builder queryParameters(List<QueryParameter> queryParameters) {
             this.queryParameters = queryParameters;
             return this;
         }

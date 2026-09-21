@@ -151,7 +151,7 @@ class RouteSelectionStageTest {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath(canonicalPath)
-                .queryParameters(Map.of())
+                .queryParameters(List.of())
                 .headers(Map.of())
                 .build();
         request.canonicalPath(canonicalPath);

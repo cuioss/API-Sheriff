@@ -46,15 +46,22 @@ import org.junit.jupiter.api.Test;
 class SecurityProfileModeIT extends BaseIntegrationTest {
 
     /**
-     * A url-parameter value the strict url-parameter pipeline rejects: {@code <} lies outside the
-     * RFC 3986 {@code query} grammar (a path separator no longer qualifies — that grammar admits
-     * {@code /}). Sent percent-encoded with URL encoding disabled so the gateway sees exactly these
-     * bytes; {@link #REJECTED_PARAMETER_VALUE} is the decoded form the upstream echoes.
+     * A url-parameter value the strict url-parameter pipeline rejects: a double-encoded slash. The
+     * filter judges the raw, still-percent-encoded wire form (ADR-0047), so it sees {@code %252F} and
+     * detects the double encoding. A decoded {@code <} no longer separates the two routes — once the
+     * raw value is handed over it is judged by meaning, not by spelling. Sent with URL encoding
+     * disabled so the gateway sees exactly these bytes. The same literal re-grounds the api-sheriff
+     * unit leg ({@code GatewayEdgePipelineTest}).
      */
-    private static final String REJECTED_PARAMETER_VALUE_WIRE = "%3Chome";
+    private static final String REJECTED_PARAMETER_VALUE_WIRE = "%252F";
 
-    /** The decoded form of {@link #REJECTED_PARAMETER_VALUE_WIRE}. */
-    private static final String REJECTED_PARAMETER_VALUE = "<home";
+    /**
+     * What go-httpbin reports as the parameter's value when the gateway forwards
+     * {@link #REJECTED_PARAMETER_VALUE_WIRE} verbatim: the upstream decodes the raw pair exactly once.
+     * A gateway that decoded or re-encoded on the way would make the upstream report {@code /} or
+     * {@code %252F} instead.
+     */
+    private static final String REJECTED_PARAMETER_VALUE_DECODED_ONCE = "%2F";
 
     /** The strict preset's query-parameter count cap; the pre-route floor enforces it for every route. */
     private static final int STRICT_PARAMETER_COUNT_CAP = 20;
@@ -106,10 +113,11 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
             // The control for this assertion is rejectedParameterValueIsRejectedOnInheritingRoute
             // above: the SAME parameter value on the strict route returns 400. The echo proves the
             // request was forwarded, not merely un-rejected.
+            String rawQuery = "return_to=" + REJECTED_PARAMETER_VALUE_WIRE;
             var response = given()
                     .urlEncodingEnabled(false)
                     .when()
-                    .get(MINIMAL_ROUTE_PATH + "?return_to=" + REJECTED_PARAMETER_VALUE_WIRE)
+                    .get(MINIMAL_ROUTE_PATH + "?" + rawQuery)
                     .then()
                     .statusCode(200)
                     .extract();
@@ -117,8 +125,11 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
             assertEquals("GET", response.path("method"));
             assertTrue(response.path("url").toString().contains("/anything/minimal-mode"),
                     "the minimal route must reach its own upstream path");
-            assertEquals(REJECTED_PARAMETER_VALUE, response.path("args.return_to[0]"),
-                    "the value strict rejects must be forwarded verbatim under 'minimal'");
+            assertTrue(response.path("url").toString().endsWith("?" + rawQuery),
+                    "the value strict rejects must be forwarded as its raw pair, never re-encoded, under"
+                            + " 'minimal'; echoed url: " + response.path("url"));
+            assertEquals(REJECTED_PARAMETER_VALUE_DECODED_ONCE, response.path("args.return_to[0]"),
+                    "the upstream decodes the raw pair exactly once, so the gateway forwarded it verbatim");
         }
     }
 

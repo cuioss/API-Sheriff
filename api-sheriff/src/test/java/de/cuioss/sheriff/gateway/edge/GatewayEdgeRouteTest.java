@@ -395,7 +395,7 @@ class GatewayEdgeRouteTest {
             // Assert
             assertEquals(SecurityProfile.STRICT, strict.profile(),
                     "a block-less route inherits the gateway-wide profile");
-            assertEquals(SecurityConfiguration.strict(), strict.configuration(),
+            assertEquals(SecurityProfile.STRICT.preset(), strict.configuration(),
                     "and is governed by that profile's preset, not by SecurityConfiguration.defaults()");
             assertEquals(SecurityProfile.LENIENT, lenient.profile());
             assertEquals(SecurityConfiguration.lenient(), lenient.configuration());
@@ -443,9 +443,9 @@ class GatewayEdgeRouteTest {
                             "a route declaring its own limits still carries the gateway-wide override"),
                     () -> assertEquals(2048L, relaxedWithLimits.maxBodySize(),
                             "and still carries its own declared limit"),
-                    () -> assertEquals(SecurityConfiguration.strict(), omitted,
+                    () -> assertEquals(SecurityProfile.STRICT.preset(), omitted,
                             "an omitted key leaves the preset untouched"));
-            assertDiffersFromPresetInExtendedAsciiAlone(SecurityConfiguration.strict(), relaxedStrict);
+            assertDiffersFromPresetInExtendedAsciiAlone(SecurityProfile.STRICT.preset(), relaxedStrict);
             assertDiffersFromPresetInExtendedAsciiAlone(SecurityConfiguration.lenient(), tightenedLenient);
         }
 
@@ -498,18 +498,18 @@ class GatewayEdgeRouteTest {
             assertEquals(SecurityProfile.MINIMAL, inheritsLenient.profile(), "the mode itself stays 'minimal'");
             assertEquals(SecurityConfiguration.lenient(), inheritsLenient.configuration(),
                     "'minimal' takes the nearest non-minimal profile's limits");
-            assertEquals(SecurityConfiguration.strict(), allMinimal.configuration(),
+            assertEquals(SecurityProfile.STRICT.preset(), allMinimal.configuration(),
                     "an all-minimal chain lands on STRICT rather than leaving the limits unresolved");
             assertEquals(SecurityProfile.MINIMAL, globalMinimalBlockLess.profile(),
                     "a gateway-wide 'minimal' also reaches a route with no security_filter block");
-            assertEquals(SecurityConfiguration.strict(), globalMinimalBlockLess.configuration());
+            assertEquals(SecurityProfile.STRICT.preset(), globalMinimalBlockLess.configuration());
         }
 
         @Test
         @DisplayName("overrides only the declared limits and leaves every other dimension on the preset")
         void overridesOnlyDeclaredLimits() {
             // Arrange — one declared dimension against the strict preset
-            SecurityConfiguration preset = SecurityConfiguration.strict();
+            SecurityConfiguration preset = SecurityProfile.STRICT.preset();
             SecurityFilterConfig declared = SecurityFilterConfig.builder()
                     .maxBodyBytes(4096)
                     .allowedContentTypes(List.of("application/json"))
@@ -651,7 +651,7 @@ class GatewayEdgeRouteTest {
         @DisplayName("the Authorization carve-out differs from a strict baseline in the length cap alone")
         void authorizationCarveOutSeededFromStrictBaseline() {
             // Arrange — a bearer-only gateway declaring no security_defaults block at all
-            SecurityConfiguration baseline = SecurityConfiguration.strict();
+            SecurityConfiguration baseline = SecurityProfile.STRICT.preset();
 
             // Act
             SecurityConfiguration carveOut = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
@@ -690,9 +690,9 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration blockPresent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
-                    gatewayWithAuthorizationCap(null), SecurityConfiguration.strict());
+                    gatewayWithAuthorizationCap(null), SecurityProfile.STRICT.preset());
             SecurityConfiguration blockAbsent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
-                    GatewayConfig.builder().version(1).build(), SecurityConfiguration.strict());
+                    GatewayConfig.builder().version(1).build(), SecurityProfile.STRICT.preset());
 
             // Assert
             assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
@@ -712,13 +712,13 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration inertRuntime = GatewayEdgeRoute.cookieHeaderConfigurationFor(
-                    cookieModeGateway(), BffRuntime.inert(), SecurityConfiguration.strict());
+                    cookieModeGateway(), BffRuntime.inert(), SecurityProfile.STRICT.preset());
             SecurityConfiguration sessionAbsent = GatewayEdgeRoute.cookieHeaderConfigurationFor(
                     GatewayConfig.builder().version(1).build(), activeCookieRuntime(),
-                    SecurityConfiguration.strict());
+                    SecurityProfile.STRICT.preset());
             SecurityConfiguration serverMode = GatewayEdgeRoute.cookieHeaderConfigurationFor(
                     sessionModeGateway(OidcConfig.Session.MODE_SERVER), activeCookieRuntime(),
-                    SecurityConfiguration.strict());
+                    SecurityProfile.STRICT.preset());
 
             // Assert
             assertNull(inertRuntime, "a bearer-only gateway keeps the resolved baseline on every header");
@@ -735,7 +735,7 @@ class GatewayEdgeRouteTest {
             // assertion originally existed for: on a strict gateway the cookie carve-out used to be
             // built from the builder defaults, quietly relaxing three further validators the ADR
             // promised were untouched.
-            SecurityConfiguration baseline = SecurityConfiguration.strict();
+            SecurityConfiguration baseline = SecurityProfile.STRICT.preset();
 
             // Act
             SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(

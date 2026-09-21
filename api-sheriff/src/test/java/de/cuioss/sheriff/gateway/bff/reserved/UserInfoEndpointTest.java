@@ -17,13 +17,16 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -34,6 +37,7 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -242,6 +246,65 @@ class UserInfoEndpointTest {
             UserInfoOutcome outcome = endpoint.handle(cookieHeader, "email", T0);
 
             assertEquals("no-store", outcome.headers().get("Cache-Control"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Native JSON claim types through the production projection")
+    class NativeClaimTypes {
+
+        private static final String PAYLOAD = """
+                {"sub":"user-sub-1","groups":["test-group","admins"],"address":{"country":"DE"},\
+                "exp":1790000000,"email_verified":true,"secret_structure":{"internal":["x"]}}
+                """;
+
+        private UserInfoEndpoint projectingEndpoint;
+
+        @BeforeEach
+        void bindProjection() {
+            ClaimAllowlistFilter structuredFilter = new ClaimAllowlistFilter(
+                    List.of("sub", "groups", "address", "exp", "email_verified"), List.of("sub"));
+            IdTokenContent idToken = new IdTokenContent(Map.of(), compactToken(PAYLOAD));
+            projectingEndpoint = new UserInfoEndpoint(new ServerSessionBinding(sessionStore, sessionCodec),
+                    structuredFilter, session -> IdTokenClaimProjection.project(idToken));
+        }
+
+        private static String compactToken(String payloadJson) {
+            Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+            return encoder.encodeToString("{\"alg\":\"RS256\"}".getBytes(StandardCharsets.UTF_8)) + "."
+                    + encoder.encodeToString(payloadJson.getBytes(StandardCharsets.UTF_8)) + ".c2ln";
+        }
+
+        @Test
+        @DisplayName("Allowlisted array, object, number and boolean claims are disclosed in their native types")
+        void shouldDiscloseStructuredClaimsNatively() {
+            UserInfoOutcome outcome = projectingEndpoint.handle(cookieHeader, "groups,address,exp,email_verified", T0);
+
+            assertEquals(200, outcome.status());
+            Map<String, Object> claims = claimsOf(outcome);
+            assertIterableEquals(List.of("test-group", "admins"), assertInstanceOf(List.class, claims.get("groups")));
+            assertEquals("DE", assertInstanceOf(Map.class, claims.get("address")).get("country"));
+            assertEquals(1_790_000_000L, assertInstanceOf(Number.class, claims.get("exp")).longValue());
+            assertEquals(Boolean.TRUE, assertInstanceOf(Boolean.class, claims.get("email_verified")));
+        }
+
+        @Test
+        @DisplayName("A structured claim outside the allowlist is still refused 403 when requested")
+        void shouldRefuseNonAllowlistedStructuredClaim() {
+            UserInfoOutcome outcome = projectingEndpoint.handle(cookieHeader, "secret_structure", T0);
+
+            assertEquals(403, outcome.status(), "the allowlist cap survives the type change");
+            assertFalse(outcome.isDisclosed());
+        }
+
+        @Test
+        @DisplayName("A structured claim outside the allowlist is absent from the full view")
+        void shouldOmitNonAllowlistedStructuredClaimFromFullView() {
+            UserInfoOutcome outcome = projectingEndpoint.handle(cookieHeader, UserInfoEndpoint.FULL_VIEW, T0);
+
+            Map<String, Object> claims = claimsOf(outcome);
+            assertFalse(claims.containsKey("secret_structure"), "a structured claim never widens disclosure");
+            assertTrue(claims.keySet().containsAll(List.of("groups", "address", "exp", "email_verified")));
         }
     }
 

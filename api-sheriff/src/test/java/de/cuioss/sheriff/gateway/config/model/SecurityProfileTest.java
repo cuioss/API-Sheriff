@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -80,13 +82,49 @@ class SecurityProfileTest {
     }
 
     @Test
-    @DisplayName("Should map STRICT and LENIENT onto their cui-http presets")
-    void shouldMapToPresets() {
+    @DisplayName("Should map LENIENT onto the unmodified cui-http lenient preset")
+    void shouldMapLenientToPreset() {
         // Act + Assert
-        assertEquals(SecurityConfiguration.strict(), SecurityProfile.STRICT.preset(),
-                "STRICT is backed by SecurityConfiguration.strict()");
         assertEquals(SecurityConfiguration.lenient(), SecurityProfile.LENIENT.preset(),
                 "LENIENT is backed by SecurityConfiguration.lenient()");
+    }
+
+    @Test
+    @DisplayName("Should refuse decoded line breaks in parameter values under STRICT")
+    void shouldRefuseLineBreaksInParameterValuesUnderStrict() {
+        // Act
+        SecurityConfiguration strict = SecurityProfile.STRICT.preset();
+
+        // Assert
+        assertFalse(strict.allowLineBreaksInParameterValues(),
+                "STRICT refuses a url-parameter value that decodes to CR or LF");
+        assertNotEquals(SecurityConfiguration.strict(), strict,
+                "the deviation is real: the cui-http strict preset admits line breaks in parameter values");
+    }
+
+    @Test
+    @DisplayName("Should equal the cui-http strict preset in every component but the line-break flag")
+    void shouldEqualStrictPresetExceptLineBreakFlag() {
+        // Arrange
+        SecurityConfiguration upstream = SecurityConfiguration.strict();
+
+        // Act - put the one deviating component back to the upstream value
+        SecurityConfiguration reseeded = SecurityConfigurations
+                .builderSeededFrom(SecurityProfile.STRICT.preset())
+                .allowLineBreaksInParameterValues(upstream.allowLineBreaksInParameterValues())
+                .build();
+
+        // Assert
+        assertEquals(upstream, reseeded,
+                "allowLineBreaksInParameterValues is the only component STRICT changes");
+    }
+
+    @Test
+    @DisplayName("Should return the same cached STRICT policy on every call")
+    void shouldCacheStrictPreset() {
+        // Act + Assert
+        assertSame(SecurityProfile.STRICT.preset(), SecurityProfile.STRICT.preset(),
+                "the derived strict policy is built once, not per call");
     }
 
     @Test

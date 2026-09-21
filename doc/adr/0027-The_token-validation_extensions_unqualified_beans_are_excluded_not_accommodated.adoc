@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The gateway drives token validation from gateway.yaml through the @GatewayValidator qualifier and never uses the token-validation extension's unqualified validator, so every extension bean that reaches it — two health probes and a scheduled metrics collector — is removed from the bean set rather than configured into a working state; the extension dependency itself stays for the GraalVM reflection registration the gateway does use, and the resulting readiness `jwks` datum is a boot-time constructibility fact rather than a live signal.
+// summary: The gateway drives token validation from gateway.yaml through the @GatewayValidator qualifier and never uses the token-validation extension's unqualified validator, so every extension bean that reaches it — two health probes and a scheduled metrics collector — is removed from the bean set rather than configured into a working state; the extension dependency itself stays for the GraalVM reflection registration the gateway does use, and the resulting readiness `jwks` datum is a boot-time constructibility fact rather than a live signal. AMENDED (A1): the live-signal gap section 5 records is closed — the gateway installs its own JWKS loader per issuer, readiness reads a non-fetching per-issuer key-set state and reports DOWN while any issuer has no key set, and a failed load is retried on a bounded backoff; the exclusion and the eager-boot fail-closed disposition are unchanged.
 // tags: health-checks, readiness, metrics, scheduler, cdi, bean-exclusion, observability, extension-boundary, native-image, token-validation
 // affects: api-sheriff
 // supersedes:
@@ -157,6 +157,10 @@ gateway's own metrics adapter, which already binds the `cui-http` security count
 
 === 5. That `jwks` datum is boot-time constructibility, not a live signal
 
+NOTE: The gap this section records is *closed* by <<amendment-a1,Amendment A1>>: the readiness
+check now carries a live, non-fetching per-issuer key-set read. The section is kept as the statement
+of what the exclusion did and did not remove.
+
 This is stated as part of the decision rather than left to be discovered, because the datum reads
 more strongly than it is. The producer forces the application-scoped validator into existence at
 boot, and a failure there aborts startup; afterwards the probe's lookup returns the cached instance
@@ -197,15 +201,16 @@ exclusion removed, and restoring the excluded probes would not close it.
   scheduler-driven case; a bean in the same position driven some other way is still found from its
   symptom.
 * Someone reading the readiness payload sees a `jwks` datum that reports ready and will reasonably
-  read it as a live signal. It is not one, and only the documentation says so.
+  read it as a live signal. *Resolved by <<amendment-a1,Amendment A1>>*: the datum now reports
+  whether every issuer has a loaded key set; what it still does not cover is recorded there.
 
 === Risks
 
-* *The boot-time-constructibility datum is mistaken for liveness.* This is the principal residual
-  risk and it is accepted deliberately: the gap is real, it pre-dates this decision, and closing it
-  is separate work. Until then a JWKS endpoint can become unreachable, a key rotation can stall, or
-  a signing key can expire, and readiness will continue to report ready throughout. Operational
-  alerting must not treat this readiness probe as coverage for those conditions.
+* *The boot-time-constructibility datum is mistaken for liveness.* This was the principal residual
+  risk when the exclusion was decided. It is *closed for key-set availability* by
+  <<amendment-a1,Amendment A1>> -- readiness is `DOWN` while any issuer has no key set. The part that
+  remains is narrower and is carried there: a key set that loaded once keeps readiness `UP` while
+  later background refreshes fail, because the library keeps serving the keys it already holds.
 
 * *The exclusion outlives its justification.* It is correct only while the extension's issuer
   namespace remains unpopulated in this artifact. A deployment that ever supplies extension-backed
@@ -276,6 +281,48 @@ The unifying principle: the first two alternatives try to make an uninformative 
 last two try to make it *someone else's problem*. An observability surface is composed by the
 application that serves it -- a bean belongs in it when it observes something that application does,
 and a bean that observes nothing is removed rather than satisfied.
+
+[[amendment-a1]]
+== Amendment A1: readiness carries a live per-issuer key-set read
+
+*The gap section 5 records is closed.* The gateway's readiness check now carries the live
+loader-status read section 5 named as the way to close it, without restoring any excluded bean and
+without touching the eager-boot disposition.
+
+* *The gateway owns each issuer's loader.* Every issuer's library loader is wrapped in a
+  gateway-owned loader installed through the library's public issuer-configuration loader seam. The
+  wrapper records the outcome of each load attempt itself and reports the library's `OK` status
+  exactly when a key set has been loaded. That second part matters beyond readiness: the library's
+  own loader never moves from its undefined status to `OK` after a failed first fetch, and its issuer
+  cache re-admits an issuer only on `OK`, so the wrapper also repairs the library's recovery path.
+* *Readiness reads a non-fetching per-issuer view.* A per-issuer key-set state published alongside
+  the qualified validator is read by the gateway's readiness check after the validator resolves.
+  Readiness is `UP` with `jwks: ready` only when every configured issuer has a key set; otherwise it
+  is `DOWN` with `jwks: loading` or `jwks: unavailable` and the bounded counts `issuers` and
+  `issuers_loaded`, rendered through the same DOWN path the construction-failure leg uses. No payload
+  names an issuer, a URL, a host or a cause. Reading the state never triggers a fetch, so the probe
+  cannot drive network activity.
+* *A failed load is retried fast and bounded.* A load attempt that produces no key set schedules the
+  next one after one second, doubling per attempt, capped at thirty seconds and never above the
+  issuer's refresh interval. Retries run on one shared scheduler, strictly sequentially per issuer, so
+  neither request traffic nor the probe can multiply them. This schedule sits *above* the HTTP
+  client's own retry of each fetch: an attempt against an unreachable provider reports failure only
+  after that inner backoff (roughly 1, 2, 4 and 8 seconds, about 17 seconds in all) is spent, so the
+  gateway's first retry follows the first attempt's end, not the boot, by one second.
+
+*What is unchanged.* The exclusion of the extension's unqualified beans stands exactly as decided,
+and so does the eager-boot, fail-closed assembly: a misconfigured JWKS source still aborts startup,
+so the construction-failure leg of the readiness check remains unreachable in the shipped topology
+and is kept for the reason section 5 gives. The readiness datum changes meaning from *the validator
+could be built* to *every issuer has a key set*; the operator-facing contract is in
+link:../configuration.adoc#_jwks_readiness[the configuration reference].
+
+*What is still not covered.* Once an issuer's key set has loaded, the library's background refresh
+keeps it current, and a later refresh failure leaves the loaded keys in service -- so readiness stays
+`UP` while an identity provider becomes unreachable after boot, and a stalled key rotation is not
+detected by this probe. That is the deliberate choice of *availability of validation* over *freshness
+of the key set*: the held keys keep validating the tokens they signed. Operational alerting that
+needs freshness still cannot rely on readiness alone.
 
 == References
 

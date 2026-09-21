@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: A host-side bring-up gate restates neither scheme, published port nor management context path -- it derives all three from the resolved Compose model via the service's management-scheme and management-root-path labels -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a single-shot readiness assertion behind it, which needs no retry budget because the waiting already happened.
+// summary: A host-side bring-up gate restates neither scheme, published port nor management context path -- it derives all three from the resolved Compose model via the service's management-scheme and management-root-path labels -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a readiness assertion behind it -- a single shot in the integration stack, a bounded poll in the operator sample.
 // tags: readiness, bring-up, integration-tests, compose-model, probe-derivation, container-health
 // affects: integration-tests, demo-client
 // supersedes:
@@ -49,8 +49,9 @@ as failure, so a service answering "not ready" while starting does not clear the
 gate at port-accept time.
 
 This rule survived the amendment below unchanged, and is in fact the reason the
-amendment is safe. The single-shot readiness assertion both bring-up scripts now
-run *is* this rule: it hits the readiness endpoint, with the client configured to
+amendment is safe. The readiness assertion both bring-up scripts now run -- a single
+shot in the integration stack, a bounded wait in the operator sample (see the nuance
+under the third rule) -- *is* this rule: it hits the readiness endpoint, with the client configured to
 fail closed on a non-2xx answer. What changed is only where the *waiting* happens,
 never what is finally asserted.
 
@@ -84,12 +85,12 @@ unscoped on purpose -- each of its three services is either health-checked or
 correctly satisfied by "running" -- and that is a property of that stack, not a
 different rule.
 
-**Delegate the waiting to the image's container health check; the host keeps only a
+**Delegate the waiting to the image's container health check; the host keeps a
 bound.** *(Amends the original "Derive the retry budget from measurement, and record
 the measurement". The rule below replaces it for the two stacks named in the scope
 note; see that note for where the original still governs.)*
 
-There is no host-side retry budget. The waiting is performed by
+The waiting is performed by
 `compose up --wait`, which blocks on the `HEALTHCHECK` baked into the gateway
 image, so the cadence that used to live as a host-side loop -- `--interval`,
 `--retries`, `--start-period` -- is declared once, in the Dockerfile, and is an
@@ -98,7 +99,7 @@ Compose `healthcheck:` key does not extend the image's declaration; it *override
 it, which is why a copy is a mirror to be kept in step rather than a second
 authority.
 
-The host retains exactly one number, and it is a bound rather than a budget: the
+For this wait the host retains a bound rather than a budget: the
 `--wait-timeout`. It is 180s for the integration stack and 120s for the operator
 sample, both derived from the same measured worst-case time-to-live of 9.14s
 recorded in the integration-test topology document -- roughly a 20x and a 13x
@@ -108,19 +109,37 @@ sample brings up one gateway and two supporting services. Neither is consumed on
 healthy run, so the headroom costs nothing; both must survive a loaded CI runner,
 which is why they are sized against a measured figure rather than an observed one.
 
-The readiness assertion behind that wait needs no budget at all, and this is the
+For the integration stack, the readiness assertion behind that wait needs no budget at all, and this is the
 substantive simplification. A retry budget exists to absorb the interval between
 "asked too early" and "ready". By the time the assertion runs, the runtime has
 already reported the instance healthy -- so a non-UP readiness answer is not an
 early ask, it is a defect, and retrying would only delay reporting it. Single-shot
 is therefore not a shortcut; it is what the layering makes correct.
 
-One nuance belongs to the rationale rather than the rule. When a readiness check
-reports a *boot-time constructibility* fact read from a cached instance, the
-network cost sits in boot, ahead of readiness, not inside the probe. That is why
-readiness lands at effectively the same moment liveness does on this gateway, and
-why delegating the wait to a liveness-shaped container check costs no additional
-delay over the host-side readiness loop it replaced.
+One nuance belongs to the rationale rather than the rule, and it has moved. When
+this layering was adopted, the gateway's readiness check reported a *boot-time
+constructibility* fact read from a cached instance, so readiness landed at
+effectively the same moment liveness did. It no longer does: readiness is now `DOWN`
+until every configured issuer has a loaded JWKS key set
+(link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
+Amendment A1]), and that key set arrives asynchronously after boot. The single shot
+therefore stays correct only for a reason the *stack* supplies rather than the
+probe: the identity provider must be serving its key set before the gateway's
+health check first reports healthy. The integration stack supplies it -- it starts
+Keycloak first and waits for Keycloak's own readiness before any gateway starts, so
+each gateway's first key-set fetch succeeds within a moment of boot, and the image's
+health check first reports healthy only after its own `--interval` of ten seconds, by
+which time even a first fetch that failed has been retried several times on the
+gateway's one-second-doubling backoff. The operator sample orders its gateway only
+behind an *accept-level* Keycloak health check, which is a weaker guarantee: the
+gateway can start while the realm is still importing and sit out a backoff step. The
+sample therefore takes the remedy the risk below names and runs a *bounded readiness
+wait* in place of the single shot -- the same fail-closed `health/ready` probe,
+repeated at one-second intervals up to a budget of 90 attempts. That budget has a
+recorded origin rather than a round-number one: it outlasts the backoff's whole climb
+to its 30-second cap (1 + 2 + 4 + 8 + 16 + 30 = 61 s), with the rest as slack. It
+bounds the wait and never widens what counts as ready, and the integration stack,
+which does supply the ordering guarantee, keeps the single shot.
 
 **Scope note.** These amendments describe the integration stack's
 `start-integration-container.sh` and the operator sample's `start-sample.sh`.
@@ -143,9 +162,9 @@ original form.
 * A deliberate per-instance exception is expressed as data on the service rather
   than as a branch in the probe, so one loop covers every instance.
 * The bound is auditable: its origin is a recorded measurement, not a convention.
-* The probe cadence is an image-level artifact, so every consumer of the image --
+* The liveness cadence is an image-level artifact, so every consumer of the image --
   the integration stack, the operator sample, an orchestrator -- inherits one
-  declaration instead of re-deriving a host-side budget of its own.
+  `HEALTHCHECK` declaration instead of re-deriving it.
 
 === Negative
 
@@ -162,7 +181,7 @@ original form.
   `compose up --wait`, `depends_on: condition: service_healthy`, an orchestrator's
   liveness probe, a `docker ps` health column -- is reading liveness however
   "healthy" reads. Readiness remains asserted in exactly two places: the host-side
-  single shot against `health/ready` beneath the deployment's configured management
+  assertion against `health/ready` beneath the deployment's configured management
   root path -- `/q/health/ready` on a stock image, but derived from the
   `de.cuioss.sheriff.management-root-path` label rather than assumed, per the decision
   above -- and `GatewayReadinessCheck` itself. A reader
@@ -178,9 +197,24 @@ original form.
   materially safer than a duplicated literal -- both stay correct when the model
   changes -- but the `--wait-timeout` value is a genuine duplicate: the two can be
   re-tuned apart, and only a shared library would make them one. The amendment
-  shrinks this rather than removing it -- one bound per script instead of a whole
-  retry budget per script -- and the third script, demo-client's, still carries the
+  shrinks this rather than removing it -- one bound per script in the integration stack, a bound and a
+  derived poll budget in the operator sample -- and the third script, demo-client's, still carries the
   original budget.
+* **The single-shot assertion now races the key-set fetch, bounded by the stack.**
+  Readiness waits for every issuer's JWKS key set, which a liveness-shaped health check
+  cannot see. The single shot therefore holds only while the identity provider serves
+  its key set -- over a chain the gateway trusts -- before the health check's first
+  report. A stack that starts a gateway before its identity provider is serving, a
+  gateway configured with an issuer whose JWKS it cannot fetch or cannot trust, or a
+  shortened health-check interval turns the single shot into a failure: a spurious one
+  where the key set is merely late, a correct one where it can never load. Where the
+  key set is merely late, the remedy is a bounded readiness *wait* in place of the
+  single shot, never a relaxation of what readiness asserts. The operator sample has
+  taken that remedy (see the nuance above). It also met the other half of this risk: it
+  named no JWKS trust profile, so its key set could never load against the self-signed
+  sample identity provider. The fix there was to bind a trust profile to the generated
+  certificate, not to wait longer -- no budget turns a key set that cannot load into a
+  ready gateway.
 * The image's health-check cadence and any Compose `healthcheck:` block mirroring it
   are two spellings of one contract, and Compose resolves the conflict by *replacing*
   rather than merging. A drifted mirror is therefore not a documentation defect but a

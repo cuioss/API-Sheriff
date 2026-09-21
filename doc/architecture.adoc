@@ -281,11 +281,26 @@ Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
 * `RequestCollectionValidator` enforces collection-count limits (parameter/header/cookie
   counts) -- the DoS guard a per-value pipeline cannot express.
 * A shared, immutable `SecurityConfiguration` supplies the tunable limits. The gateway sources it
-  from the resolved profile's preset (`strict()` / `lenient()`), overlaid with any explicit
+  from the resolved profile's preset (`SecurityProfile.STRICT` -- `strict()` with parameter-value
+  line breaks refused -- or `lenient()`), overlaid with any explicit
   `security_filter` limit keys -- never from bare builder defaults. `minimal` has no preset of its own
   and inherits the nearest non-`minimal` one (see *Profiles* above).
 * A single `de.cuioss.http.security.monitoring.SecurityEventCounter` is passed into every
   pipeline; it auto-increments on each violation, and its counts feed the gateway metrics.
+
+*The query is validated in the form it is forwarded in.* The post-route stage receives the query
+pairs raw and still percent-encoded, split from the request-target itself on `&` and kept as an
+ordered pair sequence in wire order -- never grouped by name -- and validates names and values with
+`cui-http`'s parameter-name and parameter-value pipelines (each decoding once). The forward path
+appends exactly those pairs, in the same order, so interleaved repeated names such as `a=1&b=2&a=3`
+reach the upstream as validated and what the filter judged and what the upstream receives are the
+same bytes -- with one exception: every raw `;` in a forwarded name or value is written as `%3B`, on
+every route, so an upstream that also splits on `;` cannot read a second parameter out of a pair the
+gateway judged as one (CWE-235). The rewrite is lossless at the decoded level, so the validated form
+still equals the forwarded form there
+(link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc#semicolon-exception[ADR-0047]). The `strict`
+profile is the `cui-http` strict preset with one component changed: a parameter value decoding to CR
+or LF is refused.
 
 Path *whitelisting* that `cui-http` does not express natively (it has no path allow-list knob)
 is enforced at the gateway layer from the route's `allowed_paths`. Which client headers and
@@ -964,30 +979,42 @@ suffixes are Quarkus' own and are fixed; the prefix they hang from is
 seam moves -- see link:user/context-path.adoc[The Context Path]. All three therefore share whatever
 posture that single port has -- HTTPS by default, plain HTTP if the opt-out above is taken. That
 sharing is the point: health cannot be downgraded separately from metrics, because they are the
-same listener. Readiness reflects the loaded-and-validated configuration and the boot-time
-*constructibility* of the bearer-token validator -- not live issuer reachability. The distinction is
-load-bearing: resolving the validator proves every configured issuer declared a usable JWKS source,
-but the JWKS fetch itself is lazy, so an issuer that is configured correctly and unreachable right
-now still reports ready. A deployment with no `token_validation` block has no validator to
-construct. In that case a BFF `mode: server` deployment reports its `issuer_reachability` datum as
-`unverified` rather than asserted, because it reaches its issuer lazily on the first login and that
-does not gate boot readiness; a bearer-only deployment emits no `issuer_reachability` datum at all.
+same listener. Readiness reflects the loaded-and-validated configuration and -- where a
+`token_validation` block is configured -- whether *every configured issuer has a loaded key set*
+(link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
+Amendment A1]). Resolving the validator alone proves only that every issuer declared a usable JWKS
+source; the fetch itself is asynchronous, so the probe additionally reads a *non-fetching* per-issuer
+key-set state kept by the gateway's own JWKS loaders. While any issuer has no key set it reports
+`DOWN` with `jwks: loading` or `jwks: unavailable` and the bounded counts `issuers` / `issuers_loaded`;
+it turns `UP` with `jwks: ready` once every issuer has one. A failed load is retried by the loader
+on a bounded backoff (1 s doubling, capped at 30 s and never above the refresh interval), driven by a
+scheduler rather than by requests or probes, so an identity provider that comes up after the gateway
+is picked up within seconds. Readiness reports key-set *availability*, not *freshness*: once a key set
+has loaded, a later refresh failure keeps the held keys in service and readiness `UP` (see
+link:configuration.adoc#_jwks_readiness[Key-set loading and readiness]). A deployment with no
+`token_validation` block has no key set to wait for. A BFF `mode: server` deployment adds an
+`oidc: server` datum and an `issuer_reachability` datum that is *always* `unverified`, whether or not
+it configures `token_validation` and whether the probe is `UP` or `DOWN`; a bearer-only deployment
+emits no `issuer_reachability` datum at all. The probe holds no live reachability signal and sends no
+network request, and key-set state is not one: a loaded key set survives later refresh failures, so
+it would claim `reachable` for an issuer that has since gone offline, and a missing one would claim
+`unreachable` for an issuer that answered with unusable keys. What the key-set state does prove is
+reported by `jwks` and `issuers_loaded`, which alone drive the verdict. A server-mode deployment
+reaches its issuer lazily on the first login, which does not gate boot readiness.
 
-That reading is why the DOWN branch is, in the shipped topology, effectively unreachable rather than
-a routine outcome. `TokenValidatorProducer.onStartup` forces the same eager contextual-instance
+The *construction-failure* leg of the probe is, in the shipped topology, unreachable rather than a
+routine outcome. `TokenValidatorProducer.onStartup` forces the same eager contextual-instance
 creation the probe's `Instance.get()` performs -- it calls a method on the injected validator proxy
 at `StartupEvent` -- so a validator that cannot be constructed aborts the boot before the management
-listener ever binds; a validator that constructs but whose JWKS is lazily unreachable reports UP.
-The probe is therefore hardened for a *future* relaxation of that eager assembly, not against a live
-exposure.
+listener ever binds. That leg is hardened for a *future* relaxation of that eager assembly. The
+key-set leg above, by contrast, is live: a gateway that booted before its identity provider answered
+reports `DOWN` until the key set arrives.
 
-The hardening itself stands regardless. Readiness reports *state, never cause*, consistent with the
-boot-time-constructibility reading of the `jwks` datum in
-link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027].
-Where the bearer-token validator cannot be resolved the probe marks readiness DOWN with
-`jwks: unavailable` and a fixed `error: validation-unavailable` token -- it never places the
-underlying exception message on the payload, which can name issuer URLs, internal hostnames,
-TLS/trust material and filesystem paths. Because the management interface has exactly one port and
+Both legs report *state, never cause*, through one DOWN renderer. Where the bearer-token validator
+cannot be resolved the probe marks readiness DOWN with `jwks: unavailable` and a fixed
+`error: validation-unavailable` token; where a key set is missing it names no issuer, URL or host. It
+never places an underlying exception message on the payload, which can name issuer URLs, internal
+hostnames, TLS/trust material and filesystem paths. Because the management interface has exactly one port and
 may legitimately be plain HTTP (the opt-out above), that payload must be treated as reachable by
 anything that can reach the port. The full cause reaches the operator through `WARN ApiSheriff-116`
 instead.

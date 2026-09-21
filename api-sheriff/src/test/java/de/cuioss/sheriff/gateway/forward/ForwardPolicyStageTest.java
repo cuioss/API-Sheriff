@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -34,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.edge.ResponseStage;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -246,7 +248,7 @@ class ForwardPolicyStageTest {
                     .method(HttpMethod.GET)
                     .requestPath("/api/orders")
                     .peerAddress(UNTRUSTED_PEER)
-                    .queryParameters(Map.of("page", List.of("2"), "secret", List.of("x")))
+                    .queryParameters(List.of(pair("page", "2"), pair("secret", "x")))
                     .build();
 
             // Act
@@ -254,8 +256,8 @@ class ForwardPolicyStageTest {
                     ForwardConfig.builder().queryAllow(List.of("page")).build(), false);
 
             // Assert
-            assertEquals(List.of("2"), result.query().get("page"), "allow-listed query parameter must cross");
-            assertFalse(result.query().containsKey("secret"), "non-allow-listed query parameter must be dropped");
+            assertEquals(List.of("2"), valuesOf(result, "page"), "allow-listed query parameter must cross");
+            assertFalse(namesOf(result).contains("secret"), "non-allow-listed query parameter must be dropped");
         }
 
         @Test
@@ -264,7 +266,7 @@ class ForwardPolicyStageTest {
             // Arrange — the distinction this deliverable exists to preserve: declared-empty is a
             // positive-list that admits nothing, NOT the absent state (which is forward-all)
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = queryRequest(Map.of("page", List.of("2"), "secret", List.of("x")));
+            PipelineRequest request = queryRequest(pair("page", "2"), pair("secret", "x"));
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
@@ -337,15 +339,15 @@ class ForwardPolicyStageTest {
         void crossesEveryQueryParameterButTheDeniedOne() {
             // Arrange
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = queryRequest(Map.of("page", List.of("2"), "secret", List.of("x")));
+            PipelineRequest request = queryRequest(pair("page", "2"), pair("secret", "x"));
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
                     ForwardConfig.builder().queryDeny(List.of("secret")).build(), false);
 
             // Assert
-            assertEquals(List.of("2"), result.query().get("page"), "an undenied parameter crosses");
-            assertFalse(result.query().containsKey("secret"), "the denied parameter must not cross");
+            assertEquals(List.of("2"), valuesOf(result, "page"), "an undenied parameter crosses");
+            assertFalse(namesOf(result).contains("secret"), "the denied parameter must not cross");
         }
 
         @Test
@@ -391,13 +393,13 @@ class ForwardPolicyStageTest {
         void crossesAnUnlistedQueryParameter() {
             // Arrange
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = queryRequest(Map.of("page", List.of("2")));
+            PipelineRequest request = queryRequest(pair("page", "2"));
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
 
             // Assert
-            assertEquals(List.of("2"), result.query().get("page"),
+            assertEquals(List.of("2"), valuesOf(result, "page"),
                     "with neither query list declared every client parameter crosses");
         }
 
@@ -427,7 +429,7 @@ class ForwardPolicyStageTest {
                     .requestPath("/api/orders")
                     .peerAddress(UNTRUSTED_PEER)
                     .headers(Map.of("X-Api-Version", List.of("v2"), "X-Secret", List.of("leak")))
-                    .queryParameters(Map.of("page", List.of("2")))
+                    .queryParameters(List.of(pair("page", "2")))
                     .build();
 
             // Act
@@ -439,7 +441,7 @@ class ForwardPolicyStageTest {
                             "the allow-listed header crosses under its declared name"),
                     () -> assertFalse(result.headers().containsKey("x-secret"),
                             "the header positive-list still excludes the unlisted header"),
-                    () -> assertEquals(List.of("2"), result.query().get("page"),
+                    () -> assertEquals(List.of("2"), valuesOf(result, "page"),
                             "the query dimension declares no list, so it is forward-all"));
         }
     }
@@ -1038,6 +1040,215 @@ class ForwardPolicyStageTest {
     }
 
     /**
+     * The query lists match the percent-decoded name while the raw pair crosses unchanged (ADR-0047).
+     * Matching the raw spelling would be fail-open: the upstream decodes {@code %74oken} to
+     * {@code token}, so a deny that compared raw names would be evaded by encoding one character.
+     */
+    @Nested
+    @DisplayName("query lists match the decoded name, the raw pair crosses")
+    class DecodedNameQueryMatching {
+
+        private static final String ENCODED_TOKEN = "%74oken";
+        /**
+         * {@code %} followed by FULLWIDTH DIGIT SEVEN (U+FF17) and FULLWIDTH DIGIT FOUR (U+FF14), then
+         * {@code oken}. Built from code points rather than spelled as a source escape.
+         */
+        private static final String FULL_WIDTH_TOKEN = "%" + (char) 0xFF17 + (char) 0xFF14 + "oken";
+
+        @Test
+        @DisplayName("query_deny: [token] withholds the percent-encoded spelling %74oken")
+        void denyMatchesEncodedSpelling() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair(ENCODED_TOKEN, "secret"), pair("page", "2"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("token")).build(), false);
+
+            // Assert
+            assertFalse(namesOf(result).contains(ENCODED_TOKEN), "an encoded spelling cannot evade the deny");
+            assertEquals(List.of("2"), valuesOf(result, "page"), "an undenied parameter still crosses");
+        }
+
+        @Test
+        @DisplayName("query_allow: [token] admits the percent-encoded spelling %74oken under its raw spelling")
+        void allowMatchesEncodedSpellingAndKeepsRawPair() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair(ENCODED_TOKEN, "a%2Fb"), pair("other", "x"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryAllow(List.of("token")).build(), false);
+
+            // Assert — the pair crosses byte-for-byte as validated: raw name, raw value
+            assertEquals(List.of("a%2Fb"), valuesOf(result, ENCODED_TOKEN),
+                    "the admitted pair keeps its raw spelling on both sides of the '='");
+            assertFalse(namesOf(result).contains("token"), "the decoded spelling is never forwarded");
+            assertFalse(namesOf(result).contains("other"), "a non-allow-listed parameter is dropped");
+        }
+
+        @Test
+        @DisplayName("a '+' in a raw name is read as a space when matched")
+        void plusIsReadAsSpace() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair("session+id", "1"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("session id")).build(), false);
+
+            // Assert
+            assertTrue(result.query().isEmpty(), "form semantics: '+' is a space in the decoded name");
+        }
+
+        @ParameterizedTest(name = "withholds the undecodable name {0} under a deny list")
+        @ValueSource(strings = {"bad%zz", "trunc%7", "%C3%28", "café"})
+        @DisplayName("a name without a well-formed UTF-8 decoding is withheld under a list")
+        void undecodableNameIsWithheldUnderList(String rawName) {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair(rawName, "1"));
+
+            // Act
+            ForwardPolicyStage.Result denyResult = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("unrelated")).build(), false);
+            ForwardPolicyStage.Result forwardAllResult = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertTrue(denyResult.query().isEmpty(), "no decoded name can be proven absent from the deny list");
+            assertEquals(List.of("1"), valuesOf(forwardAllResult, rawName), "forward-all still forwards it");
+        }
+
+        @Test
+        @DisplayName("a bare pair crosses as a bare pair and pair order is preserved")
+        void barePairAndOrderSurvive() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair("z", "1"), pair("flag", null), pair("a", "2"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertEquals(List.of("z", "flag", "a"), namesOf(result), "inbound order is kept");
+            assertEquals(pair("flag", null), result.query().get(1), "the bare pair keeps its null value");
+        }
+
+        @ParameterizedTest(name = "a list of {0} withholds the full-width-digit escape")
+        @ValueSource(strings = {"allow", "deny"})
+        @DisplayName("an escape spelled with non-ASCII (full-width) hex digits has no decoded name")
+        void fullWidthDigitEscapeIsWithheldUnderList(String mode) {
+            // Arrange — '%' followed by FULLWIDTH DIGIT SEVEN and FULLWIDTH DIGIT FOUR, then 'oken'.
+            // Character.digit would read the two as hex 7 and 4 and decode the name to 'token'; RFC 3986
+            // HEXDIG is ASCII only, so the escape is malformed and the name has no decoded form at all.
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair(FULL_WIDTH_TOKEN, "secret"), pair("page", "2"));
+            ForwardConfig forward = "allow".equals(mode)
+                    ? ForwardConfig.builder().queryAllow(List.of("token", "page")).build()
+                    : ForwardConfig.builder().queryDeny(List.of("token")).build();
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, forward, false);
+
+            // Assert
+            assertAll(mode,
+                    () -> assertFalse(namesOf(result).contains(FULL_WIDTH_TOKEN),
+                            "a name with no decoded form is withheld under an allow AND a deny list"),
+                    () -> assertEquals(List.of("page"), namesOf(result),
+                            "the well-formed pair is still judged normally"));
+        }
+
+        @Test
+        @DisplayName("an escape spelled with non-ASCII hex digits still crosses under forward-all")
+        void fullWidthDigitEscapeCrossesUnderForwardAll() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair(FULL_WIDTH_TOKEN, "secret"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertEquals(List.of(pair(FULL_WIDTH_TOKEN, "secret")), result.query(),
+                    "forward-all compares no names, so the raw pair crosses unchanged");
+        }
+
+        @Test
+        @DisplayName("interleaved repeated names cross in their inbound order, never regrouped")
+        void interleavedRepeatedNamesKeepInboundOrder() {
+            // Arrange — a=1&b=2&a=3: a name-keyed map would forward a=1&a=3&b=2
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair("a", "1"), pair("b", "2"), pair("a", "3"));
+            List<QueryParameter> inbound = request.queryParameters();
+
+            // Act
+            ForwardPolicyStage.Result forwardAll = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result allowBoth = stage.process(request,
+                    ForwardConfig.builder().queryAllow(List.of("a", "b")).build(), false);
+            ForwardPolicyStage.Result denyOther = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("c")).build(), false);
+
+            // Assert
+            assertAll("the forwarded sequence equals the validated sequence, pair for pair",
+                    () -> assertEquals(inbound, forwardAll.query(), "forward-all"),
+                    () -> assertEquals(inbound, allowBoth.query(), "an allow list keeping both names"),
+                    () -> assertEquals(inbound, denyOther.query(), "a deny list keeping both names"));
+        }
+
+        @Test
+        @DisplayName("a dropped pair leaves the surviving pairs in their inbound order")
+        void droppedPairKeepsSurvivorsInOrder() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair("a", "1"), pair("b", "2"), pair("a", "3"), pair("c", null));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("b")).build(), false);
+
+            // Assert
+            assertEquals(List.of(pair("a", "1"), pair("a", "3"), pair("c", null)), result.query(),
+                    "each pair is judged on its own and the survivors keep their positions' order");
+        }
+
+        @Test
+        @DisplayName("query_deny: [token] never yields a 'token' parameter out of x=1;token=abc")
+        void denyNeverYieldsTokenOutOfSemicolonPair() {
+            // Arrange — the edge splits on '&' only, so the whole pair arrives as one name 'x'
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair("x", "1;token=abc"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("token")).build(), false);
+
+            // Assert — the ';' stays inside the one judged pair; the edge renders it as %3B
+            assertAll("the stage judges '&'-split pairs only",
+                    () -> assertFalse(namesOf(result).contains("token"), "no separate 'token' parameter exists"),
+                    () -> assertEquals(List.of("1;token=abc"), valuesOf(result, "x"),
+                            "the ';' remains part of the value of the one pair 'x'"));
+        }
+
+        @Test
+        @DisplayName("query_allow: [x] keeps x=1;token=abc as the single pair 'x'")
+        void allowKeepsSemicolonPairAsOnePair() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(pair("x", "1;token=abc"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryAllow(List.of("x")).build(), false);
+
+            // Assert
+            assertEquals(List.of("x"), namesOf(result), "only the allow-listed pair crosses");
+        }
+    }
+
+    /**
      * Every outbound value whose field name equals {@code name} ignoring case.
      * <p>
      * Assertions use this rather than {@code headers().get(name)} because the interesting failures are
@@ -1053,12 +1264,36 @@ class ForwardPolicyStageTest {
                 .toList();
     }
 
-    private static PipelineRequest queryRequest(Map<String, List<String>> queryParameters) {
+    private static PipelineRequest queryRequest(QueryParameter... queryParameters) {
         return PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
                 .peerAddress(UNTRUSTED_PEER)
-                .queryParameters(queryParameters)
+                .queryParameters(List.of(queryParameters))
                 .build();
+    }
+
+    /** One raw query pair; a {@code null} value is a bare pair without {@code =}. */
+    private static QueryParameter pair(String name, @Nullable String value) {
+        return new QueryParameter(name, value);
+    }
+
+    /** The raw names of the forwarded pairs, in forwarded order, one entry per pair. */
+    private static List<String> namesOf(ForwardPolicyStage.Result result) {
+        return result.query().stream().map(QueryParameter::name).toList();
+    }
+
+    /**
+     * The raw values of every forwarded pair named {@code name}, in forwarded order; a bare pair
+     * contributes a {@code null} entry, so the list is built mutable rather than via {@code toList()}.
+     */
+    private static List<@Nullable String> valuesOf(ForwardPolicyStage.Result result, String name) {
+        List<@Nullable String> values = new ArrayList<>();
+        for (QueryParameter parameter : result.query()) {
+            if (parameter.name().equals(name)) {
+                values.add(parameter.value());
+            }
+        }
+        return values;
     }
 }

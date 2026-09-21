@@ -19,7 +19,8 @@
 #   6. profile 'minimal' on a type: bff route, refused by the same rule on the anchor-type
 #      dimension;
 #   7. an unresolvable JWKS source (token_validation issuer whose 'source: file' names a
-#      path that does not exist), which aborts boot from the ADR-0027 eager-assembly seam;
+#      path that does not exist), which aborts boot from the ADR-0027 eager-assembly seam
+#      (a boot refusal — distinct from readiness DOWN, which a merely late IdP produces);
 #   8. an open redirect (a redirect route whose location is an external absolute URI while
 #      allow_external is off), refused by the ADR-0014 Amendment A1 open-redirect review.
 #
@@ -450,11 +451,16 @@ chmod 644 "${MINIMAL_BFF_DIR}/gateway.yaml" "${MINIMAL_BFF_DIR}/topology.propert
 assert_fails_to_boot "${MINIMAL_BFF_DIR}" "profile 'minimal' on a type: bff route" "is type 'bff'"
 
 # Case 7: an unresolvable JWKS source — a token_validation issuer whose 'source: file' names a
-# path that is not present in the mounted config. This is the boot-time constructibility contract
-# ADR-0027 describes and TokenValidatorProducer.onStartup forces into existence: the producer
-# invokes a method on the @ApplicationScoped validator proxy at StartupEvent, which runs the full
-# assembly path and throws here, so a gateway that cannot build a validator refuses to run at all
-# rather than deferring the failure to the first bearer request.
+# path that is not present in the mounted config. This is the eager-assembly contract ADR-0027
+# keeps and TokenValidatorProducer.onStartup forces into existence: the producer invokes a method on
+# the @ApplicationScoped validator proxy at StartupEvent, which runs the full assembly path and
+# throws here, so a gateway that cannot build a validator refuses to run at all rather than
+# deferring the failure to the first bearer request.
+#
+# Keep that distinct from what READINESS now reports. Since ADR-0027 Amendment A1, readiness is DOWN
+# while an issuer's key set has not loaded yet — an HTTP issuer whose IdP is merely late boots,
+# reports DOWN and retries. This case is the other kind of failure: a configuration the gateway can
+# never serve, which must stop the process rather than leave it running DOWN.
 #
 # This case, uniquely, passes MGMT_PROBE_PORT to get the negative leg. The reason is the seam it
 # exercises: cases 1-6 are refused by ConfigProducer while the route table is being produced —

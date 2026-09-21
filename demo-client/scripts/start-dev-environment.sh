@@ -214,11 +214,12 @@ mkdir -p "${LOG_TARGET_DIR}"
 chmod 1777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
-# Keycloak FIRST, and READY, before either gateway starts. The native app eagerly loads the realm's
-# JWKS at boot; if it starts before Keycloak can answer, that load fails and — with a long
-# background-refresh interval — the issuer stays unhealthy for the whole run, so every login's token
-# validation fails with "No healthy issuer configuration found". Gating the gateway start on a ready
-# Keycloak removes the race.
+# Keycloak FIRST, and READY, before either gateway starts. The native app starts loading the realms'
+# JWKS at boot and reports readiness DOWN until every issuer's key set has loaded (ADR-0027
+# Amendment A1). A gateway started before Keycloak answers retries the fetch on a bounded backoff
+# (1 s doubling, capped at 30 s), so it would still recover — but only up to 30 s after Keycloak
+# became reachable, which the gateway readiness budget below does not reliably cover. Gating the
+# gateway start on a ready Keycloak makes the first fetch succeed within a moment of boot.
 echo "🐳 Starting ${DEMO_IDP_SERVICE} first (the gateways start only after it is ready)..."
 $COMPOSE_CMD up -d "${DEMO_IDP_SERVICE}"
 
@@ -260,10 +261,11 @@ $COMPOSE_CMD up -d --no-deps "${DEMO_GATEWAY_SERVICES[@]}"
 # uses, and for the same reason: the management interface's /health/live — reached beneath each
 # instance's derived management root path, wherever a deployment has moved it — answers as soon as
 # the process is up, which is strictly earlier than the point at which the SPA can be driven
-# against it. The switch costs no
-# additional wait — GatewayReadinessCheck's `jwks` datum is a boot-time constructibility fact
-# (ADR-0027), so readiness flips at the same moment liveness does. The measured live-to-ready delta
-# behind that claim is in doc/development/integration-test-topology.adoc, "The Readiness Contract".
+# against it. Readiness additionally waits for every issuer's JWKS key set (ADR-0027 Amendment A1),
+# so it now trails liveness by the first key-set fetch; against the Keycloak this script already
+# waited on above that fetch completes within a moment of boot, well inside this budget. The
+# readiness contract, and the live-to-ready figure measured before that change, are in
+# doc/development/integration-test-topology.adoc, "The Readiness Contract".
 GATEWAY_READY_ATTEMPTS=30
 
 echo "⏳ Waiting for the demo gateway instances to be ready..."
