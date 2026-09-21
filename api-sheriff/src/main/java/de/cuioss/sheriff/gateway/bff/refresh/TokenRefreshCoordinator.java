@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -613,7 +612,7 @@ public final class TokenRefreshCoordinator {
         if (grantedScope == null || grantedScope.isBlank()) {
             return previous;
         }
-        return Set.copyOf(new LinkedHashSet<>(Arrays.asList(WHITESPACE.split(grantedScope.strip()))));
+        return Set.copyOf(Arrays.asList(WHITESPACE.split(grantedScope.strip())));
     }
 
     /**

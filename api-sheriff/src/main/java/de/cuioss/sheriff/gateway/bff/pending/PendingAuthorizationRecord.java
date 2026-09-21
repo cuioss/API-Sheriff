@@ -21,7 +21,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 
@@ -110,7 +109,7 @@ Duration ttl) {
     public static PendingAuthorizationRecord create(FlowContext flowContext, String returnUrl,
             Collection<String> requestedScopes, Instant createdAt) {
         Objects.requireNonNull(requestedScopes, "requestedScopes");
-        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, new HashSet<>(requestedScopes),
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, Set.copyOf(requestedScopes),
                 createdAt, FIXED_TTL);
     }
 

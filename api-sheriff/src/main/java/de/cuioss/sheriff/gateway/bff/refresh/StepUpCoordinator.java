@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 
 import java.time.Instant;
 import java.util.Collection;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -119,7 +118,7 @@ public final class StepUpCoordinator {
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
         this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
-        this.stepUpScopes = Set.copyOf(new LinkedHashSet<>(Objects.requireNonNull(stepUpScopes, "stepUpScopes")));
+        this.stepUpScopes = Set.copyOf(Objects.requireNonNull(stepUpScopes, "stepUpScopes"));
     }
 
     /**
