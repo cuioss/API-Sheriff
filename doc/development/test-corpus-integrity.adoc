@@ -1854,6 +1854,85 @@ existing shapes structurally could not reach; neither of these two does. The fir
 stronger instance of (c), the second is (a) under a different spelling, and adding shapes for them
 would dilute a taxonomy whose value is that each entry means exactly one thing.
 
+[[awaits-reassertion-guard]]
+== The Until-Then-Re-Assert Fitness Function
+
+`api-sheriff/src/test/java/de/cuioss/sheriff/gateway/arch/AwaitsReassertionArchTest.java` ships the
+one comment-only invariant this plan converts into a guard: *a declared test that waits on a
+condition with `Awaits.until(..)` must assert the state it waited for after the wait returns.*
+
+=== Why a wait is not an assertion
+
+`Awaits.until` polls and either returns or throws a `TimeoutException`. A test whose last word on the
+awaited state is the poll therefore records only that the condition held at some instant *during*
+polling -- never that it holds at the point the test finishes reasoning about it. Remove the
+behaviour the test names and the poll can still be satisfied transiently by a neighbouring effect,
+and the method still returns green. Re-asserting after the wait moves the evidence onto the
+post-state, which is what the test's name actually claims.
+
+`edge/WebSocketRelayStageTest.awaitReleases`:469 is the corpus's own worked example: the
+`Awaits.until(..)` is immediately followed by `assertEquals(1, releases.get(), message)`.
+
+=== Why a source sweep rather than an ArchUnit rule
+
+The discriminator is the *order* of two calls inside one method body, and whether the second is an
+assertion. ArchUnit reads bytecode, where an assertion call and an await call are both method calls
+from the same code unit with no recoverable ordering -- the bytecode rule that would express this
+does not exist. The sweep therefore reads source text, the same shape
+`LoopbackEphemeralBindArchTest`'s wildcard-host-literal sweep uses and for the same reason.
+
+The sweep is phrased *positively*: it collects offenders and asserts the collection is empty, naming
+each offender in the failure message. The inverted `no...should` spelling is deliberately not used --
+ArchUnit inverts a condition's event polarity under it, so such a rule reports nothing and stays
+green over an arbitrarily dirty corpus.
+
+=== The four ADR-0030 control legs
+
+Non-vacuity guard:: `guardIsNonVacuous` asserts the source root resolves, the selection is non-empty,
+it contains declared test methods, and at least one of those methods really calls `Awaits.until`.
+Without the last, "zero offenders" cannot be told apart from a sweep whose pattern stopped matching.
+
+Negative control:: `arch/specimen/AwaitsWithoutReassertionSpecimen` carries *two* deliberate
+violations the sweep must report -- a test that asserts nothing at all, and one that asserts *before*
+the wait and not after. The second exists because a guard that asked only "does this test assert
+anything?" would accept it, and the control's exact count of two is what keeps that guard honest.
+
+Matched positive controls:: `arch/specimen/AwaitsWithReassertionSpecimen` carries the compliant shape
+and the helper-tier near miss. Each control asserts its near-miss property *first* -- that the file
+still carries an awaited test method, and that the helper-tier await is still un-reasserted -- and
+only then that the sweep does not report it. Reversed, either control would pass just as happily over
+a file that had quietly become compliant, which is the always-passing failure one level down.
+
+Specimen carve-out:: the specimen package is excluded from the production selection *by name* in
+`isCarvedOutSource`, not by relying on a package or import filter, and the carve-out has its own
+control that first proves the specimen still violates the rule.
+
+[[awaits-guard-limits]]
+=== Accepted limits
+
+Both limits below are bounds on what the guard reaches, stated here rather than left to be
+discovered from a green run.
+
+The selection is declared test methods, not every method:: At `3abc370` the lane carries *10*
+`Awaits.until` occurrences across *6* files. *Five* sit inside a declared test method and are the
+guard's live population (`auth/RetryingJwksLoaderTest` ×3, `auth/TokenValidatorProducerTest` ×1,
+`testsupport/AwaitsTest` ×1). The other five are *wait primitives* -- `RetryingJwksLoaderTest.awaitLog`,
+`edge/GatewayEdgeRouteTest.connectWhenAdmitted` and `.awaitReleased`,
+`edge/WebSocketRelayStageTest.awaitReleases`, `tls/TlsEdgeProducerTest.awaitNotListening` -- named
+helpers whose re-assertion obligation belongs to whichever test calls them, and several of which
+legitimately end with the await. Sweeping every method body would report four of those five, which is
+a noisy guard rather than a finding, so the scope is the declared test. *The cost is real and is not
+hidden*: a helper that both waits and never re-asserts is out of reach, and so is a test that
+delegates its entire wait to such a helper.
+
+The lane is `api-sheriff` only:: `integration-tests` depends on `api-sheriff`, not the reverse, so an
+ArchTest living in `api-sheriff` structurally cannot see integration-lane sources. *Mirroring the
+sweep into `integration-tests` is explicitly not taken.* The integration lane carries no
+`Awaits.until` call at all today, so a second copy would guard an empty set -- a standing vacuous
+guard, which is the defect this note exists to remove -- while doubling the maintenance surface of a
+hand-rolled source scanner. If the integration lane ever adopts `Awaits`, that decision is the trigger
+to revisit this, and nothing else is.
+
 [[backlog]]
 == The Countable Backlog
 
