@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.bff.runtime;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -74,7 +75,8 @@ import org.jspecify.annotations.Nullable;
  * </ol>
  * An <strong>unauthenticated</strong> request is content-negotiated: a <em>navigation</em> request
  * (its {@code Accept} offers {@code text/html}) is redirected {@code 302} into the auth-code flow via
- * the {@link LoginInitiation} seam (short-circuiting the pipeline); anything else (an XHR / API call)
+ * the {@link LoginInitiation} seam (short-circuiting the pipeline), requesting the selected route's
+ * {@link RouteRuntime#getNeededScopes() neededScopes}; anything else (an XHR / API call)
  * gets {@code 401} {@code application/problem+json} via {@link EventType#TOKEN_MISSING}.
  * <p>
  * The stage runs <strong>no scope check</strong>: no session-route path answers
@@ -201,7 +203,9 @@ public final class SessionAuthenticationStage {
 
     private void challengeUnauthenticated(PipelineRequest request, RouteRuntime route, Instant now) {
         if (acceptsHtml(request)) {
-            LoginChallenge challenge = loginInitiation.initiate(returnUrl(request), now);
+            // The login requests exactly what this route needs — the one boot-derived neededScopes the
+            // bearer check also reads — so requesting and checking can never drift apart.
+            LoginChallenge challenge = loginInitiation.initiate(returnUrl(request), route.getNeededScopes(), now);
             request.responseHeaders().put(LOCATION_HEADER, challenge.location());
             emitSetCookies(request, challenge.setCookieHeaders());
             request.shortCircuit(FOUND);
@@ -381,10 +385,12 @@ public final class SessionAuthenticationStage {
          *
          * @param returnUrl the post-login return target (the path the browser was navigating to, plus
          *                  its raw query verbatim when it carried one)
+         * @param scopes    the scope set the login requests — the selected route's
+         *                  {@link RouteRuntime#getNeededScopes() neededScopes}
          * @param now       the reference instant (the pending record's TTL anchor)
          * @return the redirect target and the browser-binding {@code Set-Cookie}
          */
-        LoginChallenge initiate(String returnUrl, Instant now);
+        LoginChallenge initiate(String returnUrl, Collection<String> scopes, Instant now);
     }
 
     /**

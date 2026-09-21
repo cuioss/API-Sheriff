@@ -16,12 +16,16 @@
 package de.cuioss.sheriff.gateway.bff.login;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.AuthorizationInitiation;
@@ -53,10 +57,13 @@ class LoginFlowTest {
     private static final String AUTHORIZATION_URL = "https://idp.example.com/authorize?client_id=api-sheriff";
     /** A configured {@code oidc.login.default_return_url} distinct from {@code /}. */
     private static final String CONFIGURED_DEFAULT = "/home";
+    /** The scope set a caller names for the login; the flow forwards it to the seam unchanged. */
+    private static final List<String> SCOPES = List.of("openid", "profile", "orders:read");
 
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
     private FlowContext flowContext;
+    private AtomicReference<Collection<String>> requestedScopes;
     private AuthorizationInitiation authorization;
     private LoginFlow loginFlow;
 
@@ -67,7 +74,11 @@ class LoginFlowTest {
         flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =
                 new AuthorizationCodeFlow.AuthorizationRedirect(AUTHORIZATION_URL, flowContext);
-        authorization = () -> redirect;
+        requestedScopes = new AtomicReference<>();
+        authorization = scopes -> {
+            requestedScopes.set(scopes);
+            return redirect;
+        };
         loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
     }
 
@@ -85,7 +96,7 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should redirect to the engine authorization URL and set the binding cookie")
         void shouldRedirectToAuthorizationUrl() {
-            LoginRedirect result = loginFlow.initiate("/dashboard", T0);
+            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, T0);
 
             assertEquals(AUTHORIZATION_URL, result.authorizationUrl(), "the URL comes from the engine, unchanged");
             assertEquals(1, result.setCookieHeaders().size());
@@ -95,12 +106,20 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should persist the engine FlowContext as a single-use pending record bound to the browser")
         void shouldPersistPendingRecord() {
-            LoginRedirect result = loginFlow.initiate("/dashboard", T0);
+            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, T0);
 
             PendingAuthorizationRecord pending = consumeBoundRecord(result);
             assertSame(flowContext, pending.flowContext(), "the record wraps the engine context, never re-invents it");
             assertEquals("/dashboard", pending.returnUrl());
             assertEquals(T0, pending.createdAt());
+        }
+
+        @Test
+        @DisplayName("Should forward the requested scope set to the authorization seam unchanged")
+        void shouldForwardScopesToSeam() {
+            loginFlow.initiate("/dashboard", SCOPES, T0);
+
+            assertEquals(SCOPES, requestedScopes.get(), "the seam receives exactly the scope set the caller named");
         }
     }
 
@@ -113,7 +132,7 @@ class LoginFlowTest {
                 "https://gw.example.com/app"})
         @DisplayName("Should record a same-origin return URL verbatim, query included")
         void shouldRecordSameOriginReturnUrl(String returnUrl) {
-            LoginRedirect result = loginFlow.initiate(returnUrl, T0);
+            LoginRedirect result = loginFlow.initiate(returnUrl, SCOPES, T0);
 
             assertEquals(returnUrl, consumeBoundRecord(result).returnUrl());
         }
@@ -122,7 +141,7 @@ class LoginFlowTest {
         @ValueSource(strings = {"https://evil.example.com/app", "//evil.example.com", "javascript:alert(1)"})
         @DisplayName("Should fall back to the configured default for a cross-origin or unparseable return URL")
         void shouldFallBackForOffOrigin(String returnUrl) {
-            LoginRedirect result = loginFlow.initiate(returnUrl, T0);
+            LoginRedirect result = loginFlow.initiate(returnUrl, SCOPES, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
         }
@@ -130,7 +149,7 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should fall back to the configured default when no return URL is supplied")
         void shouldFallBackForNull() {
-            LoginRedirect result = loginFlow.initiate(null, T0);
+            LoginRedirect result = loginFlow.initiate(null, SCOPES, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
         }
@@ -140,8 +159,8 @@ class LoginFlowTest {
         void shouldFallBackToRootDefault() {
             LoginFlow rootDefault = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, "/");
 
-            LoginRedirect absent = rootDefault.initiate(null, T0);
-            LoginRedirect offOrigin = rootDefault.initiate("https://evil.example.com/app", T0);
+            LoginRedirect absent = rootDefault.initiate(null, SCOPES, T0);
+            LoginRedirect offOrigin = rootDefault.initiate("https://evil.example.com/app", SCOPES, T0);
 
             assertEquals("/", consumeBoundRecord(absent).returnUrl(), "an absent target lands on '/'");
             assertEquals("/", consumeBoundRecord(offOrigin).returnUrl(), "an off-origin target lands on '/'");
@@ -161,7 +180,14 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
-            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", null));
+            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", SCOPES, null));
+        }
+
+        @Test
+        @DisplayName("Should reject a null scope set before reaching the seam")
+        void shouldRejectNullScopes() {
+            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", null, T0));
+            assertNull(requestedScopes.get(), "the seam is never reached without a scope set");
         }
 
         @Test

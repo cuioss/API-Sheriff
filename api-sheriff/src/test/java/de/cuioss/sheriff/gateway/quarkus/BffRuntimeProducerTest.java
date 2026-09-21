@@ -34,6 +34,9 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
+import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -70,6 +73,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
+import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
@@ -82,11 +86,20 @@ import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
@@ -1119,6 +1132,11 @@ class BffRuntimeProducerTest {
 
         private static final String PROFILE = "corporate-idp";
         private static final String EMPTY_JWKS = "{\"keys\":[]}";
+        /** The scope a scoped endpoint adds on top of {@code oidc.scopes = [openid]}. */
+        private static final String SCOPED_ENDPOINT_SCOPE = "orders:read";
+        private static final String SCOPED_ROUTE_PREFIX = "/orders";
+        /** {@code oidc.scopes ∪ endpoint.scopes} for the scoped session route. */
+        private static final Set<String> SCOPED_NEEDED_SCOPES = Set.of("openid", SCOPED_ENDPOINT_SCOPE);
 
         private Path fixtureDir;
         private SanMismatchedJwksServer server;
@@ -1216,8 +1234,8 @@ class BffRuntimeProducerTest {
             TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
             OidcConfig oidc = serverModeOidc();
 
-            ClientConfiguration configuration = producer(oidc, new EgressTlsConfig(true, true, null, true, PROFILE),
-                    registry).backChannelConfiguration(oidc);
+            ClientConfiguration configuration = assembledBackChannel(producer(oidc,
+                    new EgressTlsConfig(true, true, null, true, PROFILE), registry), oidc, oidc.scopes());
 
             assertSame(registry.profileContext(), configuration.getSslContext(),
                     "a named oidc_tls_profile must put exactly its own trust anchors on the back-channel");
@@ -1230,8 +1248,8 @@ class BffRuntimeProducerTest {
         void omittedProfileKeepsDefaultTrust() {
             OidcConfig oidc = serverModeOidc();
 
-            ClientConfiguration configuration = producer(oidc, EgressTlsConfig.defaults(),
-                    TestTlsConfigurationRegistry.empty()).backChannelConfiguration(oidc);
+            ClientConfiguration configuration = assembledBackChannel(producer(oidc, EgressTlsConfig.defaults(),
+                    TestTlsConfigurationRegistry.empty()), oidc, oidc.scopes());
 
             assertNull(configuration.getSslContext(),
                     "without a profile no caller context is set, so the resolver — which would refuse the "
@@ -1251,6 +1269,127 @@ class BffRuntimeProducerTest {
                     "the refusal must name the gateway key that declared the profile: " + thrown.getMessage());
         }
 
+        @Test
+        @DisplayName("every scoped configuration carries the base configuration's pinned hostname and trust posture")
+        void scopedConfigurationsCarryTheBasePosture() {
+            TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
+            OidcConfig oidc = serverModeOidc();
+            BffRuntimeProducer profiled = producer(oidc, new EgressTlsConfig(true, true, null, true, PROFILE), registry);
+            BffRuntimeProducer relaxed = producer(oidc, oidcHostname(false), TestTlsConfigurationRegistry.empty());
+            List<String> scoped = List.of("openid", SCOPED_ENDPOINT_SCOPE);
+
+            ClientConfiguration profiledBase = profiled.backChannelConfiguration(oidc, oidc.scopes());
+            ClientConfiguration profiledScoped = profiled.backChannelConfiguration(oidc, scoped);
+            ClientConfiguration relaxedBase = relaxed.backChannelConfiguration(oidc, oidc.scopes());
+            ClientConfiguration relaxedScoped = relaxed.backChannelConfiguration(oidc, scoped);
+
+            assertAll("the scope list is the only thing a scoped variant changes",
+                    () -> assertEquals(scoped, profiledScoped.getScopes(), "the variant carries the requested scopes"),
+                    () -> assertEquals(oidc.scopes(), profiledBase.getScopes(), "the base carries oidc.scopes"),
+                    () -> assertSame(registry.profileContext(), profiledScoped.getSslContext(),
+                            "a scoped variant dials with the profile's own trust anchors"),
+                    () -> assertEquals(profiledBase.isVerifyHostname(), profiledScoped.isVerifyHostname()),
+                    () -> assertFalse(relaxedScoped.isVerifyHostname(),
+                            "a relaxed hostname posture reaches every scoped variant too"),
+                    () -> assertEquals(relaxedBase.isVerifyHostname(), relaxedScoped.isVerifyHostname()),
+                    () -> assertNull(relaxedScoped.getSslContext(), "no profile, no caller context, on every variant"));
+        }
+
+        @Test
+        @DisplayName("the hostname/profile collision is refused for a scoped variant as well as at boot")
+        void scopedVariantRefusesTheCollision() {
+            OidcConfig oidc = serverModeOidc();
+            BffRuntimeProducer colliding = producer(oidc, new EgressTlsConfig(true, true, null, false, PROFILE),
+                    TestTlsConfigurationRegistry.with(PROFILE));
+            List<String> scoped = List.of("openid", SCOPED_ENDPOINT_SCOPE);
+
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> colliding.backChannelConfiguration(oidc, scoped));
+
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType(),
+                    "a scoped variant can never be built on the posture boot refuses");
+            assertThrows(GatewayException.class, colliding::bffRuntime, "and boot itself still refuses it");
+        }
+
+        @Test
+        @DisplayName("a navigation login on a scoped session route requests exactly oidc.scopes united with the endpoint's scopes")
+        void sessionRouteLoginRequestsNeededScopes() {
+            BffRuntime runtime = scopedRuntime();
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.GET)
+                    .requestPath(SCOPED_ROUTE_PREFIX + "/list")
+                    .queryParameters(List.of())
+                    .headers(Map.of("accept", List.of("text/html")))
+                    .build();
+            request.canonicalPath(SCOPED_ROUTE_PREFIX + "/list");
+            request.selectedRoute(RouteRuntime.builder().id("orders")
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .neededScopes(SCOPED_NEEDED_SCOPES)
+                    .build());
+
+            runtime.sessionStage().process(request);
+
+            assertEquals(Optional.of(302), request.shortCircuitStatus(), "the navigation is redirected into login");
+            assertEquals(SCOPED_NEEDED_SCOPES, scopeOf(request.responseHeaders().get("Location")),
+                    "the authorization URL requests the route's neededScopes, never the static oidc.scopes alone");
+        }
+
+        @Test
+        @DisplayName("/auth/login requests the landing route's needed scopes, and oidc.scopes alone for an unrouted target")
+        void loginInitiationRequestsReturnTargetScopes() {
+            BffRuntime runtime = scopedRuntime();
+            Instant now = Instant.parse("2026-07-25T10:00:00Z");
+
+            BffRuntime.ReservedHttpResponse routed = runtime.dispatch(ReservedEndpoint.LOGIN,
+                    new BffRuntime.ReservedHttpRequest("", null, null, SCOPED_ROUTE_PREFIX + "/list", null, null, "GET"),
+                    now);
+            BffRuntime.ReservedHttpResponse unrouted = runtime.dispatch(ReservedEndpoint.LOGIN,
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/unrouted", null, null, "GET"), now);
+
+            assertAll("the producer wires ReturnTargetScopes over the injected route table",
+                    () -> assertEquals(SCOPED_NEEDED_SCOPES, scopeOf(routed.locationOptional().orElseThrow())),
+                    () -> assertEquals(Set.of("openid"), scopeOf(unrouted.locationOptional().orElseThrow())));
+            assertFalse(reachableInstancesOf(runtime, ReturnTargetScopes.class).isEmpty(),
+                    "the login-initiation endpoint holds the producer-built resolver");
+        }
+
+        /**
+         * An active server-mode runtime whose discovery reaches the SAN-mismatch fixture over the relaxed
+         * hostname posture, over a route table carrying one scoped session route.
+         */
+        private BffRuntime scopedRuntime() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer(server.issuer())
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build())
+                    .build();
+            ResolvedRoute scopedRoute = ResolvedRoute.builder()
+                    .id("orders")
+                    .match(MatchConfig.builder().pathPrefix(SCOPED_ROUTE_PREFIX).build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("https", "orders.example", 443, ""))
+                    .neededScopes(SCOPED_NEEDED_SCOPES)
+                    .build();
+            return producer(oidc, oidcHostname(false), TestTlsConfigurationRegistry.empty(),
+                    new RouteTable(List.of(scopedRoute))).bffRuntime();
+        }
+
+        private static Set<String> scopeOf(String authorizationUrl) {
+            String rawQuery = URI.create(authorizationUrl).getRawQuery();
+            for (String pair : rawQuery.split("&")) {
+                String[] nameValue = pair.split("=", 2);
+                if ("scope".equals(nameValue[0])) {
+                    return Set.of(URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8).split(" "));
+                }
+            }
+            throw new AssertionError("the authorization URL carries no scope parameter: " + authorizationUrl);
+        }
+
         private ClientConfiguration backChannelFor(SanMismatchedJwksServer target, @Nullable EgressTlsConfig egressTls) {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(target.issuer())
@@ -1260,7 +1399,8 @@ class BffRuntimeProducerTest {
                     .redirectUri(REDIRECT_URI)
                     .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
                     .build();
-            return producer(oidc, egressTls, TestTlsConfigurationRegistry.empty()).backChannelConfiguration(oidc);
+            return assembledBackChannel(producer(oidc, egressTls, TestTlsConfigurationRegistry.empty()), oidc,
+                    oidc.scopes());
         }
 
         private static EgressTlsConfig oidcHostname(boolean verify) {
@@ -1324,9 +1464,24 @@ class BffRuntimeProducerTest {
 
     private BffRuntimeProducer producer(@Nullable OidcConfig oidc, @Nullable EgressTlsConfig egressTls,
             TestTlsConfigurationRegistry registry) {
+        return producer(oidc, egressTls, registry, new RouteTable(List.of()));
+    }
+
+    private BffRuntimeProducer producer(@Nullable OidcConfig oidc, @Nullable EgressTlsConfig egressTls,
+            TestTlsConfigurationRegistry registry, RouteTable routeTable) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
-        return new BffRuntimeProducer(gatewayConfig, new SingletonInstance<>(tokenValidator),
+        return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(tokenValidator),
                 new JwksTrustProfileResolver(registry), REVOCATION_EXECUTOR);
+    }
+
+    /**
+     * Builds the back-channel configuration exactly as {@code build} does: the posture is reported once,
+     * then the configuration for {@code scopes} is built through the same seam every scoped variant uses.
+     */
+    private static ClientConfiguration assembledBackChannel(BffRuntimeProducer producer, OidcConfig oidc,
+            List<String> scopes) {
+        producer.reportBackChannelPosture();
+        return producer.backChannelConfiguration(oidc, scopes);
     }
 
     private static OidcConfig serverModeOidc() {

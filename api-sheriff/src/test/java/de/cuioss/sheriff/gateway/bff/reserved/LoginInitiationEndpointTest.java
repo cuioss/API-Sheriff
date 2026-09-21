@@ -21,12 +21,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.AuthorizationInitiation;
+import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
@@ -35,6 +40,13 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,12 +81,18 @@ class LoginInitiationEndpointTest {
     private static final String SUBJECT = "user-sub-1";
     /** A configured {@code oidc.login.default_return_url} distinct from {@code /}. */
     private static final String CONFIGURED_DEFAULT = "/home";
+    /** The configured {@code oidc.scopes} — what a login with no route-specific target requests. */
+    private static final Set<String> OIDC_SCOPES = Set.of("openid", "profile");
+    /** The {@code neededScopes} of the session route under {@code /dashboard}. */
+    private static final Set<String> DASHBOARD_SCOPES = Set.of("openid", "profile", "dashboard:read");
 
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
     private AtomicInteger authorizeCalls;
+    private AtomicReference<Collection<String>> requestedScopes;
+    private LoginFlow loginFlow;
     private LoginInitiationEndpoint endpoint;
 
     @BeforeEach
@@ -85,17 +103,31 @@ class LoginInitiationEndpointTest {
         AuthorizationCodeFlow.AuthorizationRedirect redirect =
                 new AuthorizationCodeFlow.AuthorizationRedirect(AUTHORIZATION_URL, flowContext);
         authorizeCalls = new AtomicInteger();
-        AuthorizationInitiation authorization = () -> {
+        requestedScopes = new AtomicReference<>();
+        AuthorizationInitiation authorization = scopes -> {
             authorizeCalls.incrementAndGet();
+            requestedScopes.set(scopes);
             return redirect;
         };
-        LoginFlow loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN,
-                CONFIGURED_DEFAULT);
+        loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
 
         sessionStore = new InMemorySessionStore(16);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         endpoint = new LoginInitiationEndpoint(loginFlow, new ServerSessionBinding(sessionStore, sessionCodec),
-                GATEWAY_ORIGIN);
+                GATEWAY_ORIGIN, returnTargetScopes());
+    }
+
+    /** A route table with one {@code require: session} route under {@code /dashboard}. */
+    private static ReturnTargetScopes returnTargetScopes() {
+        ResolvedRoute dashboard = ResolvedRoute.builder()
+                .id("dashboard")
+                .match(MatchConfig.builder().pathPrefix("/dashboard").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .upstream(new ResolvedUpstream("https", "dashboard.example", 443, ""))
+                .neededScopes(DASHBOARD_SCOPES)
+                .build();
+        return new ReturnTargetScopes(new RouteTable(List.of(dashboard)), GATEWAY_ORIGIN, OIDC_SCOPES);
     }
 
     /** Creates a live session and returns the request {@code Cookie} header that resolves it. */
@@ -164,6 +196,32 @@ class LoginInitiationEndpointTest {
         }
 
         @Test
+        @DisplayName("Should request the needed scopes of the authenticated route the return target lands on")
+        void shouldRequestTargetRouteScopes() {
+            endpoint.initiate("/dashboard/reports?range=week", null, T0);
+
+            assertEquals(DASHBOARD_SCOPES, Set.copyOf(requestedScopes.get()),
+                    "the fresh login requests what the landing route needs");
+        }
+
+        @ParameterizedTest(name = "return target \"{0}\" requests oidc.scopes only")
+        @ValueSource(strings = {"/unrouted", "https://evil.example.com/dashboard"})
+        @DisplayName("Should request oidc.scopes only for a target that lands on no authenticated route")
+        void shouldRequestOidcScopesForUnauthenticatedTarget(String returnUrl) {
+            endpoint.initiate(returnUrl, null, T0);
+
+            assertEquals(OIDC_SCOPES, Set.copyOf(requestedScopes.get()));
+        }
+
+        @Test
+        @DisplayName("Should request oidc.scopes only when no return URL is supplied")
+        void shouldRequestOidcScopesForAbsentTarget() {
+            endpoint.initiate(null, null, T0);
+
+            assertEquals(OIDC_SCOPES, Set.copyOf(requestedScopes.get()));
+        }
+
+        @Test
         @DisplayName("Should treat an expired session as unauthenticated and drive a fresh flow")
         void shouldTreatExpiredSessionAsUnauthenticated() {
             String cookie = liveSessionCookie();
@@ -223,6 +281,15 @@ class LoginInitiationEndpointTest {
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
             assertThrows(NullPointerException.class, () -> endpoint.initiate("/dashboard", null, null));
+        }
+
+        @Test
+        @DisplayName("Should reject an absent return-target scope resolver")
+        void shouldRejectNullReturnTargetScopes() {
+            ServerSessionBinding binding = new ServerSessionBinding(sessionStore, sessionCodec);
+
+            assertThrows(NullPointerException.class,
+                    () -> new LoginInitiationEndpoint(loginFlow, binding, GATEWAY_ORIGIN, null));
         }
     }
 }

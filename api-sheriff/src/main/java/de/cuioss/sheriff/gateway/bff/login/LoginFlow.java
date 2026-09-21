@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.bff.login;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
@@ -48,6 +49,13 @@ import org.jspecify.annotations.Nullable;
  * the {@link AuthorizationInitiation} seam, keeping the flow decoupled from the confidential-client
  * wiring (discovery metadata) and unit-testable without a live IdP.
  * <p>
+ * <strong>Requested scope.</strong> Every initiation names the scope set the login requests, and the
+ * flow forwards it to the seam unchanged. The caller supplies the set: the session stage passes the
+ * selected route's {@code neededScopes}, the login-initiation endpoint the set
+ * {@link ReturnTargetScopes} resolves for the return target. The runtime binds the seam to
+ * {@link ScopedEngineFlows}, which renders an authorization URL whose {@code scope} is exactly that
+ * set (ADR-0048).
+ * <p>
  * <strong>Response mode.</strong> The authorization URL the seam yields carries
  * {@code response_mode=query} — see {@link QueryResponseModeAuthorizationRequestBuilder}, which the
  * runtime wires into the engine. That is what makes the later callback a top-level GET navigation,
@@ -70,7 +78,7 @@ public final class LoginFlow {
     /**
      * Assembles the login flow with the engine authorization seam and the gateway-side stores.
      *
-     * @param authorization      the engine authorization seam (bound to {@link AuthorizationCodeFlow#authorize})
+     * @param authorization      the engine authorization seam (bound to {@link ScopedEngineFlows#authorize})
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
@@ -97,16 +105,20 @@ public final class LoginFlow {
     }
 
     /**
-     * Initiates a login: drives the engine authorization, persists the transaction, sets the binding
-     * cookie, and redirects the browser to the IdP.
+     * Initiates a login: drives the engine authorization for the requested scope set, persists the
+     * transaction, sets the binding cookie, and redirects the browser to the IdP.
      *
      * @param requestedReturnUrl the post-login return target the browser asked for, may be absent
+     * @param scopes             the scope set the login requests — the selected route's
+     *                           {@code neededScopes}, or {@code oidc.scopes} when no route applies;
+     *                           forwarded to the {@link AuthorizationInitiation} seam verbatim
      * @param now                the reference instant (the pending record's TTL anchor)
      * @return the redirect to the IdP authorization URL carrying the binding {@code Set-Cookie}
      */
-    public LoginRedirect initiate(@Nullable String requestedReturnUrl, Instant now) {
+    public LoginRedirect initiate(@Nullable String requestedReturnUrl, Collection<String> scopes, Instant now) {
+        Objects.requireNonNull(scopes, "scopes");
         Objects.requireNonNull(now, "now");
-        AuthorizationCodeFlow.AuthorizationRedirect redirect = authorization.authorize();
+        AuthorizationCodeFlow.AuthorizationRedirect redirect = authorization.authorize(scopes);
         String returnUrl = requestedReturnUrl != null
                 && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
                 ? requestedReturnUrl : defaultReturnUrl;
@@ -118,10 +130,10 @@ public final class LoginFlow {
     }
 
     /**
-     * The engine authorization seam. The session runtime binds it to the engine as
-     * {@code () -> authorizationCodeFlow.authorize(providerMetadata)}; a test binds it to a
-     * hand-built redirect. Keeping the discovery-metadata wiring behind the seam decouples the flow
-     * from it and makes the initiation path unit-testable without a live IdP.
+     * The engine authorization seam. The session runtime binds it to the per-scope-set engine seam
+     * as {@code scopes -> scopedEngineFlows.authorize(providerMetadata, scopes)} (ADR-0048); a test
+     * binds it to a hand-built redirect. Keeping the discovery-metadata wiring behind the seam
+     * decouples the flow from it and makes the initiation path unit-testable without a live IdP.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -131,11 +143,12 @@ public final class LoginFlow {
 
         /**
          * Builds the authorization URL and the transaction context (PKCE/state/nonce owned by the
-         * engine) for a fresh login.
+         * engine) for a fresh login requesting {@code scopes}.
          *
+         * @param scopes the scope set the authorization request's {@code scope} parameter carries
          * @return the engine's authorization redirect (URL + transaction {@code FlowContext})
          */
-        AuthorizationCodeFlow.AuthorizationRedirect authorize();
+        AuthorizationCodeFlow.AuthorizationRedirect authorize(Collection<String> scopes);
     }
 
     /**

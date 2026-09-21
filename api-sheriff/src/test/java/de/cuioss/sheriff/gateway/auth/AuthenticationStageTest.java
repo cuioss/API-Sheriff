@@ -261,7 +261,7 @@ class AuthenticationStageTest {
         return new SessionAuthenticationStage(new ServerSessionBinding(store, codec),
                 (session, cookieHeader, now) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
-                (returnUrl, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
+                (returnUrl, scopes, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 CLOCK);
     }

@@ -34,6 +34,7 @@ import java.util.concurrent.Executors;
 
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
+import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -642,7 +643,7 @@ class GatewayEdgeRouteBffWiringTest {
             SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                     (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                             new SessionBinding.BoundSession(session, List.of())),
-                    (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
+                    (returnUrl, scopes, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                     SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                     Clock.systemUTC());
             StepUpCoordinator stepUp = new StepUpCoordinator(
@@ -651,7 +652,7 @@ class GatewayEdgeRouteBffWiringTest {
                         throw new AssertionError("engine step-up must not be reached");
                     },
                     pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
-            LoginFlow loginFlow = new LoginFlow(() -> {
+            LoginFlow loginFlow = new LoginFlow(scopes -> {
                 throw new AssertionError("engine authorize must not be reached");
             }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
             BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
@@ -663,7 +664,8 @@ class GatewayEdgeRouteBffWiringTest {
             UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionBinding,
                     new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
                     session -> Map.of("sub", session.sub()));
-            LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, sessionBinding, ORIGIN);
+            LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, sessionBinding, ORIGIN,
+                    engineFreeReturnTargetScopes());
 
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
                     () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login);
@@ -709,14 +711,14 @@ class GatewayEdgeRouteBffWiringTest {
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(16);
         Duration ttl = Duration.ofHours(1);
 
-        LoginFlow loginFlow = new LoginFlow(() -> {
+        LoginFlow loginFlow = new LoginFlow(scopes -> {
             throw new AssertionError("engine authorize must not be reached");
         }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
 
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
                 (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
-                (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
+                (returnUrl, scopes, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 Clock.systemUTC());
 
@@ -743,10 +745,20 @@ class GatewayEdgeRouteBffWiringTest {
                 new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
                 session -> Map.of("sub", session.sub()));
 
-        LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, binding, ORIGIN);
+        LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, binding, ORIGIN,
+                engineFreeReturnTargetScopes());
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
                 userInfo, login);
+    }
+
+    /**
+     * The login-initiation scope resolver for the engine-free fixtures: an empty route table and empty
+     * {@code oidc.scopes}, because no path these fixtures drive ever reaches the engine that would
+     * consume a resolved scope set.
+     */
+    private static ReturnTargetScopes engineFreeReturnTargetScopes() {
+        return new ReturnTargetScopes(new RouteTable(List.of()), ORIGIN, List.of());
     }
 
     private static LogoutEndpoint logoutEndpoint(SessionBinding binding) {

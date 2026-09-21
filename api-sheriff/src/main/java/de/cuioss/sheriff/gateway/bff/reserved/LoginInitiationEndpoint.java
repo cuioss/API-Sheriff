@@ -22,6 +22,7 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
+import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -39,8 +40,13 @@ import org.jspecify.annotations.Nullable;
  * reuses the same-origin-validated post-login return URL and the browser-binding cookie carried by
  * the D2b {@link PendingAuthorizationRecord}, and delegates the whole auth-code initiation (engine
  * authorization, PKCE/{@code state}/{@code nonce}, pending-record persistence, binding-cookie
- * minting) to {@link LoginFlow#initiate}. It adds exactly one gateway-side concern on top: the
- * already-authenticated short-circuit.
+ * minting) to {@link LoginFlow#initiate}. It adds two gateway-side concerns on top: the
+ * already-authenticated short-circuit, and the choice of the scope set a fresh login requests.
+ * <p>
+ * <strong>Requested scope.</strong> A login started here has no selected route, so the scope set is
+ * resolved from the return target by {@link ReturnTargetScopes}: the {@code neededScopes} of the
+ * authenticated route the target lands on, or {@code oidc.scopes} when the target is absent,
+ * cross-origin, unmatched or a {@code require: none} route.
  * <p>
  * <strong>Return-URL safety (never an open redirect).</strong> The {@code returnUrl} parameter is
  * same-origin-validated exactly as D2b requires
@@ -75,19 +81,24 @@ public final class LoginInitiationEndpoint {
     private final LoginFlow loginFlow;
     private final SessionBinding sessionBinding;
     private final String gatewayOrigin;
+    private final ReturnTargetScopes returnTargetScopes;
 
     /**
      * Assembles the login-initiation endpoint with the D5 login flow and the session-resolution seam.
      *
-     * @param loginFlow      the D5 auth-code login initiation reused on the unauthenticated path
-     * @param sessionBinding the mode-neutral session binding resolving the request's live session
-     * @param gatewayOrigin  the gateway's own origin (the {@code redirect_uri} origin) used to
-     *                       same-origin-validate the return URL on the already-authenticated path
+     * @param loginFlow          the D5 auth-code login initiation reused on the unauthenticated path
+     * @param sessionBinding     the mode-neutral session binding resolving the request's live session
+     * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
+     *                           same-origin-validate the return URL on the already-authenticated path
+     * @param returnTargetScopes the boot-built resolver mapping the return target to the scope set the
+     *                           fresh login requests
      */
-    public LoginInitiationEndpoint(LoginFlow loginFlow, SessionBinding sessionBinding, String gatewayOrigin) {
+    public LoginInitiationEndpoint(LoginFlow loginFlow, SessionBinding sessionBinding, String gatewayOrigin,
+            ReturnTargetScopes returnTargetScopes) {
         this.loginFlow = Objects.requireNonNull(loginFlow, "loginFlow");
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
+        this.returnTargetScopes = Objects.requireNonNull(returnTargetScopes, "returnTargetScopes");
     }
 
     /**
@@ -117,7 +128,8 @@ public final class LoginInitiationEndpoint {
             return LoginInitiationOutcome.redirect(returnUrl, List.of());
         }
 
-        LoginFlow.LoginRedirect redirect = loginFlow.initiate(requestedReturnUrl, now);
+        LoginFlow.LoginRedirect redirect = loginFlow.initiate(requestedReturnUrl,
+                returnTargetScopes.resolve(requestedReturnUrl), now);
         LOGGER.debug("Login initiation without a live session — starting the OIDC auth-code flow");
         return LoginInitiationOutcome.redirect(redirect.authorizationUrl(), redirect.setCookieHeaders());
     }

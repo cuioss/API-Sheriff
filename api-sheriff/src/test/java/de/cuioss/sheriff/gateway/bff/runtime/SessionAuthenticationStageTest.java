@@ -25,6 +25,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -248,6 +249,40 @@ class SessionAuthenticationStageTest {
             assertEquals(List.of(BINDING_COOKIE), request.responseSetCookies(),
                     "the browser-binding Set-Cookie is emitted with the redirect");
             assertTrue(request.mediatedBearer().isEmpty(), "an unauthenticated request mediates no bearer");
+        }
+
+        @Test
+        @DisplayName("requests exactly the selected route's needed scopes in the login challenge")
+        void requestsRouteNeededScopesAtLogin() {
+            Set<String> neededScopes = Set.of("openid", "profile", NEEDED_SCOPE);
+            AtomicReference<Collection<String>> requested = new AtomicReference<>();
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, scopes, now) -> {
+                requested.set(scopes);
+                return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+            });
+            PipelineRequest request = sessionRequest(neededScopes, navigationHeaders());
+
+            stage.process(request);
+
+            assertEquals(neededScopes, Set.copyOf(requested.get()),
+                    "the login requests the route's boot-derived neededScopes, the set the bearer check also reads");
+        }
+
+        @Test
+        @DisplayName("requests the needed scopes again when a failed refresh re-drives the login")
+        void requestsRouteNeededScopesOnReauthentication() {
+            Set<String> neededScopes = Set.of("openid", NEEDED_SCOPE);
+            AtomicReference<Collection<String>> requested = new AtomicReference<>();
+            SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), sessionEndedRefresh(),
+                    (returnUrl, scopes, now) -> {
+                        requested.set(scopes);
+                        return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+                    });
+            PipelineRequest request = sessionRequest(neededScopes, navigationHeaders());
+
+            stage.process(request);
+
+            assertEquals(neededScopes, Set.copyOf(requested.get()));
         }
 
         @Test
@@ -575,7 +610,7 @@ class SessionAuthenticationStageTest {
 
         private String recordedReturnUrl(String path, List<QueryParameter> query) {
             AtomicReference<String> recorded = new AtomicReference<>();
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, now) -> {
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, scopes, now) -> {
                 recorded.set(returnUrl);
                 return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
             });
@@ -648,7 +683,7 @@ class SessionAuthenticationStageTest {
     }
 
     private static SessionAuthenticationStage.LoginInitiation redirectLogin() {
-        return (returnUrl, now) -> new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+        return (returnUrl, scopes, now) -> new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
     }
 
     private static SessionBinding emptyBinding() {

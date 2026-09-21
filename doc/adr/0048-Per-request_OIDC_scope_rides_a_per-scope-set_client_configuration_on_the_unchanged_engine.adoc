@@ -1,0 +1,156 @@
+= ADR-0048: Per-request OIDC scope rides a per-scope-set client configuration on the unchanged engine
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The confidential-client engine reads the OAuth scope parameter only from ClientConfiguration.getScopes(), on the authorization request and on the refresh grant alike, so the gateway supplies a per-request scope set by building one ClientConfiguration per scope set — through the same factory that pins the ADR-0045 back-channel posture — and driving a per-request AuthorizationCodeFlow or RefreshFlow over the shared token-endpoint client; login flows are cached per canonical scope set, which boot configuration bounds, refresh flows are built per call because the active scope set comes from the identity provider; no engine release and no new dependency are needed, subclassing the request builder is rejected because it covers the login leg only, and the RFC 9470 step-up leg remains on the static oidc.scopes.
+// tags: bff, oidc, scopes, engine-seam, token-sheriff-client
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+A BFF-mode gateway requests OAuth scopes on two legs it drives through the confidential-client
+engine (`token-sheriff-client`):
+
+* the *login leg*: the authorization request the browser is redirected to carries a `scope`
+  parameter, and the identity provider grants at most what it names;
+* the *refresh leg*: the refresh grant posted to the token endpoint may carry a `scope` parameter,
+  and RFC 6749 §6 lets it narrow, but never widen, the originally granted set.
+
+The scope set a request needs is not one gateway-wide value. An endpoint declares additional
+scopes (`endpoint.scopes`), and each route materializes `neededScopes = oidc.scopes ∪ endpoint.scopes`
+once at boot. A session route's login has to request that route's set. A login started through
+`/auth/login?returnUrl=` has to request the set of the route the target lands on. A refresh has to
+request the session's active scope set, the one the identity provider actually granted, rather than
+the static `oidc.scopes`, because a refresh that names a narrower set silently narrows the session.
+
+The engine has no per-call scope argument. On both legs it reads `scope` from exactly one place,
+`ClientConfiguration.getScopes()`: `AuthorizationRequestBuilder.build(configuration, metadata, context)`
+renders it into the authorization URL, and `RefreshFlow.refresh(metadata, refreshToken)` posts it
+in the grant. The configuration is fixed when a flow is constructed. The question this ADR settles is
+how a gateway with per-request scope needs drives an engine whose scope is per-configuration.
+
+== Decision
+
+*The scope set is carried by the configuration, so the gateway builds one configuration per scope
+set and drives a flow over it. The engine is used unchanged.*
+
+`ScopedEngineFlows` is the gateway-side seam. It is built once per runtime over the collaborators the
+base configuration already uses: the shared `TokenEndpointClient`, the access-token and ID-token
+validation bridges, the gateway's `response_mode=query` request builder and the confidential-client
+authentication. It also takes a factory that builds a `ClientConfiguration` for a given scope list.
+
+* `authorize(metadata, scopes)` drives an `AuthorizationCodeFlow` whose configuration carries
+  exactly `scopes`. The flow is cached under the canonical form of the set (deduplicated, then
+  sorted), so two requests for the same scopes in a different order share one flow.
+* `refresh(metadata, refreshToken, scopes)` builds a `RefreshFlow` over a configuration carrying
+  exactly `scopes` for that one call, and never caches it.
+
+*The factory is the posture-pinning method.* The runtime producer passes
+`backChannelConfiguration(oidc, scopes)` as the factory: the method that applies the ADR-0045 posture
+(the `oidc_verify_hostname` passthrough on every build, the `oidc_tls_profile` trust context, and the
+boot-time refusal of the two together). The scope list is the only input that varies between the
+configurations it builds. A scoped variant therefore cannot dial the identity provider with a posture
+the base configuration does not carry. The relaxed or replaced posture is reported once per runtime,
+not once per variant.
+
+*What stays on the base configuration.* Discovery, the callback's code exchange, RFC 9470 step-up
+and refresh-token revocation keep the base configuration carrying `oidc.scopes`. The exchange does not
+send `scope`, and discovery and revocation do not read it. Step-up is covered under Risks.
+
+*Who chooses the set.* The login flow forwards whatever set its caller names:
+
+* the session stage passes the selected route's `neededScopes` for an unauthenticated navigation;
+* the login-initiation endpoint passes the set `ReturnTargetScopes` resolves for the return target:
+  the `neededScopes` of the authenticated route the same-origin, canonicalized target path selects as
+  a `GET` on the gateway host, or `oidc.scopes` when the target is absent, cross-origin, non-canonical
+  or unmatched, or lands on a `require: none` route. A route with `match.headers` is not selected,
+  because a header matcher cannot be evaluated for a request that has not happened yet.
+
+The refresh leg passes the session's active scope set.
+
+== Consequences
+
+=== Positive
+
+* Per-request scope works on both legs with no engine release and no new dependency. The seam
+  depends only on the engine's public API (`ClientConfiguration.builder()`, `AuthorizationCodeFlow`,
+  `RefreshFlow`, `TokenEndpointClient`, `RotationResult.grantedScope()`).
+* Requesting and checking read one derivation. The login request, the `/auth/login` resolution and
+  the bearer route's `insufficient_scope` check all read the route's boot-derived `neededScopes`, so
+  they cannot drift apart.
+* The ADR-0045 back-channel posture holds on every scoped variant by construction, because the
+  variants come from the method that pins it.
+* Scope encoding stays the engine's. The gateway never renders or rewrites a `scope` parameter
+  itself.
+
+=== Negative
+
+* The login-flow cache holds one `AuthorizationCodeFlow` per distinct login scope set. The cache is
+  bounded by construction: a login scope set is always a route's `neededScopes` or `oidc.scopes`, both
+  fixed at boot, so there are at most as many entries as there are distinct route scope sets.
+* Every refresh constructs a `ClientConfiguration` and a `RefreshFlow`. With a named
+  `oidc_tls_profile` that also resolves the profile's trust context per refresh. The cost is paid once
+  per token lifetime per session, not per request, and it is small next to the refresh grant's own
+  round trip. Caching it is not possible without a bound, because the active scope set comes from the
+  identity provider.
+
+=== Risks
+
+* *The step-up leg still requests the static `oidc.scopes`.* `StepUpHandler.initiate` builds its
+  authorization request from the base configuration, so an RFC 9470 re-drive requests `oidc.scopes`
+  rather than the session's active set. The session-side lookup that step-up re-drive uses is
+  currently unwired, so no live path narrows a session through it. The step-up entry point is left to
+  the step-up design. Until it is settled, the step-up pending record records the static set it
+  actually requested.
+* *Granted scopes accumulate across endpoints.* A session that logged in through one scoped route
+  and later refreshes carries every scope granted to it, so a token relayed to one endpoint can carry
+  another endpoint's scopes. Per-endpoint token narrowing is out of scope. The residual is documented
+  in the operator and threat-model documentation.
+
+== Alternatives Considered
+
+*Subclass the authorization request builder to rewrite `scope`.* The gateway already supplies its
+own `AuthorizationRequestBuilder` (for `response_mode=query`), so it could override `build` and
+replace the `scope` parameter in the rendered URL with a per-request value passed through a side
+channel. That covers the login leg only: `RefreshFlow` takes no request builder, so the refresh leg
+would still post the static `oidc.scopes` and narrow every session to it. It would also have the
+gateway parse and re-encode a URL the engine produced, duplicating encoding the engine owns, and it
+would need a thread-bound side channel to carry the scope set into `build`. Rejected.
+
+*Release an engine version with a per-call scope argument.* An `authorize(metadata, scopes)` and a
+`refresh(metadata, refreshToken, scopes)` on the engine would be the most direct shape. The engine
+already reads `scope` from the configuration on both legs, so the per-configuration seam reaches the
+same behaviour without changing the engine. An engine release is excluded for this decision.
+
+*Cache refresh flows too.* A cache keyed by the active scope set would save the per-refresh
+construction, but its keys come from the identity provider's grants rather than from boot
+configuration, so its size would be set outside the gateway. The construction it saves is cheap.
+Rejected.
+
+All three alternatives change either who renders `scope` or what bounds a cache. The decision keeps
+both where they already are: the engine renders `scope` from the configuration, and only boot
+configuration sizes a cache.
+
+== References
+
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel posture every scoped configuration carries
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the `response_mode=query` request builder the scoped login flows share
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/ScopedEngineFlows.java`: the per-scope-set seam
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/ReturnTargetScopes.java`: the `/auth/login?returnUrl=` scope resolution
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java`: `backChannelConfiguration(oidc, scopes)`, the factory the seam builds with
