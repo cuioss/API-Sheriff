@@ -189,10 +189,12 @@ Set<String> activeScopes) {
      *
      * The field-count guard is strict: only the current ten-field shape is accepted, and the buffer
      * must be consumed exactly — trailing bytes after the tenth field are a foreign shape and are
-     * refused. There is no legacy acceptance path for any earlier framing: a clean break, so a
-     * payload predating this format — including the nine-field shape without the active scope set —
-     * is rejected outright rather than admitted with synthesized components, and the browser simply
-     * re-authenticates.
+     * refused. There is no legacy acceptance path for any other framing: a payload of any other
+     * field shape is rejected outright rather than admitted with synthesized components, and the
+     * browser simply re-authenticates. A change to the field set is also a
+     * {@link SealedSessionCookieCodec#FORMAT_VERSION} increment, so a cookie of an earlier shape is
+     * normally refused at the codec's version gate before this reader ever sees it; this guard is
+     * the second line.
      *
      * @param encoded the length-prefixed UTF-8 bytes produced by {@link #encode()}
      * @return the decoded payload; empty when the bytes do not carry the expected field shape,

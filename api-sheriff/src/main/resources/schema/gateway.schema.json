@@ -352,7 +352,11 @@
         "issuer": { "type": "string" },
         "client_id": { "type": "string" },
         "client_secret": { "type": "string" },
-        "scopes": { "type": "array", "items": { "type": "string" } },
+        "scopes": {
+          "type": "array",
+          "description": "The OIDC scopes every session login requests and every bearer route requires; an endpoint's endpoint.scopes is added on top. Each entry must be an RFC 6749 section 3.3 scope-token: one or more printable ASCII characters (0x21-0x7E) excluding the double quote and the backslash, so no space, no control character and no non-ASCII. A malformed name is refused at boot rather than being sent to the identity provider or compared against a token's scope claim. The pattern terminates with a negative lookahead rather than '$', because '$' also matches before a final line terminator.",
+          "items": { "type": "string", "pattern": "^[\\x21\\x23-\\x5B\\x5D-\\x7E]+(?![\\s\\S])" }
+        },
         "redirect_uri": { "type": "string" },
         "logout": {
           "type": "object",

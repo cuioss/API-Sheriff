@@ -178,7 +178,9 @@ class BffEndpointScopesIT {
      * <p>
      * The gateway holds the needed scope set as an unordered set, so the order of the members in the
      * parameter carries no meaning and only membership is compared. A duplicated member would be
-     * hidden by that set conversion, so it is rejected explicitly first.
+     * hidden by that set conversion, so it is rejected explicitly first. A repeated {@code scope}
+     * parameter is rejected for the same reason: reading only the first occurrence would let a
+     * malformed request carrying a second, different scope list pass unnoticed.
      *
      * @param initiation the {@code 302} that starts the authorization-code flow
      * @return the requested scope members
@@ -189,12 +191,13 @@ class BffEndpointScopesIT {
                 () -> "expected a redirect into the OIDC authorization endpoint, got " + location);
         String rawQuery = URI.create(location).getRawQuery();
         assertNotNull(rawQuery, () -> "the authorization redirect carries no query: " + location);
-        String scope = Arrays.stream(rawQuery.split("&"))
+        List<String> scopeParameters = Arrays.stream(rawQuery.split("&"))
                 .filter(parameter -> parameter.startsWith("scope="))
-                .map(parameter -> URLDecoder.decode(parameter.substring("scope=".length()), StandardCharsets.UTF_8))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("the authorization redirect carries no scope parameter: "
-                        + location));
+                .toList();
+        assertEquals(1, scopeParameters.size(),
+                () -> "the authorization redirect must carry exactly one scope parameter: " + location);
+        String scope = URLDecoder.decode(scopeParameters.getFirst().substring("scope=".length()),
+                StandardCharsets.UTF_8);
         List<String> members = Arrays.asList(scope.trim().split(" +"));
         Set<String> unique = new HashSet<>(members);
         assertEquals(members.size(), unique.size(),

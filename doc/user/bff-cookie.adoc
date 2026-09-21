@@ -90,7 +90,7 @@ cookie sealed under the withdrawn key carries a key id the gateway no longer hol
 "no session", and those users simply log in again.
 
 Treat a key change as a scheduled forced re-login -- operationally the same event as the
-format-version bump described under "Upgrading" below.
+format-version change described under "Upgrading" below.
 
 === Migrating from a configuration that declared `previous_key`
 
@@ -193,8 +193,8 @@ names reach that derivation. A longer `+__Host-+` name still costs budget exactl
 *This supersedes earlier guidance.* Previous releases of this guide said that access + ID + refresh
 together commonly exceeded the budget, and pointed you at the server-session variant as the answer
 whenever both refresh and browser-safe cookies were required. That is no longer the position: the
-sealed payload is now framed as length-prefixed raw UTF-8 and deflated before it is encrypted
-(`FORMAT_VERSION` 3), which is what made the three-token session fit.
+sealed payload is now framed as length-prefixed raw UTF-8 and deflated before it is encrypted,
+which is what made the three-token session fit.
 
 *Enabling `session.refresh` still costs a third token in the seal.* The refresh token has to be
 stored in the session -- it is the only thing that re-contacts the IdP -- and in cookie mode the
@@ -313,31 +313,28 @@ never shared, so a login *begun* on one replica must *complete* on that replica.
 *Configure session affinity for the login leg only* -- the redirect through to the callback. Once
 the session cookie is issued, requests may be balanced freely across replicas with no affinity.
 
-== Upgrading: forced re-login on a format bump
+== Upgrading: forced re-login on a format change
 
-The sealed-cookie format carries a version that is bound into the cookie's authenticated data. When
-that version is bumped, cookies in the previous format fail to unseal rather than being mis-parsed,
-and there is deliberately no backward-compatible acceptance path.
+The sealed-cookie format carries a version that is bound into the cookie's authenticated data. The
+version is incremented by one on every change to the set of fields the cookie seals, and a cookie
+carrying any other version fails to unseal rather than being mis-parsed -- there is deliberately no
+backward-compatible acceptance path.
 
-*Plan for it*: on an upgrade that bumps the format version, all existing cookie-mode sessions are
-invalidated at deploy time and users must log in again. There is no rolling migration -- schedule
-the deploy accordingly.
+*Plan for it*: on an upgrade that changes the format version, all existing cookie-mode sessions are
+invalidated at deploy time and users must log in again, once. There is no rolling migration --
+schedule the deploy accordingly.
 
-The current format is `FORMAT_VERSION` *3*, and the bump to it was the packaging change: the sealed
-payload became length-prefixed raw UTF-8 that is deflated before encryption, replacing version 2's
-per-field base64 armouring. That is the change that made a refresh-carrying session fit the budget.
-The bump before it, to version 2, added the per-session identity nonce. A cookie in either retired
-format is refused at an explicit version gate *before* decryption: the version byte is read and
-compared before any cipher is constructed. The version an accepted cookie carries is authenticated in
-turn -- AES-GCM binds it into the associated data -- but that happens after the gate, not at it. So a
-retired format is never mis-parsed, and there is deliberately no acceptance path.
+The current format is `FORMAT_VERSION` *1*: the sealed payload is length-prefixed raw UTF-8, deflated
+before encryption, and carries ten fields -- the tokens, the identity and session claims, and the
+session's active scope set. The numbering restarted at 1 with the change that added the active scope
+set, so *cookies sealed before this change are refused*: they carry an earlier version byte, fail the
+explicit version gate *before* decryption (logged once as `ApiSheriff-113` with disposition
+`unknown-version`), and are treated as no session -- navigations are redirected to login and API
+calls answer `401`. Existing cookie sessions therefore log in again once after the upgrade.
 
-*Adding the active scope set also forces a re-login, without a version bump.* The payload grew from
-nine fields to ten while `FORMAT_VERSION` stayed *3*. A cookie sealed before the change still passes
-the version gate and unseals, but its payload no longer matches the strict ten-field shape, so it is
-treated as no session (logged once as `ApiSheriff-113` with disposition `payload-format`):
-navigations are redirected to login and API calls answer `401`. The effect on
-an upgrade is the same as a format bump -- plan the deploy as one.
+The gate reads and compares the version byte before any cipher is constructed. The version an
+accepted cookie carries is authenticated in turn -- AES-GCM binds it into the associated data -- but
+that happens after the gate, not at it. So a retired format is never mis-parsed.
 
 == Operate
 

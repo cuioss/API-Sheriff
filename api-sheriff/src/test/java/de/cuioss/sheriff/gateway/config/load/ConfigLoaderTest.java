@@ -282,54 +282,144 @@ class ConfigLoaderTest {
         assertEquals(List.of(), loaded.endpoints().getFirst().scopes());
     }
 
-    @Test
-    void rejectsRemovedRequiredScopesInEndpointAuth() throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeConfig("endpoints/orders.yaml", """
+    /**
+     * One case per {@code endpoints/orders.yaml} document the bundled endpoint schema must refuse,
+     * each carrying the JSON pointer the refusal has to name. The cases share a byte-identical body
+     * -- a bare {@code gateway.yaml}, the endpoint document, a collected refusal at a pointer -- so
+     * they are one parameterized test; each case's own reason is recorded at its row. The gateway-level
+     * counterpart is {@link #refusedGatewayBlocks()}.
+     *
+     * @return (case description, {@code endpoints/orders.yaml} text, the pointer fragment the refusal
+     *         names)
+     */
+    static Stream<Arguments> refusedEndpointDocuments() {
+        return Stream.of(
+                // required_scopes is removed, not renamed: the scopes a route needs are now declared
+                // additively by endpoint.scopes, outside auth. A lingering declaration must fail the
+                // boot rather than parse and act nowhere.
+                Arguments.of("a removed required_scopes key in the endpoint auth block",
+                        """
+                                endpoint:
+                                  id: orders
+                                  base_url: ORDERS
+                                  auth:
+                                    require: bearer
+                                    required_scopes: ["orders.read"]
+                                  routes:
+                                    - id: orders-read
+                                      match:
+                                        path_prefix: /orders
+                                """,
+                        "/endpoint/auth"),
+                // AS-3: a matcher carries exactly one path form, so declaring both is refused at load.
+                Arguments.of("a matcher declaring both path and path_prefix",
+                        """
+                                endpoint:
+                                  id: orders
+                                  base_url: ORDERS
+                                  auth:
+                                    require: none
+                                  routes:
+                                    - id: orders-read
+                                      match:
+                                        path_prefix: /orders
+                                        path: /orders
+                                """,
+                        "/routes/0/match"),
+                // AS-3: the other half of "exactly one" -- a matcher naming no path form is refused too.
+                Arguments.of("a matcher declaring neither path nor path_prefix",
+                        """
+                                endpoint:
+                                  id: orders
+                                  base_url: ORDERS
+                                  auth:
+                                    require: none
+                                  routes:
+                                    - id: orders-read
+                                      match:
+                                        methods: ["GET"]
+                                """,
+                        "/routes/0/match"),
+                // RFC 6749 section 3.3: a scope-token is printable ASCII without space, double quote
+                // or backslash. The three excluded characters each fail the load at the item pointer.
+                Arguments.of("an endpoint scope containing a space",
+                        endpointDeclaringScope("\"orders read\""), "/endpoint/scopes/0"),
+                Arguments.of("an endpoint scope containing a double quote",
+                        endpointDeclaringScope("'orders\"read'"), "/endpoint/scopes/0"),
+                Arguments.of("an endpoint scope containing a backslash",
+                        endpointDeclaringScope("'orders\\read'"), "/endpoint/scopes/0"));
+    }
+
+    /**
+     * @param scopeYaml one YAML flow-sequence entry, quoted as the case needs
+     * @return an otherwise-valid bearer {@code endpoints/orders.yaml} declaring that single scope
+     */
+    private static String endpointDeclaringScope(String scopeYaml) {
+        return """
                 endpoint:
                   id: orders
                   base_url: ORDERS
                   auth:
                     require: bearer
-                    required_scopes: ["orders.read"]
+                  scopes: [%s]
                   routes:
                     - id: orders-read
                       match:
                         path_prefix: /orders
+                """.formatted(scopeYaml);
+    }
+
+    /**
+     * @param scopeYaml one YAML flow-sequence entry, quoted as the case needs
+     * @return a {@code gateway.yaml} declaring that single {@code oidc.scopes} entry
+     */
+    private static String gatewayDeclaringOidcScope(String scopeYaml) {
+        return """
+                version: 1
+                oidc:
+                  scopes: [%s]
+                """.formatted(scopeYaml);
+    }
+
+    /**
+     * The RFC 6749 section 3.3 scope-token pattern on {@code oidc.scopes} and {@code endpoint.scopes}
+     * must admit real-world names — a colon-separated scope and an underscore-separated one — and the
+     * two boundary characters of the admitted range, {@code !} (0x21) and {@code ~} (0x7E), together
+     * with the characters immediately around the excluded double quote and backslash.
+     */
+    @Test
+    void bindsScopeTokensAdmittedByRfc6749() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  scopes: ["openid", "orders:read", "k_beispiel_token_permissions", "!#[]~"]
                 """);
+        writeConfig("endpoints/orders.yaml",
+                endpointDeclaringScope("\"orders:read\", \"k_beispiel_token_permissions\""));
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(List.of("openid", "orders:read", "k_beispiel_token_permissions", "!#[]~"),
+                loaded.gateway().oidc().scopes(), "well-formed oidc.scopes entries must bind");
+        assertEquals(List.of("orders:read", "k_beispiel_token_permissions"), loaded.endpoints().getFirst().scopes(),
+                "well-formed endpoint.scopes entries must bind");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("refusedEndpointDocuments")
+    void rejectsRefusedEndpointDocument(String description, String endpointYaml, String pointerFragment)
+            throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", endpointYaml);
 
         ConfigLoader loader = loader(Map.of());
         ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
-                                && error.pointer().contains("/endpoint/auth")),
-                () -> "expected the removed required_scopes key to be refused by the schema, got: "
-                        + exception.errors());
-    }
-
-    @Test
-    void rejectsRemovedRequiredScopesInAnchorAuth() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                anchors:
-                  api:
-                    path_prefix: /api
-                    type: proxy
-                    access: authenticated
-                    auth:
-                      require: bearer
-                      required_scopes: ["api.read"]
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("/anchors/api/auth")),
-                () -> "expected the removed required_scopes key to be refused by the schema, got: "
-                        + exception.errors());
+                                && error.pointer().contains(pointerFragment)),
+                () -> "expected " + description + " to be refused at a pointer naming '" + pointerFragment
+                        + "', got: " + exception.errors());
     }
 
     @Test
@@ -602,10 +692,11 @@ class ConfigLoaderTest {
 
     /**
      * One case per gateway-level block the bundled schema must refuse, each carrying the JSON pointer
-     * the refusal has to name. The three previously stood as separate {@code @Test} methods with a
+     * the refusal has to name. The cases previously stood as separate {@code @Test} methods with a
      * byte-identical body: what differs between them is the document and the pointer, which is
      * exactly what an argument row carries, so they are one parameterized test. Each case's own
-     * reason is recorded at its row rather than lost in the merge.
+     * reason is recorded at its row rather than lost in the merge. The endpoint-document counterpart
+     * is {@link #refusedEndpointDocuments()}.
      *
      * @return (case description, {@code gateway.yaml} text, the pointer fragment the refusal names)
      */
@@ -640,7 +731,60 @@ class ConfigLoaderTest {
                                 forwarded:
                                   trust_scheme_host: true
                                 """,
-                        "forwarded"));
+                        "forwarded"),
+                // required_scopes is removed, not renamed: the scopes a route needs are now declared
+                // additively by endpoint.scopes, outside auth — an anchor's auth block included.
+                Arguments.of("a removed required_scopes key in an anchor auth block",
+                        """
+                                version: 1
+                                anchors:
+                                  api:
+                                    path_prefix: /api
+                                    type: proxy
+                                    access: authenticated
+                                    auth:
+                                      require: bearer
+                                      required_scopes: ["api.read"]
+                                """,
+                        "/anchors/api/auth"),
+                Arguments.of("an unknown key inside an anchor block",
+                        """
+                                version: 1
+                                anchors:
+                                  api:
+                                    path_prefix: /api
+                                    type: proxy
+                                    access: authenticated
+                                    bogus_key: true
+                                """,
+                        "anchors"),
+                // ADR-0007 Amendment A1: CORS is evaluated before route selection, so an anchor can never
+                // scope it. The anchor security_headers schema therefore carries only the response
+                // security headers, and a cors block there fails the boot at load rather than being
+                // accepted and ignored.
+                Arguments.of("a cors block under an anchor's security_headers",
+                        """
+                                version: 1
+                                anchors:
+                                  frontend:
+                                    path_prefix: /app
+                                    type: proxy
+                                    access: public
+                                    security_headers:
+                                      frame_deny: true
+                                      cors:
+                                        enabled: true
+                                        allowed_origins: ["https://app.example"]
+                                """,
+                        "security_headers"),
+                // RFC 6749 section 3.3: a scope-token is printable ASCII without space, double quote
+                // or backslash. The three excluded characters each fail the load at the item pointer.
+                Arguments.of("an oidc scope containing a space",
+                        gatewayDeclaringOidcScope("\"orders read\""), "/oidc/scopes/0"),
+                Arguments.of("an oidc scope containing a double quote",
+                        gatewayDeclaringOidcScope("'orders\"read'"), "/oidc/scopes/0"),
+                Arguments.of("an oidc scope containing a backslash",
+                        gatewayDeclaringOidcScope("'orders\\read'"), "/oidc/scopes/0"));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -944,27 +1088,6 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void rejectsUnknownKeyInsideAnAnchorBlock() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                anchors:
-                  api:
-                    path_prefix: /api
-                    type: proxy
-                    access: authenticated
-                    bogus_key: true
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file()) && error.pointer().contains("anchors")),
-                () -> "an unknown key inside an anchor block must fail the boot with a pointer, got: "
-                        + exception.errors());
-    }
-
-    @Test
     void bindsAnchorReferencesOnEndpointAndRoute() throws Exception {
         writeConfig("gateway.yaml", """
                 version: 1
@@ -1031,6 +1154,7 @@ class ConfigLoaderTest {
     // The schema owns the shape: exactly one path form per matcher, the redirect block's required
     // keys and its status value range. base_url is no longer schema-required — its conditional
     // mandatoriness (proxy routes only) is a code rule, so a document without it must bind here.
+    // The two "exactly one path form" refusals are rows of refusedEndpointDocuments() above.
 
     @Test
     void bindsAnEndpointWithoutBaseUrlCarryingOnlyAssetAndRedirectRoutes() throws Exception {
@@ -1141,57 +1265,6 @@ class ConfigLoaderTest {
                 loaded.endpoints().getFirst().routes().getFirst().redirect(),
                 "omitted keep_query and allow_external bind to false: no query is carried and no external"
                         + " target is admitted unless the operator opts in");
-    }
-
-    @Test
-    void rejectsAMatchDeclaringBothPathAndPathPrefix() throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeConfig("endpoints/orders.yaml", """
-                endpoint:
-                  id: orders
-                  base_url: ORDERS
-                  auth:
-                    require: none
-                  routes:
-                    - id: orders-read
-                      match:
-                        path_prefix: /orders
-                        path: /orders
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
-                                && error.pointer().contains("/routes/0/match")),
-                () -> "a matcher declaring both path forms must be refused at load at the match pointer, got: "
-                        + exception.errors());
-    }
-
-    @Test
-    void rejectsAMatchDeclaringNeitherPathNorPathPrefix() throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeConfig("endpoints/orders.yaml", """
-                endpoint:
-                  id: orders
-                  base_url: ORDERS
-                  auth:
-                    require: none
-                  routes:
-                    - id: orders-read
-                      match:
-                        methods: ["GET"]
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
-                                && error.pointer().contains("/routes/0/match")),
-                () -> "a matcher declaring no path form must be refused at load at the match pointer, got: "
-                        + exception.errors());
     }
 
     /**
@@ -2034,36 +2107,6 @@ class ConfigLoaderTest {
         assertEquals(Map.of("avif", "image/avif", "m4v", "video/mp4;codecs=avc1"),
                 loaded.gateway().assetDefaults().contentTypes(),
                 "a well-formed media type, with and without a parameter, must still bind");
-    }
-
-    /**
-     * ADR-0007 Amendment A1: CORS is evaluated before route selection, so an anchor can never scope it.
-     * The anchor {@code security_headers} schema therefore carries only the response security headers,
-     * and a {@code cors} block there fails the boot at load rather than being accepted and ignored.
-     */
-    @Test
-    void refusesCorsUnderAnAnchorSecurityHeadersBlock() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                anchors:
-                  frontend:
-                    path_prefix: /app
-                    type: proxy
-                    access: public
-                    security_headers:
-                      frame_deny: true
-                      cors:
-                        enabled: true
-                        allowed_origins: ["https://app.example"]
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("security_headers")),
-                () -> "an anchor-level cors block must be refused at schema load, got: " + exception.errors());
     }
 
     @Test

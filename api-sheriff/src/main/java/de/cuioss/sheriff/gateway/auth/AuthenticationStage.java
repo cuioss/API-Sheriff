@@ -72,6 +72,9 @@ public final class AuthenticationStage {
 
     private static final String BEARER_PREFIX = "Bearer ";
 
+    /** The challenge header every bearer rejection carries (RFC 6750 section 3). */
+    private static final String WWW_AUTHENTICATE = "WWW-Authenticate";
+
     private final Provider<TokenValidator> tokenValidator;
     private final @Nullable SessionAuthenticationStage sessionStage;
 
@@ -170,7 +173,7 @@ public final class AuthenticationStage {
     private static GatewayException insufficientScope(PipelineRequest request, RouteRuntime route,
             Set<String> missingScopes) {
         String missing = String.join(" ", new TreeSet<>(missingScopes));
-        request.responseHeaders().put("WWW-Authenticate",
+        request.responseHeaders().put(WWW_AUTHENTICATE,
                 "Bearer error=\"insufficient_scope\", scope=\"" + missing + "\"");
         return new GatewayException(EventType.SCOPE_MISSING,
                 "Token missing a needed scope for route " + route.getId());
@@ -184,13 +187,13 @@ public final class AuthenticationStage {
     }
 
     private static GatewayException unauthorized(PipelineRequest request, EventType eventType, String detail) {
-        request.responseHeaders().put("WWW-Authenticate", "Bearer");
+        request.responseHeaders().put(WWW_AUTHENTICATE, "Bearer");
         return new GatewayException(eventType, detail);
     }
 
     private static GatewayException unauthorizedFromValidation(PipelineRequest request,
             TokenValidationException validationFailure) {
-        request.responseHeaders().put("WWW-Authenticate", "Bearer");
+        request.responseHeaders().put(WWW_AUTHENTICATE, "Bearer");
         return new GatewayException(EventType.TOKEN_INVALID, "Bearer token rejected by validation", validationFailure);
     }
 

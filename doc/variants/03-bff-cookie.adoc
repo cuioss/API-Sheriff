@@ -280,21 +280,25 @@ across replicas with no affinity at all.
 === Sealed-cookie format version
 
 The sealed-cookie format version is bound into the cookie's authenticated data, so a cookie carrying
-a retired version fails to unseal rather than being mis-parsed -- the version byte is read at an
-explicit gate before a cipher is ever constructed. The current version is *3*, bumped for the
-packaging change: length-prefixed raw UTF-8 framing, deflated before the seal, replacing version 2's
-per-field base64 armouring. The bump before it, to version 2, added the per-session identity nonce
-to the sealed payload.
+any other version fails to unseal rather than being mis-parsed -- the version byte is read at an
+explicit gate before a cipher is ever constructed. The current version is *1*: the ten-field payload
+-- tokens, identity and session claims, and the session's active scope set -- framed as
+length-prefixed raw UTF-8 and deflated before the seal. *The rule is to increment the version by one
+on every change to the sealed payload's field set*; a change that leaves the field set and its
+framing untouched keeps the version.
 
 *Upgrade consequence*: existing cookie-mode sessions are invalidated on deploy and users must log
-in again. There is deliberately no backward-compatible acceptance path for a retired format, and
-each bump has its own reason for that. Accepting a version-1 cookie would have meant synthesizing
-the missing nonce, silently changing the derived session identity; a version-2 cookie frames its
-fields in an entirely different way, so accepting one would mean carrying a second reader for a
-format that exists only in cookies already issued. See
+in again, once. The numbering restarted at 1 with the change that added the active scope set, so
+cookies sealed before that change carry an earlier version byte and are refused at the version gate
+as no session; the browser re-authenticates. There is deliberately no backward-compatible acceptance
+path for a retired format: accepting one would mean synthesizing the fields it lacks -- for the
+active scope set, silently narrowing a session to `oidc.scopes`; for the per-session identity nonce,
+silently changing the derived session identity -- or carrying a second reader for a format that
+exists only in cookies already issued. See
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
-for the architectural
-decision behind the identity model.
+for the architectural decision behind the identity model, and
+link:../user/bff-cookie.adoc#_upgrading_forced_re_login_on_a_format_change[the operator guide] for
+planning the deploy.
 
 == Performance baseline
 
@@ -323,7 +327,7 @@ The defining cost of this variant:
 
 [NOTE]
 ====
-*Do not read a cookie-format version bump as a regression.* Bumping the sealed-cookie format
+*Do not read a cookie-format version change as a regression.* Changing the sealed-cookie format
 invalidates existing sessions, so the first run after such a deploy re-executes the login handshake
 for every user. That is a one-off re-authentication cost, not a change in steady-state throughput.
 ====

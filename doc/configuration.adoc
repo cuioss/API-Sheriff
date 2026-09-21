@@ -381,7 +381,9 @@ oidc:                              # only used by the BFF variants (2 and 3)
   client_secret: ${SHERIFF_CLIENT_SECRET}
   scopes: [openid, profile]        # REQUESTED on every login and joined into every route's
                                    #   needed set (bearer routes check them too); endpoints add
-                                   #   their own via endpoint.scopes, never remove these
+                                   #   their own via endpoint.scopes, never remove these.
+                                   #   Each entry is an RFC 6749 scope-token (printable ASCII,
+                                   #   no space, " or \) -- anything else is refused at load
   redirect_uri: https://gw.example.com/auth/callback
                                    # register at the IdP as a plain GET redirect target: the
                                    #   gateway drives response_mode=query (fixed in code, no knob)
@@ -1824,6 +1826,7 @@ of the variants-are-route-postures rule is in link:variants/README.adoc[Variants
 | Aspect | Contract
 
 | Type / default | Array of strings on the `endpoint` block, *outside* `auth`. Default empty.
+| Syntax | Every entry -- here and in `oidc.scopes` -- must be an RFC 6749 §3.3 `scope-token`: one or more printable ASCII characters (`0x21`-`0x7E`) other than the double quote and the backslash, so no space, control character or non-ASCII. The bundled schemas carry the pattern, so a malformed name (`orders read`, say) is refused at load with a pointer to the entry.
 | Cascade | None. It is endpoint-level only and *additive*: every route of the endpoint needs `needed = oidc.scopes ∪ endpoint.scopes`, materialized once at boot (`endpoint.scopes` alone when the gateway declares no `oidc` block). An endpoint can add scopes but never remove an `oidc.scopes` member, and a route-level `auth` override does not affect the set.
 | `require: bearer` | The validated token must carry every member of `needed`; a shortfall is `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` (the missing names only, sorted, taken from boot config -- never from the token). An empty `needed` skips the check.
 | `require: session` | `needed` is the `scope` a login started on the route requests (and, through `oidc.login.path`, a login whose `returnUrl` lands on the route). No session-route request is checked against it; the session's granted set persists for its life and is what every refresh requests.
@@ -2089,7 +2092,9 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   token carries only that. Every login requests at least `scopes`; a login for a route whose
   endpoint declares link:#_endpoint_scopes[`endpoint.scopes`] requests their union. Because the same
   union is every route's needed set, a `require: bearer` route answers `403 insufficient_scope` to a
-  token lacking any `scopes` member.
+  token lacking any `scopes` member. Each `scopes` entry must be an RFC 6749 §3.3 `scope-token` --
+  printable ASCII without space, double quote or backslash -- or the load is refused (see the syntax row of
+  link:#_endpoint_scopes[`endpoint.scopes`]).
   *Register it as a plain redirect target reached by a `GET`*: the gateway drives the
   authorization request with `response_mode=query`, so the IdP must be free to answer a `302`
   carrying `code` and `state` in the query string. An IdP client pinned to force `form_post`

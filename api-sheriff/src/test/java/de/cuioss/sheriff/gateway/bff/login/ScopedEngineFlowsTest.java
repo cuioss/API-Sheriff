@@ -278,9 +278,10 @@ class ScopedEngineFlowsTest {
         @Test
         @DisplayName("Should reject a null scope set and a null scope name")
         void shouldRejectNulls() {
+            List<String> withNullName = Arrays.asList("openid", null);
+
             assertThrows(NullPointerException.class, () -> ScopedEngineFlows.canonical(null));
-            assertThrows(NullPointerException.class,
-                    () -> ScopedEngineFlows.canonical(Arrays.asList("openid", null)));
+            assertThrows(NullPointerException.class, () -> ScopedEngineFlows.canonical(withNullName));
         }
     }
 }

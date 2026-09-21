@@ -208,16 +208,16 @@ class SealedSessionPayloadTest {
         }
 
         @Test
-        @DisplayName("Should decode nothing from a legacy nine-field payload without the active scope set")
-        void shouldDecodeNothingFromLegacyNineFieldPayload() {
-            byte[] legacy = wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
+        @DisplayName("Should decode nothing from a frame lacking the tenth field, the active scope set")
+        void shouldDecodeNothingFromFrameWithoutActiveScopes() {
+            byte[] withoutScopes = wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
                     Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE);
 
             assertTrue(SealedSessionPayload.decode(minimalWireForm()).isPresent(),
                     "positive control: the same material with the tenth field decodes");
-            assertTrue(SealedSessionPayload.decode(legacy).isEmpty(),
-                    "the pre-scope nine-field shape is rejected outright — a breaking wire change with no "
-                            + "dual-format reader, so the browser simply re-authenticates");
+            assertTrue(SealedSessionPayload.decode(withoutScopes).isEmpty(),
+                    "a frame without the active scope set is rejected outright — there is no dual-format "
+                            + "reader behind the format-version gate, so the browser simply re-authenticates");
         }
 
         @Test
@@ -232,9 +232,9 @@ class SealedSessionPayloadTest {
         }
 
         @Test
-        @DisplayName("Should decode nothing from a version-2 newline-joined, per-field-base64 payload")
-        void shouldDecodeNothingFromVersionTwoFraming() {
-            byte[] versionTwo = Arrays.stream(new String[]{ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
+        @DisplayName("Should decode nothing from a newline-joined, per-field-base64 payload")
+        void shouldDecodeNothingFromNewlineJoinedFraming() {
+            byte[] newlineJoined = Arrays.stream(new String[]{ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
                     Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE})
                     .map(field -> Base64.getUrlEncoder().withoutPadding()
                             .encodeToString(field.getBytes(StandardCharsets.UTF_8)))
@@ -242,7 +242,7 @@ class SealedSessionPayloadTest {
                     .orElseThrow()
                     .getBytes(StandardCharsets.UTF_8);
 
-            assertTrue(SealedSessionPayload.decode(versionTwo).isEmpty(),
+            assertTrue(SealedSessionPayload.decode(newlineJoined).isEmpty(),
                     "the retired framing has no acceptance path: its leading bytes are base64 text, which "
                             + "reads as a length prefix promising far more than the buffer holds");
         }

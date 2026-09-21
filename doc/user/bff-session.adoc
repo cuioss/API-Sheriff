@@ -138,6 +138,12 @@ it can never turn a login into an open redirect.
 *Terminology.* `oidc.scopes` and `endpoint.scopes` are scopes the gateway *requests* from the IdP.
 They are not pre-approved: the IdP decides what it grants, and the token carries only that.
 
+*Syntax.* Every entry of either list must be an RFC 6749 §3.3 `scope-token`: one or more printable
+ASCII characters (`0x21`-`0x7E`) other than the double quote and the backslash -- so no space, no
+control character and no non-ASCII. `orders:read`, `orders.read` and `k_beispiel_token_permissions`
+are fine; `orders read` is two scopes written as one and is refused at boot, naming the offending
+entry.
+
 *Additivity.* The scope set a route needs is worked out once at boot:
 
 [source]
