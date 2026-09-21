@@ -26,18 +26,28 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Standing <strong>matched positive controls</strong> for the until-then-re-assert guard in
- * {@code AwaitsReassertionArchTest}: the two shapes the guard must leave alone, carried alongside
- * {@link AwaitsWithoutReassertionSpecimen}'s violations so the pair proves the guard discriminates
+ * {@code AwaitsReassertionArchTest}: the three shapes the guard must leave alone, carried alongside
+ * {@link AwaitsWithoutReassertionSpecimen}'s violations so the set proves the guard discriminates
  * instead of always-failing.
  * <p>
- * <strong>The two shapes are not interchangeable.</strong> {@link #waitsThenReasserts()} is the
- * compliant spelling — it is in the guard's selection and passes on its merits. {@link #awaitSettled()}
- * is the <em>near miss</em>: an await with no re-assertion after it, excluded only because it is a
- * helper rather than a declared test, which is the guard's scope limit made concrete. The control
- * over it asserts that near-miss property first — that this file really does still carry an
- * un-reasserted await outside every test method — and only then that the guard does not report it.
- * Reversed, the control would pass just as happily against a file that had lost the helper
+ * <strong>The three shapes are not interchangeable.</strong> {@link #waitsThenReasserts()} is the
+ * compliant spelling — it is in the guard's selection and passes on its merits. The other two are
+ * <em>near misses</em>, each pinning a different accepted limit of the guard, and each has a control
+ * that asserts the near-miss property FIRST and only then that the guard does not report it.
+ * Reversed, either control would pass just as happily against a file that had lost the shape
  * altogether, which is the always-passing failure one level down.
+ * <ul>
+ *   <li>{@link #awaitSettled()} pins the <em>scope</em> limit: an await with no assertion after it,
+ *       excluded only because it is a helper rather than a declared test.</li>
+ *   <li>{@link #waitsThenAssertsSomethingElse()} pins the <em>position-only</em> limit: a declared
+ *       test that waits on one value and then asserts a different one. The guard relates the
+ *       assertion to the wait by position, never by subject, so it accepts this — and that
+ *       acceptance is a stated limit rather than a defect.</li>
+ * </ul>
+ * <p>
+ * <strong>Order within this file is load-bearing.</strong> {@link #awaitSettled()} must stay LAST:
+ * the helper-tier control asserts that no assertion follows the file's final helper-tier await, so a
+ * method carrying an assertion placed after it would fail that control.
  * <p>
  * <strong>Every awaited condition is already satisfied</strong>, and the class name matches none of
  * Surefire's default include patterns, for the reasons given in the sibling specimen.
@@ -45,12 +55,20 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
+@SuppressWarnings("java:S3577") // the non-matching name is load-bearing; see the class Javadoc
 final class AwaitsWithReassertionSpecimen {
 
     private static final String LABEL = "a condition that already holds";
 
     /** Already {@code true}, so no method here ever waits; see the class Javadoc. */
     private static final AtomicBoolean SETTLED = new AtomicBoolean(true);
+
+    /**
+     * A second, deliberately unrelated flag. Nothing waits on it — its only job is to be the subject
+     * of {@link #waitsThenAssertsSomethingElse()}'s post-wait assertion, so that assertion is
+     * demonstrably not about the state that was awaited.
+     */
+    private static final AtomicBoolean UNRELATED = new AtomicBoolean(true);
 
     /**
      * The compliant shape: the wait is followed by an assertion on the state it waited for, so the
@@ -69,7 +87,25 @@ final class AwaitsWithReassertionSpecimen {
     }
 
     /**
-     * The near miss: a wait primitive whose body is the await and nothing else. Its re-assertion
+     * The position-only near miss: a declared test that waits on {@code SETTLED} and then asserts
+     * {@code UNRELATED}. The awaited state is never re-asserted, so this method does NOT satisfy the
+     * invariant the guard is named for — yet the guard accepts it, because its predicate asks only
+     * whether an assertion appears after the wait in the same body. That acceptance is the guard's
+     * stated position-only limit made concrete, and it is what the matched control over this method
+     * pins.
+     *
+     * @throws Exception never, because the condition is already satisfied; broadened for the same
+     *                   {@code SimplifyTestThrows} reason given on {@link #waitsThenReasserts()}
+     */
+    @Test
+    void waitsThenAssertsSomethingElse() throws Exception {
+        Awaits.until(SETTLED::get, LABEL, Awaits.TEARDOWN_CEILING_SECONDS);
+
+        assertTrue(UNRELATED.get(), "a value the wait never mentioned, asserted after the wait");
+    }
+
+    /**
+     * The scope near miss: a wait primitive whose body is the await and nothing else. Its re-assertion
      * obligation belongs to whichever test calls it, so the guard — which selects declared test
      * methods — must not report this, even though the shape is character-for-character the violation
      * {@link AwaitsWithoutReassertionSpecimen#waitsAndAssertsNothing()} carries.

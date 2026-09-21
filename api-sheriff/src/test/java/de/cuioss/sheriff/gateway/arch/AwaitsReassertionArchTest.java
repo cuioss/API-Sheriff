@@ -35,9 +35,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Fitness function for the <em>until-then-re-assert</em> invariant: a declared test that waits on a
- * condition with {@code Awaits.until(..)} must assert the state it waited for <em>after</em> the
- * wait returns.
+ * Fitness function for the <em>until-then-re-assert</em> invariant. What the sweep enforces is the
+ * <em>positional</em> half of that invariant: a declared test that waits on a condition with
+ * {@code Awaits.until(..)} must carry an assertion <em>after</em> the wait returns, inside the same
+ * method body. <strong>Which</strong> state that assertion names is not checked — the third accepted
+ * limit below says what that costs and why relating the two is not attempted.
  *
  * <h2>Why a wait is not an assertion</h2>
  *
@@ -72,8 +74,9 @@ import org.junit.jupiter.api.Test;
  *   <li><strong>Negative control</strong> — {@code AwaitsWithoutReassertionSpecimen} carries two
  *       deliberate violations the sweep must report.</li>
  *   <li><strong>Matched positive controls</strong> — {@code AwaitsWithReassertionSpecimen} carries
- *       the compliant shape and the helper-tier near miss; each control asserts its near-miss
- *       property still holds before asserting exclusion.</li>
+ *       the compliant shape, the helper-tier near miss and the unrelated-post-wait-assertion near
+ *       miss; each control asserts its near-miss property still holds before asserting
+ *       exclusion.</li>
  *   <li><strong>Specimen carve-out</strong> — the specimen package is excluded from the production
  *       selection by name in {@link #isCarvedOutSource(Path)}, not by relying on any import or
  *       package filter, and the carve-out has its own control.</li>
@@ -95,10 +98,30 @@ import org.junit.jupiter.api.Test;
  * carries no {@code Awaits.until} call at all today, so a second copy would guard an empty set while
  * doubling the maintenance surface.
  *
+ * <p><strong>The assertion is related to the wait by position only, never by subject.</strong> The
+ * sweep asks whether an {@code assertXxx(} appears after the await inside the same method body. It
+ * never asks whether the value being asserted is the value that was awaited, so
+ *
+ * <pre>{@code
+ * Awaits.until(ready::get, LABEL, CEILING);
+ * assertTrue(unrelated.get(), "...");
+ * }</pre>
+ *
+ * satisfies the sweep although {@code ready} is never re-asserted. The cost is real and is not
+ * hidden: a test that waits on one condition and asserts a different one is not reported, so a clean
+ * verdict here is a floor — every awaited test carries <em>some</em> post-wait assertion — rather
+ * than a guarantee that each one re-asserts what it waited for. Relating the assertion's subject to
+ * the awaited condition is deliberately not attempted: the awaited state arrives as an arbitrary
+ * {@code BooleanSupplier} — a method reference, a lambda closing over anything in scope, a call into
+ * a helper — so deciding what it reads needs expression-level analysis, which is a Java parser
+ * rather than the source sweep this deliberately is. The near miss is pinned by a matched control
+ * rather than left to be discovered; see
+ * {@code MatchedControls#sweepAcceptsAnUnrelatedPostWaitAssertion()}.
+ *
  * @author API Sheriff Team
  * @since 1.0
  */
-@DisplayName("Awaits.until must be followed by a re-assertion")
+@DisplayName("Awaits.until must be followed by an assertion in the same test method")
 class AwaitsReassertionArchTest {
 
     /** The module-relative test source root; the sweep reads source text, not bytecode. */
@@ -109,6 +132,15 @@ class AwaitsReassertionArchTest {
             SPECIMEN_DIRECTORY + "/AwaitsWithoutReassertionSpecimen.java";
     private static final String WITH_REASSERTION_SPECIMEN =
             SPECIMEN_DIRECTORY + "/AwaitsWithReassertionSpecimen.java";
+
+    /** The declared test in the matched specimen that waits on one value and asserts another. */
+    private static final String UNRELATED_ASSERTION_TEST = "waitsThenAssertsSomethingElse";
+
+    /**
+     * The flag that method awaits. Its ABSENCE from the post-wait region is what makes the method a
+     * near miss rather than the compliant shape.
+     */
+    private static final String AWAITED_FLAG = "SETTLED";
 
     /** The annotations that declare a method to be a test; the sweep's selection is exactly these. */
     private static final Pattern TEST_ANNOTATION =
@@ -356,6 +388,42 @@ class AwaitsReassertionArchTest {
         return content.length();
     }
 
+    /**
+     * The body text of the first method declared under {@code methodName}, brace-matched the same way
+     * {@link #testMethodBodies(String)} matches a test body.
+     *
+     * @param code       source text with comments and literals blanked, so a name mentioned only in
+     *                   Javadoc cannot be mistaken for the declaration
+     * @param methodName the declared method's name
+     * @return the body between the braces, or the empty string when the method or its body is absent
+     */
+    private static String bodyOfMethod(String code, String methodName) {
+        int declaration = code.indexOf(methodName);
+        if (declaration < 0) {
+            return "";
+        }
+        int open = bodyBraceAfter(code, declaration);
+        int close = matchingCloser(code, open, '{', '}');
+        return open < 0 || close < 0 ? "" : code.substring(open + 1, close);
+    }
+
+    /**
+     * The part of a method body that follows its first {@code Awaits.until(..)} call — the region the
+     * sweep searches for an assertion.
+     *
+     * @param body a method body with comments and literals blanked
+     * @return the text after the first await's closing parenthesis, or the empty string when the body
+     *         carries no await
+     */
+    private static String afterFirstAwaitIn(String body) {
+        Matcher until = AWAITS_UNTIL.matcher(body);
+        if (!until.find()) {
+            return "";
+        }
+        int callEnd = matchingCloser(body, body.indexOf('(', until.start()), '(', ')');
+        return callEnd < 0 ? "" : body.substring(callEnd + 1);
+    }
+
     private static int lineOf(String content, int offset) {
         int line = 1;
         for (int i = 0; i < offset && i < content.length(); i++) {
@@ -369,7 +437,7 @@ class AwaitsReassertionArchTest {
     // --- the rule -------------------------------------------------------
 
     @Test
-    @DisplayName("Every declared test that waits on a condition re-asserts it after the wait")
+    @DisplayName("Every declared test that waits on a condition carries an assertion after the wait")
     void everyAwaitedTestReassertsAfterTheWait() throws Exception {
         List<String> offenders = new ArrayList<>();
         for (Path source : guardedSources()) {
@@ -377,11 +445,13 @@ class AwaitsReassertionArchTest {
         }
 
         assertTrue(offenders.isEmpty(),
-                "A test waits with Awaits.until and never asserts the state it waited for. The poll is "
-                        + "then the test's only evidence, so the test survives the removal of the "
-                        + "behaviour its name claims: the condition can be satisfied transiently by a "
-                        + "neighbouring effect and the method still returns. Assert the awaited state "
-                        + "after the wait — WebSocketRelayStageTest.awaitReleases is the shape. "
+                "A test waits with Awaits.until and carries no assertion at all after the wait. The "
+                        + "poll is then the test's only evidence, so the test survives the removal of "
+                        + "the behaviour its name claims: the condition can be satisfied transiently by "
+                        + "a neighbouring effect and the method still returns. Assert the awaited state "
+                        + "after the wait — WebSocketRelayStageTest.awaitReleases is the shape. This "
+                        + "sweep relates the assertion to the wait by POSITION only, so clearing it is "
+                        + "a floor rather than proof that the awaited state itself was re-asserted. "
                         + "Offenders: " + offenders);
     }
 
@@ -509,6 +579,47 @@ class AwaitsReassertionArchTest {
                     "The sweep must leave a wait primitive alone: its re-assertion obligation belongs to "
                             + "the test that calls it, and reporting it would make the guard noisy "
                             + "rather than useful.");
+        }
+
+        /**
+         * Matched positive control for the position-only limit. The specimen's
+         * {@code waitsThenAssertsSomethingElse} waits on one value and then asserts a different one,
+         * so it does not satisfy the invariant this guard is named for — and the guard accepts it
+         * anyway, because its predicate relates the assertion to the wait by position alone.
+         * <p>
+         * The order is load-bearing for the same reason the helper-tier control's is. "Not reported"
+         * is trivially true of a method that quietly started re-asserting the awaited state, so the
+         * near-miss property is asserted first: the method still awaits, it still carries a post-wait
+         * assertion, and that assertion still names no awaited flag.
+         */
+        @Test
+        @DisplayName("Sweep accepts a post-wait assertion on an unrelated value (positive control)")
+        void sweepAcceptsAnUnrelatedPostWaitAssertion() throws Exception {
+            Path specimen = TEST_SOURCE_ROOT.resolve(WITH_REASSERTION_SPECIMEN);
+            String content = Files.readString(specimen);
+
+            String body = bodyOfMethod(blankNonCode(content), UNRELATED_ASSERTION_TEST);
+            assertFalse(body.isEmpty(),
+                    "The matched specimen no longer declares " + UNRELATED_ASSERTION_TEST
+                            + ", so the acceptance below is about a method that is not there.");
+            String afterTheWait = afterFirstAwaitIn(body);
+            assertFalse(afterTheWait.isEmpty(),
+                    UNRELATED_ASSERTION_TEST + " no longer calls Awaits.until, so it is not the "
+                            + "position-only near miss this control needs.");
+            assertTrue(ASSERTION_CALL.matcher(afterTheWait).find(),
+                    UNRELATED_ASSERTION_TEST + " carries no assertion after its wait any more, which "
+                            + "makes it an ordinary offender rather than the near miss.");
+            assertFalse(afterTheWait.contains(AWAITED_FLAG),
+                    UNRELATED_ASSERTION_TEST + " now names " + AWAITED_FLAG + " after the wait, so it "
+                            + "re-asserts the awaited state and has become the compliant shape rather "
+                            + "than the near miss. Restore an assertion on a value the wait does not "
+                            + "mention.");
+
+            assertTrue(offendersIn(specimen.getFileName().toString(), content).isEmpty(),
+                    "The sweep relates the assertion to the wait by position only, so it must accept a "
+                            + "post-wait assertion on an unrelated value. Reporting it would mean the "
+                            + "sweep had gained subject analysis it does not have, and the accepted "
+                            + "limit stated in this guard's Javadoc would have to be removed with it.");
         }
 
         /**

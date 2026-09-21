@@ -48,6 +48,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
+@SuppressWarnings("java:S3577") // the non-matching name is load-bearing; see the class Javadoc
 final class AwaitsWithoutReassertionSpecimen {
 
     private static final String LABEL = "a condition that already holds";
@@ -64,6 +65,7 @@ final class AwaitsWithoutReassertionSpecimen {
      *                   because {@code SimplifyTestThrows} broadens it; see
      *                   {@code doc/development/build-gate-discipline.adoc}
      */
+    @SuppressWarnings("java:S2699") // the absent assertion IS this negative control; see the method Javadoc
     @Test
     void waitsAndAssertsNothing() throws Exception {
         Awaits.until(SETTLED::get, LABEL, Awaits.TEARDOWN_CEILING_SECONDS);
