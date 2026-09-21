@@ -254,8 +254,8 @@ class SealedSessionCookieCodecTest {
 
         /**
          * Every header byte other than the current {@code FORMAT_VERSION}, derived from it rather than
-         * listed beside it. That covers the retired versions below it, the next increment above it,
-         * and the {@code 2} and {@code 3} stamped by the pre-reset layouts that live cookies from
+         * listed beside it. That covers the next increment above it, and the {@code 2} and
+         * {@code 3} stamped by the pre-reset layouts that live cookies from
          * before the numbering restarted at {@code 1} still carry. A hand-kept list mirrors a set
          * defined elsewhere, so the next increment could retire a version this regression never
          * exercises while the test stays green; deriving the range means it cannot.

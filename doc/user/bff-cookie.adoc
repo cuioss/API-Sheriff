@@ -327,7 +327,7 @@ schedule the deploy accordingly.
 The current format is `FORMAT_VERSION` *1*: the sealed payload is length-prefixed raw UTF-8, deflated
 before encryption, and carries ten fields -- the tokens, the identity and session claims, and the
 session's active scope set. The numbering restarted at 1 with the change that added the active scope
-set, so *cookies sealed before this change are refused*: they carry an earlier version byte, fail the
+set, so *cookies sealed before this change are refused*: they carry a different version byte, fail the
 explicit version gate *before* decryption (logged once as `ApiSheriff-113` with disposition
 `unknown-version`), and are treated as no session -- navigations are redirected to login and API
 calls answer `401`. Existing cookie sessions therefore log in again once after the upgrade.
