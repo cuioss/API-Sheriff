@@ -22,6 +22,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 
 
 import org.jspecify.annotations.Nullable;
@@ -38,9 +40,12 @@ import org.jspecify.annotations.Nullable;
  * extend the session: the deadline is always recomputed from the original login.
  * <p>
  * <strong>Wire format.</strong> {@link #encode()} produces a compact, explicit, dependency-free
- * encoding: the nine fields in declaration order, each written as a 2-byte big-endian unsigned
+ * encoding: the ten fields in declaration order, each written as a 2-byte big-endian unsigned
  * length followed by its raw UTF-8 bytes ({@value #FIELD_COUNT} fields = {@value #FRAMING_BYTES}
- * bytes of framing), with a zero length standing for an absent optional. Length prefixes rather
+ * bytes of framing), with a zero length standing for an absent optional. The tenth field, the active
+ * scope set, is written as its scope names sorted and joined by a single space, and an empty set is
+ * a zero-length field; a scope name can never contain a space (RFC 6749 §3.3 {@code scope-token}),
+ * which the canonical constructor enforces, so the join is unambiguous. Length prefixes rather
  * than a separator character are what let the value bytes stay <em>raw</em>: nothing in a field can
  * be confused with a delimiter, so no per-field base64 armouring — and the 4/3 expansion it costs —
  * is needed. That expansion is the reason the format changed; the sealed value is base64url-encoded
@@ -66,6 +71,8 @@ import org.jspecify.annotations.Nullable;
  *                     session identity so two logins by the same subject within one clock second
  *                     cannot collide. Re-sealed verbatim — never re-minted — so the identity is
  *                     stable for the life of the session
+ * @param activeScopes the session's active scope set {@code A} (see {@code SessionRecord}); an absent
+ *                     set normalizes to empty. Not an identity input, so a refresh may change it
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -79,7 +86,8 @@ String sub,
 @Nullable String acr,
 @Nullable Instant authTime,
 Instant loginInstant,
-String sessionNonce) {
+String sessionNonce,
+Set<String> activeScopes) {
 
     /**
      * The largest encoded plaintext this format admits, in bytes — an <em>allocation</em> bound, not
@@ -98,7 +106,8 @@ String sessionNonce) {
     public static final int MAX_PLAINTEXT_BYTES = 64 * 1024;
 
     private static final String REDACTED = "***REDACTED***";
-    private static final int FIELD_COUNT = 9;
+    private static final String SCOPE_DELIMITER = " ";
+    private static final int FIELD_COUNT = 10;
     private static final int LENGTH_PREFIX_BYTES = 2;
     private static final int FRAMING_BYTES = FIELD_COUNT * LENGTH_PREFIX_BYTES;
 
@@ -109,9 +118,15 @@ String sessionNonce) {
      * identity, so an empty value would silently degrade that identity back to the colliding
      * pre-nonce shape instead of failing. The nonce value itself never reaches the exception
      * message.
+     * <p>
+     * {@code activeScopes} is defensively copied (absent normalizes to empty), and every scope name
+     * must be non-empty and free of whitespace: the names are space-joined on the wire, so a name
+     * carrying the delimiter would decode as different scopes.
      *
-     * @throws NullPointerException     when a mandatory component is {@code null}
-     * @throws IllegalArgumentException when {@code sessionNonce} is blank
+     * @throws NullPointerException     when a mandatory component is {@code null}, or
+     *                                  {@code activeScopes} contains a {@code null} element
+     * @throws IllegalArgumentException when {@code sessionNonce} is blank, or a scope name is empty
+     *                                  or contains whitespace
      */
     public SealedSessionPayload {
         Objects.requireNonNull(accessToken, "accessToken");
@@ -121,6 +136,12 @@ String sessionNonce) {
         Objects.requireNonNull(sessionNonce, "sessionNonce");
         if (sessionNonce.isBlank()) {
             throw new IllegalArgumentException("sessionNonce must not be blank");
+        }
+        activeScopes = activeScopes == null ? Set.of() : Set.copyOf(activeScopes);
+        for (String scope : activeScopes) {
+            if (scope.isEmpty() || scope.chars().anyMatch(Character::isWhitespace)) {
+                throw new IllegalArgumentException("active scope names must be non-empty and free of whitespace");
+            }
         }
     }
 
@@ -143,7 +164,8 @@ String sessionNonce) {
                 utf8(acr),
                 utf8(authTime == null ? null : Long.toString(authTime.getEpochSecond())),
                 utf8(Long.toString(loginInstant.getEpochSecond())),
-                utf8(sessionNonce)
+                utf8(sessionNonce),
+                utf8(String.join(SCOPE_DELIMITER, new TreeSet<>(activeScopes)))
         };
         int total = FRAMING_BYTES;
         for (byte[] field : fields) {
@@ -165,16 +187,19 @@ String sessionNonce) {
      * Reads a payload back from the wire form. The input MUST already have been authenticated by the
      * codec's GCM tag — this method is not a parser for untrusted input.
      *
-     * The field-count guard is strict: only the current nine-field shape is accepted, and the buffer
-     * must be consumed exactly — trailing bytes after the ninth field are a foreign shape and are
-     * refused. There is no legacy acceptance path for any earlier framing: a clean break, so a
-     * payload predating this format is rejected outright rather than admitted with synthesized
-     * components that would silently change the derived session identity.
+     * The field-count guard is strict: only the current ten-field shape is accepted, and the buffer
+     * must be consumed exactly — trailing bytes after the tenth field are a foreign shape and are
+     * refused. There is no legacy acceptance path for any other framing: a payload of any other
+     * field shape is rejected outright rather than admitted with synthesized components, and the
+     * browser simply re-authenticates. A change to the field set is also a
+     * {@link SealedSessionCookieCodec#FORMAT_VERSION} increment, so a cookie of an earlier shape is
+     * normally refused at the codec's version gate before this reader ever sees it; this guard is
+     * the second line.
      *
      * @param encoded the length-prefixed UTF-8 bytes produced by {@link #encode()}
      * @return the decoded payload; empty when the bytes do not carry the expected field shape,
-     *         exceed {@link #MAX_PLAINTEXT_BYTES}, or carry a blank session nonce (a defensive guard
-     *         against a key that authenticates a foreign format)
+     *         exceed {@link #MAX_PLAINTEXT_BYTES}, carry a blank session nonce, or carry a malformed
+     *         active scope field (a defensive guard against a key that authenticates a foreign format)
      */
     public static Optional<SealedSessionPayload> decode(byte[] encoded) {
         Objects.requireNonNull(encoded, "encoded");
@@ -208,11 +233,13 @@ String sessionNonce) {
                     nullableField(fields[5]),
                     epochSecondField(fields[6]),
                     Instant.ofEpochSecond(Long.parseLong(fields[7])),
-                    fields[8]));
+                    fields[8],
+                    scopeField(fields[9])));
         } catch (IllegalArgumentException | DateTimeException _) {
             // Epoch-second parse failure, an epoch second that parses as a long but lies outside
-            // Instant's supported range, or a blank session nonce rejected by the canonical
-            // constructor, on bytes that authenticated: a foreign payload format under the same key.
+            // Instant's supported range, a blank session nonce, or a scope field with an empty or
+            // duplicated name rejected by the canonical constructor or scopeField, on bytes that
+            // authenticated: a foreign payload format under the same key.
             // DateTimeException is NOT an IllegalArgumentException, so it must be caught explicitly
             // or it escapes unseal() as an unhandled request error. Report "no session" rather than
             // propagating.
@@ -238,15 +265,15 @@ String sessionNonce) {
      * Overridden to redact every credential — the three tokens — plus the session nonce, which keys
      * the derived session identity and so is treated as secret material. The default record
      * {@code toString()} would otherwise print the raw token material into any log line, exception
-     * message, or debugger view.
+     * message, or debugger view. The active scope names are not credentials and are printed as-is.
      *
      * @return a string representation with all credential-bearing fields redacted
      */
     @Override
     public String toString() {
-        return "SealedSessionPayload[accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, acr=%s, authTime=%s, loginInstant=%s, sessionNonce=%s]"
+        return "SealedSessionPayload[accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, acr=%s, authTime=%s, loginInstant=%s, sessionNonce=%s, activeScopes=%s]"
                 .formatted(REDACTED, refreshToken == null ? "null" : REDACTED,
-                        REDACTED, sub, sid, acr, authTime, loginInstant, REDACTED);
+                        REDACTED, sub, sid, acr, authTime, loginInstant, REDACTED, activeScopes);
     }
 
     private static byte[] utf8(@Nullable String value) {
@@ -259,5 +286,20 @@ String sessionNonce) {
 
     private static @Nullable Instant epochSecondField(String field) {
         return field.isEmpty() ? null : Instant.ofEpochSecond(Long.parseLong(field));
+    }
+
+    /**
+     * Reads the space-joined active scope field. A zero-length field is the empty set; otherwise the
+     * field must split into distinct, non-empty names exactly as {@link #encode()} writes them.
+     *
+     * @throws IllegalArgumentException when the field carries an empty or duplicated name
+     */
+    private static Set<String> scopeField(String field) {
+        if (field.isEmpty()) {
+            return Set.of();
+        }
+        // Set.of rejects a duplicated name with IllegalArgumentException; the canonical constructor
+        // rejects an empty one (a leading, trailing or doubled delimiter) the same way.
+        return Set.of(field.split(SCOPE_DELIMITER, -1));
     }
 }

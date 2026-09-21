@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The bearer route that needs a scope BEYOND the gateway's oidc.scopes (ADR-0048).
+# Anchored to the 'secure' anchor (type: proxy, access: authenticated, auth: require: bearer)
+# declared in gateway.yaml and routed to the go-httpbin echo backend (the UPSTREAM topology
+# alias), so an admitted request is observable and a rejected one is provably not forwarded.
+#
+# `scopes` is ADDITIVE: this route checks a presented token against oidc.scopes united with
+# this list, i.e. "openid profile email sheriff_it_endpoint". A token missing any member is
+# answered 403 with WWW-Authenticate: Bearer error="insufficient_scope" naming the missing
+# scope (RFC 6750 §3.1) and never reaches the upstream. BearerScopeIT drives both halves with
+# password-grant tokens from the 'integration' realm: one without sheriff_it_endpoint (403,
+# upstream=0) and one that requests it (200). sheriff_it_endpoint is an OPTIONAL client scope
+# in integration-realm.json, so a token carries it only when the grant asked for it.
+#
+# The prefix nests under /secure and is statically disjoint from secure-proxy and
+# secure-filtered by specificity; secure.yaml is deliberately left untouched so the
+# BearerValidationIT and BearerSecurityFilterInteractionIT fixtures do not move.
+endpoint:
+  id: secure-scoped
+  enabled: true
+  base_url: UPSTREAM
+  anchor: secure
+  scopes: ["sheriff_it_endpoint"]
+  routes:
+    - id: secure-scoped
+      match:
+        path_prefix: /secure/scoped

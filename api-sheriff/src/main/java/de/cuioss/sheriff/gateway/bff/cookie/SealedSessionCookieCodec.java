@@ -123,21 +123,22 @@ public final class SealedSessionCookieCodec {
     /**
      * The current sealed-cookie format version, bound into the GCM associated data.
      * <p>
-     * Version {@code 3} carries the nine-field payload framed as length-prefixed raw UTF-8 and
-     * deflated before sealing. It replaces version {@code 2}, which base64url-armoured every field
-     * <em>inside</em> the plaintext and then base64url-encoded the sealed value again for transport —
-     * a compounded ~33 % expansion applied to material that is already base64 text, and the reason a
-     * session carrying access + refresh + ID tokens could not fit the browser-safe budget.
+     * Version {@code 1} is the ten-field {@link SealedSessionPayload} — the session's tokens and
+     * bookkeeping plus the active scope set the identity provider granted — framed as
+     * length-prefixed raw UTF-8 and deflated before sealing.
      * <p>
-     * The bump is a clean break with no migration path: {@link #unseal} reads the leading version
-     * byte and rejects anything other than {@code FORMAT_VERSION} at an explicit gate, before a
-     * {@link Cipher} is even constructed — so a version-2 cookie is refused outright rather than
-     * being inflated and mis-parsed against the new framing, and decryption is never attempted for
-     * it. The version byte is additionally bound into the GCM associated data, so it cannot be forged
-     * onto a value sealed under a different version either. Pre-existing cookie sessions are
-     * therefore refused fail-closed and the browser simply re-logs in.
+     * <strong>Versioning rule.</strong> The value is incremented by exactly one on every change to
+     * the sealed payload's field set (a field added, removed or re-framed). A change that leaves the
+     * field set and its framing untouched keeps the version. Every increment is a clean break with no
+     * migration path: {@link #unseal} reads the leading version byte and rejects anything other than
+     * {@code FORMAT_VERSION} at an explicit gate, before a {@link Cipher} is even constructed — so a
+     * cookie of any other version is refused outright rather than being inflated and mis-parsed
+     * against the current framing, and decryption is never attempted for it. The version byte is
+     * additionally bound into the GCM associated data, so it cannot be forged onto a value sealed
+     * under a different version either. Cookie sessions sealed under any other version are therefore
+     * refused fail-closed and the browser simply logs in again, once.
      */
-    public static final byte FORMAT_VERSION = 3;
+    public static final byte FORMAT_VERSION = 1;
 
     /**
      * The {@code Max-Age} attribute introducer, shared by the header assembly in

@@ -32,6 +32,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -110,6 +111,8 @@ class TokenRefreshCoordinatorTest {
     private static final String ROTATED_ACCESS = "rotated-access-token";
     private static final String ROTATED_REFRESH = "rotated-refresh-token";
     private static final String ROTATED_ID = "rotated-id-token";
+    /** The session's active scope set A: the static oidc.scopes united with an endpoint scope. */
+    private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
 
     private static final String COOKIE_HEADER = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID;
 
@@ -147,23 +150,23 @@ class TokenRefreshCoordinatorTest {
                 .expiresAt(NOW.plus(SESSION_TTL))
                 .acr(null)
                 .authTime(null)
+                .activeScopes(ACTIVE_SCOPES)
                 .build();
     }
 
     private static RotationResult rotation() {
+        // The "IdP declared no scope on the refresh response" shape — a null grantedScope with
+        // UNDECLARED — is the neutral value for the scheduling, single-flight, rebinding and
+        // failure-disposition cases: it leaves the session's active scope set unchanged. The
+        // ActiveScopeSet cases below pass a declared scope explicitly.
+        return rotation(null, RotationResult.ScopeDelta.UNDECLARED);
+    }
+
+    private static RotationResult rotation(@Nullable String grantedScope, RotationResult.ScopeDelta delta) {
         Map<String, ClaimValue> claims = new HashMap<>();
         claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString("sub-1"));
         AccessTokenContent rotatedAccess = new AccessTokenContent(claims, ROTATED_ACCESS);
-        // token-sheriff 0.9.5 widened RotationResult with grantedScope + scopeDelta. Both are set to
-        // the "the IdP declared no scope on the refresh response" pair here — a null grantedScope
-        // (the component is nullable; only scopeDelta is requireNonNull) with UNDECLARED — because
-        // that is the neutral value for THESE tests: every case below exercises refresh scheduling,
-        // single-flight coordination, session rebinding and failure disposition, none of which reads
-        // either component. Picking EQUAL instead would assert a scope comparison the fixture never
-        // performs. Nothing in the gateway reads scopeDelta yet, so a NARROWED or BROADENED scope on
-        // refresh is currently unobserved; that needs its own plan and its own assertions.
-        return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true,
-                null, RotationResult.ScopeDelta.UNDECLARED);
+        return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true, grantedScope, delta);
     }
 
     private static void awaitRelease(CountDownLatch latch) {
@@ -195,7 +198,7 @@ class TokenRefreshCoordinatorTest {
     }
 
     private static RefreshExchange throwing(RuntimeException failure) {
-        return presented -> {
+        return (presented, _) -> {
             throw failure;
         };
     }
@@ -213,7 +216,7 @@ class TokenRefreshCoordinatorTest {
         void shouldReturnCurrentWhenNotNearExpiry() {
             AtomicInteger calls = new AtomicInteger();
             SessionRecord live = storedSession();
-            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, rt -> {
+            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, (rt, _) -> {
                 calls.incrementAndGet();
                 return rotation();
             });
@@ -231,7 +234,7 @@ class TokenRefreshCoordinatorTest {
             AtomicInteger calls = new AtomicInteger();
             SessionRecord live = session(null);
             store.create(live, NOW);
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> {
                 calls.incrementAndGet();
                 return rotation();
             });
@@ -251,7 +254,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should refresh through the engine and persist the rotated token material")
         void shouldRefreshAndPersist() {
             SessionRecord live = storedSession();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
@@ -270,7 +273,7 @@ class TokenRefreshCoordinatorTest {
         void shouldPresentCurrentRefreshToken() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 assertEquals(CURRENT_REFRESH, presented, "the coordinator presents the stored refresh token");
                 return rotation();
@@ -281,6 +284,100 @@ class TokenRefreshCoordinatorTest {
             assertEquals(1, calls.get());
             SessionRecord persisted = store.resolve(SESSION_ID, NOW).orElseThrow();
             assertEquals(ROTATED_ACCESS, persisted.accessToken(), "the store now serves the rotated token");
+        }
+    }
+
+    /**
+     * The active scope set {@code A}: the refresh grant requests it, and the rotated session's {@code A}
+     * follows the response's {@code scope}, or stays unchanged when the response omits it.
+     */
+    @Nested
+    @DisplayName("Active scope set A across a refresh")
+    class ActiveScopeSet {
+
+        private RefreshOutcome refreshReturning(RotationResult rotation, List<Set<String>> requested) {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, activeScopes) -> {
+                requested.add(activeScopes);
+                return rotation;
+            });
+            return coordinator.refresh(live, COOKIE_HEADER, NOW);
+        }
+
+        @Test
+        @DisplayName("Should request the session's active scope set on the refresh grant")
+        void shouldRequestActiveScopes() {
+            List<Set<String>> requested = new ArrayList<>();
+
+            refreshReturning(rotation(), requested);
+
+            assertEquals(List.of(ACTIVE_SCOPES), requested,
+                    "the grant sends A, never the static oidc.scopes, so an endpoint scope survives the refresh");
+        }
+
+        @Test
+        @DisplayName("Should set the new A to the response scope")
+        void shouldTakeResponseScope() {
+            RefreshOutcome outcome = refreshReturning(
+                    rotation("openid profile email orders:read", RotationResult.ScopeDelta.EQUAL), new ArrayList<>());
+
+            assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
+            assertEquals(ACTIVE_SCOPES, rotatedScopes(outcome));
+            assertEquals(ACTIVE_SCOPES, store.resolve(SESSION_ID, NOW).orElseThrow().activeScopes(),
+                    "the persisted session carries the new A to the next request");
+        }
+
+        @Test
+        @DisplayName("Should keep A unchanged when the response omits scope")
+        void shouldKeepScopesWhenOmitted() {
+            RefreshOutcome outcome = refreshReturning(rotation(), new ArrayList<>());
+
+            assertEquals(ACTIVE_SCOPES, rotatedScopes(outcome),
+                    "an omitted scope means identical to the one requested (RFC 6749 §5.1)");
+        }
+
+        @Test
+        @DisplayName("Should keep A unchanged when the response carries a blank scope")
+        void shouldKeepScopesWhenBlank() {
+            RefreshOutcome outcome = refreshReturning(rotation("  ", RotationResult.ScopeDelta.UNDECLARED),
+                    new ArrayList<>());
+
+            assertEquals(ACTIVE_SCOPES, rotatedScopes(outcome));
+        }
+
+        @Test
+        @DisplayName("Should narrow A when the response narrows the scope")
+        void shouldNarrowScopes() {
+            List<Set<String>> requested = new ArrayList<>();
+            RefreshOutcome outcome = refreshReturning(
+                    rotation("openid  profile", RotationResult.ScopeDelta.NARROWED), requested);
+
+            assertEquals(Set.of("openid", "profile"), rotatedScopes(outcome),
+                    "the identity provider's grant is authoritative; whitespace runs delimit the names");
+        }
+
+        @Test
+        @DisplayName("Should request the narrowed A on the next refresh")
+        void shouldRequestNarrowedScopesNext() {
+            SessionRecord live = storedSession();
+            List<Set<String>> requested = new ArrayList<>();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, activeScopes) -> {
+                requested.add(activeScopes);
+                return rotation("openid", RotationResult.ScopeDelta.NARROWED);
+            });
+
+            coordinator.refresh(live, COOKIE_HEADER, NOW);
+            SessionRecord rotated = store.resolve(SESSION_ID, NOW).orElseThrow();
+            coordinator.refresh(rotated, COOKIE_HEADER, NOW);
+
+            assertEquals(List.of(ACTIVE_SCOPES, Set.of("openid")), requested,
+                    "each refresh sends the A the previous one left on the session");
+        }
+
+        private static Set<String> rotatedScopes(RefreshOutcome outcome) {
+            SessionRecord rotated = outcome.session();
+            assertNotNull(rotated, "a refreshed outcome carries the rotated session");
+            return rotated.activeScopes();
         }
     }
 
@@ -350,7 +447,7 @@ class TokenRefreshCoordinatorTest {
         void shouldBackOffBeforeRetrying() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 throw new TransportException("Token endpoint returned HTTP 503");
             });
@@ -376,7 +473,7 @@ class TokenRefreshCoordinatorTest {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
             Instant accessExpiry = NOW.plusSeconds(1);
-            TokenRefreshCoordinator coordinator = coordinator(accessExpiry, presented -> {
+            TokenRefreshCoordinator coordinator = coordinator(accessExpiry, (presented, _) -> {
                 calls.incrementAndGet();
                 throw new TransportException("Token endpoint returned HTTP 503");
             });
@@ -394,7 +491,7 @@ class TokenRefreshCoordinatorTest {
         void shouldRefreshAfterRecovery() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
                 if (calls.incrementAndGet() == 1) {
                     throw new TransportException("Token endpoint returned HTTP 503");
                 }
@@ -438,7 +535,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         private TokenRefreshCoordinator failingCoordinator(Instant accessExpiry) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, presented -> {
+            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, (presented, _) -> {
                 calls.incrementAndGet();
                 throw OUTAGE;
             }, saturationBinding, revoked::add, DIRECT, EndedRefreshTokens.inert());
@@ -554,7 +651,7 @@ class TokenRefreshCoordinatorTest {
             CountDownLatch othersReturned = new CountDownLatch(PROBE_CONTENDERS - 1);
             AtomicBoolean holdProbe = new AtomicBoolean();
             AtomicBoolean holdExpired = new AtomicBoolean();
-            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 if (holdProbe.get()) {
                     holdExpired.set(!awaitQuietly(othersReturned));
@@ -610,7 +707,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should release the probe claim once the identity provider processes the probe's grant")
         void shouldReleaseProbeClaimOnRecovery() {
             AtomicBoolean recovered = new AtomicBoolean();
-            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 if (recovered.get()) {
                     return rotation();
@@ -683,7 +780,7 @@ class TokenRefreshCoordinatorTest {
             CountDownLatch othersReturned = new CountDownLatch(PROBE_CONTENDERS - 1);
             AtomicBoolean holdProbe = new AtomicBoolean();
             AtomicBoolean holdExpired = new AtomicBoolean();
-            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 if (holdProbe.get()) {
                     holdExpired.set(!awaitQuietly(othersReturned));
@@ -721,7 +818,7 @@ class TokenRefreshCoordinatorTest {
             CountDownLatch allEntered = new CountDownLatch(PROBE_CONTENDERS);
             AtomicBoolean healthy = new AtomicBoolean();
             AtomicBoolean holdExpired = new AtomicBoolean();
-            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinatorWith(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 if (!healthy.get()) {
                     throw OUTAGE;
@@ -853,7 +950,7 @@ class TokenRefreshCoordinatorTest {
         void shouldFailOnReplayRejectedByIdentityProvider() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 throw credentialRejected();
             });
@@ -921,7 +1018,7 @@ class TokenRefreshCoordinatorTest {
             storedSession();
             SessionBinding persistFailing = new PersistFailingBinding(binding);
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
-                    rt -> rotation(), persistFailing, revoked::add, DIRECT, EndedRefreshTokens.inert());
+                    (rt, _) -> rotation(), persistFailing, revoked::add, DIRECT, EndedRefreshTokens.inert());
 
             RefreshOutcome outcome = coordinator.refresh(session(CURRENT_REFRESH), COOKIE_HEADER, NOW);
 
@@ -959,7 +1056,7 @@ class TokenRefreshCoordinatorTest {
         void shouldFailWhenSessionGone() {
             SessionRecord live = session(CURRENT_REFRESH);
             // Deliberately NOT stored — models a session destroyed concurrently before the lead resolves it.
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
@@ -1033,7 +1130,7 @@ class TokenRefreshCoordinatorTest {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch proceed = new CountDownLatch(1);
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> {
                 calls.incrementAndGet();
                 entered.countDown();
                 awaitRelease(proceed);
@@ -1204,7 +1301,7 @@ class TokenRefreshCoordinatorTest {
             ExecutorService revocations = Executors.newVirtualThreadPerTaskExecutor();
             try {
                 SessionRecord live = session(CURRENT_REFRESH);
-                TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, rt -> {
+                TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, (rt, _) -> {
                     exchangeEntered.countDown();
                     awaitRelease(proceed);
                     return exchange.get();
@@ -1308,7 +1405,7 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome redeemed = cookieCoordinator(throwing(new RedeemedScopeRefusalException(
                     "granted a broader scope than requested", RefreshRedemption.rotated(ROTATED_REFRESH))),
                     cookieBinding, redeemedMarker).refresh(cookieSession, sealedCookieHeader, NOW);
-            RefreshOutcome persistFailure = cookieCoordinator(rt -> rotation(), new PersistFailingBinding(cookieBinding),
+            RefreshOutcome persistFailure = cookieCoordinator((rt, _) -> rotation(), new PersistFailingBinding(cookieBinding),
                     persistFailureMarker).refresh(cookieSession, sealedCookieHeader, NOW);
 
             assertAll("every session-ending path marks the token the ended session presented",
@@ -1326,7 +1423,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should refuse a replayed ended cookie locally with no engine call, no revocation and no ApiSheriff-111")
         void shouldRefuseReplayedEndedTokenLocally() {
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = cookieCoordinator(presented -> {
+            TokenRefreshCoordinator coordinator = cookieCoordinator((presented, _) -> {
                 calls.incrementAndGet();
                 throw new RedeemedScopeRefusalException("granted a broader scope than requested",
                         RefreshRedemption.rotated(ROTATED_REFRESH));
@@ -1352,7 +1449,7 @@ class TokenRefreshCoordinatorTest {
         void shouldNotRefuseSuccessorWithDifferentRefreshToken() {
             AtomicInteger calls = new AtomicInteger();
             EndedRefreshTokens marker = EndedRefreshTokens.bounded();
-            TokenRefreshCoordinator coordinator = cookieCoordinator(presented -> {
+            TokenRefreshCoordinator coordinator = cookieCoordinator((presented, _) -> {
                 if (calls.incrementAndGet() == 1) {
                     return rotation();
                 }
@@ -1382,7 +1479,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should let a replay reach the exchange as before when the inert server-mode marker is bound")
         void shouldReachExchangeWithInertMarker() {
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = cookieCoordinator(presented -> {
+            TokenRefreshCoordinator coordinator = cookieCoordinator((presented, _) -> {
                 calls.incrementAndGet();
                 throw credentialRejected();
             });
@@ -1397,7 +1494,7 @@ class TokenRefreshCoordinatorTest {
         @Test
         @DisplayName("Should re-seal the rotated material into a new Set-Cookie rather than a store write")
         void shouldResealIntoANewCookie() {
-            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+            TokenRefreshCoordinator coordinator = cookieCoordinator((rt, _) -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
@@ -1414,7 +1511,7 @@ class TokenRefreshCoordinatorTest {
         @Test
         @DisplayName("Should carry the rotated material in the re-sealed cookie the next request presents")
         void shouldServeTheRotatedMaterialFromTheReSealedCookie() {
-            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+            TokenRefreshCoordinator coordinator = cookieCoordinator((rt, _) -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
@@ -1435,7 +1532,7 @@ class TokenRefreshCoordinatorTest {
             // this asserts the copy directly rather than inferring it from identity stability.
             assertNotNull(cookieSession.sessionNonce(),
                     "a resolved cookie-mode record always carries the nonce sealed at login");
-            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+            TokenRefreshCoordinator coordinator = cookieCoordinator((rt, _) -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
@@ -1455,7 +1552,7 @@ class TokenRefreshCoordinatorTest {
         @Test
         @DisplayName("Should keep the derived identity stable across the re-seal, so single-flight keys the same")
         void shouldKeepTheSingleFlightKeyStable() {
-            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+            TokenRefreshCoordinator coordinator = cookieCoordinator((rt, _) -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
@@ -1469,7 +1566,7 @@ class TokenRefreshCoordinatorTest {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch proceed = new CountDownLatch(1);
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> {
+            TokenRefreshCoordinator coordinator = cookieCoordinator((rt, _) -> {
                 calls.incrementAndGet();
                 entered.countDown();
                 awaitRelease(proceed);
@@ -1541,7 +1638,7 @@ class TokenRefreshCoordinatorTest {
         @Test
         @DisplayName("Should reject a null session and a null instant")
         void shouldRejectNullArguments() {
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> rotation());
 
             var session = session(CURRENT_REFRESH);
             assertThrows(NullPointerException.class, () -> coordinator.refresh(null, COOKIE_HEADER, NOW));
@@ -1551,7 +1648,7 @@ class TokenRefreshCoordinatorTest {
         @Test
         @DisplayName("Should reject a missing revocation seam, revocation executor or ended-token marker")
         void shouldRejectMissingRevocationSeam() {
-            RefreshExchange exchange = rt -> rotation();
+            RefreshExchange exchange = (rt, _) -> rotation();
             RefreshTokenRevocation revocation = revoked::add;
             EndedRefreshTokens marker = EndedRefreshTokens.inert();
 

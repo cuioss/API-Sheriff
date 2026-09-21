@@ -41,7 +41,13 @@ endpoint:
     require: bearer                #   may override it (below). MANDATORY unless the endpoint's
                                    #   anchor declares an auth block (see "Anchors" in
                                    #   anchors.adoc)
-  allowed_methods: [GET, POST]     # optional per-endpoint verb allowlist; REPLACES the
+  scopes: [orders.read]            # optional, OUTSIDE auth, ADDITIVE: every route of this
+                                   #   endpoint needs oidc.scopes ∪ these. A bearer route
+                                   #   answers 403 insufficient_scope to a token missing one;
+                                   #   a session route requests them at login (see "Endpoint
+                                   #   scopes" below). Refused at boot when every route of the
+                                   #   endpoint resolves require: none
+  allowed_methods: [GET, POST]   # optional per-endpoint verb allowlist; REPLACES the
                                    #   anchor/global allowed_methods wholesale for this
                                    #   endpoint (no inheritance, no merge). Omit => the
                                    #   anchor's list applies, else the global list
@@ -62,8 +68,13 @@ endpoint:
         headers:                   # optional header matchers (presence or exact value)
           - { name: X-Tenant, present: true }
       auth:                        # route-level override of endpoint.auth (whole block
-        require: bearer            #   replaces, no merge)
-        required_scopes: [orders.read]
+        require: bearer            #   replaces, no merge); scopes are NOT part of auth, so
+                                   #   overriding auth never drops endpoint.scopes
+        token_relay: true          # default true; acts only on require: session. false keeps
+                                   #   the session's access token away from this upstream
+                                   #   (no Authorization header is relayed) while still
+                                   #   requiring the login. Refused at boot together with
+                                   #   forward.headers_allow naming Authorization
       security_filter:             # "basic filtering -- NOT a WAF"; the field-level contract is
                                    #   "security_filter" in ../configuration.adoc
         profile: strict
@@ -606,6 +617,36 @@ hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full p
 Routes remain free to use neighbouring prefixes; only the exact reserved paths on that one host
 are carved out.
 
+[[_endpoint_scopes]]
+=== Endpoint scopes (`endpoint.scopes`)
+
+`scopes` is an endpoint-level list, declared beside `auth` rather than inside it. It is *additive*:
+every route of the endpoint needs
+
+----
+needed(route) = oidc.scopes ∪ endpoint.scopes
+----
+
+worked out once at boot (`endpoint.scopes` alone when the gateway declares no `oidc` block). Because
+it sits outside `auth`, a route that overrides `auth` still needs the endpoint's scopes, and no
+endpoint can remove a member of `oidc.scopes`. What the set does depends on the route's effective
+auth:
+
+* *`require: bearer`* -- the presented token must carry every member. A token missing one is answered
+  `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the
+  missing scopes (sorted), and the upstream is never contacted. Because the set includes
+  `oidc.scopes`, a gateway that also runs the BFF rejects a bearer token lacking them -- a
+  `client_credentials` token among them. An empty set skips the check.
+* *`require: session`* -- the set is what a login started on the route *requests* from the IdP. A
+  live session is never checked against it; see
+  link:bff-session.adoc#scopes[Server-Session BFF -- Scopes] for session-wide scope growth and the
+  refresh behaviour.
+* *`require: none`* -- the set has no effect. An endpoint declaring `scopes` whose every route
+  resolves `require: none` is refused at boot.
+
+The `auth` block carries no scope list of its own; the schema refuses one, so endpoint scopes are
+declared here or not at all.
+
 [[_defaults_for_omitted_blocks]]
 === Defaults for omitted blocks
 
@@ -626,6 +667,15 @@ and is explained in its own cell:
   implicit default. A route-level `auth` block *replaces* the endpoint/anchor default
   wholesale (no field merging). An endpoint file with neither its own nor an anchor-provided
   `auth` block fails the boot.
+
+| `auth.token_relay`
+| `true`: a `require: session` route relays the session's access token upstream as
+  `Authorization: Bearer`. The key travels with its `auth` block, so it cascades route -> endpoint
+  -> anchor with the block, never on its own. It has no effect on `bearer` or `none` routes.
+
+| `scopes` (endpoint level)
+| Empty: the endpoint's routes need `oidc.scopes` alone (nothing at all when the gateway has no
+  `oidc` block). See <<_endpoint_scopes>>.
 
 | `enabled` (endpoint level)
 | The endpoint is *active* (`enabled: true`). Set `false` -- or the env override

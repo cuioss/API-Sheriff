@@ -81,4 +81,16 @@ class BffLoginInitiationIT extends BaseIntegrationTest {
         assertEquals("/home", location,
                 "the short-circuit must redirect to the returnUrl the browser asked for");
     }
+
+    @Test
+    @DisplayName("a login started without returnUrl lands on / when oidc.login.default_return_url is unset")
+    void loginWithoutReturnUrlLandsOnRootFallback() {
+        // The primary (server-mode) stack declares no oidc.login.default_return_url, so the post-login
+        // fallback is '/'. /auth/login is itself the start path: the flow's first navigation is the
+        // initiation, which 302s into Keycloak exactly as a session-route navigation does.
+        Session session = BffKeycloakLoginFlow.login("/auth/login");
+
+        assertEquals("/", session.callbackLocation(),
+                "a login with no return target must land on the '/' fallback on the server stack");
+    }
 }

@@ -205,19 +205,23 @@ actively misleads.
 non-http scheme *is* refused). A credential embedded in a topology URL is silently thrown away
 rather than flagged.
 
-=== CFG-12 — `require: none` plus `required_scopes` is accepted and inert
+=== CFG-12 — `require: none` plus `endpoint.scopes` would be accepted and inert
 
 [cols="1,4"]
 |===
-|Severity |LOW — Confidence MEDIUM — Category: false-security
-|Location |`auth/AuthenticationStage.java:118-127` + `config/validation/ConfigValidator.java`
+|Severity |LOW — Confidence MEDIUM — Category: false-security (resolved for the endpoint-wide case)
+|Location |`auth/AuthenticationStage.java` + `config/validation/ConfigValidator.java`
 |===
 
-An `auth` block of `require: none` with a non-empty `required_scopes` is accepted by schema and
-validator, and the `NONE` switch arm enforces nothing — the declared scopes are silently inert.
-No cross-cutting rule refuses the incoherent pair (unlike the analogous refusals for
-`websocket` blocks on non-websocket routes and `*_allow`+`*_deny`). An operator reading the
-file sees a scope requirement that is never enforced.
+Scopes no longer live in the `auth` block: they are the endpoint-level, additive
+`endpoint.scopes`, and each route needs `oidc.scopes ∪ endpoint.scopes`. The `NONE` switch arm
+still enforces nothing, so scopes on a `require: none` route are inert. The incoherent
+*endpoint-wide* case is now refused at boot: an enabled endpoint declaring non-empty `scopes`
+whose every route resolves `require: none` fails with `CONFIG_INVALID`, like the analogous
+refusals for `websocket` blocks on non-websocket routes and `*_allow`+`*_deny`. What remains is a
+single `require: none` route inside an endpoint whose other routes authenticate — a health route
+under a scoped bearer endpoint is the normal shape — and there the endpoint's scopes are
+deliberately not applied to the public route rather than silently dropped from a declared one.
 
 === CFG-13 — Omitted `audience` silently disables audience validation
 

@@ -15,9 +15,10 @@
  */
 package de.cuioss.sheriff.gateway.auth;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -44,15 +45,19 @@ import org.jspecify.annotations.Nullable;
  *       four-component {@link AccessTokenRequest} (token, headers, URI, method — URI and method are
  *       mandatory for DPoP binding). A missing token is 401 {@link EventType#TOKEN_MISSING}; an
  *       invalid / expired / tampered token is 401 {@link EventType#TOKEN_INVALID}; both carry
- *       {@code WWW-Authenticate: Bearer}. A valid token lacking a required scope is 403
- *       {@link EventType#SCOPE_MISSING};</li>
+ *       {@code WWW-Authenticate: Bearer}. A valid token lacking a member of the route's
+ *       {@link RouteRuntime#getNeededScopes() needed scopes} ({@code oidc.scopes} united with the
+ *       endpoint's {@code scopes}) is 403 {@link EventType#SCOPE_MISSING} carrying the RFC 6750
+ *       challenge {@code WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"},
+ *       which names only the missing scopes, sorted; an empty needed set skips the check;</li>
  *   <li>{@code require: session} — dispatched to the {@link SessionAuthenticationStage} stage-4
  *       runtime (D4): the opaque session cookie is resolved to a live session, the mediated token is
- *       injected as the upstream {@code Authorization: Bearer}, {@code required_scopes} are enforced
- *       against the mediated token (403 {@link EventType#SCOPE_MISSING}), and an unauthenticated
- *       request is redirected into the auth-code flow (navigation) or challenged 401
- *       {@code application/problem+json} (everything else). Bearer and session stay separate
- *       mechanisms — the bearer-validation logic above is untouched.</li>
+ *       injected as the upstream {@code Authorization: Bearer}, and an unauthenticated request is
+ *       redirected into the auth-code flow (navigation) or challenged 401
+ *       {@code application/problem+json} (everything else). A session route runs <em>no</em> scope
+ *       check: the scopes it needs are requested at login, not enforced against the session's token.
+ *       Bearer and session stay separate mechanisms — the bearer-validation logic above is
+ *       untouched.</li>
  * </ul>
  * The upstream is never contacted on any authentication or authorization rejection.
  * <p>
@@ -66,6 +71,9 @@ import org.jspecify.annotations.Nullable;
 public final class AuthenticationStage {
 
     private static final String BEARER_PREFIX = "Bearer ";
+
+    /** The challenge header every bearer rejection carries (RFC 6750 section 3). */
+    private static final String WWW_AUTHENTICATE = "WWW-Authenticate";
 
     private final Provider<TokenValidator> tokenValidator;
     private final @Nullable SessionAuthenticationStage sessionStage;
@@ -118,7 +126,7 @@ public final class AuthenticationStage {
             case NONE -> {
                 // Anonymous surface: nothing to enforce.
             }
-            case BEARER -> validateBearer(request, auth, route);
+            case BEARER -> validateBearer(request, route);
             case SESSION -> requireSessionStage(route).process(request);
             case null -> throw new IllegalStateException(
                     "Route " + route.getId() + " reached authentication with a null auth posture");
@@ -133,7 +141,7 @@ public final class AuthenticationStage {
         return sessionStage;
     }
 
-    private void validateBearer(PipelineRequest request, AuthConfig auth, RouteRuntime route) {
+    private void validateBearer(PipelineRequest request, RouteRuntime route) {
         String token = extractBearerToken(request)
                 .orElseThrow(() -> unauthorized(request, EventType.TOKEN_MISSING, "No bearer token presented"));
 
@@ -145,11 +153,30 @@ public final class AuthenticationStage {
             throw unauthorizedFromValidation(request, validationFailure);
         }
 
-        List<String> requiredScopes = auth.requiredScopes();
-        if (!requiredScopes.isEmpty() && !content.providesScopes(requiredScopes)) {
-            throw new GatewayException(EventType.SCOPE_MISSING,
-                    "Token missing a required scope for route " + route.getId());
+        Set<String> neededScopes = route.getNeededScopes();
+        if (neededScopes.isEmpty()) {
+            return;
         }
+        Set<String> missingScopes = content.determineMissingScopes(neededScopes);
+        if (!missingScopes.isEmpty()) {
+            throw insufficientScope(request, route, missingScopes);
+        }
+    }
+
+    /**
+     * Builds the RFC 6750 section 3.1 {@code insufficient_scope} rejection: {@code 403} with
+     * {@code WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"}. The
+     * {@code scope} attribute names only the scopes the token lacks, space-separated and sorted so
+     * the challenge is deterministic. Every name is drawn from the route's boot-configured
+     * {@code neededScopes} — never from the token — so the header carries no token material.
+     */
+    private static GatewayException insufficientScope(PipelineRequest request, RouteRuntime route,
+            Set<String> missingScopes) {
+        String missing = String.join(" ", new TreeSet<>(missingScopes));
+        request.responseHeaders().put(WWW_AUTHENTICATE,
+                "Bearer error=\"insufficient_scope\", scope=\"" + missing + "\"");
+        return new GatewayException(EventType.SCOPE_MISSING,
+                "Token missing a needed scope for route " + route.getId());
     }
 
     private static Optional<String> extractBearerToken(PipelineRequest request) {
@@ -160,13 +187,13 @@ public final class AuthenticationStage {
     }
 
     private static GatewayException unauthorized(PipelineRequest request, EventType eventType, String detail) {
-        request.responseHeaders().put("WWW-Authenticate", "Bearer");
+        request.responseHeaders().put(WWW_AUTHENTICATE, "Bearer");
         return new GatewayException(eventType, detail);
     }
 
     private static GatewayException unauthorizedFromValidation(PipelineRequest request,
             TokenValidationException validationFailure) {
-        request.responseHeaders().put("WWW-Authenticate", "Bearer");
+        request.responseHeaders().put(WWW_AUTHENTICATE, "Bearer");
         return new GatewayException(EventType.TOKEN_INVALID, "Bearer token rejected by validation", validationFailure);
     }
 

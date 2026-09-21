@@ -739,7 +739,7 @@ class GatewayEdgePipelineTest {
                 route.effectiveAllowedMethods(), route.effectiveSecurityFilter(), anchorHeaders(),
                 route.retryEnabled(), route.notModifiedEnabled(), route.rewriteLocation(), route.upstream(),
                 route.asset(), route.redirect(), route.effectiveForward(), route.effectiveAllowedOrigins(),
-                route.effectiveWebSocketIdleTimeoutSeconds());
+                route.effectiveWebSocketIdleTimeoutSeconds(), route.neededScopes());
     }
 
     /** A public directory asset route serving {@value #ASSET_FILE} from the fixture's temporary directory. */

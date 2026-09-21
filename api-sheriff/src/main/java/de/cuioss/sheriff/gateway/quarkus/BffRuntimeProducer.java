@@ -35,6 +35,8 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
+import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
+import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -61,6 +63,7 @@ import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
@@ -73,7 +76,6 @@ import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackHandler;
 import de.cuioss.sheriff.token.client.flow.IssValidator;
-import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
@@ -107,9 +109,19 @@ import org.jspecify.annotations.Nullable;
  * On the active path the producer assembles the session binding, the cookie codecs, the CSRF
  * defence, the token-refresh / step-up coordinators, the
  * reserved-endpoint handlers, and the {@code require: session} stage-4 runtime, and binds the
- * {@code token-sheriff-client} engine seams — {@code AuthorizationCodeFlow#authorize} /
- * {@code #exchange} for login and callback, {@code RefreshFlow#refresh} for transparent refresh, and
- * {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is reached at runtime.
+ * {@code token-sheriff-client} engine seams — {@link ScopedEngineFlows#authorize} for login,
+ * {@code AuthorizationCodeFlow#exchange} for the callback, {@link ScopedEngineFlows#refresh} for
+ * transparent refresh, and {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is
+ * reached at runtime.
+ * <p>
+ * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
+ * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
+ * resolves for a {@code /auth/login?returnUrl=} target — and the refresh leg requests the session's
+ * active scope set {@code A}, both through {@link ScopedEngineFlows}, which drives a flow over a
+ * {@link ClientConfiguration} built for exactly that set by
+ * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, step-up and revocation
+ * stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is handed that
+ * static set as the scope set its re-drive requests.
  * <p>
  * <strong>Response mode.</strong> Both authorization-URL seams are wired with the gateway-owned
  * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
@@ -176,6 +188,8 @@ public class BffRuntimeProducer {
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
+    /** The post-login fallback return target when {@code oidc.login.default_return_url} is omitted. */
+    private static final String ROOT_RETURN_URL = "/";
     /** The gateway key a named BFF back-channel trust profile is declared under, for error context. */
     private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
     /** The RFC 7009 {@code token_type_hint} sent when a live refresh token is revoked. */
@@ -186,6 +200,7 @@ public class BffRuntimeProducer {
     private static final String ON_FAILURE_REJECT = "reject";
 
     private final GatewayConfig gatewayConfig;
+    private final RouteTable routeTable;
     private final Instance<TokenValidator> tokenValidator;
     private final JwksTrustProfileResolver trustProfileResolver;
     private final ExecutorService virtualThreadExecutor;
@@ -201,6 +216,8 @@ public class BffRuntimeProducer {
     /**
      * @param gatewayConfig         the bound global gateway document carrying the {@code oidc} block and
      *                              the global {@code egress_tls} block
+     * @param routeTable            the boot-built route table the login-initiation endpoint resolves a
+     *                              return target's requested scope set against
      * @param tokenValidator        a lazy handle to the gateway's shared offline validator, resolved
      *                              only on the active BFF path in either session mode (a bearer-only
      *                              gateway never triggers it)
@@ -210,11 +227,12 @@ public class BffRuntimeProducer {
      * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor a best-effort refresh-token
      *                              revocation is dispatched on, off the request path
      */
-    public BffRuntimeProducer(GatewayConfig gatewayConfig,
+    public BffRuntimeProducer(GatewayConfig gatewayConfig, RouteTable routeTable,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
             JwksTrustProfileResolver trustProfileResolver,
             @VirtualThreads ExecutorService virtualThreadExecutor) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
+        this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
         this.trustProfileResolver = Objects.requireNonNull(trustProfileResolver, "trustProfileResolver");
         this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
@@ -290,7 +308,12 @@ public class BffRuntimeProducer {
                 ? Set.of(gatewayOrigin)
                 : Set.copyOf(declaredTrustedOrigins);
 
-        ClientConfiguration clientConfiguration = backChannelConfiguration(oidc);
+        // The base configuration carries the static oidc.scopes and serves every leg that does not
+        // request a per-request scope set: discovery, the callback code exchange, step-up and
+        // revocation. The login and refresh legs request per scope set through ScopedEngineFlows below, whose
+        // factory is this same method — so every scoped variant carries the identical pinned posture.
+        reportBackChannelPosture();
+        ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
         ClientAuthentication clientAuthentication = new ClientSecretBasicAuth(clientId, clientSecret);
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
@@ -310,8 +333,11 @@ public class BffRuntimeProducer {
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
                 tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
                 new CallbackHandler(), null);
-        RefreshFlow refreshFlow = new RefreshFlow(clientConfiguration, tokenEndpointClient, tokenBridge,
-                clientAuthentication);
+        // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so a login that
+        // requests a route's neededScopes, and a refresh that requests the session's active scope set,
+        // each ride a configuration built for exactly that set.
+        ScopedEngineFlows scopedFlows = new ScopedEngineFlows(scopes -> backChannelConfiguration(oidc, scopes),
+                tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication);
 
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
@@ -323,9 +349,14 @@ public class BffRuntimeProducer {
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
-        // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime.
-        LoginFlow loginFlow = new LoginFlow(() -> authorizationCodeFlow.authorize(metadata.get()),
-                pendingStore, bindingCookieCodec, gatewayOrigin);
+        // Resolved once: the login flow, the login-initiation endpoint (through the flow) and the step-up
+        // re-drive all fall back to the same configured post-login target.
+        String defaultReturnUrl = defaultReturnUrl(oidc);
+
+        // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime, requesting
+        // exactly the scope set the caller names (a route's neededScopes, or oidc.scopes).
+        LoginFlow loginFlow = new LoginFlow(scopes -> scopedFlows.authorize(metadata.get(), scopes),
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
         // then hands the result to the refresh policy, which is where the exchange's refresh token is
@@ -344,12 +375,14 @@ public class BffRuntimeProducer {
         // gateway mediates the current token verbatim until the session's absolute TTL expires.
         // The revocation client is built from the SAME back-channel configuration, so a refresh token
         // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
+        // The refresh grant requests the session's active scope set A through ScopedEngineFlows, never
+        // the static oidc.scopes the base configuration carries.
         RevocationClient revocationClient = new RevocationClient(clientConfiguration);
         SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
                 ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
-                refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
+                (refreshToken, activeScopes) -> scopedFlows.refresh(metadata.get(), refreshToken, activeScopes),
                 sessionBinding,
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
                         clientAuthentication),
@@ -357,13 +390,12 @@ public class BffRuntimeProducer {
                 endedRefreshTokens(session)))
                 : sessionUnchanged();
 
-        // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
+        // D4 session stage-4 runtime — binds refresh and the login-redirect seam. A session route runs
+        // no scope check: the scopes it needs are requested at login, never enforced per request.
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                 tokenRefresh,
-                (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)
-                        .providesScopes(requiredScopes),
-                (returnUrl, now) -> {
-                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, now);
+                (returnUrl, scopes, now) -> {
+                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
@@ -376,11 +408,13 @@ public class BffRuntimeProducer {
         // constructs its own authorization URL through an AuthorizationRequestBuilder, so leaving it on
         // the default builder would keep the step-up re-drive emitting response_mode=form_post and
         // reintroduce the dropped-binding-cookie failure on that leg alone.
+        // The step-up request is built from the base configuration, so the re-drive records the static
+        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0048).
         StepUpHandler stepUpHandler = new StepUpHandler(authorizationRequestBuilder);
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
                 (sessionRecord, challenge, now) -> Optional.empty(),
                 challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),
-                pendingStore, bindingCookieCodec, gatewayOrigin);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes());
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
         // JSON types, capped by the allowlist.
@@ -393,8 +427,10 @@ public class BffRuntimeProducer {
                         idBridge.validateRefreshedIdToken(sessionRecord.idToken())));
 
         // D12 login-initiation fold — the browser-facing start mirror of the callback.
+        // Its fresh login requests the scope set of the route the return target lands on.
+        ReturnTargetScopes returnTargetScopes = new ReturnTargetScopes(routeTable, gatewayOrigin, oidc.scopes());
         LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionBinding,
-                gatewayOrigin);
+                gatewayOrigin, returnTargetScopes);
 
         // D2c back-channel logout — JWKS signature verification through the engine, then the claim residual.
         // The endpoint stays wired in both modes: it is gated on the binding's IdP-destruction
@@ -441,35 +477,30 @@ public class BffRuntimeProducer {
      * an upstream default change cannot silently move this gateway's posture (ADR-0022). The trust
      * context is set only when a profile is named; otherwise the leg keeps the JVM default trust store.
      * <p>
-     * Each relaxed or replaced posture is reported once, at the single build this {@link Singleton}
-     * runtime performs: {@code ApiSheriff-125} when the hostname flag resolves {@code false},
-     * {@code ApiSheriff-126} when a trust profile is in effect.
+     * <strong>One posture for every scope set (ADR-0048).</strong> The {@code scopes} argument is the
+     * only thing that varies between the configurations this method builds: the base configuration
+     * passes {@code oidc.scopes}, and {@link ScopedEngineFlows} passes each per-request scope set. The
+     * collision refusal, the hostname posture and the trust context are applied identically on every
+     * call, so a scoped variant can never dial the identity provider with a weaker posture than the
+     * base configuration. The build is silent; the relaxed or replaced posture is reported once per
+     * runtime by {@link #reportBackChannelPosture()}, never once per scoped variant or per refresh.
      *
-     * @param oidc the global {@code oidc} block, already cleared by the BFF-mode activation predicate
-     * @return the back-channel client configuration carrying the resolved hostname posture and, when a
-     *         profile is named, its trust anchors
+     * @param oidc   the global {@code oidc} block, already cleared by the BFF-mode activation predicate
+     * @param scopes the scope list the configuration carries — the {@code scope} value the engine
+     *               sends on the authorization request and the refresh grant it drives with it
+     * @return the back-channel client configuration carrying {@code scopes}, the resolved hostname
+     *         posture and, when a profile is named, its trust anchors
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when
      *                          {@code egress_tls.oidc_verify_hostname} is {@code false} while
      *                          {@code egress_tls.oidc_tls_profile} is named, or when the named profile
      *                          cannot be resolved to trust anchors
      */
-    ClientConfiguration backChannelConfiguration(OidcConfig oidc) {
+    ClientConfiguration backChannelConfiguration(OidcConfig oidc, List<String> scopes) {
+        Objects.requireNonNull(scopes, "scopes");
         String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
         boolean verifyHostname = egressTls.oidcVerifyHostname();
         String tlsProfile = egressTls.oidcTlsProfile();
-        if (!verifyHostname && tlsProfile != null) {
-            throw new GatewayException(EventType.CONFIG_INVALID,
-                    "egress_tls.oidc_tls_profile '" + tlsProfile + "' is named while "
-                            + "egress_tls.oidc_verify_hostname is false — the two are mutually exclusive. The "
-                            + "hostname relaxation applies only to the default-trust-store context the BFF "
-                            + "OIDC back-channel derives, so a profile-supplied context leaves nothing to "
-                            + "relax. Either drop egress_tls.oidc_tls_profile and bind the identity "
-                            + "provider's anchors into the JVM default trust store, or set "
-                            + "egress_tls.oidc_verify_hostname back to true");
-        }
-        if (!verifyHostname) {
-            LOGGER.warn(ConfigLogMessages.WARN.OIDC_HOSTNAME_VERIFICATION_DISABLED);
-        }
+        refuseRelaxedProfileCollision(verifyHostname, tlsProfile);
         // The configured oidc.issuer, or the gateway's own origin when the key is omitted. The explicit null
         // tests on captured locals are deliberate (java:S2637): Sonar does not prove an Objects.requireNonNullElse
         // result non-null at the @NonNull issuer/clientId builder setters, so do not collapse them back.
@@ -483,15 +514,49 @@ public class BffRuntimeProducer {
         ClientConfiguration.ClientConfigurationBuilder builder = ClientConfiguration.builder()
                 .issuer(issuer).clientId(clientId).clientSecret(clientSecret)
                 .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
-                .scopes(oidc.scopes()).redirectUri(redirectUri)
+                .scopes(scopes).redirectUri(redirectUri)
                 // Called unconditionally, on the true path as well, so the posture never rests on the
                 // library default (ADR-0022).
                 .verifyHostname(verifyHostname);
         if (tlsProfile != null) {
             builder.sslContext(trustProfileResolver.resolveEgressProfile(OIDC_TLS_PROFILE_KEY, tlsProfile));
-            LOGGER.warn(ConfigLogMessages.WARN.OIDC_TRUST_PROFILE_IN_EFFECT, tlsProfile);
         }
         return builder.build();
+    }
+
+    /**
+     * Reports the relaxed or replaced back-channel posture once, at the single build this
+     * {@link Singleton} runtime performs: {@code ApiSheriff-125} when {@code oidc_verify_hostname}
+     * resolves {@code false}, {@code ApiSheriff-126} when an {@code oidc_tls_profile} is in effect. The
+     * collision of the two is refused first, so the pair is never reported as if it were in effect.
+     *
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when
+     *                          {@code egress_tls.oidc_verify_hostname} is {@code false} while
+     *                          {@code egress_tls.oidc_tls_profile} is named
+     */
+    void reportBackChannelPosture() {
+        boolean verifyHostname = egressTls.oidcVerifyHostname();
+        String tlsProfile = egressTls.oidcTlsProfile();
+        refuseRelaxedProfileCollision(verifyHostname, tlsProfile);
+        if (!verifyHostname) {
+            LOGGER.warn(ConfigLogMessages.WARN.OIDC_HOSTNAME_VERIFICATION_DISABLED);
+        }
+        if (tlsProfile != null) {
+            LOGGER.warn(ConfigLogMessages.WARN.OIDC_TRUST_PROFILE_IN_EFFECT, tlsProfile);
+        }
+    }
+
+    private static void refuseRelaxedProfileCollision(boolean verifyHostname, @Nullable String tlsProfile) {
+        if (!verifyHostname && tlsProfile != null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    "egress_tls.oidc_tls_profile '" + tlsProfile + "' is named while "
+                            + "egress_tls.oidc_verify_hostname is false — the two are mutually exclusive. The "
+                            + "hostname relaxation applies only to the default-trust-store context the BFF "
+                            + "OIDC back-channel derives, so a profile-supplied context leaves nothing to "
+                            + "relax. Either drop egress_tls.oidc_tls_profile and bind the identity "
+                            + "provider's anchors into the JVM default trust store, or set "
+                            + "egress_tls.oidc_verify_hostname back to true");
+        }
     }
 
     /**
@@ -514,6 +579,22 @@ public class BffRuntimeProducer {
                     "oidc.session.refresh.on_failure '" + declared + "' is not recognised — use '"
                             + ON_FAILURE_REAUTHENTICATE + "' or '" + ON_FAILURE_REJECT + "'");
         };
+    }
+
+    /**
+     * Resolves {@code oidc.login.default_return_url} — the post-login target the login flow, the
+     * login-initiation endpoint and the step-up re-drive fall back to when no usable same-origin return
+     * URL is supplied. An omitted key (or an omitted {@code login} block) resolves to {@code /}. Boot
+     * validation has already refused a declared value that is not same-origin with
+     * {@code redirect_uri}, so the value is used as declared.
+     *
+     * @param oidc the bound {@code oidc} block
+     * @return the configured default return URL, {@code /} when unset
+     */
+    static String defaultReturnUrl(OidcConfig oidc) {
+        OidcConfig.Login login = oidc.login();
+        String declared = login == null ? null : login.defaultReturnUrl();
+        return declared == null ? ROOT_RETURN_URL : declared;
     }
 
     /**

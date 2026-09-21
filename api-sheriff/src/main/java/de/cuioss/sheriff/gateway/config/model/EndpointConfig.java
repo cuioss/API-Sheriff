@@ -46,6 +46,11 @@ import org.jspecify.annotations.Nullable;
  * allowlist) wholesale for this endpoint (no inheritance); an empty list means the
  * global/anchor list applies. The endpoint-level {@code upstreamDefaults}, when
  * present, replaces the global block wholesale for this endpoint's routes.
+ * {@code scopes} names the OIDC scopes this endpoint needs <em>in addition to</em> the
+ * gateway's {@code oidc.scopes}. It is additive only — an endpoint can add scopes but never
+ * remove one — and it lives on the endpoint, outside {@code auth}, so a route- or anchor-level
+ * {@code auth} block never replaces it. The route-table builder unites it with
+ * {@code oidc.scopes} into each route's {@link ResolvedRoute#neededScopes()}.
  *
  * @param id               the unique endpoint id (mandatory)
  * @param enabled          whether the endpoint is active
@@ -55,6 +60,7 @@ import org.jspecify.annotations.Nullable;
  *                         declares none
  * @param auth             the default auth posture for the routes, {@code null} when the
  *                         endpoint relies on an anchor- or route-provided posture
+ * @param scopes           the additional OIDC scopes this endpoint needs, empty when none
  * @param allowedMethods   the per-endpoint verb allowlist, empty meaning the
  *                         global/anchor list applies
  * @param upstreamDefaults the endpoint-level retry/not-modified defaults, {@code null}
@@ -71,16 +77,18 @@ boolean enabled,
 @Nullable String baseUrl,
 @Nullable String anchor,
 @Nullable AuthConfig auth,
+List<String> scopes,
 List<HttpMethod> allowedMethods,
 @Nullable UpstreamDefaultsConfig upstreamDefaults,
 List<RouteConfig> routes) {
 
     /**
-     * Canonical constructor requiring {@code id} and defensively copying the
-     * collections.
+     * Canonical constructor requiring {@code id}, defensively copying the collections and
+     * normalizing an absent collection to empty.
      */
     public EndpointConfig {
         Objects.requireNonNull(id, "id");
+        scopes = scopes == null ? List.of() : List.copyOf(scopes);
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
         routes = routes == null ? List.of() : List.copyOf(routes);
     }

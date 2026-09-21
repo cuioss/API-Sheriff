@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The session route that needs a scope BEYOND the gateway's oidc.scopes (ADR-0048).
+# Anchored to the 'bff-session' anchor (type: bff, access: authenticated, auth: require:
+# session) declared in gateway.yaml, so its route inherits the session floor, and routed to
+# the same go-httpbin echo backend (the UPSTREAM topology alias) as endpoints/bff-session.yaml
+# so the mediated bearer the gateway forwards is observable.
+#
+# `scopes` is ADDITIVE: the scope set this route needs is oidc.scopes united with this list,
+# i.e. exactly "openid profile email sheriff_it_endpoint". That one boot-time value is what a
+# navigation login started on this route requests from Keycloak, and what the refresh leg keeps
+# asking for afterwards. BffEndpointScopesIT captures the authorization redirect and asserts the
+# requested `scope` byte for byte; BffTokenRefreshIT asserts a refreshed token still carries the
+# extra scope. sheriff_it_endpoint is an OPTIONAL client scope in integration-realm.json, so
+# Keycloak issues it only when it is requested — its presence in a token is therefore proof the
+# gateway asked for it, not an artefact of the realm's defaults.
+#
+# The prefix nests under /bff-session and is statically disjoint from bff-session-mediated by
+# specificity, exactly as /secure/filtered coexists with /secure in endpoints/secure.yaml.
+# No forward block: the mediated bearer is merged by ForwardPolicyStage regardless of any
+# forward list, and nothing here needs a client header to reach the echo.
+endpoint:
+  id: bff-scoped
+  enabled: true
+  base_url: UPSTREAM
+  anchor: bff-session
+  scopes: ["sheriff_it_endpoint"]
+  routes:
+    - id: bff-scoped
+      match:
+        path_prefix: /bff-session/scoped

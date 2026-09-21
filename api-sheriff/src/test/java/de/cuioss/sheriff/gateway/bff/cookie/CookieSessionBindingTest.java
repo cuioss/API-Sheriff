@@ -28,6 +28,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.Set;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -65,6 +66,7 @@ class CookieSessionBindingTest {
     private static final String ID_TOKEN = "raw-id-token-SECRET-material";
     private static final String SUB = "user-sub-1";
     private static final String SID = "idp-sid-9";
+    private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
     private static final byte CURRENT_KEY_ID = 1;
 
     /** The id a cookie sealed before a key change still carries — a generation the binding no longer holds. */
@@ -116,6 +118,7 @@ class CookieSessionBindingTest {
                 .sub(SUB)
                 .sid(SID)
                 .expiresAt(expiresAt)
+                .activeScopes(ACTIVE_SCOPES)
                 .build();
     }
 
@@ -137,6 +140,7 @@ class CookieSessionBindingTest {
                 .acr(original.acr())
                 .authTime(original.authTime())
                 .sessionNonce(original.sessionNonce())
+                .activeScopes(original.activeScopes())
                 .build();
     }
 
@@ -328,6 +332,74 @@ class CookieSessionBindingTest {
             assertTrue(binding.resolve(cookieHeader, LOGIN.plus(TTL).minusSeconds(1)).isPresent());
             assertTrue(binding.resolve(cookieHeader, LOGIN.plus(TTL)).isEmpty(),
                     "the original deadline still applies after the re-seal");
+        }
+    }
+
+    @Nested
+    @DisplayName("Active scope set")
+    class ActiveScopeSet {
+
+        @Test
+        @DisplayName("Should carry the active scope set through bind and resolve")
+        void shouldSurviveBindAndResolve() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+
+            assertEquals(ACTIVE_SCOPES, bound.session().activeScopes(), "the bound record carries A");
+            assertEquals(ACTIVE_SCOPES, resolved.activeScopes(),
+                    "A is sealed into the cookie, so a stateless gateway recovers it on the next request");
+        }
+
+        @Test
+        @DisplayName("Should resolve an empty active scope set as empty")
+        void shouldSurviveEmptyScopes() {
+            SessionRecord unscoped = SessionRecord.builder()
+                    .sessionId("ignored-on-bind").accessToken(ACCESS_TOKEN).idToken(ID_TOKEN).sub(SUB)
+                    .expiresAt(LOGIN.plus(TTL)).build();
+
+            BoundSession bound = binding.bind(unscoped, LOGIN);
+
+            assertTrue(binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow().activeScopes().isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should re-seal a changed active scope set and keep the session identity")
+        void shouldResealChangedScopes() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+            Set<String> narrowed = Set.of("openid", "profile");
+            SessionRecord rotated = SessionRecord.builder()
+                    .sessionId(resolved.sessionId())
+                    .accessToken("rotated-access-token")
+                    .refreshToken(resolved.refreshToken())
+                    .idToken(resolved.idToken())
+                    .sub(resolved.sub())
+                    .sid(resolved.sid())
+                    .expiresAt(resolved.expiresAt())
+                    .sessionNonce(resolved.sessionNonce())
+                    .activeScopes(narrowed)
+                    .build();
+
+            BoundSession reBound = binding.persist(rotated, LOGIN.plusSeconds(60));
+            SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
+                    .orElseThrow();
+
+            assertEquals(narrowed, reResolved.activeScopes(),
+                    "a refresh that changes A must reach the next request, so the re-seal carries it");
+            assertEquals(resolved.sessionId(), reResolved.sessionId(),
+                    "A is not an identity input, so changing it leaves single-flight keying intact");
+        }
+
+        @Test
+        @DisplayName("Should carry an unchanged active scope set across a re-seal")
+        void shouldResealUnchangedScopes() {
+            BoundSession reBound = binding.persist(resealable("rotated-access-token"), LOGIN.plusSeconds(60));
+
+            SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
+                    .orElseThrow();
+
+            assertEquals(ACTIVE_SCOPES, reResolved.activeScopes());
         }
     }
 

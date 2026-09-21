@@ -22,14 +22,18 @@
  * {@link de.cuioss.sheriff.gateway.bff.session.SessionBinding} seam — no opaque session id appears
  * in the stage's contract, so the stage is identical for a server-side store and for a stateless
  * binding. It then offers the session to the single-flight refresh seam (the D9 hook), emits any
- * {@code Set-Cookie} the binding returns, enforces {@code required_scopes} against the mediated
- * token's granted scopes ({@code 403}), and records the mediated access token for automatic
- * upstream {@code Authorization: Bearer} injection. An unauthenticated request is
+ * {@code Set-Cookie} the binding returns, and records the mediated access token for automatic
+ * upstream {@code Authorization: Bearer} injection — unless the route's effective
+ * {@code auth.token_relay} is {@code false}, in which case the session is still resolved, refreshed
+ * and required but no token is relayed and the upstream sees no {@code Authorization} header. An
+ * unauthenticated request is
  * content-negotiated: a navigation request is redirected into the auth-code flow, everything else
- * is challenged {@code 401} {@code application/problem+json}.
+ * is challenged {@code 401} {@code application/problem+json}. The stage runs no scope check: the
+ * scopes a session route needs are requested at login, and no session-route path answers
+ * {@code 403}.
  * <p>
- * The stage is framework-agnostic and driven through seams (refresh, scope membership, login
- * initiation), so it is unit-testable without a container or a live IdP; the session runtime binds
+ * The stage is framework-agnostic and driven through seams (refresh, login initiation), so it is
+ * unit-testable without a container or a live IdP; the session runtime binds
  * the seams to the engine and the request/response edge.
  *
  * @author API Sheriff Team

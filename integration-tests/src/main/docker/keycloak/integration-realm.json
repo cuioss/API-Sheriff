@@ -53,7 +53,7 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
       "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
-      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
       "attributes": {
         "post.logout.redirect.uris": "*",
         "oauth2.device.authorization.grant.enabled": "false",
@@ -74,7 +74,7 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
       "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
-      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
       "attributes": {
         "post.logout.redirect.uris": "*",
         "oauth2.device.authorization.grant.enabled": "false",
@@ -259,6 +259,15 @@
           }
         }
       ]
+    },
+    {
+      "name": "sheriff_it_endpoint",
+      "description": "Endpoint-specific scope the gateway requests only for routes declaring endpoint.scopes (BffEndpointScopesIT, BearerScopeIT, BffTokenRefreshIT). Optional on both clients, so it is issued only when requested.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
     }
   ],
   "defaultDefaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],

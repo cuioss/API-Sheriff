@@ -113,6 +113,21 @@ class BffCookieSessionIT {
     }
 
     @Test
+    @DisplayName("a login started without returnUrl lands on the configured oidc.login.default_return_url")
+    void loginWithoutReturnUrlLandsOnConfiguredDefault() {
+        // Arrange — this stack's gateway.yaml sets oidc.login.default_return_url to the public demo page;
+        // the server-mode stack leaves it unset and lands on '/' (BffLoginInitiationIT).
+        String configuredDefault = "/assets/demo/landing.html";
+
+        // Act — /auth/login with no returnUrl is the start path, so the login carries no return target.
+        Session session = BffKeycloakLoginFlow.login("/auth/login", COOKIE_ORIGIN);
+
+        // Assert
+        assertEquals(configuredDefault, session.callbackLocation(),
+                "a login with no return target must land on the configured default_return_url");
+    }
+
+    @Test
     @DisplayName("the sealed cookie value is opaque ciphertext carrying no readable token substring")
     void sealedCookieValueCarriesNoReadableToken() {
         // Arrange
@@ -142,9 +157,9 @@ class BffCookieSessionIT {
         byte[] raw = Base64.getUrlDecoder().decode(sealed);
         // The literal tracks SealedSessionCookieCodec.FORMAT_VERSION by hand: this module tests the
         // gateway black-box through its container, so it carries no api-sheriff class on its
-        // classpath and cannot reference the constant. Bump both together.
-        assertEquals((byte) 3, raw[0],
-                "the cookie value must be the version-3 sealed layout, not an opaque server-side handle");
+        // classpath and cannot reference the constant. Increment both together.
+        assertEquals((byte) 1, raw[0],
+                "the cookie value must be the version-1 sealed layout, not an opaque server-side handle");
     }
 
     @Test

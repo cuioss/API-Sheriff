@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -24,9 +25,12 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
@@ -43,7 +47,9 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -58,7 +64,7 @@ class SessionAuthenticationStageTest {
     private static final String SESSION_ID = "opaque-session-id";
     private static final String MEDIATED_TOKEN = "mediated-access-token";
     private static final String REFRESHED_TOKEN = "refreshed-access-token";
-    private static final String REQUIRED_SCOPE = "orders:read";
+    private static final String NEEDED_SCOPE = "orders:read";
     private static final String LOGIN_LOCATION = "https://idp.example/authorize?client_id=sheriff";
     private static final String BINDING_COOKIE = "__Host-sheriff-binding=binding-value; Path=/; Secure; HttpOnly; SameSite=Lax";
     private static final String RESEAL_COOKIE = "__Host-sheriff-session=re-sealed-value; Path=/; Secure; HttpOnly; SameSite=Lax";
@@ -74,8 +80,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("injects the mediated access token as the upstream bearer for a live session")
         void injectsMediatedBearer() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, identityRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             assertDoesNotThrow(() -> stage.process(request));
 
@@ -91,8 +97,8 @@ class SessionAuthenticationStageTest {
             SessionAuthenticationStage.TokenRefresh rotating =
                     (session, cookieHeader, now) -> RefreshResult.mediate(
                             new SessionBinding.BoundSession(rebind(session, REFRESHED_TOKEN), List.of()));
-            SessionAuthenticationStage stage = stage(binding, rotating, scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, rotating, redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             stage.process(request);
 
@@ -107,8 +113,8 @@ class SessionAuthenticationStageTest {
             SessionAuthenticationStage.TokenRefresh resealing =
                     (session, cookieHeader, now) -> RefreshResult.mediate(new SessionBinding.BoundSession(
                             rebind(session, REFRESHED_TOKEN), List.of(RESEAL_COOKIE)));
-            SessionAuthenticationStage stage = stage(binding, resealing, scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, resealing, redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             stage.process(request);
 
@@ -119,34 +125,109 @@ class SessionAuthenticationStageTest {
         }
 
         @Test
-        @DisplayName("passes and injects the bearer when the mediated token grants every required scope")
-        void passesWhenRequiredScopesSatisfied() {
+        @DisplayName("mediates a live session on a route with non-empty needed scopes without any scope check")
+        void mediatesWithoutScopeCheckOnScopedRoute() {
+            // The mediated token is an opaque string granting nothing: were any scope check left on the
+            // session path it could only fail, so a clean mediation proves none runs.
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, identityRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of(REQUIRED_SCOPE)), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(NEEDED_SCOPE), navigationHeaders());
 
             assertDoesNotThrow(() -> stage.process(request));
 
             assertEquals(Optional.of(MEDIATED_TOKEN), request.mediatedBearer(),
-                    "a scope-satisfying session still mediates its bearer");
+                    "a session route requests its needed scopes at login and never enforces them per request");
+            assertTrue(request.shortCircuitStatus().isEmpty());
         }
     }
 
     @Nested
-    @DisplayName("Scope enforcement")
-    class ScopeEnforcement {
+    @DisplayName("token_relay")
+    class TokenRelay {
 
         @Test
-        @DisplayName("rejects 403 SCOPE_MISSING when the mediated token lacks a required scope")
-        void rejectsMissingScopeWith403() {
+        @DisplayName("token_relay: false resolves the live session but mediates no bearer")
+        void liveSessionMediatesNoBearerWhenRelayOff() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, identityRefresh(), scopesDenied(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of(REQUIRED_SCOPE)), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders(), false);
+
+            assertDoesNotThrow(() -> stage.process(request));
+
+            assertAll("the session is accepted, but no Authorization reaches the upstream",
+                    () -> assertTrue(request.mediatedBearer().isEmpty()),
+                    () -> assertTrue(request.shortCircuitStatus().isEmpty(),
+                            "an authenticated request flows on, never short-circuits"));
+        }
+
+        @Test
+        @DisplayName("token_relay: false still emits the refresh re-bind cookie")
+        void relayOffStillEmitsRebindCookie() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage.TokenRefresh resealing =
+                    (session, cookieHeader, now) -> RefreshResult.mediate(new SessionBinding.BoundSession(
+                            rebind(session, REFRESHED_TOKEN), List.of(RESEAL_COOKIE)));
+            SessionAuthenticationStage stage = stage(binding, resealing, redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders(), false);
+
+            stage.process(request);
+
+            assertAll(
+                    () -> assertEquals(List.of(RESEAL_COOKIE), request.responseSetCookies(),
+                            "the session is still refreshed and re-bound"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty()));
+        }
+
+        @Test
+        @DisplayName("token_relay: false still redirects an unauthenticated navigation 302 into login")
+        void relayOffStillRedirectsNavigation() {
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders(), false);
+
+            stage.process(request);
+
+            assertAll(
+                    () -> assertEquals(Optional.of(302), request.shortCircuitStatus()),
+                    () -> assertEquals(LOGIN_LOCATION, request.responseHeaders().get("Location")));
+        }
+
+        @Test
+        @DisplayName("token_relay: false still challenges an unauthenticated XHR 401")
+        void relayOffStillChallengesXhr() {
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders(), false);
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
-            assertEquals(EventType.SCOPE_MISSING, thrown.getEventType(), "a scope shortfall is a 403 SCOPE_MISSING");
-            assertTrue(request.mediatedBearer().isEmpty(), "no bearer is mediated when a required scope is missing");
+            assertEquals(EventType.TOKEN_MISSING, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("token_relay: false still clears the cookie of a session the refresh ended")
+        void relayOffStillClearsEndedSessionCookie() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders(), false);
+
+            assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertEquals(List.of(binding.clearingSetCookieHeader()), request.responseSetCookies());
+        }
+
+        @Test
+        @DisplayName("token_relay absent or true mediates the session's bearer")
+        void relayAbsentOrTrueMediates() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin());
+            PipelineRequest absent = sessionRequest(Set.of(), navigationHeaders(), null);
+            PipelineRequest explicit = sessionRequest(Set.of(), navigationHeaders(), true);
+
+            stage.process(absent);
+            stage.process(explicit);
+
+            assertAll(
+                    () -> assertEquals(Optional.of(MEDIATED_TOKEN), absent.mediatedBearer()),
+                    () -> assertEquals(Optional.of(MEDIATED_TOKEN), explicit.mediatedBearer()));
         }
     }
 
@@ -157,8 +238,8 @@ class SessionAuthenticationStageTest {
         @Test
         @DisplayName("redirects a navigation request 302 into the auth-code flow")
         void redirectsNavigationIntoLogin() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             assertDoesNotThrow(() -> stage.process(request));
 
@@ -171,10 +252,44 @@ class SessionAuthenticationStageTest {
         }
 
         @Test
+        @DisplayName("requests exactly the selected route's needed scopes in the login challenge")
+        void requestsRouteNeededScopesAtLogin() {
+            Set<String> neededScopes = Set.of("openid", "profile", NEEDED_SCOPE);
+            AtomicReference<Collection<String>> requested = new AtomicReference<>();
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, scopes, now) -> {
+                requested.set(scopes);
+                return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+            });
+            PipelineRequest request = sessionRequest(neededScopes, navigationHeaders());
+
+            stage.process(request);
+
+            assertEquals(neededScopes, Set.copyOf(requested.get()),
+                    "the login requests the route's boot-derived neededScopes, the set the bearer check also reads");
+        }
+
+        @Test
+        @DisplayName("requests the needed scopes again when a failed refresh re-drives the login")
+        void requestsRouteNeededScopesOnReauthentication() {
+            Set<String> neededScopes = Set.of("openid", NEEDED_SCOPE);
+            AtomicReference<Collection<String>> requested = new AtomicReference<>();
+            SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), sessionEndedRefresh(),
+                    (returnUrl, scopes, now) -> {
+                        requested.set(scopes);
+                        return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+                    });
+            PipelineRequest request = sessionRequest(neededScopes, navigationHeaders());
+
+            stage.process(request);
+
+            assertEquals(neededScopes, Set.copyOf(requested.get()));
+        }
+
+        @Test
         @DisplayName("challenges an XHR request 401 TOKEN_MISSING rather than redirecting")
         void challengesXhrWith401() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), xhrHeaders());
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -187,8 +302,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("treats an expired session as unauthenticated")
         void treatsExpiredSessionAsUnauthenticated() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN, NOW.minusSeconds(1)));
-            SessionAuthenticationStage stage = stage(binding, identityRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), xhrHeaders());
+            SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -199,8 +314,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("treats a request without a session cookie as unauthenticated")
         void treatsAbsentCookieAsUnauthenticated() {
             SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), identityRefresh(),
-                    scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), Map.of("accept", List.of("application/json")));
+                    redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), Map.of("accept", List.of("application/json")));
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -211,8 +326,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("treats a failed refresh as unauthenticated rather than mediating the pre-refresh token")
         void treatsFailedRefreshAsUnauthenticated() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), xhrHeaders());
+            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -226,8 +341,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("clears the browser's session cookie when a refresh failure destroys the session")
         void clearsTheCookieOnFailedRefresh() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), xhrHeaders());
+            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
 
             assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -239,8 +354,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("emits BOTH the clearing cookie and the login-challenge cookie when a refresh failure ends the session on an HTML navigation")
         void retainsBothCookiesWhenRefreshFailureEndsSessionOnNavigation() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             stage.process(request);
 
@@ -258,8 +373,8 @@ class SessionAuthenticationStageTest {
             SessionAuthenticationStage.TokenRefresh multiCookieRefresh =
                     (session, cookieHeader, now) -> RefreshResult.mediate(new SessionBinding.BoundSession(
                             rebind(session, REFRESHED_TOKEN), List.of(RESEAL_COOKIE, secondCookie)));
-            SessionAuthenticationStage stage = stage(binding, multiCookieRefresh, scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, multiCookieRefresh, redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             stage.process(request);
 
@@ -271,8 +386,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("re-drives a navigation request through login when the refresh fails")
         void redrivesNavigationOnFailedRefresh() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             assertDoesNotThrow(() -> stage.process(request));
 
@@ -291,9 +406,9 @@ class SessionAuthenticationStageTest {
         @DisplayName("session ended under reject: clears the cookie and answers 401 even for a navigation")
         void sessionEndedUnderRejectClearsCookieAndRejectsNavigation() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), scopesGranted(), redirectLogin(),
+            SessionAuthenticationStage stage = stage(binding, sessionEndedRefresh(), redirectLogin(),
                     OnFailure.REJECT);
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -309,8 +424,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("request failed under reauthenticate: an XHR gets 401 and the session cookie is NOT cleared")
         void requestFailedKeepsCookieOnXhr() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, requestFailedRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), xhrHeaders());
+            SessionAuthenticationStage stage = stage(binding, requestFailedRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -325,8 +440,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("request failed under reauthenticate: a navigation is redirected with only the login cookie")
         void requestFailedRedirectsNavigationWithoutClearing() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, requestFailedRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(binding, requestFailedRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             stage.process(request);
 
@@ -340,9 +455,9 @@ class SessionAuthenticationStageTest {
         @DisplayName("request failed under reject: a navigation gets 401 and the session cookie is NOT cleared")
         void requestFailedUnderRejectRejectsNavigation() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, requestFailedRefresh(), scopesGranted(), redirectLogin(),
+            SessionAuthenticationStage stage = stage(binding, requestFailedRefresh(), redirectLogin(),
                     OnFailure.REJECT);
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -355,9 +470,9 @@ class SessionAuthenticationStageTest {
         @Test
         @DisplayName("reject governs only a refresh failure: a missing session still redirects a navigation into login")
         void rejectDoesNotApplyToMissingSession() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin(),
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin(),
                     OnFailure.REJECT);
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             assertDoesNotThrow(() -> stage.process(request));
 
@@ -369,9 +484,9 @@ class SessionAuthenticationStageTest {
         @DisplayName("mediates normally under reject when the refresh succeeds")
         void rejectMediatesSuccessfulRefresh() {
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
-            SessionAuthenticationStage stage = stage(binding, identityRefresh(), scopesGranted(), redirectLogin(),
+            SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin(),
                     OnFailure.REJECT);
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             assertDoesNotThrow(() -> stage.process(request));
 
@@ -384,11 +499,10 @@ class SessionAuthenticationStageTest {
         void rejectsNullOnFailurePolicy() {
             SessionBinding binding = emptyBinding();
             SessionAuthenticationStage.TokenRefresh refresh = identityRefresh();
-            SessionAuthenticationStage.GrantedScopes scopes = scopesGranted();
             SessionAuthenticationStage.LoginInitiation login = redirectLogin();
 
             assertThrows(NullPointerException.class,
-                    () -> new SessionAuthenticationStage(binding, refresh, scopes, login, null, CLOCK));
+                    () -> new SessionAuthenticationStage(binding, refresh, login, null, CLOCK));
         }
 
         @Test
@@ -413,8 +527,8 @@ class SessionAuthenticationStageTest {
         @Test
         @DisplayName("an unauthenticated navigation leaves a 302 short-circuit and no bearer, so the edge redirects instead of forwarding")
         void navigationLeavesShortCircuitAndNoBearer() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
 
             stage.process(request);
 
@@ -433,8 +547,8 @@ class SessionAuthenticationStageTest {
         @Test
         @DisplayName("an unauthenticated XHR raises 401 TOKEN_MISSING with no short-circuit, so the edge takes the problem path not the redirect")
         void xhrRaises401WithNoShortCircuit() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin());
-            PipelineRequest request = sessionRequest(authConfig(List.of()), xhrHeaders());
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
 
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
@@ -446,13 +560,87 @@ class SessionAuthenticationStageTest {
     }
 
     @Nested
+    @DisplayName("Post-login return URL")
+    class ReturnUrl {
+
+        @Test
+        @DisplayName("records the canonical path alone when the request carries no query")
+        void pathOnly() {
+            assertEquals("/x", recordedReturnUrl("/x", List.of()),
+                    "no '?' is appended when there is no query");
+        }
+
+        @Test
+        @DisplayName("records the path plus the raw query, bare names kept bare")
+        void pathPlusQuery() {
+            List<QueryParameter> query = List.of(new QueryParameter("tab", "a"), new QueryParameter("b", null));
+
+            assertEquals("/x?tab=a&b", recordedReturnUrl("/x", query),
+                    "the recorded return URL is exactly the navigated path plus its query");
+        }
+
+        @Test
+        @DisplayName("keeps repeated and interleaved names in wire order")
+        void repeatedAndInterleavedNamesKeepWireOrder() {
+            List<QueryParameter> query = List.of(new QueryParameter("a", "1"), new QueryParameter("b", "2"),
+                    new QueryParameter("a", "3"));
+
+            assertEquals("/x?a=1&b=2&a=3", recordedReturnUrl("/x", query),
+                    "pairs are never regrouped by name");
+        }
+
+        @Test
+        @DisplayName("keeps a bare name bare and an empty value as name=")
+        void bareNameStaysBare() {
+            List<QueryParameter> query = List.of(new QueryParameter("flag", null), new QueryParameter("empty", ""));
+
+            assertEquals("/x?flag&empty=", recordedReturnUrl("/x", query),
+                    "a pair without '=' is never rendered as 'flag='");
+        }
+
+        @Test
+        @DisplayName("keeps percent-encoded bytes verbatim, never decoding or re-encoding them")
+        void percentEncodedBytesKeptVerbatim() {
+            List<QueryParameter> query = List.of(new QueryParameter("q", "a%20b%2Fc+d"),
+                    new QueryParameter("n%C3%A4me", "%26"));
+
+            assertEquals("/x?q=a%20b%2Fc+d&n%C3%A4me=%26", recordedReturnUrl("/x", query),
+                    "the rebuilt query is byte-identical to the inbound one");
+        }
+
+        private String recordedReturnUrl(String path, List<QueryParameter> query) {
+            AtomicReference<String> recorded = new AtomicReference<>();
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, scopes, now) -> {
+                recorded.set(returnUrl);
+                return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+            });
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.GET)
+                    .requestPath(path)
+                    .queryParameters(query)
+                    .headers(navigationHeaders())
+                    .build();
+            request.canonicalPath(path);
+            request.selectedRoute(RouteRuntime.builder().id("orders")
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .neededScopes(Set.of())
+                    .build());
+
+            stage.process(request);
+
+            assertEquals(Optional.of(302), request.shortCircuitStatus(), "the navigation is redirected into login");
+            return recorded.get();
+        }
+    }
+
+    @Nested
     @DisplayName("Preconditions")
     class Preconditions {
 
         @Test
         @DisplayName("rejects a request whose route was not selected at stage 2")
         void rejectsUnselectedRoute() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin());
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
             PipelineRequest request = PipelineRequest.builder()
                     .method(HttpMethod.GET).requestPath("/app").queryParameters(List.of()).headers(Map.of()).build();
 
@@ -462,22 +650,21 @@ class SessionAuthenticationStageTest {
         @Test
         @DisplayName("rejects a null request")
         void rejectsNullRequest() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), scopesGranted(), redirectLogin());
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
 
             assertThrows(NullPointerException.class, () -> stage.process(null));
         }
     }
 
     private static SessionAuthenticationStage stage(SessionBinding binding,
-            SessionAuthenticationStage.TokenRefresh refresh, SessionAuthenticationStage.GrantedScopes scopes,
-            SessionAuthenticationStage.LoginInitiation login) {
-        return stage(binding, refresh, scopes, login, OnFailure.REAUTHENTICATE);
+            SessionAuthenticationStage.TokenRefresh refresh, SessionAuthenticationStage.LoginInitiation login) {
+        return stage(binding, refresh, login, OnFailure.REAUTHENTICATE);
     }
 
     private static SessionAuthenticationStage stage(SessionBinding binding,
-            SessionAuthenticationStage.TokenRefresh refresh, SessionAuthenticationStage.GrantedScopes scopes,
-            SessionAuthenticationStage.LoginInitiation login, OnFailure onFailure) {
-        return new SessionAuthenticationStage(binding, refresh, scopes, login, onFailure, CLOCK);
+            SessionAuthenticationStage.TokenRefresh refresh, SessionAuthenticationStage.LoginInitiation login,
+            OnFailure onFailure) {
+        return new SessionAuthenticationStage(binding, refresh, login, onFailure, CLOCK);
     }
 
     private static SessionAuthenticationStage.TokenRefresh identityRefresh() {
@@ -495,16 +682,8 @@ class SessionAuthenticationStageTest {
         return (session, cookieHeader, now) -> RefreshResult.requestFailed();
     }
 
-    private static SessionAuthenticationStage.GrantedScopes scopesGranted() {
-        return (accessToken, requiredScopes) -> true;
-    }
-
-    private static SessionAuthenticationStage.GrantedScopes scopesDenied() {
-        return (accessToken, requiredScopes) -> false;
-    }
-
     private static SessionAuthenticationStage.LoginInitiation redirectLogin() {
-        return (returnUrl, now) -> new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+        return (returnUrl, scopes, now) -> new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
     }
 
     private static SessionBinding emptyBinding() {
@@ -547,10 +726,6 @@ class SessionAuthenticationStageTest {
                 .build();
     }
 
-    private static AuthConfig authConfig(List<String> requiredScopes) {
-        return AuthConfig.builder().require(Require.SESSION).requiredScopes(requiredScopes).build();
-    }
-
     private static Map<String, List<String>> navigationHeaders() {
         return Map.of("cookie", List.of(cookie()), "accept", List.of("text/html,application/xhtml+xml"));
     }
@@ -563,7 +738,12 @@ class SessionAuthenticationStageTest {
         return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID;
     }
 
-    private static PipelineRequest sessionRequest(AuthConfig auth, Map<String, List<String>> headers) {
+    private static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers) {
+        return sessionRequest(neededScopes, headers, null);
+    }
+
+    private static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers,
+            @Nullable Boolean tokenRelay) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/app/orders")
@@ -571,7 +751,10 @@ class SessionAuthenticationStageTest {
                 .headers(headers)
                 .build();
         request.canonicalPath("/app/orders");
-        request.selectedRoute(RouteRuntime.builder().id("orders").effectiveAuth(auth).build());
+        request.selectedRoute(RouteRuntime.builder().id("orders")
+                .effectiveAuth(AuthConfig.builder().require(Require.SESSION).tokenRelay(tokenRelay).build())
+                .neededScopes(neededScopes)
+                .build());
         return request;
     }
 }

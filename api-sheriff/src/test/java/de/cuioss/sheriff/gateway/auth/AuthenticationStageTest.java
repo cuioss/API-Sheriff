@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.auth;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,8 +26,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -54,7 +58,11 @@ import org.junit.jupiter.api.Test;
 @DisplayName("AuthenticationStage — stage 4 auth dispatch (offline bearer validation and session dispatch)")
 class AuthenticationStageTest {
 
-    private static final String ABSENT_SCOPE = "gateway:definitely-absent-scope-xyz";
+    /** An endpoint-level scope no generated token ever carries. */
+    private static final String ABSENT_ENDPOINT_SCOPE = "gateway:definitely-absent-scope-xyz";
+    /** A second absent scope, standing in for an {@code oidc.scopes} member the token lacks. */
+    private static final String ABSENT_OIDC_SCOPE = "absent-oidc-scope";
+    private static final String WWW_AUTHENTICATE = "WWW-Authenticate";
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final String SESSION_ID = "opaque-session-id";
@@ -68,22 +76,38 @@ class AuthenticationStageTest {
         AuthenticationStage stage = new AuthenticationStage(() -> {
             throw new AssertionError("require:none must not resolve the token validator");
         });
-        PipelineRequest request = request(authConfig(Require.NONE, List.of()), Map.of());
+        PipelineRequest request = request(Require.NONE, Set.of(ABSENT_ENDPOINT_SCOPE), Map.of());
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request));
     }
 
     @Test
-    @DisplayName("accepts a valid bearer token on a require:bearer route")
-    void acceptsValidBearerToken() {
+    @DisplayName("accepts a valid bearer token on a require:bearer route needing no scope")
+    void acceptsValidBearerTokenWithEmptyNeededScopes() {
         // Arrange
         TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
         AuthenticationStage stage = stageFor(holder);
-        PipelineRequest request = bearerRequest(holder.getRawToken(), authConfig(Require.BEARER, List.of()));
+        PipelineRequest request = bearerRequest(holder.getRawToken(), Set.of());
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request));
+        assertNull(request.responseHeaders().get(WWW_AUTHENTICATE), "an accepted token carries no challenge");
+    }
+
+    @Test
+    @DisplayName("accepts a valid bearer token that covers every needed scope")
+    void acceptsTokenCoveringNeededScopes() {
+        // Arrange — the needed set is exactly the token's own granted scopes
+        TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+        Set<String> granted = new LinkedHashSet<>(holder.asAccessTokenContent().getScopes());
+        assertFalse(granted.isEmpty(), "precondition: the generated token grants at least one scope");
+        AuthenticationStage stage = stageFor(holder);
+        PipelineRequest request = bearerRequest(holder.getRawToken(), granted);
+
+        // Act + Assert
+        assertDoesNotThrow(() -> stage.process(request));
+        assertNull(request.responseHeaders().get(WWW_AUTHENTICATE));
     }
 
     @Test
@@ -91,14 +115,14 @@ class AuthenticationStageTest {
     void rejectsMissingBearerToken() {
         // Arrange
         AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
-        PipelineRequest request = request(authConfig(Require.BEARER, List.of()), Map.of());
+        PipelineRequest request = request(Require.BEARER, Set.of(), Map.of());
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
         // Assert
         assertEquals(EventType.TOKEN_MISSING, thrown.getEventType());
-        assertEquals("Bearer", request.responseHeaders().get("WWW-Authenticate"));
+        assertEquals("Bearer", request.responseHeaders().get(WWW_AUTHENTICATE));
     }
 
     @Test
@@ -106,29 +130,69 @@ class AuthenticationStageTest {
     void rejectsInvalidBearerToken() {
         // Arrange
         AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
-        PipelineRequest request = bearerRequest("not.a.valid.jwt", authConfig(Require.BEARER, List.of()));
+        PipelineRequest request = bearerRequest("not.a.valid.jwt", Set.of());
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
         // Assert
         assertEquals(EventType.TOKEN_INVALID, thrown.getEventType());
-        assertEquals("Bearer", request.responseHeaders().get("WWW-Authenticate"));
+        assertEquals("Bearer", request.responseHeaders().get(WWW_AUTHENTICATE));
     }
 
     @Test
-    @DisplayName("rejects a valid token lacking a required scope 403")
-    void rejectsMissingScope() {
-        // Arrange
+    @DisplayName("rejects a token lacking an endpoint scope 403 insufficient_scope naming only the missing scope")
+    void rejectsMissingEndpointScopeWithInsufficientScopeChallenge() {
+        // Arrange — the token covers everything it grants but not the endpoint-added scope
         TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+        Set<String> needed = new LinkedHashSet<>(holder.asAccessTokenContent().getScopes());
+        needed.add(ABSENT_ENDPOINT_SCOPE);
         AuthenticationStage stage = stageFor(holder);
-        PipelineRequest request = bearerRequest(holder.getRawToken(), authConfig(Require.BEARER, List.of(ABSENT_SCOPE)));
+        PipelineRequest request = bearerRequest(holder.getRawToken(), needed);
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
         // Assert
         assertEquals(EventType.SCOPE_MISSING, thrown.getEventType());
+        assertEquals("Bearer error=\"insufficient_scope\", scope=\"" + ABSENT_ENDPOINT_SCOPE + "\"",
+                request.responseHeaders().get(WWW_AUTHENTICATE),
+                "the challenge names only the missing scope, never a granted one");
+    }
+
+    @Test
+    @DisplayName("rejects a token lacking an oidc.scopes member 403 — the documented BFF-mode consequence")
+    void rejectsMissingOidcScopeMember() {
+        // Arrange — needed = oidc.scopes (one member the token lacks) united with an empty endpoint set
+        TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+        AuthenticationStage stage = stageFor(holder);
+        PipelineRequest request = bearerRequest(holder.getRawToken(), Set.of(ABSENT_OIDC_SCOPE));
+
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+        // Assert
+        assertEquals(EventType.SCOPE_MISSING, thrown.getEventType());
+        assertEquals("Bearer error=\"insufficient_scope\", scope=\"" + ABSENT_OIDC_SCOPE + "\"",
+                request.responseHeaders().get(WWW_AUTHENTICATE));
+    }
+
+    @Test
+    @DisplayName("lists several missing scopes space-separated and sorted in the challenge")
+    void listsSeveralMissingScopesSorted() {
+        // Arrange
+        TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+        AuthenticationStage stage = stageFor(holder);
+        PipelineRequest request = bearerRequest(holder.getRawToken(),
+                Set.of(ABSENT_OIDC_SCOPE, ABSENT_ENDPOINT_SCOPE));
+
+        // Act
+        assertThrows(GatewayException.class, () -> stage.process(request));
+
+        // Assert — "absent-oidc-scope" sorts before "gateway:…"
+        assertEquals("Bearer error=\"insufficient_scope\", scope=\"" + ABSENT_OIDC_SCOPE + " "
+                + ABSENT_ENDPOINT_SCOPE + "\"",
+                request.responseHeaders().get(WWW_AUTHENTICATE));
     }
 
     @Test
@@ -137,7 +201,7 @@ class AuthenticationStageTest {
         // Arrange — a session stage wired with a live session; a require:session request carrying the
         // session cookie must be dispatched here and complete, recording the mediated bearer.
         AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
-        PipelineRequest request = sessionRequest(authConfig(Require.SESSION, List.of()));
+        PipelineRequest request = sessionRequest(Set.of());
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request));
@@ -147,11 +211,23 @@ class AuthenticationStageTest {
     }
 
     @Test
+    @DisplayName("runs no scope check on a require:session route with non-empty needed scopes")
+    void runsNoScopeCheckOnSessionRoute() {
+        // Arrange — the mediated token is opaque and grants nothing; a session route must not check it
+        AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
+        PipelineRequest request = sessionRequest(Set.of(ABSENT_ENDPOINT_SCOPE));
+
+        // Act + Assert
+        assertDoesNotThrow(() -> stage.process(request));
+        assertEquals(MEDIATED_TOKEN, request.mediatedBearer().orElseThrow());
+    }
+
+    @Test
     @DisplayName("rejects a require:session route when no session runtime is wired")
     void rejectsSessionRouteWithoutWiredSessionRuntime() {
         // Arrange — a stage built without a session runtime (non-BFF gateway).
         AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
-        PipelineRequest request = sessionRequest(authConfig(Require.SESSION, List.of()));
+        PipelineRequest request = sessionRequest(Set.of());
 
         // Act
         IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> stage.process(request));
@@ -185,13 +261,12 @@ class AuthenticationStageTest {
         return new SessionAuthenticationStage(new ServerSessionBinding(store, codec),
                 (session, cookieHeader, now) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
-                (accessToken, requiredScopes) -> true,
-                (returnUrl, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
+                (returnUrl, scopes, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 CLOCK);
     }
 
-    private static PipelineRequest sessionRequest(AuthConfig auth) {
+    private static PipelineRequest sessionRequest(Set<String> neededScopes) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/app/orders")
@@ -200,19 +275,23 @@ class AuthenticationStageTest {
                         "accept", List.of("application/json")))
                 .build();
         request.canonicalPath("/app/orders");
-        request.selectedRoute(RouteRuntime.builder().id("orders").effectiveAuth(auth).build());
+        request.selectedRoute(route(Require.SESSION, neededScopes));
         return request;
     }
 
-    private static AuthConfig authConfig(Require require, List<String> requiredScopes) {
-        return AuthConfig.builder().require(require).requiredScopes(requiredScopes).build();
+    private static RouteRuntime route(Require require, Set<String> neededScopes) {
+        return RouteRuntime.builder().id("orders")
+                .effectiveAuth(AuthConfig.builder().require(require).build())
+                .neededScopes(neededScopes)
+                .build();
     }
 
-    private static PipelineRequest bearerRequest(String token, AuthConfig auth) {
-        return request(auth, Map.of("authorization", List.of("Bearer " + token)));
+    private static PipelineRequest bearerRequest(String token, Set<String> neededScopes) {
+        return request(Require.BEARER, neededScopes, Map.of("authorization", List.of("Bearer " + token)));
     }
 
-    private static PipelineRequest request(AuthConfig auth, Map<String, List<String>> headers) {
+    private static PipelineRequest request(Require require, Set<String> neededScopes,
+            Map<String, List<String>> headers) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
@@ -220,7 +299,7 @@ class AuthenticationStageTest {
                 .headers(headers)
                 .build();
         request.canonicalPath("/api/orders");
-        request.selectedRoute(RouteRuntime.builder().id("orders").effectiveAuth(auth).build());
+        request.selectedRoute(route(require, neededScopes));
         return request;
     }
 }

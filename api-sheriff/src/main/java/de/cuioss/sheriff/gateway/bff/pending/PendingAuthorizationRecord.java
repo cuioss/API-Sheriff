@@ -20,7 +20,9 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Objects;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -44,17 +46,29 @@ import org.jspecify.annotations.Nullable;
  * unguessable {@link #id()} is the store key and the value carried by the browser-binding
  * cookie ({@link BindingCookieCodec}); a callback is valid only when both the returned
  * {@code state} matches and the binding cookie resolves to this same record.
+ * <p>
+ * The record also carries the scope set the authorization request asked for. The callback uses it as
+ * the session's active scope set when the issued access token carries no {@code scope} claim, so a
+ * session always knows which scope set to refresh with.
  *
- * @param id          the unguessable record id (store key and binding-cookie value)
- * @param flowContext the engine transaction DTO owning {@code state}/{@code nonce}/PKCE
- * @param returnUrl   the same-origin-validated post-login redirect target
- * @param createdAt   the instant the record was created (TTL anchor)
- * @param ttl         the short fixed lifetime before the record expires
+ * @param id              the unguessable record id (store key and binding-cookie value)
+ * @param flowContext     the engine transaction DTO owning {@code state}/{@code nonce}/PKCE
+ * @param returnUrl       the same-origin-validated post-login redirect target
+ * @param requestedScopes the scope set the authorization request carried in its {@code scope}
+ *                        parameter
+ * @param createdAt       the instant the record was created (TTL anchor)
+ * @param ttl             the short fixed lifetime before the record expires
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record PendingAuthorizationRecord(String id, FlowContext flowContext, String returnUrl, Instant createdAt,
+public record PendingAuthorizationRecord(
+String id,
+FlowContext flowContext,
+String returnUrl,
+Set<String> requestedScopes,
+Instant createdAt,
 Duration ttl) {
 
     /**
@@ -68,12 +82,17 @@ Duration ttl) {
     private static final int ID_BYTES = 32;
 
     /**
-     * Canonical constructor rejecting any absent component — every field is mandatory.
+     * Canonical constructor rejecting any absent component — every field is mandatory — and
+     * defensively copying {@code requestedScopes} into an immutable set.
+     *
+     * @throws NullPointerException when a component is {@code null}, or {@code requestedScopes}
+     *                              contains a {@code null} element
      */
     public PendingAuthorizationRecord {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(flowContext, "flowContext");
         Objects.requireNonNull(returnUrl, "returnUrl");
+        requestedScopes = Set.copyOf(Objects.requireNonNull(requestedScopes, "requestedScopes"));
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(ttl, "ttl");
     }
@@ -81,13 +100,17 @@ Duration ttl) {
     /**
      * Creates a record with a freshly generated unguessable id and the {@link #FIXED_TTL}.
      *
-     * @param flowContext the engine transaction DTO
-     * @param returnUrl   the already same-origin-validated post-login redirect target
-     * @param createdAt   the creation instant (TTL anchor)
+     * @param flowContext     the engine transaction DTO
+     * @param returnUrl       the already same-origin-validated post-login redirect target
+     * @param requestedScopes the scope set the authorization request carried; duplicates collapse
+     * @param createdAt       the creation instant (TTL anchor)
      * @return a new pending-authorization record
      */
-    public static PendingAuthorizationRecord create(FlowContext flowContext, String returnUrl, Instant createdAt) {
-        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, createdAt, FIXED_TTL);
+    public static PendingAuthorizationRecord create(FlowContext flowContext, String returnUrl,
+            Collection<String> requestedScopes, Instant createdAt) {
+        Objects.requireNonNull(requestedScopes, "requestedScopes");
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, Set.copyOf(requestedScopes),
+                createdAt, FIXED_TTL);
     }
 
     /**
@@ -122,9 +145,10 @@ Duration ttl) {
      * Whether {@code returnUrl} is safe to redirect a browser to after login: a gateway-relative
      * path ({@code /...}), or an absolute URL whose origin (scheme + host + port) matches
      * {@code gatewayOrigin}. A schema-relative ({@code //host}) value, a backslash-authority
-     * ({@code /\host}, which browsers normalize to {@code //host}) value, a cross-origin absolute
-     * URL, a blank value, or an unparseable value is rejected — the post-login redirect is never
-     * an open redirect.
+     * ({@code /\host}, which browsers normalize to {@code //host}) value, a value carrying any
+     * control character ({@code /\t/host}, which browsers strip to {@code //host}), a cross-origin
+     * absolute URL, a blank value, or an unparseable value is rejected — the post-login redirect is
+     * never an open redirect.
      *
      * @param returnUrl     the candidate post-login redirect target (may be absent/blank)
      * @param gatewayOrigin the gateway's own origin (e.g. the {@code redirect_uri} origin)
@@ -139,6 +163,14 @@ Duration ttl) {
         // gateway-relative path or an absolute gateway URL — never carries a raw backslash, so any
         // backslash is rejected outright (closes /\evil.com, /\/evil.com, \evil.com).
         if (returnUrl.indexOf('\\') >= 0) {
+            return false;
+        }
+        // The WHATWG URL parser removes every ASCII tab and newline from a Location value before
+        // parsing it, so /<TAB>/evil.com (a decoded ?returnUrl=/%09/evil.com) would pass the checks
+        // above yet land as the protocol-relative //evil.com. A legitimate return URL carries no raw
+        // control character (the gateway-built one is a canonical path plus a still-encoded query),
+        // so any control character is rejected outright.
+        if (returnUrl.chars().anyMatch(Character::isISOControl)) {
             return false;
         }
         if (returnUrl.startsWith("/")) {

@@ -97,7 +97,7 @@ class ConfigValidatorRouteDisjointnessTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("ORDERS")
-                .auth(new AuthConfig(Require.NONE, List.of()))
+                .auth(new AuthConfig(Require.NONE, null))
                 .routes(List.of(route("first", first), route("second", second)))
                 .build();
 

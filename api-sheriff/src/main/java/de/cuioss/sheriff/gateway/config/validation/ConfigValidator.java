@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -128,6 +129,12 @@ import org.jspecify.annotations.Nullable;
  * place its target is ever judged — and refuses {@code keep_query} together with
  * {@code allow_external}, the pair that would hand the inbound query to a foreign origin.
  * <p>
+ * The session-and-scope rules add three more: a route resolving {@code auth.token_relay: false}
+ * must not re-admit {@code Authorization} through {@code forward.headers_allow}; an endpoint
+ * declaring {@code scopes} must have at least one route that is not {@code require: none}, since
+ * scopes act only on authenticated routes; and a declared {@code oidc.login.default_return_url}
+ * must be same-origin with {@code redirect_uri}.
+ * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
  *
@@ -159,6 +166,13 @@ public final class ConfigValidator {
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_PATH_POINTER = "/oidc/login/path";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER = "/oidc/login/default_return_url";
+    private static final String ENDPOINT_SCOPES_POINTER = "/endpoint/scopes";
+
+    /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
+    private static final String AUTHORIZATION_HEADER = "Authorization";
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
@@ -266,7 +280,11 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAssetContentTypeValues(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateForwardModeExclusivity(endpoints, errors));
+            (gateway, endpoints, topology, errors) -> validateForwardModeExclusivity(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateTokenRelayForwardConflict(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors));
 
     private final List<ValidationRule> rules;
 
@@ -552,6 +570,113 @@ public final class ConfigValidator {
                         + "declare %s for a positive-list, %s for a negative-list, or neither for the "
                         + "forward-all baseline")
                         .formatted(route.id(), allowKey, denyKey, dimension, allowKey, denyKey)));
+    }
+
+    /**
+     * Rule: a route whose effective {@code auth.token_relay} is {@code false} must not name
+     * {@code Authorization} (in any letter case) in its {@code forward.headers_allow}.
+     * <p>
+     * {@code token_relay: false} states that no access token reaches this route's upstream, while
+     * naming {@code Authorization} in {@code headers_allow} is the one way an inbound
+     * {@code Authorization} header is re-admitted past the gateway-owned never-forward set. The pair
+     * therefore declares two opposite postures for the same header, and whichever one the gateway
+     * silently honoured would be a guess about the operator's intent — so the boot refuses it. The
+     * effective auth is resolved through the same wholesale {@code route → endpoint → anchor} chain
+     * the route table uses. The message names the route and the two keys, never a header value.
+     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateTokenRelayForwardConflict(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                AuthConfig auth = effectiveAuth(gateway, endpoint, route);
+                ForwardConfig forward = route.forward();
+                List<String> headersAllow = forward == null ? null : forward.headersAllow();
+                if (auth == null || auth.effectiveTokenRelay() || headersAllow == null) {
+                    continue;
+                }
+                if (headersAllow.stream().anyMatch(AUTHORIZATION_HEADER::equalsIgnoreCase)) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            ("route '%s' resolves auth.token_relay: false but its forward.headers_allow names "
+                                    + "Authorization; token_relay: false keeps every access token away from the "
+                                    + "upstream, so re-admitting the Authorization header contradicts it — drop "
+                                    + "Authorization from headers_allow, or drop token_relay: false")
+                                    .formatted(route.id())));
+                }
+            }
+        }
+    }
+
+    /**
+     * Rule: an endpoint declaring a non-empty {@code scopes} list must have at least one route whose
+     * effective auth is not {@code require: none}.
+     * <p>
+     * {@code endpoint.scopes} is consumed only by authenticated routes — a session route requests the
+     * scopes at login and a bearer route checks them on the token. On an endpoint whose every route
+     * resolves {@code require: none} the key would parse and act nowhere, so an operator reading it
+     * would believe a scope requirement is in force that no request ever meets. The boot refuses it
+     * rather than letting the declaration stand inert. Only enabled endpoints reach this rule. Every
+     * violation collects into the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateEndpointScopesNeedAuthentication(GatewayConfig gateway,
+            List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            if (endpoint.scopes().isEmpty()) {
+                continue;
+            }
+            boolean allUnauthenticated = endpoint.routes().stream()
+                    .allMatch(route -> effectiveRequire(gateway, endpoint, route) == Require.NONE);
+            if (allUnauthenticated) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_SCOPES_POINTER,
+                        ("endpoint '%s' declares scopes but every one of its routes resolves require: none; "
+                                + "scopes are requested at a session login and checked on a bearer token, so on "
+                                + "an unauthenticated endpoint they would never act — remove scopes, or give a "
+                                + "route of this endpoint a bearer or session posture")
+                                .formatted(endpoint.id())));
+            }
+        }
+    }
+
+    /**
+     * Rule: a declared {@code oidc.login.default_return_url} must be same-origin with
+     * {@code oidc.redirect_uri}.
+     * <p>
+     * The value is where a browser is sent after login whenever the login carried no usable return
+     * target, so a cross-origin value would make every such login an open redirect to a foreign
+     * origin. The check reuses {@link PendingAuthorizationRecord#sameOrigin}, the single predicate
+     * the runtime applies to a request-supplied return target, so the boot review and the request
+     * path can never disagree about what counts as same-origin: a gateway-relative path is admitted,
+     * an absolute URL only on the {@code redirect_uri} origin, and a scheme-relative, backslash, blank
+     * or unparseable value is refused. With no {@code redirect_uri} there is no origin to compare an
+     * absolute value against, so only a gateway-relative path is admitted. The value is echoed
+     * through {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117).
+     */
+    private static void validateDefaultReturnUrl(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null) {
+            return;
+        }
+        OidcConfig.Login login = oidc.login();
+        String declared = login == null ? null : login.defaultReturnUrl();
+        if (declared == null) {
+            return;
+        }
+        String redirectUri = oidc.redirectUri();
+        boolean admitted;
+        if (redirectUri == null) {
+            // No origin to compare an absolute value against: only a gateway-relative path passes, and
+            // sameOrigin decides such a path without ever reading the origin argument.
+            admitted = declared.startsWith("/") && PendingAuthorizationRecord.sameOrigin(declared, "/");
+        } else {
+            admitted = PendingAuthorizationRecord.sameOrigin(declared, redirectUri);
+        }
+        if (!admitted) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER,
+                    ("oidc login default_return_url '%s' is not same-origin with redirect_uri; it is the "
+                            + "post-login redirect target, so it must be a gateway path starting with a single "
+                            + "'/' or an absolute URL on the redirect_uri origin")
+                            .formatted(renderForMessage(declared))));
+        }
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {

@@ -56,4 +56,18 @@ class BffSessionLoginIT extends BaseIntegrationTest {
         assertEquals("GET", response.path("method"),
                 "the authorized session request must reach the go-httpbin echo upstream");
     }
+
+    @Test
+    @DisplayName("the login returns the browser to exactly the requested path and raw query")
+    void loginReturnsToRequestedPathAndRawQuery() {
+        // A query with two parameters and a percent-encoded '/' in a value: the gateway must record the
+        // canonical path plus the raw query byte for byte, never a re-encoded or re-ordered rendering.
+        // The start path is sent unencoded by the login flow, so %2F reaches the gateway as sent.
+        String requested = "/bff-session/liste/1?tab=a&x=%2F";
+
+        Session session = BffKeycloakLoginFlow.login(requested);
+
+        assertEquals(requested, session.callbackLocation(),
+                "after the Keycloak login the callback must redirect to exactly the requested path and query");
+    }
 }

@@ -21,9 +21,12 @@ import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -106,6 +109,11 @@ import org.jspecify.annotations.Nullable;
  * now-consumed binding cookie (single-use), and redirects the browser to the record's
  * same-origin-validated return URL.
  * <p>
+ * <strong>Active scope set.</strong> The new session's active scope set {@code A} — the {@code scope}
+ * every later refresh grant sends — is the access token's granted {@code scope} claim, or the scope set
+ * the authorization request asked for (recorded on the pending record) when the token carries no
+ * {@code scope} claim.
+ * <p>
  * <strong>The refresh token never reaches the browser in the clear.</strong> It is a component of
  * the {@link SessionRecord}, so it lives wherever the active binding puts that record: server-side
  * in the store under an opaque handle in server mode, and inside the AES-256-GCM sealed value in
@@ -129,6 +137,8 @@ public final class CallbackEndpoint {
     private static final String CLAIM_SID = "sid";
     private static final String CLAIM_ACR = "acr";
     private static final String CLAIM_AUTH_TIME = "auth_time";
+    private static final String CLAIM_SCOPE = "scope";
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private final CodeExchange codeExchange;
     private final PendingAuthorizationStore pendingStore;
@@ -243,6 +253,7 @@ public final class CallbackEndpoint {
                 .expiresAt(now.plus(sessionTtl))
                 .acr(claim(idToken, CLAIM_ACR))
                 .authTime(claimEpochSeconds(idToken, CLAIM_AUTH_TIME))
+                .activeScopes(activeScopes(accessToken, pending))
                 .build();
         SessionBinding.BoundSession bound;
         try {
@@ -262,6 +273,45 @@ public final class CallbackEndpoint {
         List<String> setCookies = new ArrayList<>(bound.setCookieHeaders());
         setCookies.add(bindingCookieCodec.toClearingSetCookieHeader());
         return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
+    }
+
+    /**
+     * Derives the new session's active scope set {@code A}: the scope the access token was granted, or
+     * — when the token carries no {@code scope} claim — the set the authorization request asked for,
+     * as recorded on the pending record. The granted scope is authoritative because the identity
+     * provider may narrow or widen the request; the requested set is the only other honest source.
+     * <p>
+     * The claim is read from the validated token's claim map rather than through
+     * {@code AccessTokenContent#getScopes()}, so an absent claim is an ordinary fallback rather than an
+     * exception. A list-typed claim is taken element by element; a plain-string claim is split on
+     * whitespace (RFC 6749 §3.3), and each element is split the same way so no scope name can carry the
+     * delimiter.
+     */
+    private static Set<String> activeScopes(AccessTokenContent accessToken, PendingAuthorizationRecord pending) {
+        ClaimValue value = accessToken.getClaims().get(CLAIM_SCOPE);
+        if (value == null) {
+            return pending.requestedScopes();
+        }
+        List<String> listed = value.getAsList();
+        List<String> candidates;
+        if (listed != null && !listed.isEmpty()) {
+            candidates = listed;
+        } else {
+            String original = value.getOriginalString();
+            candidates = original == null ? List.of() : List.of(original);
+        }
+        Set<String> granted = new LinkedHashSet<>();
+        for (String candidate : candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            for (String scope : WHITESPACE.split(candidate.strip())) {
+                if (!scope.isEmpty()) {
+                    granted.add(scope);
+                }
+            }
+        }
+        return granted.isEmpty() ? pending.requestedScopes() : Set.copyOf(granted);
     }
 
     private static @Nullable String claim(TokenContent token, String name) {

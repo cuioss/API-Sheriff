@@ -24,7 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -50,8 +53,10 @@ class PendingAuthorizationStoreTest {
         return FlowContext.create(GATEWAY_ORIGIN + "/callback");
     }
 
+    private static final List<String> REQUESTED_SCOPES = List.of("openid", "profile", "email", "orders:read");
+
     private static PendingAuthorizationRecord pendingRecord(String returnUrl, Instant createdAt) {
-        return PendingAuthorizationRecord.create(flow(), returnUrl, createdAt);
+        return PendingAuthorizationRecord.create(flow(), returnUrl, REQUESTED_SCOPES, createdAt);
     }
 
     @Nested
@@ -179,19 +184,56 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should wrap the engine FlowContext and expose the gateway fields")
         void shouldWrapFlowContextAndGatewayFields() {
             FlowContext flow = flow();
-            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, "/dashboard", T0);
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, "/dashboard",
+                    REQUESTED_SCOPES, T0);
 
             assertSame(flow, pending.flowContext(), "the record wraps the engine DTO, never re-invents it");
             assertEquals("/dashboard", pending.returnUrl());
+            assertEquals(Set.copyOf(REQUESTED_SCOPES), pending.requestedScopes());
             assertEquals(T0, pending.createdAt());
             assertEquals(PendingAuthorizationRecord.FIXED_TTL, pending.ttl());
             assertEquals(T0.plus(PendingAuthorizationRecord.FIXED_TTL), pending.expiresAt());
         }
 
         @Test
+        @DisplayName("Should retain the requested scope set through the store")
+        void shouldRetainRequestedScopesThroughStore() {
+            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(4);
+            PendingAuthorizationRecord stored = pendingRecord("/app", T0);
+            store.store(stored);
+
+            PendingAuthorizationRecord consumed = store.consume(stored.id(), T0).orElseThrow();
+
+            assertEquals(Set.copyOf(REQUESTED_SCOPES), consumed.requestedScopes(),
+                    "the callback reads the requested set back as its fallback for the session's active scopes");
+        }
+
+        @Test
+        @DisplayName("Should collapse duplicated requested scopes and hold them immutably")
+        void shouldNormalizeRequestedScopes() {
+            List<String> requested = new ArrayList<>(List.of("openid", "orders:read", "openid"));
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow(), "/app", requested, T0);
+            requested.add("profile");
+
+            assertEquals(Set.of("openid", "orders:read"), pending.requestedScopes(),
+                    "duplicates collapse and later changes to the caller's collection do not leak in");
+            Set<String> held = pending.requestedScopes();
+            assertThrows(UnsupportedOperationException.class, () -> held.add("email"));
+        }
+
+        @Test
+        @DisplayName("Should accept an empty requested scope set")
+        void shouldAcceptEmptyRequestedScopes() {
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow(), "/app", List.of(), T0);
+
+            assertTrue(pending.requestedScopes().isEmpty());
+        }
+
+        @Test
         @DisplayName("Should treat the TTL boundary as expired (inclusive)")
         void shouldTreatTtlBoundaryAsExpired() {
-            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow(), "/app", T0);
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow(), "/app", REQUESTED_SCOPES,
+                    T0);
             assertFalse(pending.isExpired(pending.expiresAt().minusNanos(1)));
             assertTrue(pending.isExpired(pending.expiresAt()), "expiry is inclusive of the boundary");
         }
@@ -201,12 +243,22 @@ class PendingAuthorizationStoreTest {
         void shouldRejectNullComponents() {
             Duration ttl = Duration.ofMinutes(1);
             FlowContext flow = flow();
+            Set<String> scopes = Set.of("openid");
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord(null, flow, "/a", T0, ttl));
+                    () -> new PendingAuthorizationRecord(null, flow, "/a", scopes, T0, ttl));
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord("id", null, "/a", T0, ttl));
+                    () -> new PendingAuthorizationRecord("id", null, "/a", scopes, T0, ttl));
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord("id", flow, null, T0, ttl));
+                    () -> new PendingAuthorizationRecord("id", flow, null, scopes, T0, ttl));
+            assertThrows(NullPointerException.class,
+                    () -> new PendingAuthorizationRecord("id", flow, "/a", null, T0, ttl),
+                    "the requested scope set is mandatory — the callback falls back to it");
+            assertThrows(NullPointerException.class,
+                    () -> new PendingAuthorizationRecord("id", flow, "/a", scopes, null, ttl));
+            assertThrows(NullPointerException.class,
+                    () -> new PendingAuthorizationRecord("id", flow, "/a", scopes, T0, null));
+            assertThrows(NullPointerException.class,
+                    () -> PendingAuthorizationRecord.create(flow, "/a", null, T0));
         }
     }
 
@@ -237,6 +289,15 @@ class PendingAuthorizationStoreTest {
         void shouldRejectBackslashAuthority(String returnUrl) {
             assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN),
                     "a backslash the browser normalizes to / must never yield a protocol-relative open redirect");
+        }
+
+        @ParameterizedTest(name = "control-character return URL \"{0}\" is rejected")
+        @ValueSource(strings = {"/\t/evil.example.com", "/\n/evil.example.com", "/\r/evil.example.com",
+                "/\t\t/evil.example.com", "/app\0", "https://gw.example.com/\t/app"})
+        @DisplayName("Should reject a return URL carrying a control character (browsers strip tab/newline)")
+        void shouldRejectControlCharacters(String returnUrl) {
+            assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN),
+                    "a tab or newline the browser strips must never yield a protocol-relative open redirect");
         }
 
         @Test

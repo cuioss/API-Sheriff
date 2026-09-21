@@ -201,8 +201,11 @@ final class BffKeycloakLoginFlow {
      *                        {@code HttpOnly} / {@code SameSite} / {@code Path} / {@code Domain}
      *                        attributes preserved — the flat {@code gatewayCookies} map drops them,
      *                        and the sealed-cookie hardening contract is asserted on these
+     * @param callbackLocation the {@code Location} the callback's {@code 302} sends the browser to —
+     *                        the post-login return target the gateway recorded when the login
+     *                        started, exactly as emitted (not followed, not re-encoded)
      */
-    record Session(Map<String, String> gatewayCookies, Cookies callbackCookies) {
+    record Session(Map<String, String> gatewayCookies, Cookies callbackCookies, String callbackLocation) {
     }
 
     /**
@@ -284,7 +287,13 @@ final class BffKeycloakLoginFlow {
 
         // Step 1 — navigate onto the require:session route: the gateway sets the pending-auth binding
         // cookie and 302s the browser to the IdP authorization endpoint.
+        //
+        // urlEncodingEnabled(false): the start path is sent byte for byte, as a browser sends an
+        // address it already holds in encoded form. A start path carrying a raw query such as
+        // ?tab=a&x=%2F would otherwise be re-encoded (%2F -> %252F) and the gateway would record a
+        // return URL the test never asked for. Every other start path is plain ASCII, unaffected.
         Response initiation = gateway(gatewayCookies, gatewayOrigin)
+                .urlEncodingEnabled(false)
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when().get(startPath)
@@ -334,7 +343,7 @@ final class BffKeycloakLoginFlow {
         // cookie the browser would actually keep.
         assertCookiesFitBrowserBudget(callback);
 
-        return new Session(gatewayCookies, callback.getDetailedCookies());
+        return new Session(gatewayCookies, callback.getDetailedCookies(), location(callback));
     }
 
     /**

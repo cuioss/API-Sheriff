@@ -37,8 +37,15 @@ import org.junit.jupiter.api.Test;
  * The mediated route proxies to the go-httpbin echo backend, so the forwarded request is fully
  * observable: {@code headers.Authorization} carries the injected bearer (Authorization is allow-listed
  * on the route) and {@code headers.Cookie} is absent (Cookie is deny-by-default and never forwarded).
+ * <p>
+ * The sibling {@code /bff-session/norelay} route resolves {@code auth.token_relay: false}: the same
+ * session is required, but no {@code Authorization} header reaches the origin — neither the mediated
+ * bearer nor one the client sends — while the unauthenticated {@code 302}/{@code 401} negotiation is
+ * unchanged.
  */
 class BffSessionMediationIT extends BaseIntegrationTest {
+
+    private static final String NORELAY_PATH = "/bff-session/norelay/get";
 
     @Test
     @DisplayName("an authenticated session injects the bearer upstream and never forwards the session cookie")
@@ -117,5 +124,62 @@ class BffSessionMediationIT extends BaseIntegrationTest {
             assertEquals("GET", response.path("method"),
                     "every mediated request in the live session must reach the upstream");
         }
+    }
+
+    @Test
+    @DisplayName("a token_relay:false route serves a live session without relaying any Authorization upstream")
+    void tokenRelayOptOutRelaysNoAuthorization() {
+        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+
+        // The client also sends an Authorization of its own: it must not cross either, so the origin sees
+        // no Authorization header at all — the session's token stays at the gateway.
+        Response response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header("Authorization", "Bearer client-supplied-token")
+                .when()
+                .get(NORELAY_PATH)
+                .then()
+                .statusCode(200)
+                .extract().response();
+
+        assertEquals("GET", response.path("method"),
+                "the live session must still authorize the token_relay:false route to reach the upstream");
+        assertNull(response.path("headers.Authorization"),
+                "a token_relay:false route must relay neither the mediated bearer nor the client's Authorization");
+        assertNull(response.path("headers.Cookie"),
+                "the browser session cookie must never be forwarded upstream");
+    }
+
+    @Test
+    @DisplayName("a token_relay:false route still challenges an unauthenticated XHR with 401")
+    void tokenRelayOptOutStillChallengesXhr() {
+        var response = given()
+                .header("Accept", "application/json")
+                .when()
+                .get(NORELAY_PATH)
+                .then()
+                .statusCode(401)
+                .extract();
+
+        assertTrue(response.contentType().contains("application/problem+json"),
+                "token_relay:false must not relax the session requirement for a non-navigation request");
+        assertNull(response.path("method"), "a challenged request must never reach the upstream");
+    }
+
+    @Test
+    @DisplayName("a token_relay:false route still redirects an unauthenticated navigation into the IdP")
+    void tokenRelayOptOutStillRedirectsNavigation() {
+        var response = given()
+                .header("Accept", "text/html")
+                .redirects().follow(false)
+                .when()
+                .get(NORELAY_PATH)
+                .then()
+                .statusCode(302)
+                .extract();
+
+        String location = response.header("Location");
+        assertNotNull(location, "a navigation challenge must carry a Location redirect");
+        assertTrue(location.contains("/protocol/openid-connect/auth"),
+                "token_relay:false must not relax the login requirement for a navigation");
     }
 }

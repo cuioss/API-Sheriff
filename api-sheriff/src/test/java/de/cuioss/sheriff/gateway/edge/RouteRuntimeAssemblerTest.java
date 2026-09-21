@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -237,19 +238,33 @@ class RouteRuntimeAssemblerTest {
     }
 
     @Test
-    @DisplayName("Should carry the required scopes from the effective auth")
-    void shouldCarryRequiredScopes() {
-        AuthConfig auth = AuthConfig.builder().require(Require.BEARER)
-                .requiredScopes(List.of("read", "write")).build();
+    @DisplayName("Should carry the needed scopes from the resolved route")
+    void shouldCarryNeededScopes() {
+        AuthConfig auth = AuthConfig.builder().require(Require.BEARER).build();
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("scoped").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/s").build())
                 .effectiveAuth(auth).effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .neededScopes(Set.of("openid", "read", "write"))
                 .upstream(upstream("a.example")).build()));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
-        assertTrue(runtimes.getFirst().getRequiredScopes().containsAll(List.of("read", "write")),
-                "Required scopes flow from the effective auth to the runtime");
+        assertEquals(Set.of("openid", "read", "write"), runtimes.getFirst().getNeededScopes(),
+                "The materialized needed scopes flow from the resolved route to the runtime unchanged");
+    }
+
+    @Test
+    @DisplayName("Should carry an empty needed-scope set for a route needing no scope")
+    void shouldCarryEmptyNeededScopes() {
+        RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
+                .id("open").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/o").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .upstream(upstream("a.example")).build()));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
+
+        assertTrue(runtimes.getFirst().getNeededScopes().isEmpty());
     }
 
     @Test

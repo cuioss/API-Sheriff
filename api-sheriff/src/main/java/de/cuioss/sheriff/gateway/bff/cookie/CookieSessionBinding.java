@@ -62,6 +62,11 @@ import org.jspecify.annotations.Nullable;
  * only the sealed value crosses. Single-flight is necessarily <em>per instance</em> here; a
  * cross-instance duplicate refresh cannot be prevented without shared state and is this variant's
  * documented, accepted trade-off.
+ * <p>
+ * <strong>Active scope set.</strong> The session's active scope set {@code A} is sealed alongside the
+ * token material on {@link #bind}, restored on {@link #resolve}, and re-sealed from the rotated record
+ * on {@link #persist}, so a refresh that changes {@code A} is carried into the next request. It is
+ * not an identity input: a changed {@code A} leaves the derived session identity untouched.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -196,7 +201,8 @@ public final class CookieSessionBinding implements SessionBinding {
     private static SealedSessionPayload payloadOf(SessionRecord session, Instant loginInstant,
             String sessionNonce) {
         return new SealedSessionPayload(session.accessToken(), session.refreshToken(), session.idToken(),
-                session.sub(), session.sid(), session.acr(), session.authTime(), loginInstant, sessionNonce);
+                session.sub(), session.sid(), session.acr(), session.authTime(), loginInstant, sessionNonce,
+                session.activeScopes());
     }
 
     /**
@@ -221,6 +227,7 @@ public final class CookieSessionBinding implements SessionBinding {
                 .expiresAt(payload.loginInstant().plus(codec.sessionTtl()))
                 .acr(payload.acr())
                 .authTime(payload.authTime())
+                .activeScopes(payload.activeScopes())
                 .build();
     }
 

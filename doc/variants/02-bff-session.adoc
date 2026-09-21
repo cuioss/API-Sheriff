@@ -33,6 +33,15 @@ POST); the gateway -- driving the `token-sheriff-client` engine -- verifies `sta
 code server-to-server, validates the tokens offline, and -- in this variant -- *stores them
 server-side* and sets an opaque session-id cookie.
 
+*What the login asks for.* The authorization request's `scope` is the route's `needed(request) =
+oidc.scopes ∪ endpoint.scopes`, derived once at boot per route -- the same set a bearer route checks,
+so requesting and checking read one derivation. A login started through `oidc.login.path` requests
+the set of the authenticated route its `returnUrl` lands on, or `oidc.scopes` alone. The session then
+records the scope set actually granted (its active set) and keeps it for its life; a session route
+never re-checks a live session against a route's scopes. The browser returns to the requested path
+*with its raw query*, or to `oidc.login.default_return_url` (default `/`) when the login carried no
+usable target. See link:../user/bff-session.adoc#scopes[the operator guide].
+
 === Login-initiation entry point
 
 A browser can start a login explicitly by navigating to the gateway-owned `oidc.login.path`
@@ -70,7 +79,9 @@ Once the session exists, an API call carries only the session-id cookie. The gat
   including the session cookie the gateway just consumed -- is in the gateway-owned
   never-forward set and reaches no upstream under *any* forward mode; that absoluteness is what
   makes the BFF premise hold. The mediated bearer is merged last, so it wins over any inbound
-  `Authorization` a route's mode admitted.
+  `Authorization` a route's mode admitted. A route resolving `auth.token_relay: false` skips this
+  injection: the session is still required, but the upstream receives no `Authorization` at all,
+  and such a route may not re-admit one through `forward.headers_allow` (refused at boot).
 
 image::../resources/diagrams/bff-token-mediation.svg[Session-based versus cookie-based token mediation compared side by side, align=center]
 
@@ -168,7 +179,10 @@ gateway as BFF:
 
 When the stored access token is within the configured leeway of expiry, the gateway refreshes
 it through the engine using the stored refresh token (with rotation), transparently during a
-normal API request.
+normal API request. The refresh grant requests the session's *active* scope set -- what the IdP
+granted at login, or at the previous refresh -- never the static `oidc.scopes`, so a refresh keeps
+the endpoint scopes a scoped login obtained. The response's `scope` becomes the new active set; an
+omitted `scope` leaves it unchanged.
 
 A refused refresh is disposed by *what the identity provider did to the presented refresh token*:
 
@@ -232,7 +246,7 @@ oidc:
   client_id: api-sheriff
   client_secret: ${SHERIFF_CLIENT_SECRET}
   redirect_uri: https://gw.example.com/auth/callback
-  scopes: [openid, profile, orders.read]   # must include every scope a route requires
+  scopes: [openid, profile]      # requested on every login; endpoints add their own (additive)
   login:
     path: /auth/login            # gateway-owned login-initiation entry point (reserved path)
   user_info:
@@ -254,7 +268,10 @@ oidc:
 endpoint:
   id: app1
   base_url: APP1
-  auth: { require: session, required_scopes: [orders.read] }  # default for all routes here
+  auth: { require: session }     # default for all routes here; add token_relay: false to
+                                 #   require the login without relaying the token upstream
+  scopes: [orders.read]          # a login for these routes requests oidc.scopes ∪ [orders.read];
+                                 #   a live session is never checked against it
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }

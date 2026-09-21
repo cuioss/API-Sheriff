@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.bff.login;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
@@ -41,10 +42,20 @@ import org.jspecify.annotations.Nullable;
  * another (the pre-session analogue of the session cookie).
  * <p>
  * The post-login return URL is same-origin-validated ({@link PendingAuthorizationRecord#sameOrigin})
- * before it is recorded — a cross-origin or unparseable target falls back to {@link #DEFAULT_RETURN_URL},
- * so the post-login redirect is never an open redirect. The engine authorization is reached through
+ * before it is recorded — an absent, cross-origin or unparseable target falls back to the configured
+ * {@linkplain #defaultReturnUrl() default return URL} ({@code oidc.login.default_return_url}, {@code /}
+ * when unset), so the post-login redirect is never an open redirect. A same-origin target is recorded
+ * verbatim, query included. The engine authorization is reached through
  * the {@link AuthorizationInitiation} seam, keeping the flow decoupled from the confidential-client
  * wiring (discovery metadata) and unit-testable without a live IdP.
+ * <p>
+ * <strong>Requested scope.</strong> Every initiation names the scope set the login requests, and the
+ * flow forwards it to the seam unchanged. The caller supplies the set: the session stage passes the
+ * selected route's {@code neededScopes}, the login-initiation endpoint the set
+ * {@link ReturnTargetScopes} resolves for the return target. The runtime binds the seam to
+ * {@link ScopedEngineFlows}, which renders an authorization URL whose {@code scope} is exactly that
+ * set (ADR-0048). The same set is recorded on the {@link PendingAuthorizationRecord}, so the callback
+ * can use it as the session's active scope set when the access token carries no {@code scope} claim.
  * <p>
  * <strong>Response mode.</strong> The authorization URL the seam yields carries
  * {@code response_mode=query} — see {@link QueryResponseModeAuthorizationRequestBuilder}, which the
@@ -59,46 +70,63 @@ public final class LoginFlow {
 
     private static final CuiLogger LOGGER = new CuiLogger(LoginFlow.class);
 
-    /** The safe default post-login landing when no valid same-origin return URL is supplied. */
-    public static final String DEFAULT_RETURN_URL = "/";
-
     private final AuthorizationInitiation authorization;
     private final PendingAuthorizationStore pendingStore;
     private final BindingCookieCodec bindingCookieCodec;
     private final String gatewayOrigin;
+    private final String defaultReturnUrl;
 
     /**
      * Assembles the login flow with the engine authorization seam and the gateway-side stores.
      *
-     * @param authorization      the engine authorization seam (bound to {@link AuthorizationCodeFlow#authorize})
+     * @param authorization      the engine authorization seam (bound to {@link ScopedEngineFlows#authorize})
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
      *                           same-origin-validate the post-login return URL
+     * @param defaultReturnUrl   the resolved {@code oidc.login.default_return_url} ({@code /} when
+     *                           unset): the post-login landing when no valid same-origin return URL
+     *                           is supplied
      */
     public LoginFlow(AuthorizationInitiation authorization, PendingAuthorizationStore pendingStore,
-            BindingCookieCodec bindingCookieCodec, String gatewayOrigin) {
+            BindingCookieCodec bindingCookieCodec, String gatewayOrigin, String defaultReturnUrl) {
         this.authorization = Objects.requireNonNull(authorization, "authorization");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
+        this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
     }
 
     /**
-     * Initiates a login: drives the engine authorization, persists the transaction, sets the binding
-     * cookie, and redirects the browser to the IdP.
+     * @return the configured post-login landing used when no valid same-origin return URL is
+     *         supplied ({@code oidc.login.default_return_url}, {@code /} when unset)
+     */
+    public String defaultReturnUrl() {
+        return defaultReturnUrl;
+    }
+
+    /**
+     * Initiates a login: drives the engine authorization for the requested scope set, persists the
+     * transaction, sets the binding cookie, and redirects the browser to the IdP.
      *
      * @param requestedReturnUrl the post-login return target the browser asked for, may be absent
+     * @param scopes             the scope set the login requests — the selected route's
+     *                           {@code neededScopes}, or {@code oidc.scopes} when no route applies;
+     *                           forwarded to the {@link AuthorizationInitiation} seam verbatim
      * @param now                the reference instant (the pending record's TTL anchor)
      * @return the redirect to the IdP authorization URL carrying the binding {@code Set-Cookie}
      */
-    public LoginRedirect initiate(@Nullable String requestedReturnUrl, Instant now) {
+    public LoginRedirect initiate(@Nullable String requestedReturnUrl, Collection<String> scopes, Instant now) {
+        Objects.requireNonNull(scopes, "scopes");
         Objects.requireNonNull(now, "now");
-        AuthorizationCodeFlow.AuthorizationRedirect redirect = authorization.authorize();
+        AuthorizationCodeFlow.AuthorizationRedirect redirect = authorization.authorize(scopes);
         String returnUrl = requestedReturnUrl != null
                 && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
-                ? requestedReturnUrl : DEFAULT_RETURN_URL;
-        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(redirect.context(), returnUrl, now);
+                ? requestedReturnUrl : defaultReturnUrl;
+        // The requested set rides the pending record so the callback can fall back to it as the
+        // session's active scope set when the issued access token carries no scope claim.
+        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(redirect.context(), returnUrl, scopes,
+                now);
         pendingStore.store(pending);
         LOGGER.debug("Initiated OIDC login; pending record persisted, redirecting to the IdP");
         List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));
@@ -106,10 +134,10 @@ public final class LoginFlow {
     }
 
     /**
-     * The engine authorization seam. The session runtime binds it to the engine as
-     * {@code () -> authorizationCodeFlow.authorize(providerMetadata)}; a test binds it to a
-     * hand-built redirect. Keeping the discovery-metadata wiring behind the seam decouples the flow
-     * from it and makes the initiation path unit-testable without a live IdP.
+     * The engine authorization seam. The session runtime binds it to the per-scope-set engine seam
+     * as {@code scopes -> scopedEngineFlows.authorize(providerMetadata, scopes)} (ADR-0048); a test
+     * binds it to a hand-built redirect. Keeping the discovery-metadata wiring behind the seam
+     * decouples the flow from it and makes the initiation path unit-testable without a live IdP.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -119,11 +147,12 @@ public final class LoginFlow {
 
         /**
          * Builds the authorization URL and the transaction context (PKCE/state/nonce owned by the
-         * engine) for a fresh login.
+         * engine) for a fresh login requesting {@code scopes}.
          *
+         * @param scopes the scope set the authorization request's {@code scope} parameter carries
          * @return the engine's authorization redirect (URL + transaction {@code FlowContext})
          */
-        AuthorizationCodeFlow.AuthorizationRedirect authorize();
+        AuthorizationCodeFlow.AuthorizationRedirect authorize(Collection<String> scopes);
     }
 
     /**

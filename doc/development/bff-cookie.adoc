@@ -70,7 +70,8 @@ happened.
 
 == The sealed-cookie wire format
 
-`FORMAT_VERSION` is *3*. The packaging pipeline has four stages, and the direction matters in both
+`FORMAT_VERSION` is *1* -- the ten-field layout described below -- and it is incremented by one on
+every change to the sealed field set (see the rule below). The packaging pipeline has four stages, and the direction matters in both
 readings:
 
 [source]
@@ -91,14 +92,17 @@ fails the tag check rather than silently selecting a different parse. The gatewa
 sealing key: a stamped id that does not match it is refused outright -- never a try-every-key
 decrypt -- which is what makes withdrawing a key a clean, fail-closed break.
 
-The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is the nine fields in
+The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is the ten fields in
 record-declaration order, each written as a *2-byte big-endian unsigned length followed by its raw
-UTF-8 bytes* -- nine fields, so 18 bytes of framing. A zero length stands for an absent optional.
+UTF-8 bytes* -- ten fields, so 20 bytes of framing. A zero length stands for an absent optional. The
+tenth field is the session's active scope set, written as its names sorted and joined by a single
+space; an empty set is a zero-length field.
 It is read only *after* the GCM tag has authenticated the bytes -- `decode(...)` is never a parser
 for untrusted input.
 
 Length prefixes rather than a separator character are the point of the format, and the reason it
-replaced version 2. Version 2 joined the fields with a newline and URL-safe-base64-armoured each one
+replaced the earlier newline-joined layout. That layout joined the fields with a newline and
+URL-safe-base64-armoured each one
 so no value could collide with the separator; the whole sealed value was then base64url-encoded
 again for transport. That is a ~33 % expansion applied to material -- three JWTs -- that is already
 base64 text, and then a second expansion on top of it. Nothing can be confused with a delimiter when
@@ -130,13 +134,15 @@ error.
 
 [IMPORTANT]
 ====
-*Any change to the inner field set requires a `FORMAT_VERSION` bump.* The field-count guard is
-strict, the reader refuses trailing bytes after the ninth field, and there is no legacy-shape
+*Any change to the inner field set increments `FORMAT_VERSION` by exactly one.* The current value is
+`1`: the ten-field layout whose tenth field is the session's active scope set. The field-count guard
+is strict, the reader refuses trailing bytes after the tenth field, and there is no legacy-shape
 acceptance path: a cookie in the previous format must fail to unseal, not be admitted with a
-synthesized value. Bumping the version is what makes that failure clean, since the version byte is
-authenticated and is read at an explicit gate *before* a `Cipher` is constructed -- so a version-2
-cookie is refused without any decryption or inflation being attempted. A bump forces every existing
-cookie-mode session to re-login -- call that out in the operator documentation when you make one.
+synthesized value. Incrementing the version is what makes that failure clean, since the version byte
+is authenticated and is read at an explicit gate *before* a `Cipher` is constructed -- so a cookie
+stamped with any other version is refused without any decryption or inflation being attempted. An
+increment forces every existing cookie-mode session to log in again, once -- call that out in the
+operator documentation when you make one.
 ====
 
 == The four routes to a session that fits, and where each one landed
@@ -248,8 +254,10 @@ deflation cannot help with would report a ratio no real token reaches:
 |===
 | Quantity | Measured
 
-| Framed plaintext (nine fields, length-prefixed raw UTF-8)
-| 3433 bytes
+| Framed plaintext (length-prefixed raw UTF-8)
+| 3433 bytes -- measured before the tenth field, the active scope set, was added; it adds the
+  granted scope names (`email openid profile` in this fixture) plus one 2-byte prefix, so the rows
+  below move by a few dozen bytes at most
 
 | Sealed cookie value, as emitted
 | 2700 bytes -- *78.6 %* of the framed plaintext
@@ -274,7 +282,7 @@ claim set, and a deployment whose IdP mints larger tokens spends that 32.8 % fir
 the unit measurement above, which fails before any browser is involved;
 `BffCookieRefreshIT` is what measures the real thing against a running IdP.
 
-The safety of compress-then-encrypt in this construction -- the CRIME/BREACH discriminator, the nine
+The safety of compress-then-encrypt in this construction -- the CRIME/BREACH discriminator, the payload
 components and who controls each -- is settled in
 link:../adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043]
 and is not restated here.
@@ -345,14 +353,16 @@ Docker compose stack under the integration-tests Maven profile:
   is what makes "the peer held no record of this session" the evidence rather than an assumption.
   That asymmetry is deliberate: it also documents the login-leg affinity boundary.
 
-Both IT suites are behaviour-level and are *not* bound to the inner wire form, so a format change
-should leave them untouched and green.
+Both IT suites are behaviour-level and are *not* bound to the inner wire form. The one exception is
+the leading version byte: `BffCookieSessionIT` asserts it by literal, because that module has no
+`api-sheriff` class on its classpath to reference `FORMAT_VERSION` through, so an increment updates
+that literal in the same change.
 
 == How to extend
 
 * *A new sealed field* -- add the record component, append it in `encode()` in declaration order,
   read it back in `decode(...)`, raise the field count (which raises the framing width with it), and
-  *bump `FORMAT_VERSION`*. If it participates in identity, mind the stability constraint above.
+  *increment `FORMAT_VERSION` by one* (and the literal in `BffCookieSessionIT` with it). If it participates in identity, mind the stability constraint above.
   Budget the field by what it costs *after* deflation, not by its raw size: a random or
   already-compressed value costs close to its full length, while structured text costs much less.
 * *A new session-runtime capability* -- write it against the `SessionBinding` seam so it stays

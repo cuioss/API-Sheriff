@@ -19,6 +19,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Objects;
+import java.util.Set;
 
 
 import lombok.Builder;
@@ -62,6 +63,15 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * {@link #sid()} and {@link #sub()} back a server-mode store's secondary index for O(1)
  * back-channel logout destruction.
+ * <p>
+ * <strong>The active scope set {@code A}.</strong> {@link #activeScopes()} is the scope set the
+ * session's mediated access token was granted. After login it is the access token's {@code scope}
+ * claim, or the scope set the login requested when the token carries none; after a refresh it is
+ * the refresh response's {@code scope}, or unchanged when the response omits it (RFC 6749 §5.1:
+ * omitted means identical to what was requested). It is the {@code scope} the refresh grant sends,
+ * so a refresh never narrows the session back to the static {@code oidc.scopes} and never widens it
+ * past what was granted (ADR-0048). Scope names are not credentials, so {@link #toString()} prints
+ * them.
  *
  * @param sessionId    the stable per-session identity (see the identity model above)
  * @param accessToken  the mediated access token injected as the upstream bearer
@@ -74,6 +84,8 @@ import org.jspecify.annotations.Nullable;
  * @param authTime     the IdP authentication instant, {@code null} when absent
  * @param sessionNonce the per-session nonce keying the cookie-mode derived identity; always
  *                     {@code null} in server mode (see the mode split above), and never blank when present
+ * @param activeScopes the active scope set {@code A} the mediated access token was granted and the
+ *                     refresh grant requests (see above); an absent set normalizes to empty
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -89,7 +101,8 @@ String sub,
 Instant expiresAt,
 @Nullable String acr,
 @Nullable Instant authTime,
-@Nullable String sessionNonce) {
+@Nullable String sessionNonce,
+Set<String> activeScopes) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -103,8 +116,12 @@ Instant expiresAt,
      * cookie-mode derived identity, so an empty string would silently degrade that identity back to
      * the colliding pre-nonce shape instead of failing. The nonce value itself never reaches the
      * exception message.
+     * <p>
+     * {@code activeScopes} is defensively copied into an immutable set; an absent set normalizes to
+     * empty.
      *
-     * @throws NullPointerException     when a mandatory component is {@code null}
+     * @throws NullPointerException     when a mandatory component is {@code null}, or
+     *                                  {@code activeScopes} contains a {@code null} element
      * @throws IllegalArgumentException when {@code sessionNonce} is present but blank
      */
     public SessionRecord {
@@ -116,6 +133,7 @@ Instant expiresAt,
         if (sessionNonce != null && sessionNonce.isBlank()) {
             throw new IllegalArgumentException("sessionNonce must not be blank when present");
         }
+        activeScopes = activeScopes == null ? Set.of() : Set.copyOf(activeScopes);
     }
 
     /**
@@ -148,15 +166,16 @@ Instant expiresAt,
      * Overridden to redact every credential — the session id, all three tokens, and the session
      * nonce that keys the cookie-mode derived identity. The default
      * record {@code toString()} would otherwise print the bearer session id and the raw token
-     * material into any log line, exception message, or debugger view.
+     * material into any log line, exception message, or debugger view. The active scope names are
+     * not credentials and are printed as-is.
      *
      * @return a string representation with all credential-bearing fields redacted
      */
     @Override
     public String toString() {
-        return "SessionRecord[sessionId=%s, accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, expiresAt=%s, acr=%s, authTime=%s, sessionNonce=%s]"
+        return "SessionRecord[sessionId=%s, accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, expiresAt=%s, acr=%s, authTime=%s, sessionNonce=%s, activeScopes=%s]"
                 .formatted(REDACTED, REDACTED, refreshToken == null ? "null" : REDACTED,
                         REDACTED, sub, sid, expiresAt, acr, authTime,
-                        sessionNonce == null ? "null" : REDACTED);
+                        sessionNonce == null ? "null" : REDACTED, activeScopes);
     }
 }

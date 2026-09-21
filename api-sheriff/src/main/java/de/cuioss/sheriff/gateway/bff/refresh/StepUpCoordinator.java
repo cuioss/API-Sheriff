@@ -16,9 +16,11 @@
 package de.cuioss.sheriff.gateway.bff.refresh;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -72,18 +74,24 @@ public final class StepUpCoordinator {
 
     private static final CuiLogger LOGGER = new CuiLogger(StepUpCoordinator.class);
 
-    /** The safe default replay target when no valid same-origin replay URL is supplied. */
-    public static final String DEFAULT_RETURN_URL = "/";
-
     private final StepUpChallengeParser challengeParser;
     private final SilentSatisfaction silentSatisfaction;
     private final StepUpInitiation stepUpInitiation;
     private final PendingAuthorizationStore pendingStore;
     private final BindingCookieCodec bindingCookieCodec;
     private final String gatewayOrigin;
+    private final String defaultReturnUrl;
+    private final Set<String> stepUpScopes;
 
     /**
      * Assembles the coordinator with the engine step-up seams and the gateway-side stores.
+     * <p>
+     * <strong>Step-up requested scope set (PLAN-20 residual).</strong> The engine builds the step-up
+     * authorization request from the static base configuration, so its {@code scope} is always
+     * {@code oidc.scopes}, whatever the session's active scope set is. The re-drive pending record
+     * honestly records that static set as its requested scopes, which is what the callback falls back
+     * to when the step-up access token carries no {@code scope} claim. Requesting the session's active
+     * set on the step-up leg is PLAN-20's question (see ADR-0048's consequences).
      *
      * @param silentSatisfaction the silent-step-up seam (bound to the engine's silent elevation; a
      *                           test binds a fixed present/absent result)
@@ -94,15 +102,23 @@ public final class StepUpCoordinator {
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
      *                           same-origin-validate the replay return URL
+     * @param defaultReturnUrl   the resolved {@code oidc.login.default_return_url} ({@code /} when
+     *                           unset): the replay target when no valid same-origin replay URL is
+     *                           supplied
+     * @param stepUpScopes       the scope set the step-up authorization request is built with (the
+     *                           static {@code oidc.scopes}), recorded on every re-drive pending record
      */
     public StepUpCoordinator(SilentSatisfaction silentSatisfaction, StepUpInitiation stepUpInitiation,
-            PendingAuthorizationStore pendingStore, BindingCookieCodec bindingCookieCodec, String gatewayOrigin) {
+            PendingAuthorizationStore pendingStore, BindingCookieCodec bindingCookieCodec, String gatewayOrigin,
+            String defaultReturnUrl, Collection<String> stepUpScopes) {
         this.challengeParser = new StepUpChallengeParser();
         this.silentSatisfaction = Objects.requireNonNull(silentSatisfaction, "silentSatisfaction");
         this.stepUpInitiation = Objects.requireNonNull(stepUpInitiation, "stepUpInitiation");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
+        this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
+        this.stepUpScopes = Set.copyOf(Objects.requireNonNull(stepUpScopes, "stepUpScopes"));
     }
 
     /**
@@ -146,8 +162,11 @@ public final class StepUpCoordinator {
         StepUpHandler.StepUpRequest request = stepUpInitiation.initiate(challenge);
         String returnUrl = replayUrl != null
                 && PendingAuthorizationRecord.sameOrigin(replayUrl, gatewayOrigin)
-                ? replayUrl : DEFAULT_RETURN_URL;
-        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(request.context(), returnUrl, now);
+                ? replayUrl : defaultReturnUrl;
+        // The step-up request is built from the static base configuration, so the scope set it asked
+        // for is stepUpScopes (the PLAN-20 residual), never the session's active set.
+        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(request.context(), returnUrl,
+                stepUpScopes, now);
         pendingStore.store(pending);
         LOGGER.debug("Step-up challenge requires re-authentication — re-driving the auth-code flow");
         List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));

@@ -39,9 +39,10 @@ oidc:
   client_id: api-sheriff
   client_secret: ${SHERIFF_CLIENT_SECRET}     # must be an ${ENV_VAR} reference
   redirect_uri: https://gw.example.com/auth/callback   # registered exactly at the IdP
-  scopes: [openid, profile, orders.read]      # include every scope a route requires
+  scopes: [openid, profile]                   # requested on every login; see "Scopes" below
   login:
     path: /auth/login                         # optional: gateway-owned login-start URL
+    default_return_url: /app/                 # optional: landing page when a login has no target (default /)
   user_info:
     path: /auth/userinfo                      # optional: curated identity view for the SPA
     allowed_claims: [sub, name, email]        # disclosure ceiling; empty discloses nothing
@@ -57,8 +58,10 @@ oidc:
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
 ----
 
-The gateway ignores the `oidc` block entirely unless a route's effective auth is `require: session`,
-so a bearer-only deployment is unaffected by its presence.
+The gateway drives no login unless a route's effective auth is `require: session`. One part of the
+block does reach bearer routes, though: `oidc.scopes` joins the scope set every bearer route checks
+(see <<bearer-oidc-scopes>>), so adding an `oidc` block to a gateway that also
+serves bearer routes tightens those routes.
 
 == Protect a route with a session
 
@@ -72,12 +75,123 @@ stripped:
 endpoint:
   id: app1
   base_url: APP1
-  auth: { require: session, required_scopes: [orders.read] }
+  auth: { require: session }
+  scopes: [orders.read]                       # requested at login in addition to oidc.scopes
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }
       upstream: { path: /orders }
 ----
+
+A session route runs *no* scope check of its own. `scopes` names what the login for this endpoint
+*asks* the IdP for; what the IdP grants is the upstream's to judge. See <<scopes>>.
+
+[[token-relay]]
+== Enforce login without handing the origin a token
+
+By default a session route relays the session's access token to the upstream as
+`Authorization: Bearer`. Some origins need to know only that the user is logged in -- a static
+single-page app, an asset server -- and have no use for the token. Set `token_relay: false` in the
+route's `auth` block (or the endpoint's, or an anchor's) to keep the token at the gateway:
+
+[source,yaml]
+----
+# endpoints/spa.yaml
+endpoint:
+  id: spa
+  base_url: SPA
+  auth: { require: session, token_relay: false }
+  routes:
+    - id: spa-shell
+      match: { path_prefix: /app }
+----
+
+The session is still resolved, refreshed and required exactly as before: a navigation without a
+session is redirected to login, an XHR gets `401`, and an ended session still clears the cookie. The
+only difference is that the upstream receives no `Authorization` header at all. `token_relay` acts
+only on `require: session`; on a bearer route the client's own header is forwarded as usual.
+
+Because the point of `token_relay: false` is that no access token reaches the origin, the gateway
+refuses at boot a route that sets it while its effective `forward.headers_allow` names
+`Authorization` (in any letter case) -- that would let the browser's own `Authorization` header back
+in. Remove `Authorization` from `headers_allow`, or drop `token_relay: false`.
+
+[[return-url]]
+== Where the browser lands after login
+
+When a navigation without a session is redirected to login, the gateway records the URL the browser
+asked for and sends it back there after the callback. The recorded URL is the canonical request path
+*plus the raw query string, byte for byte*: `/orders?tab=open&sort` returns to exactly
+`/orders?tab=open&sort`, repeated and interleaved parameters in their original order, bare names and
+percent-encoding kept as sent. A request without a query returns to the path alone.
+
+A login started through `oidc.login.path` (`/auth/login?returnUrl=...`) returns to its `returnUrl`
+target. Either way the target must be *same-origin* with `oidc.redirect_uri`: a gateway path
+starting with a single `/`, or an absolute URL on that origin. An absent, cross-origin or unparseable
+target is replaced by `oidc.login.default_return_url`, or by `/` when that key is unset. The default
+itself is checked at boot against the same rule -- a cross-origin `default_return_url` is refused, so
+it can never turn a login into an open redirect.
+
+[[scopes]]
+== Scopes
+
+*Terminology.* `oidc.scopes` and `endpoint.scopes` are scopes the gateway *requests* from the IdP.
+They are not pre-approved: the IdP decides what it grants, and the token carries only that.
+
+*Syntax.* Every entry of either list must be an RFC 6749 §3.3 `scope-token`: one or more printable
+ASCII characters (`0x21`-`0x7E`) other than the double quote and the backslash -- so no space, no
+control character and no non-ASCII. `orders:read`, `orders.read` and `k_beispiel_token_permissions`
+are fine; `orders read` is two scopes written as one and is refused at boot, naming the offending
+entry.
+
+*Additivity.* The scope set a route needs is worked out once at boot:
+
+[source]
+----
+needed(route) = oidc.scopes ∪ endpoint.scopes     (endpoint.scopes alone when no oidc block exists)
+----
+
+`endpoint.scopes` sits at endpoint level, outside `auth`, and only ever *adds*: an endpoint cannot
+remove a global scope. Declaring `scopes` on an endpoint whose every route resolves `require: none`
+is refused at boot, since scopes act only on authenticated routes.
+
+*What a login requests.*
+
+* A navigation to a session route without a session requests exactly that route's `needed` set.
+* A login through `/auth/login?returnUrl=X` requests the `needed` set of the authenticated route `X`
+  would land on -- matched as a `GET` on the gateway host, the query ignored. A route with a
+  `match.headers` condition is never selected here, because a header cannot be evaluated for a
+  request that has not happened yet. When `X` is absent, cross-origin or unparseable, matches no
+  route, or lands on a `require: none` route, the login requests `oidc.scopes` alone.
+
+*Session-wide scope growth.* Scopes are requested when a session is *established*, never
+re-negotiated on a live one. A session that logged in through a route of `orders` holds the
+`orders.read` grant for the rest of its life, and the token it relays to every other session route
+carries that scope too -- per-endpoint token narrowing is not offered. Conversely, a session that
+logged in on a route needing fewer scopes is *not* sent back to the IdP when it reaches a route that
+needs more: the gateway runs no session-route scope check, the relayed token simply lacks the
+scope, and the upstream decides. To widen a session, the user logs out and logs in again.
+
+*Optional client scopes at the IdP.* The IdP grants a requested scope only when the client is allowed
+to request it. On Keycloak, attach an endpoint scope to the client as an *Optional* client scope, so it
+is granted only when a login asks for it. A *Default* client scope is granted on every login whether
+requested or not, which defeats the per-endpoint request.
+
+*Refresh keeps the active set.* The session remembers the scope set the IdP actually granted (its
+active set): after login, the token's `scope` claim (or the requested set when the token carries
+none); after a refresh, the `scope` the token endpoint returns, unchanged when the response omits it.
+Every refresh requests exactly that active set, never the static `oidc.scopes`, so a refresh does not
+silently narrow a session that logged in on a scoped route.
+
+[[bearer-oidc-scopes]]
+*Bearer routes check `oidc.scopes` too.* A `require: bearer` route checks the same `needed` set against
+the token the client presents, and a token missing any member is refused `403` with
+`WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the missing
+scopes. Because the set includes `oidc.scopes`, a gateway running in BFF mode rejects a bearer token
+that lacks them -- a `client_credentials` token issued without `openid` and the other `oidc.scopes`,
+for example, is answered `403 insufficient_scope` even on a bearer route whose endpoint declares no
+`scopes`. Have such clients request the `oidc.scopes` as well, or serve them from a gateway without an
+`oidc` block.
 
 == Gateway-owned reserved paths
 

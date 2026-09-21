@@ -320,13 +320,20 @@ List<String> scopes,
     /**
      * Login-initiation reserved-path settings (fold). Mirrors the {@link Logout}
      * shape so the login-initiation endpoint reads as {@code oidc.login.path}.
+     * <p>
+     * {@code defaultReturnUrl} is the post-login return target used when a login carries no
+     * usable return URL — an absent, cross-origin or unparseable target falls back to it, and
+     * the runtime resolves an omitted value to {@code /}. Boot validation refuses a value that is
+     * not same-origin with {@code redirect_uri}.
      *
-     * @param path the gateway-served login-initiation path, {@code null} when omitted
+     * @param path             the gateway-served login-initiation path, {@code null} when
+     *                         omitted
+     * @param defaultReturnUrl the post-login fallback return target, {@code null} when omitted
      * @author API Sheriff Team
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Login(@Nullable String path) {
+    public record Login(@Nullable String path, @Nullable String defaultReturnUrl) {
     }
 }

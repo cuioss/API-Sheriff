@@ -379,12 +379,18 @@ oidc:                              # only used by the BFF variants (2 and 3)
   issuer: https://idp.example.com/realms/main
   client_id: api-sheriff
   client_secret: ${SHERIFF_CLIENT_SECRET}
-  scopes: [openid, profile]
+  scopes: [openid, profile]        # REQUESTED on every login and joined into every route's
+                                   #   needed set (bearer routes check them too); endpoints add
+                                   #   their own via endpoint.scopes, never remove these.
+                                   #   Each entry is an RFC 6749 scope-token (printable ASCII,
+                                   #   no space, " or \) -- anything else is refused at load
   redirect_uri: https://gw.example.com/auth/callback
                                    # register at the IdP as a plain GET redirect target: the
                                    #   gateway drives response_mode=query (fixed in code, no knob)
   login:
     path: /auth/login              # gateway-owned login-initiation entry point (reserved path)
+    default_return_url: /          # post-login landing when a login carries no usable target;
+                                   #   same-origin with redirect_uri (boot-checked); default /
   user_info:
     path: /auth/userinfo           # gateway-served curated identity view (reserved path)
     allowed_claims: [sub, name, email]   # operator allowlist; empty (default) discloses nothing
@@ -494,6 +500,7 @@ link:user/endpoint-routes.adoc#_base_url_only_with_proxy_routes[`base_url` is ma
 proxy route]), `anchor`
 (link:user/anchors.adoc#_anchors[Anchors] -- the normative reference for both the gateway `anchors` block and
 the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
+`scopes` (link:#_endpoint_scopes[`endpoint.scopes`]),
 `allowed_methods` (link:#_allowed_methods[`allowed_methods`]), and
 `routes` (link:user/endpoint-routes.adoc#_route_ordering[Route ordering] + the per-route field headings).
 
@@ -1777,23 +1784,58 @@ Whether authentication is required is defined *per endpoint file*: `endpoint.aut
 mandatory (unless the endpoint's anchor declares an `auth` block -- see
 link:user/anchors.adoc#_anchors[Anchors]) and is the default posture for every route in the file. A route-level `auth` block
 replaces the endpoint default wholesale for that route (no field merging). "Effective auth"
-below means the route's own block if present, else the endpoint's. `required_scopes` is valid
-at either level; because override is wholesale, a route-level block that omits it *drops*
-endpoint-level scope enforcement for that route. Weakening overrides (lower `require`, dropped
-scopes) are legal -- a health route under a bearer endpoint is the normal case -- but every one
-is called out in the boot log, so weakening is always an explicit, audited choice.
+below means the route's own block if present, else the endpoint's. The block carries two keys:
+`require` and `token_relay` (see <<_auth_token_relay>>). Scopes are *not* part of it: they are the
+endpoint-level, additive link:#_endpoint_scopes[`endpoint.scopes`], so a route-level `auth` override
+never drops them. Weakening overrides (a lower `require`) are legal -- a health route under a
+bearer endpoint is the normal case -- but every one is called out in the boot log, so weakening is
+always an explicit, audited choice.
 
 [cols="1,3"]
 |===
 | Value | Behaviour
 
 | `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block, and without an anchor-provided one, fails the boot (see link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[Defaults for omitted blocks]).
-| `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; enforce `required_scopes`. link:variants/01-base-gateway.adoc[Variant 1].
-| `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. `required_scopes` on a session route are enforced against the *mediated* access token's granted scopes -- so they must be requested in `oidc.scopes` at login, or every request on the route fails with `403`.
+| `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; then check the route's needed scope set, `oidc.scopes ∪ endpoint.scopes` (`endpoint.scopes` alone without an `oidc` block). A valid token missing any member is answered `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the missing scopes, and the upstream is never contacted; an empty needed set skips the check. Because the set includes `oidc.scopes`, a BFF-mode gateway rejects a bearer token lacking them -- a `client_credentials` token among them. link:variants/01-base-gateway.adoc[Variant 1].
+| `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. A session route runs *no* scope pre-check: its needed set is what a login started on the route *requests* from the IdP, and a live session is never tested against it -- the upstream judges the relayed token. With `token_relay: false` the session is still required but no token is relayed.
 |===
+
+[[_auth_token_relay]]
+==== `auth.token_relay`
+
+[cols="1,3"]
+|===
+| Aspect | Contract
+
+| Type / default | Boolean, default `true`.
+| Scope | Part of the `auth` block, so it is declared at route, endpoint or anchor level and resolved with the block's wholesale cascade (route -> endpoint -> anchor); never merged on its own.
+| Effect | Acts only on `require: session`. `true` relays the session's access token upstream as `Authorization: Bearer`. `false` keeps the session required -- missing-session redirect/`401`, refresh and cookie clearing all unchanged -- but sets no `Authorization` header upstream. No effect on `bearer` or `none` routes.
+| Boot rule | A route whose effective `token_relay` is `false` while its effective `forward.headers_allow` names `Authorization` (any letter case) is refused (`CONFIG_INVALID`): that list would re-admit the browser's own `Authorization` header to an origin the route promises no token.
+|===
+
+See link:user/bff-session.adoc#token-relay[Server-Session BFF -- Enforce login without handing the origin a token].
 
 Routes with different `require` values may coexist in one deployment; the canonical statement
 of the variants-are-route-postures rule is in link:variants/README.adoc[Variants].
+
+[[_endpoint_scopes]]
+=== `endpoint.scopes`
+
+[cols="1,3"]
+|===
+| Aspect | Contract
+
+| Type / default | Array of strings on the `endpoint` block, *outside* `auth`. Default empty.
+| Syntax | Every entry -- here and in `oidc.scopes` -- must be an RFC 6749 §3.3 `scope-token`: one or more printable ASCII characters (`0x21`-`0x7E`) other than the double quote and the backslash, so no space, control character or non-ASCII. The bundled schemas carry the pattern, so a malformed name (`orders read`, say) is refused at load with a pointer to the entry.
+| Cascade | None. It is endpoint-level only and *additive*: every route of the endpoint needs `needed = oidc.scopes ∪ endpoint.scopes`, materialized once at boot (`endpoint.scopes` alone when the gateway declares no `oidc` block). An endpoint can add scopes but never remove an `oidc.scopes` member, and a route-level `auth` override does not affect the set.
+| `require: bearer` | The validated token must carry every member of `needed`; a shortfall is `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` (the missing names only, sorted, taken from boot config -- never from the token). An empty `needed` skips the check.
+| `require: session` | `needed` is the `scope` a login started on the route requests (and, through `oidc.login.path`, a login whose `returnUrl` lands on the route). No session-route request is checked against it; the session's granted set persists for its life and is what every refresh requests.
+| Boot rule | An enabled endpoint declaring a non-empty `scopes` whose every route resolves `require: none` is refused (`CONFIG_INVALID`) -- the scopes could never act.
+|===
+
+The `auth` block declares no scope list; a scope key inside `auth` is refused by the schema. See
+link:user/endpoint-routes.adoc#_endpoint_scopes[Endpoint scopes] and
+link:user/bff-session.adoc#scopes[Server-Session BFF -- Scopes].
 
 [[_token_validation]]
 === `token_validation`
@@ -2031,8 +2073,10 @@ CA needs both; a public-internet IdP behind a public CA needs neither.
 === `oidc`
 
 The confidential-client block used by the BFF variants
-(link:variants/02-bff-session.adoc[Variant 2] and link:variants/03-bff-cookie.adoc[Variant 3]);
-ignored when no route's effective auth is `require: session`. The TLS posture of the gateway's own
+(link:variants/02-bff-session.adoc[Variant 2] and link:variants/03-bff-cookie.adoc[Variant 3]).
+No login is driven when no route's effective auth is `require: session`, but `oidc.scopes` is never
+ignored: it joins every route's needed scope set, so bearer routes check it too (see
+link:#_endpoint_scopes[`endpoint.scopes`]). The TLS posture of the gateway's own
 dial to the identity provider is deliberately *not* in this block: it lives with every other
 outbound posture key, as `egress_tls.oidc_verify_hostname` and `egress_tls.oidc_tls_profile` -- see
 link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
@@ -2044,6 +2088,13 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
 | `issuer`, `client_id`, `client_secret`, `scopes`, `redirect_uri`
 | The OIDC confidential-client identity. `client_secret` must be an `${ENV_VAR}` reference.
   `redirect_uri` is the gateway's own callback route, registered exactly at the IdP.
+  `scopes` are *requested*, not pre-approved: the IdP grants what the client may have, and the
+  token carries only that. Every login requests at least `scopes`; a login for a route whose
+  endpoint declares link:#_endpoint_scopes[`endpoint.scopes`] requests their union. Because the same
+  union is every route's needed set, a `require: bearer` route answers `403 insufficient_scope` to a
+  token lacking any `scopes` member. Each `scopes` entry must be an RFC 6749 §3.3 `scope-token` --
+  printable ASCII without space, double quote or backslash -- or the load is refused (see the syntax row of
+  link:#_endpoint_scopes[`endpoint.scopes`]).
   *Register it as a plain redirect target reached by a `GET`*: the gateway drives the
   authorization request with `response_mode=query`, so the IdP must be free to answer a `302`
   carrying `code` and `state` in the query string. An IdP client pinned to force `form_post`
@@ -2057,7 +2108,20 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   that already holds a live session is redirected straight to the same-origin-validated return
   URL (no fresh auth-code flow); an unauthenticated caller is driven into the authorization-code
   flow. Optional -- omit it and the deployment simply has no gateway-owned login-start URL.
-  Registered as a reserved gateway path when present.
+  Registered as a reserved gateway path when present. The login it starts requests the needed scope
+  set of the authenticated route the `returnUrl` target lands on (matched as a `GET` on the gateway
+  host, query ignored, `match.headers` routes never selected), or `oidc.scopes` alone when the target
+  is absent, cross-origin, unparseable, unmatched or lands on a `require: none` route.
+
+| `login.default_return_url`
+| Where the browser lands after a login that carries no usable return target -- an absent,
+  cross-origin or unparseable `returnUrl`, or a step-up replay without one. String; *default `/`*.
+  Must be same-origin with `redirect_uri`: a gateway path starting with a single `/`, or an absolute
+  URL on the `redirect_uri` origin. A scheme-relative, backslash, blank or cross-origin value is
+  refused at boot (`CONFIG_INVALID`), so the fallback can never become an open redirect. A login
+  started by a session-route navigation returns to the requested path *plus its raw query, byte for
+  byte*, and does not use the default. See
+  link:user/bff-session.adoc#return-url[Where the browser lands after login].
 
 | `user_info.path`
 | Gateway-served *user-info* endpoint returning the curated identity view assembled from the
@@ -3378,14 +3442,13 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   *mechanically verified* against those files: `DocumentedSetsContractTest` derives both sets from
   the schemas and fails the build when a listed key, a stated count or the object-item set drifts
   from them. A key defined once and referenced from several places -- `allowed_methods` at the
-  global and anchor level, the `auth`, `security_filter` and `security_headers` blocks -- is one
+  global and anchor level, the `security_filter` and `security_headers` blocks -- is one
   key, named by the block it is declared under; an endpoint document's keys are named relative to
   its `endpoint` block.
 +
 --
-In `gateway.yaml` the schema declares 18 such keys, of which 17 declare string items and are the
-usable set: `allowed_methods` (global and anchor), `auth.required_scopes`,
-`security_filter.allowed_paths`, `security_filter.allowed_header_names`,
+In `gateway.yaml` the schema declares 17 such keys, of which 16 declare string items and are the
+usable set: `allowed_methods` (global and anchor), `security_filter.allowed_paths`, `security_filter.allowed_header_names`,
 `security_filter.blocked_header_names`, `security_filter.allowed_content_types`,
 `security_headers.cors.allowed_origins`, `security_headers.cors.allowed_methods`,
 `security_headers.cors.allowed_headers`, `tls.cipher_suites`, `tls.alpn`,
@@ -3393,8 +3456,8 @@ usable set: `allowed_methods` (global and anchor), `auth.required_scopes`,
 `oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims` and
 `oidc.user_info.default_view`.
 
-An `endpoints/*.yaml` document declares the same-named `auth.required_scopes`, `allowed_methods`
-and four `security_filter` lists, and adds 6 further string-item keys of its own:
+An `endpoints/*.yaml` document declares the same-named `allowed_methods` and four
+`security_filter` lists, and adds 7 further string-item keys of its own: `scopes`,
 `routes[].match.methods`, `routes[].forward.headers_allow`, `routes[].forward.headers_deny`,
 `routes[].forward.query_allow`, `routes[].forward.query_deny` and
 `routes[].websocket.allowed_origins`.

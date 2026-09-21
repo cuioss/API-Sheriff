@@ -70,7 +70,7 @@ class ConfigModelContractTest {
     // --- Shared fixtures ---------------------------------------------------
 
     private static AuthConfig auth() {
-        return new AuthConfig(Require.BEARER, List.of("read"));
+        return new AuthConfig(Require.BEARER, null);
     }
 
     private static AnchorConfig anchorConfig() {
@@ -166,7 +166,7 @@ class ConfigModelContractTest {
                         .build())
                 .stepUp(new OidcConfig.StepUp(true, false))
                 .userInfo(userInfo())
-                .login(new OidcConfig.Login("/session/login"))
+                .login(new OidcConfig.Login("/session/login", null))
                 .build();
     }
 
@@ -397,14 +397,23 @@ class ConfigModelContractTest {
                             new OidcConfig.StepUp(false, true)),
                     voCase("OidcConfig.UserInfo", userInfo(), userInfo(),
                             new OidcConfig.UserInfo("/other", List.of("sub"), List.of())),
-                    voCase("OidcConfig.Login", new OidcConfig.Login("/session/login"),
-                            new OidcConfig.Login("/session/login"),
-                            new OidcConfig.Login("/other-login")),
+                    voCase("OidcConfig.Login", new OidcConfig.Login("/session/login", "/home"),
+                            new OidcConfig.Login("/session/login", "/home"),
+                            new OidcConfig.Login("/session/login", "/elsewhere")),
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
                             .id("other").baseUrl("svc").auth(auth()).build()),
-                    voCase("AuthConfig", auth(), auth(), new AuthConfig(Require.NONE, List.of())),
+                    voCase("EndpointConfig.scopes", endpointConfig(), endpointConfig(), EndpointConfig.builder()
+                            .id(endpointConfig().id()).enabled(endpointConfig().enabled())
+                            .baseUrl(endpointConfig().baseUrl()).anchor(endpointConfig().anchor())
+                            .auth(endpointConfig().auth()).scopes(List.of("orders.write"))
+                            .allowedMethods(endpointConfig().allowedMethods())
+                            .upstreamDefaults(endpointConfig().upstreamDefaults())
+                            .routes(endpointConfig().routes()).build()),
+                    voCase("AuthConfig", auth(), auth(), new AuthConfig(Require.NONE, null)),
+                    voCase("AuthConfig.tokenRelay", new AuthConfig(Require.SESSION, false),
+                            new AuthConfig(Require.SESSION, false), new AuthConfig(Require.SESSION, true)),
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
                     voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
@@ -503,9 +512,8 @@ class ConfigModelContractTest {
 
         @Test
         void authConfigBuilderMatchesConstructor() {
-            AuthConfig viaCtor = new AuthConfig(Require.BEARER, List.of("read"));
-            AuthConfig viaBuilder = AuthConfig.builder().require(Require.BEARER)
-                    .requiredScopes(List.of("read")).build();
+            AuthConfig viaCtor = new AuthConfig(Require.SESSION, false);
+            AuthConfig viaBuilder = AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build();
             assertEquals(viaCtor, viaBuilder);
         }
 
@@ -532,9 +540,9 @@ class ConfigModelContractTest {
         @Test
         void endpointConfigBuilderMatchesConstructor() {
             EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", "api",
-                    auth(), List.of(HttpMethod.GET), null, List.of());
+                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, List.of());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
-                    .anchor("api").auth(auth()).allowedMethods(List.of(HttpMethod.GET))
+                    .anchor("api").auth(auth()).scopes(List.of("orders.read")).allowedMethods(List.of(HttpMethod.GET))
                     .build();
             assertEquals(viaCtor, viaBuilder);
         }
@@ -660,9 +668,10 @@ class ConfigModelContractTest {
 
         @Test
         void endpointConfigNormalizesAbsentCollectionsAndNullables() {
-            EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null);
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
+            assertTrue(cfg.scopes().isEmpty(), "an absent endpoint scopes list normalizes to empty");
             assertTrue(cfg.allowedMethods().isEmpty());
             assertNull(cfg.upstreamDefaults());
             assertTrue(cfg.routes().isEmpty());
@@ -692,7 +701,8 @@ class ConfigModelContractTest {
         @Test
         void resolvedRouteNormalizesAbsentComponents() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, false, resolvedUpstream(), null, null, null, null, null);
+                    true, false, resolvedUpstream(), null, null, null, null, null, null);
+            assertTrue(cfg.neededScopes().isEmpty(), "an absent needed-scope set normalizes to empty");
             assertNull(cfg.anchor());
             assertNull(cfg.effectiveSecurityFilter());
             assertNull(cfg.effectiveSecurityHeaders());
@@ -714,7 +724,6 @@ class ConfigModelContractTest {
 
         @Test
         void collectionBearingRecordsNormalizeNullToEmpty() {
-            assertTrue(new AuthConfig(Require.NONE, null).requiredScopes().isEmpty());
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
             assertTrue(new ForwardedConfig(null, null, null).trustedProxies().isEmpty());
             assertTrue(new ForwardConfig(null, null, null, null, null).setHeaders().isEmpty());
@@ -867,12 +876,13 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private EndpointConfig endpointConfigWith(String id, String baseUrl) {
-            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), null, List.of());
+            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, List.of());
         }
 
         @Test
         void endpointConfigAcceptsAnAbsentAuthBlock() {
-            EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), null, List.of());
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), List.of(), null,
+                    List.of());
             assertNull(cfg.auth(), "an anchored endpoint may omit its auth block");
         }
 
@@ -899,7 +909,7 @@ class ConfigModelContractTest {
         @Test
         void authConfigRequiresRequire() {
             NullPointerException ex = assertThrows(NullPointerException.class,
-                    () -> new AuthConfig(null, List.of()));
+                    () -> new AuthConfig(null, null));
             assertEquals("require", ex.getMessage());
         }
 
@@ -1041,7 +1051,7 @@ class ConfigModelContractTest {
         private ResolvedRoute resolvedRouteWith(String id, MatchConfig match, AuthConfig auth,
                 ResolvedUpstream upstream, ResolvedAsset asset, RedirectConfig redirect) {
             return new ResolvedRoute(id, Protocol.HTTP, null, match, auth, List.of(), null,
-                    null, true, true, false, upstream, asset, redirect, null, null, null);
+                    null, true, true, false, upstream, asset, redirect, null, null, null, null);
         }
     }
 
@@ -1516,15 +1526,43 @@ class ConfigModelContractTest {
 
         @Test
         void loginExposesPathAndNormalizesAbsent() {
-            assertEquals("/session/login", new OidcConfig.Login("/session/login").path());
-            assertNull(new OidcConfig.Login(null).path());
+            assertEquals("/session/login", new OidcConfig.Login("/session/login", null).path());
+            assertNull(new OidcConfig.Login(null, null).path());
+        }
+
+        @Test
+        void loginExposesDefaultReturnUrlAndKeepsAbsentAbsent() {
+            assertEquals("/app?tab=a", new OidcConfig.Login(null, "/app?tab=a").defaultReturnUrl());
+            assertNull(new OidcConfig.Login("/login", null).defaultReturnUrl(),
+                    "an omitted default_return_url stays absent; the runtime resolves it to /");
         }
 
         @Test
         void loginBuilderMatchesConstructor() {
-            OidcConfig.Login viaCtor = new OidcConfig.Login("/login");
-            OidcConfig.Login viaBuilder = OidcConfig.Login.builder().path("/login").build();
+            OidcConfig.Login viaCtor = new OidcConfig.Login("/login", "/home");
+            OidcConfig.Login viaBuilder = OidcConfig.Login.builder().path("/login").defaultReturnUrl("/home").build();
             assertEquals(viaCtor, viaBuilder);
+        }
+
+        @Test
+        void authConfigResolvesAbsentTokenRelayToRelaying() {
+            assertAll("token_relay: absent and true relay, only an explicit false withholds the token",
+                    () -> assertNull(new AuthConfig(Require.SESSION, null).tokenRelay()),
+                    () -> assertTrue(new AuthConfig(Require.SESSION, null).effectiveTokenRelay()),
+                    () -> assertTrue(new AuthConfig(Require.SESSION, true).effectiveTokenRelay()),
+                    () -> assertFalse(new AuthConfig(Require.SESSION, false).effectiveTokenRelay()));
+        }
+
+        @Test
+        void endpointConfigCopiesScopesDefensively() {
+            List<String> source = new ArrayList<>(List.of("orders.read"));
+            EndpointConfig cfg = EndpointConfig.builder().id("orders").scopes(source).build();
+            source.add("orders.write");
+            List<String> scopes = cfg.scopes();
+            assertAll(
+                    () -> assertEquals(List.of("orders.read"), scopes,
+                            "mutating the source list after construction must not affect the record"),
+                    () -> assertThrows(UnsupportedOperationException.class, () -> scopes.add("x")));
         }
 
         @Test

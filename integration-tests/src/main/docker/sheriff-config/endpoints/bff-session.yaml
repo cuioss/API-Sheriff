@@ -34,3 +34,25 @@ endpoint:
         path_prefix: /bff-session
       forward:
         headers_allow: ["Authorization", "Content-Type"]
+    # token_relay OPT-OUT (auth.token_relay: false). The login is still enforced exactly as on
+    # bff-session-mediated — a navigation without a session is redirected to login, an XHR gets 401,
+    # a live session is resolved and refreshed — but the gateway sets NO Authorization header
+    # upstream, so the echo proves the origin never receives the session's access token.
+    # BffSessionMediationIT asserts both halves against this route.
+    #
+    # The route-level auth block REPLACES the anchor's wholesale, so it restates require: session
+    # (the anchor's session floor is kept, not weakened) and adds token_relay: false.
+    #
+    # headers_allow deliberately does NOT name Authorization, and cannot: ConfigValidator refuses at
+    # boot a route whose effective token_relay is false while its forward.headers_allow names
+    # Authorization (any letter case), because that list would re-admit the browser's own
+    # Authorization header to an origin the route promises no token. The prefix nests under
+    # /bff-session and is disjoint from bff-session-mediated by specificity.
+    - id: bff-session-norelay
+      match:
+        path_prefix: /bff-session/norelay
+      auth:
+        require: session
+        token_relay: false
+      forward:
+        headers_allow: ["Content-Type"]

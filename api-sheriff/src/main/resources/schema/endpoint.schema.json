@@ -17,7 +17,11 @@
       "required": ["require"],
       "properties": {
         "require": { "type": "string", "enum": ["none", "bearer", "session"] },
-        "required_scopes": { "type": "array", "items": { "type": "string" } }
+        "token_relay": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether a require: session route relays the session's access token to the upstream as Authorization: Bearer. Defaults to true. With false the session is still resolved, refreshed and required, but no Authorization header is sent upstream. Acts only on require: session; it has no effect on bearer or none routes. Combining false with a forward.headers_allow that names Authorization is refused at boot (enforced in code). The auth block is replaced wholesale through the route -> endpoint -> anchor cascade, so the key is inherited only together with the rest of the block."
+        }
       }
     },
     "securityFilter": {
@@ -84,6 +88,11 @@
         "auth": {
           "$ref": "#/$defs/auth",
           "description": "Optional default auth posture for the routes. When omitted, an anchor-provided auth (or a route-level auth) must supply the effective posture; conditional mandatoriness is enforced in code."
+        },
+        "scopes": {
+          "type": "array",
+          "description": "Optional OIDC scopes this endpoint needs IN ADDITION to the gateway's oidc.scopes. Additive only: the scope set a route of this endpoint needs is oidc.scopes united with this list, so an endpoint can add scopes but never remove one. That one set is requested at a session-route login and checked on a bearer route (403 insufficient_scope when the token lacks a member). Declared on the endpoint, outside auth, so it is not replaced by a route- or anchor-level auth block. Declaring it on an enabled endpoint whose routes all resolve require: none is refused at boot (enforced in code). Each entry must be an RFC 6749 section 3.3 scope-token: one or more printable ASCII characters (0x21-0x7E) excluding the double quote and the backslash, so no space, no control character and no non-ASCII; a malformed name is refused at load. The pattern terminates with a negative lookahead rather than '$', because '$' also matches before a final line terminator.",
+          "items": { "type": "string", "pattern": "^[\\x21\\x23-\\x5B\\x5D-\\x7E]+(?![\\s\\S])" }
         },
         "allowed_methods": {
           "type": "array",

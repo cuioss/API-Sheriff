@@ -374,17 +374,47 @@ The active authentication strategy depends on the variant:
 | link:variants/01-base-gateway.adoc[Base gateway]
 | Offline bearer-token validation via `token-sheriff-validation` `TokenValidator`. The
   client presents its own `Authorization: Bearer`; the gateway validates it offline and
-  enforces required scopes.
+  checks the route's needed scope set (see below), answering `403 insufficient_scope` on a
+  shortfall.
 
 | link:variants/02-bff-session.adoc[BFF session]
 | The gateway is the OIDC confidential client. Tokens live server-side; the browser holds an
-  opaque session-id cookie. The gateway injects the stored access token upstream.
+  opaque session-id cookie. The gateway injects the stored access token upstream unless the route
+  resolves `auth.token_relay: false`.
 
 | link:variants/03-bff-cookie.adoc[BFF cookie]
 | The gateway is the OIDC confidential client. The tokens (access, refresh, and ID token plus
-  minimal metadata) travel only inside an AES-256-GCM-encrypted `HttpOnly` cookie, decrypted
-  per request before upstream injection.
+  minimal metadata, including the session's active scope set) travel only inside an
+  AES-256-GCM-encrypted `HttpOnly` cookie, decrypted per request before upstream injection.
 |===
+
+[[_scope_enforcement]]
+*Scope enforcement is one boot-time derivation, checked only on bearer routes.* `RouteTableBuilder`
+materializes each route's `neededScopes = oidc.scopes ∪ endpoint.scopes` once at boot
+(`endpoint.scopes` alone without an `oidc` block) and carries it on `ResolvedRoute` and
+`RouteRuntime`. Four places read that one field, so requesting and checking cannot drift apart:
+
+* *Bearer check.* `AuthenticationStage` compares the validated token against `neededScopes`; a
+  shortfall is `403 SCOPE_MISSING` with the RFC 6750 challenge
+  `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, the names drawn from boot
+  config, never the token. Because `oidc.scopes` is part of the set, a BFF-mode gateway rejects a
+  bearer token that lacks it.
+* *Session login.* A navigation to a `require: session` route without a session starts a login
+  whose authorization request carries exactly that route's `neededScopes`.
+* *`/auth/login?returnUrl=` resolution.* `ReturnTargetScopes` matches the same-origin target path
+  as a `GET` against the route table (header matchers never select) and yields the matched
+  authenticated route's `neededScopes`, or `oidc.scopes` otherwise.
+* *Refresh.* The session carries its active scope set `A` (the granted scope after login, the
+  refresh response's `scope` after each refresh, unchanged when omitted), and every refresh requests
+  exactly `A`, never the static `oidc.scopes`.
+
+There is *no session-route scope pre-check*: a live session is mediated without comparing its token
+to `neededScopes`. Why bearer routes enforce the set while session routes only request it is
+recorded in
+link:adr/0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049].
+The engine reads `scope` only from its client configuration, so the per-request
+set rides a per-scope-set configuration on the unchanged engine
+(link:adr/0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]).
 
 [IMPORTANT]
 ====
@@ -438,7 +468,9 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   (link:variants/03-bff-cookie.adoc#_stateless_after_login_not_during_it[stateless after login, not
   during it]). Either way a `require: session` route is served by a
   `SessionAuthenticationStage` injected into the session-aware authentication stage -- so the
-  route is *mediated* (the resolved access token injected upstream) rather than rejected.
+  route is *mediated* (the resolved access token injected upstream, unless the route resolves
+  `auth.token_relay: false`, in which case the session is still required but no `Authorization` is
+  relayed) rather than rejected.
 
 * *Reserved-path registry + live-edge dispatch.* The `ReservedPathRegistry` classifies each of the
   up-to-six gateway-owned OIDC paths (callback, logout, logout-return, back-channel logout,
@@ -878,7 +910,7 @@ names the category but leaks no internal detail. The consolidated status mapping
 
 | `400` | Security-filter violation (path/parameter/header pipeline, collection limits) | `INPUT_VALIDATION`
 | `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
-| `403` | Valid credentials lacking a required scope; failed CSRF origin check | `AUTHORIZATION`
+| `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`; session routes run no scope check); failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `INPUT_VALIDATION`
 | `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `INPUT_VALIDATION`
 | `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed | `INPUT_VALIDATION`
@@ -904,7 +936,7 @@ rejection it would render as an HTTP status for an HTTP route onto the canonical
 
 | `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits)
 | `UNAUTHENTICATED`    | 16 | `401` -- missing/invalid bearer token; invalid or expired session on a non-navigation request
-| `PERMISSION_DENIED`  | 7  | `403` -- valid credentials lacking a required scope; failed CSRF origin check
+| `PERMISSION_DENIED`  | 7  | `403` -- valid bearer token lacking a needed scope; failed CSRF origin check
 | `NOT_FOUND`          | 5  | `404` -- no route matched (deny-by-default routing); reserved-for-passthrough `Host`; disabled endpoint
 | `UNIMPLEMENTED`      | 12 | `405` -- request method not in the matched route's effective `allowed_methods` allowlist
 | `RESOURCE_EXHAUSTED` | 8  | `413` -- request body beyond the route's `security_filter.max_body_bytes` cap

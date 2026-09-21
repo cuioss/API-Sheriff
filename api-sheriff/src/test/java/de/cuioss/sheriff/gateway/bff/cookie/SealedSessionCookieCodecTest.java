@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.zip.Deflater;
@@ -93,6 +94,7 @@ class SealedSessionCookieCodecTest {
     private static final String ID_TOKEN = "raw-id-token-SECRET-material";
     private static final String SUB = "user-sub-1";
     private static final String SESSION_NONCE = "session-nonce-SECRET-material";
+    private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
 
     private SecretKey key;
     private SealedSessionCookieCodec codec;
@@ -112,7 +114,7 @@ class SealedSessionCookieCodecTest {
     private static SealedSessionPayload payload() {
         return new SealedSessionPayload(ACCESS_TOKEN, REFRESH_TOKEN, ID_TOKEN, SUB,
                 "idp-sid-9", "urn:acr:silver",
-                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE);
+                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE, ACTIVE_SCOPES);
     }
 
     private static String flipByteAt(String sealedValue, int index) {
@@ -125,9 +127,9 @@ class SealedSessionCookieCodecTest {
      * Material the seal-time deflation cannot shrink, so a size-budget test still measures the budget
      * rather than the compressor.
      * <p>
-     * A run of one repeated character deflates to almost nothing under {@code FORMAT_VERSION} 3, so
-     * the {@code "x".repeat(n)} the version-2 tests used would now seal comfortably <em>inside</em>
-     * the budget and quietly stop exercising it. Random bytes rendered as base64url are the honest
+     * The payload is deflated before sealing, so a run of one repeated character compresses to almost
+     * nothing: a {@code "x".repeat(n)} filler would seal comfortably <em>inside</em> the budget and
+     * quietly stop exercising it. Random bytes rendered as base64url are the honest
      * stand-in: base64 carries six bits per byte, so deflate recovers only that quarter and no more.
      */
     private static String incompressible(int approximateCharacters) {
@@ -153,6 +155,21 @@ class SealedSessionCookieCodecTest {
         }
 
         @Test
+        @DisplayName("Should carry the active scope set through seal and unseal")
+        void shouldRoundTripActiveScopes() throws Exception {
+            SealedSessionPayload scoped = payload();
+            SealedSessionPayload unscoped = new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
+
+            Unsealed scopedBack = codec.unseal(codec.seal(scoped)).orElseThrow();
+            Unsealed unscopedBack = codec.unseal(codec.seal(unscoped)).orElseThrow();
+
+            assertEquals(ACTIVE_SCOPES, scopedBack.payload().activeScopes(),
+                    "the active scope set is sealed with the tokens and comes back unchanged");
+            assertTrue(unscopedBack.payload().activeScopes().isEmpty(), "an empty set stays empty");
+        }
+
+        @Test
         @DisplayName("Should draw a fresh nonce per seal, so two seals of one payload differ")
         void shouldUseAFreshNoncePerSeal() throws Exception {
             SealedSessionPayload original = payload();
@@ -175,11 +192,11 @@ class SealedSessionCookieCodecTest {
         }
 
         @Test
-        @DisplayName("Should stamp format version 3 — the deflated, length-prefixed payload shape")
-        void shouldStampFormatVersionThree() {
-            assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, (byte) 3,
-                    "length-prefixed raw UTF-8 framing plus deflation is a wire-format break from the "
-                            + "version-2 newline-joined, per-field-base64 shape");
+        @DisplayName("Should stamp format version 1 — the ten-field layout carrying the active scope set")
+        void shouldStampFormatVersionOne() {
+            assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, (byte) 1,
+                    "version 1 is the ten-field, length-prefixed, deflated layout; any change to the sealed "
+                            + "field set must increment it by exactly one, and this pin moves with it");
         }
     }
 
@@ -236,30 +253,33 @@ class SealedSessionCookieCodecTest {
         }
 
         /**
-         * Every version below the current {@code FORMAT_VERSION}, derived from it rather than listed
-         * beside it. A hand-kept list mirrors a set defined elsewhere, so the next bump could retire a
-         * version this regression never exercises while the test stays green; deriving the range means
-         * a bump enrols the version it retires without anyone remembering to.
+         * Every header byte other than the current {@code FORMAT_VERSION}, derived from it rather than
+         * listed beside it. That covers the next increment above it, and the {@code 2} and
+         * {@code 3} stamped by the pre-reset layouts that live cookies from
+         * before the numbering restarted at {@code 1} still carry. A hand-kept list mirrors a set
+         * defined elsewhere, so the next increment could retire a version this regression never
+         * exercises while the test stays green; deriving the range means it cannot.
          *
-         * @return one argument per retired format version, as the {@code byte} the header carries
+         * @return one argument per foreign format version, as the {@code byte} the header carries
          */
-        static Stream<Arguments> retiredFormatVersions() {
-            return IntStream.range(1, SealedSessionCookieCodec.FORMAT_VERSION)
-                    .mapToObj(retired -> Arguments.of((byte) retired));
+        static Stream<Arguments> foreignFormatVersions() {
+            return IntStream.rangeClosed(Byte.MIN_VALUE, Byte.MAX_VALUE)
+                    .filter(version -> version != SealedSessionCookieCodec.FORMAT_VERSION)
+                    .mapToObj(foreign -> Arguments.of((byte) foreign));
         }
 
         @ParameterizedTest
-        @MethodSource("retiredFormatVersions")
-        @DisplayName("Should reject a cookie stamped with a retired format version, before any decrypt")
-        void shouldRejectRetiredFormatVersions(byte retired) throws Exception {
+        @MethodSource("foreignFormatVersions")
+        @DisplayName("Should reject a cookie stamped with any other format version, before any decrypt")
+        void shouldRejectForeignFormatVersions(byte foreign) throws Exception {
             String sealed = codec.seal(payload());
             byte[] raw = Base64.getUrlDecoder().decode(sealed);
-            raw[0] = retired;
+            raw[0] = foreign;
 
             assertTrue(codec.unseal(Base64.getUrlEncoder().withoutPadding().encodeToString(raw)).isEmpty(),
-                    "every version below FORMAT_VERSION is a clean break: a cookie stamped with a "
-                            + "retired version is refused at the version gate, with no Cipher constructed, "
-                            + "rather than being inflated and parsed against the current framing");
+                    "every version other than FORMAT_VERSION is a clean break: a cookie stamped with it "
+                            + "is refused at the version gate, with no Cipher constructed, rather than "
+                            + "being inflated and parsed against the current framing");
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, "unknown-version");
         }
 
@@ -315,7 +335,7 @@ class SealedSessionCookieCodecTest {
         void shouldRefuseOversizedPayload() {
             String huge = incompressible(BUDGET * 4);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
-                    null, null, null, LOGIN, SESSION_NONCE);
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));
@@ -343,7 +363,7 @@ class SealedSessionCookieCodecTest {
     }
 
     /**
-     * The {@code FORMAT_VERSION} 3 packaging pipeline: {@code encode -> deflate -> seal -> base64url}
+     * The {@code FORMAT_VERSION} 1 packaging pipeline: {@code encode -> deflate -> seal -> base64url}
      * on the way out, and its exact inverse on the way back.
      * <p>
      * The rejection cases here all seal <em>hand-built</em> bytes under the codec's own key, so they
@@ -405,7 +425,7 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should reject a well-formed deflate stream that inflates to a foreign frame")
         void shouldRejectForeignFrameInsideAValidStream() throws Exception {
-            String sealed = sealVerbatim(deflate("nine fields this is not".getBytes(StandardCharsets.UTF_8)));
+            String sealed = sealVerbatim(deflate("a ten-field frame this is not".getBytes(StandardCharsets.UTF_8)));
 
             assertTrue(codec.unseal(sealed).isEmpty(),
                     "inflating cleanly is not the same as carrying the payload shape — the frame guard "
@@ -434,7 +454,7 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should round-trip a payload whose fields deflate to less than they measure")
         void shouldRoundTripAcrossCompression() throws Exception {
             SealedSessionPayload highlyCompressible = new SealedSessionPayload("a".repeat(4096),
-                    "b".repeat(4096), "c".repeat(4096), SUB, null, null, null, LOGIN, SESSION_NONCE);
+                    "b".repeat(4096), "c".repeat(4096), SUB, null, null, null, LOGIN, SESSION_NONCE, ACTIVE_SCOPES);
 
             String sealed = codec.seal(highlyCompressible);
 
@@ -537,7 +557,9 @@ class SealedSessionCookieCodecTest {
             new SecureRandom().nextBytes(nonceMaterial);
             return new SealedSessionPayload(accessToken(), refreshToken(), idToken(), SUBJECT,
                     IDP_SESSION, "1", Instant.parse("2026-07-27T09:59:59Z"), LOGIN,
-                    Base64.getUrlEncoder().withoutPadding().encodeToString(nonceMaterial));
+                    Base64.getUrlEncoder().withoutPadding().encodeToString(nonceMaterial),
+                    // The realm's granted scope, carried as the session's active scope set.
+                    Set.of("openid", "email", "profile"));
         }
 
         @Test
@@ -552,11 +574,11 @@ class SealedSessionCookieCodecTest {
             // Reported, not merely asserted: the settlement report quotes these figures, and an
             // assertion message that only surfaces on failure cannot supply them.
             // cui-rewrite:disable CuiLogRecordPatternRecipe
-            LOGGER.info("FORMAT_VERSION 3 three-token measurement: framed plaintext %s bytes, "
+            LOGGER.info("FORMAT_VERSION %s three-token measurement: framed plaintext %s bytes, "
                     + "sealed value %s bytes (%s percent of framed), headroom floor %s bytes, "
                     + "browser-safe value budget %s bytes; the %s-character session nonce is "
                     + "random and incompressible and is a fixed floor on the ratio",
-                    framedBytes, sealedBytes,
+                    SealedSessionCookieCodec.FORMAT_VERSION, framedBytes, sealedBytes,
                     // Locale.ROOT: the report quotes this figure, and a locale-dependent decimal
                     // comma would make the same run read differently on a different machine.
                     String.format(Locale.ROOT, "%.1f", 100.0 * sealedBytes / framedBytes),
@@ -809,7 +831,7 @@ class SealedSessionCookieCodecTest {
         void shouldNotLeakKeyMaterialIntoTheOverBudgetMessage() {
             String huge = incompressible(BUDGET * 4);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
-                    null, null, null, LOGIN, SESSION_NONCE);
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));

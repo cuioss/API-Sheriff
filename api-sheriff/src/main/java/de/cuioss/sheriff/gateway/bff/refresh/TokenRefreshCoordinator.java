@@ -17,9 +17,11 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -27,6 +29,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
@@ -49,6 +52,12 @@ import org.jspecify.annotations.Nullable;
  * mode-neutral {@link SessionBinding} seam — a store write in server mode, a re-bound cookie in a
  * stateless mode — so the browser never sees a token and never drives a leg. The gateway re-implements
  * <strong>no</strong> OAuth leg: the engine owns the refresh grant and refresh-token rotation.
+ * <p>
+ * <strong>The refresh keeps the session's scope.</strong> The grant requests the session's active scope
+ * set {@code A} ({@link SessionRecord#activeScopes()}), never the static {@code oidc.scopes}, so a
+ * session that logged in on a route needing extra scopes keeps them across refreshes. The rotated
+ * session's {@code A} becomes the response's {@code scope} — which may narrow it — or stays unchanged
+ * when the response omits {@code scope}.
  * <p>
  * <strong>A refused refresh is disposed by what the identity provider did to the presented refresh
  * token.</strong> Only the exchange itself is classified, through the engine's
@@ -185,6 +194,9 @@ public final class TokenRefreshCoordinator {
     /** The bounded reason recorded when the rotated session could not be persisted. */
     static final String REASON_PERSIST_FAILURE = "persist-failure";
 
+    /** The RFC 6749 §3.3 delimiter between the names of a {@code scope} value. */
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+
     private final Duration leeway;
     private final AccessTokenExpiry accessTokenExpiry;
     private final RefreshExchange refreshExchange;
@@ -319,7 +331,8 @@ public final class TokenRefreshCoordinator {
         // (missing token endpoint, discovery failure); classify owns the mapping of every one of them.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            rotation = refreshExchange.exchange(presentedRefreshToken);
+            // The grant requests the session's active scope set A — never the static oidc.scopes.
+            rotation = refreshExchange.exchange(presentedRefreshToken, latest.activeScopes());
         } catch (RuntimeException refreshFailure) {
             return disposeRefusal(sessionId, latest, presentedRefreshToken, refreshFailure, now, admission);
         }
@@ -569,6 +582,10 @@ public final class TokenRefreshCoordinator {
      * without a nonce — changing the derived session identity mid-session and breaking the
      * single-flight coalescing this coordinator depends on. Add a copy line here for every component
      * added to {@link SessionRecord}.
+     * <p>
+     * The active scope set is the one component the rotation may change: it becomes the refresh
+     * response's {@code scope}, and stays {@code previous}'s when the response omits or blanks it
+     * (RFC 6749 §5.1 — an omitted {@code scope} is identical to the one requested).
      */
     private static SessionRecord rotate(SessionRecord previous, RotationResult rotation) {
         String rotatedIdToken = rotation.idToken();
@@ -583,7 +600,19 @@ public final class TokenRefreshCoordinator {
                 .acr(previous.acr())
                 .authTime(previous.authTime())
                 .sessionNonce(previous.sessionNonce())
+                .activeScopes(grantedScopes(rotation.grantedScope(), previous.activeScopes()))
                 .build();
+    }
+
+    /**
+     * The active scope set after a refresh: the response's {@code scope} split on whitespace, or
+     * {@code previous} when the response omitted or blanked it.
+     */
+    private static Set<String> grantedScopes(@Nullable String grantedScope, Set<String> previous) {
+        if (grantedScope == null || grantedScope.isBlank()) {
+            return previous;
+        }
+        return Set.copyOf(Arrays.asList(WHITESPACE.split(grantedScope.strip())));
     }
 
     /**
@@ -638,9 +667,10 @@ public final class TokenRefreshCoordinator {
     }
 
     /**
-     * The engine refresh seam. The session runtime binds it to the engine as
-     * {@code refreshToken -> refreshFlow.refresh(providerMetadata, refreshToken)}; a test binds a
-     * stubbed rotation or a throwing stub. The engine owns the refresh grant and refresh-token
+     * The engine refresh seam. The session runtime binds it to the per-scope-set engine seam as
+     * {@code (refreshToken, activeScopes) -> scopedEngineFlows.refresh(providerMetadata, refreshToken,
+     * activeScopes)} (ADR-0048), so the grant's {@code scope} is the session's active scope set; a test
+     * binds a stubbed rotation or a throwing stub. The engine owns the refresh grant and refresh-token
      * rotation, and its {@code RefreshFlow.classify} decides what a refusal means for the presented
      * token; refresh-token reuse detection is not part of the exchange — it is the identity provider's
      * strict rotation (ADR-0046). Keeping the confidential-client wiring (provider metadata, client
@@ -656,13 +686,15 @@ public final class TokenRefreshCoordinator {
          * Refreshes the mediated tokens using the current refresh token.
          *
          * @param refreshToken the session's current refresh token
-         * @return the engine rotation result (new access/refresh/ID token + access-token lifetime)
+         * @param activeScopes the session's active scope set {@code A}, sent as the grant's {@code scope}
+         * @return the engine rotation result (new access/refresh/ID token + access-token lifetime, and
+         *         the granted {@code scope} when the response carried one)
          * @throws RuntimeException when the refresh is refused — before the provider processed the
          *         grant, because the provider rejected the credential (including a replayed refresh
          *         token under strict rotation), or after the provider redeemed it; the coordinator
          *         classifies it through {@code RefreshFlow.classify}
          */
-        RotationResult exchange(String refreshToken);
+        RotationResult exchange(String refreshToken, Set<String> activeScopes);
     }
 
     /**

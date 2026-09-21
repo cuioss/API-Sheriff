@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *twenty files* under `integration-tests/src/main/docker/`.
+The declared surface is *twenty-two files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -64,11 +64,13 @@ disk without touching this table and the guard fails.
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 9
+| 11
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
+  `sheriff-config/endpoints/bff-scoped.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`, `sheriff-config/endpoints/grpc.yaml`,
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
-  `sheriff-config/endpoints/secure.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
+  `sheriff-config/endpoints/secure.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
+  `sheriff-config/endpoints/untrusted.yaml`,
   `sheriff-config/endpoints/websocket.yaml`
 
 | `sheriff-config/topology.properties`
@@ -96,7 +98,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all twenty files it returns hits in exactly fifteen of them:
+Over all twenty-two files it returns hits in exactly fifteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -116,8 +118,9 @@ Over all twenty files it returns hits in exactly fifteen of them:
 * `sheriff-config/endpoints/websocket.yaml`
 // end::limit-bearing[]
 
-The remaining five -- `sheriff-config/endpoints/assets.yaml`,
-`sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
+The remaining seven -- `sheriff-config/endpoints/assets.yaml`,
+`sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/bff-scoped.yaml`,
+`sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
 `sheriff-config/endpoints/untrusted.yaml` and `sheriff-config/topology.properties` -- declare none.
 That complement is the other half of the same claim, so asserting the fifteen exactly asserts both
 halves at once.
@@ -657,11 +660,12 @@ so the assertion's granularity is the file and never the key.
 
 The consequence: adding a limit-shaped key to one of the *fifteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
-row is forced. Only a key that makes one of the remaining five --
+row is forced. Only a key that makes one of the remaining seven --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
-`sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/untrusted.yaml` or
+`sheriff-config/endpoints/bff-scoped.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
+`sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Fifteen of twenty is the *majority* of the surface,
+Fifteen of twenty-two is the *majority* of the surface,
 so this is the ordinary case rather than an edge one: for those fifteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
@@ -690,14 +694,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (twenty files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (twenty-two files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
   -- the inventory table, the sweep pattern and the fifteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the fifteen/five partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the fifteen/seven partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -706,7 +710,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the twenty files, add its row here in the same change --
+When you add a limit-shaped key to any of the twenty-two files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
