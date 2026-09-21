@@ -65,7 +65,8 @@ final class AwaitsWithoutReassertionSpecimen {
      *                   because {@code SimplifyTestThrows} broadens it; see
      *                   {@code doc/development/build-gate-discipline.adoc}
      */
-    @SuppressWarnings("java:S2699") // the absent assertion IS this negative control; see the method Javadoc
+    @SuppressWarnings("java:S2699")
+    // the absent assertion IS this negative control; see the method Javadoc
     @Test
     void waitsAndAssertsNothing() throws Exception {
         Awaits.until(SETTLED::get, LABEL, Awaits.TEARDOWN_CEILING_SECONDS);
