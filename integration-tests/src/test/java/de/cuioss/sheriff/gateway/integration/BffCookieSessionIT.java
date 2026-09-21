@@ -113,6 +113,21 @@ class BffCookieSessionIT {
     }
 
     @Test
+    @DisplayName("a login started without returnUrl lands on the configured oidc.login.default_return_url")
+    void loginWithoutReturnUrlLandsOnConfiguredDefault() {
+        // Arrange — this stack's gateway.yaml sets oidc.login.default_return_url to the public demo page;
+        // the server-mode stack leaves it unset and lands on '/' (BffLoginInitiationIT).
+        String configuredDefault = "/assets/demo/landing.html";
+
+        // Act — /auth/login with no returnUrl is the start path, so the login carries no return target.
+        Session session = BffKeycloakLoginFlow.login("/auth/login", COOKIE_ORIGIN);
+
+        // Assert
+        assertEquals(configuredDefault, session.callbackLocation(),
+                "a login with no return target must land on the configured default_return_url");
+    }
+
+    @Test
     @DisplayName("the sealed cookie value is opaque ciphertext carrying no readable token substring")
     void sealedCookieValueCarriesNoReadableToken() {
         // Arrange

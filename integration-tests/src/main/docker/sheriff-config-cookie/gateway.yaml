@@ -181,3 +181,10 @@ oidc:
     default_view: ["sub", "preferred_username"]
   login:
     path: /auth/login
+    # Where the browser lands after a login that carries no usable return target (e.g. /auth/login
+    # with no returnUrl). Set on THIS stack only, so BffCookieSessionIT proves the configured default
+    # is honoured; the server-mode primary instance leaves it unset and so exercises the '/'
+    # fallback (BffLoginInitiationIT). A gateway-relative path is same-origin with redirect_uri by
+    # construction, which the boot rule requires. It names the same routable public page as
+    # logout.final_redirect above, for the same reasons: '/' is not servable on this stack.
+    default_return_url: /assets/demo/landing.html
