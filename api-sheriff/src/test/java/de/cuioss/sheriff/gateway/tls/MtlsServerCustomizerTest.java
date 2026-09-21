@@ -16,15 +16,18 @@
 package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.util.List;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import io.vertx.core.http.ClientAuth;
 import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.net.PemTrustOptions;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -61,7 +64,13 @@ class MtlsServerCustomizerTest {
 
         // Assert
         assertEquals(ClientAuth.REQUIRED, options.getClientAuth(), "enabled mTLS requires a client certificate");
-        assertNotNull(options.getTrustOptions(), "the client_ca trust anchor is bound as the listener trust store");
+        // Identity, not presence. A customizer that bound *any* trust store — the JVM default among
+        // them — satisfies a non-null check while accepting client certificates from a CA the
+        // deployment never named, which on a require-client-auth listener is the whole failure.
+        PemTrustOptions trust = assertInstanceOf(PemTrustOptions.class, options.getTrustOptions(),
+                "the client_ca is bound as a PEM trust anchor rather than as some inherited trust store");
+        assertEquals(List.of(CLIENT_CA_PATH), trust.getCertPaths(),
+                "the bound anchor is exactly the configured client_ca, and nothing else");
     }
 
     @Test

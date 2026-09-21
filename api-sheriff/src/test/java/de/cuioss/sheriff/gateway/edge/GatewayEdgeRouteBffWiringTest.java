@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -174,10 +173,53 @@ class GatewayEdgeRouteBffWiringTest {
 
         @Test
         @DisplayName("Should boot a require:session route through the session-aware AuthenticationStage")
-        void shouldBootSessionRouteWithActiveRuntime() {
+        void shouldBootSessionRouteWithActiveRuntime() throws Exception {
             RouteTable sessionTable = new RouteTable(List.of(sessionRoute()));
-            assertDoesNotThrow(() -> newEdge(sessionTable, activeRuntime(serverBinding(new InMemorySessionStore(16)))),
-                    "A require:session route assembles through the wired SessionAuthenticationStage");
+
+            // Not throwing at construction distinguishes nothing: the bearer assembly builds silently
+            // too, and so would a constructor that ignored the runtime outright — both fail only once
+            // a request arrives. The observable that IS specific to the session-aware assembly is the
+            // wired SessionAuthenticationStage's own login challenge on an unauthenticated navigation.
+            HttpClientResponse challenged = serveUnauthenticatedNavigation(sessionTable,
+                    activeRuntime(serverBinding(new InMemorySessionStore(16))));
+            HttpClientResponse unwired = serveUnauthenticatedNavigation(sessionTable, BffRuntime.inert());
+
+            assertEquals(302, challenged.statusCode(),
+                    "the wired session stage answers an unauthenticated HTML navigation with a redirect");
+            assertEquals("/login", challenged.getHeader("Location"),
+                    "and the target is that stage's own login challenge, not a bearer 401");
+            assertEquals(500, unwired.statusCode(),
+                    "control: without an active runtime the same route reaches an AuthenticationStage "
+                            + "carrying no session stage, so the assertion above is attributable to the wiring");
+        }
+
+        /**
+         * Drives one unauthenticated HTML navigation at the {@code require: session} route through a
+         * freshly-assembled edge and returns the edge's own answer. {@code Accept: text/html} is what
+         * selects the session stage's redirect branch over its API-shaped 401.
+         */
+        private HttpClientResponse serveUnauthenticatedNavigation(RouteTable table, BffRuntime runtime)
+                throws Exception {
+            GatewayEdgeRoute edge = newEdge(table, runtime);
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            HttpClient client = vertx.createHttpClient();
+            try {
+                RequestOptions options = new RequestOptions()
+                        .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                        .setHost(OIDC_HOST).setPort(front.actualPort())
+                        .setMethod(io.vertx.core.http.HttpMethod.GET).setURI("/s/page");
+                return Awaits.connect(
+                        client.request(options).compose(request ->
+                                request.putHeader("Accept", "text/html").send()),
+                        "the edge response to GET /s/page");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
         }
 
         @Test
@@ -456,8 +498,19 @@ class GatewayEdgeRouteBffWiringTest {
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGIN,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
+            BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.LOGIN,
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
+                            null, null, "GET"), now);
+
             assertEquals(302, response.status());
-            assertTrue(response.locationOptional().isPresent());
+            // "The validated return URL" is a value, not a presence: asserting only that SOME Location
+            // is set would pass for a short-circuit to any target at all, including the attacker's.
+            assertEquals(Optional.of("/home"), response.locationOptional(),
+                    "the short-circuit goes to the requested same-origin return URL");
+            assertEquals(Optional.of(LoginFlow.DEFAULT_RETURN_URL), crossOrigin.locationOptional(),
+                    "control: a cross-origin return URL is refused and replaced by the default, which is "
+                            + "what makes the assertion above one about validation rather than about "
+                            + "there being any Location header at all");
         }
 
         private BffRuntime.ReservedHttpRequest request(String cookie, String claims) {

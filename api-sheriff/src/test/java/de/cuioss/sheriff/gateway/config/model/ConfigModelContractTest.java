@@ -479,7 +479,19 @@ class ConfigModelContractTest {
             assertNotEquals(subject, different, "instances with differing components must not be equal");
             assertNotEquals(null, subject, "a value object is never equal to null");
             assertNotEquals("not-a-config", subject, "a value object is never equal to a foreign type");
-            assertNotNull(subject.toString(), "toString must be present");
+            // The toString leg used to be assertNotNull(subject.toString()), which no implementation
+            // of these records could ever have failed. What the class actually claims to verify is a
+            // usable diagnostic rendering: it names its own type, it agrees with equals, and it can
+            // tell two unequal configurations apart — none of which an inherited Object.toString does.
+            String rendered = subject.toString();
+            assertTrue(rendered.startsWith(subject.getClass().getSimpleName()),
+                    () -> "a diagnostic rendering names its own type rather than a package-qualified "
+                            + "identity hash: " + rendered);
+            assertEquals(equalCopy.toString(), rendered,
+                    "equal instances render equally — an identity-based rendering would not");
+            assertNotEquals(different.toString(), rendered,
+                    "a rendering that cannot tell two unequal configurations apart is useless in the "
+                            + "diagnostic this contract exists for");
         }
     }
 

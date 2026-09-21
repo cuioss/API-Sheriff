@@ -4,14 +4,17 @@
 :sectnums:
 
 Which test methods in the API Sheriff corpus carry assertions that *cannot support the behaviour
-their names claim*, what verdict each one received, which eighteen were strengthened, and -- the part
-that makes this note auditable rather than anecdotal -- exactly how much of the surface was left
-un-classified, counted.
+their names claim*, what verdict each one received, which thirty-two were strengthened -- the first
+pass's eighteen and the unit-lane pass's fourteen, each set proved by its own inversion audit -- and,
+the part that makes this note auditable rather than anecdotal, exactly how much of the surface was
+left un-classified, counted.
 
-Two passes are recorded. The first ranked the corpus by vacuity-marker density and read the ranked
+Three passes are recorded. The first ranked the corpus by vacuity-marker density and read the ranked
 files; the second (<<pro-forma-audit>>) read *every* file in the integration lane, because the defect
-class that motivated it leaves no marker for a ranking to find. The second pass is what added
-<<shape-e>> to the taxonomy and what emptied the integration-lane half of <<backlog>>.
+class that motivated it leaves no marker for a ranking to find; the third (<<unit-lane-audit>>) did
+the same for the unit lane. The second pass is what added <<shape-e>> to the taxonomy and what
+emptied the integration-lane half of <<backlog>>; the third is what emptied the other half, so the
+backlog is now zero and the whole D1 surface has been read.
 
 The companion note link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
 does the same job for declared gateway limits; this one does it for assertion *strength*. The third
@@ -1253,19 +1256,966 @@ four of the `strengthen` verdicts above -- see <<mirror-finding>>.
 moved them to `:336, :351` in the same plan that wrote the citation. Corrected in place, and recorded
 here because a note whose whole method is `file:line` citation cannot afford them silently.
 
+[[unit-lane-audit]]
+== The Unit-Lane Exhaustive Audit
+
+The third pass, and the one that closes the surface: *every file* under `api-sheriff/src/test/**` at
+`3abc370`, read in full. It is the unit-lane counterpart of <<pro-forma-audit>> and follows the same
+discipline -- survey, not sweep. It authored and edited no Java; every site it flags is written up
+below and routed onward.
+
+It is also the pass the `Method` section said would not scale. That section refuses a linear pass over
+the D1 surface at 155 files, and it is right to: this pass covered 130 files and roughly 30,000 lines,
+and it did not fit in one working context. It was carried out as four consecutive slices against a
+single accumulator, each slice appending its files-read list, its classification rows and its remaining
+pool, so the "not read" figure below is a running subtraction rather than an estimate. *That is the
+cost of exhaustiveness at this size, and it is the honest thing to record next to the result.*
+
+[[head-census]]
+=== Census at `3abc370` -- the figures this section is derived from
+
+Every number below was re-derived at `3abc370` rather than carried. Three of the carried figures did
+not reproduce, and they are named in <<carried-figures>> rather than quietly replaced.
+
+[cols="3,1,1,1,1,1",options="header"]
+|===
+| Census | unit files | unit occ. | IT files | IT occ. | D1 files / occ.
+
+| `@Test(?![A-Za-z0-9_])`    | 117 | 1733 | 59 | 249 | 176 / 1982
+| `@ParameterizedTest`       |  47 |  201 |  2 |   5 |  49 /  206
+| *Declared surface (union)* | *117* | *1934* | *59* | *254* | *176 / 2188*
+| `assertDoesNotThrow`       |  35 |  164 |  0 |   0 |  35 /  164
+| `assertDoesNotThrow\(`     |  35 |  127 |  0 |   0 |  35 /  127
+| `assertNotNull`            |  23 |   90 | 31 | 127 |  54 /  217
+| `assertNotNull\(`          |  22 |   67 | 31 |  96 |  53 /  163
+| *Marker union (occurrences)* | *50* | *254* | *31* | *127* | *81 / 381*
+| *Marker union (call sites)* | *49* | *194* | *31* |  *96* | *80 / 290*
+|===
+
+Every row ran under complete coverage: `files_scanned: 201`, `truncated: false`, `elided[0]`. The
+scanned population is the whole `test`-category inventory, which attributes every
+`api-sheriff/src/test/**` file twice -- once under `api-sheriff` and once under the duplicate
+`api-sheriff-parent` parent attribution -- so every per-lane column above is de-duplicated by path
+before it is summed. No row double-counts.
+
+[NOTE]
+====
+*The search response carries no `unreadable` field.* Earlier tables in this note report
+`0 unreadable` for census rows; that field belongs to `architecture find`, not to
+`architecture search --content`. The complete-coverage evidence for a content census is
+`truncated: false` plus an empty `elided` list, and that is what is stated above. The earlier tables
+are left as written -- correcting them would be a claim about runs whose output is no longer on hand.
+====
+
+*Two marker-union rows are given because they answer different questions.* The occurrence row is the
+raw census and is the figure the earlier passes published; the call-site row uses `marker\(` and is
+the population of sites that could actually be vacuous. The two differ by one file and 91 occurrences
+across D1, and the difference is fully accounted for in <<occurrence-reconciliation>>.
+
+`benchmarks/src/test/**` carries 3 test-declaring files (52 `@Test`), 2 with `assertDoesNotThrow`
+(4 occurrences) and 1 with `assertNotNull` (10). It remains outside the D1 surface by the scope
+decision this note's `Census` section already records; the figures are stated so a reader knows the
+size of what the surface excludes rather than having to assume it is negligible.
+
+[[occurrence-reconciliation]]
+=== Occurrence-vs-call-site reconciliation, now closed on both sides
+
+The earlier passes reconciled these deltas as "import lines plus one prose occurrence" and left the
+`assertDoesNotThrow` residue unnamed. This pass read every file, so both residues are now identified
+by `file:line`:
+
+[cols="2,1,1,1,3",options="header"]
+|===
+| Lane / marker | Occ. | Call sites | Delta | What the delta is made of
+
+| unit `assertDoesNotThrow`
+| 164 | 127 | 37
+| 35 `import static` lines + *2 prose occurrences*:
+  `pipeline/PassthroughHostGuardStageTest.java:124` ("An `assertDoesNotThrow` alone cannot
+  distinguish …", inside the `benignHosts` Javadoc) and
+  `quarkus/BffRuntimeProducerTest.java:172` ("A bare `assertDoesNotThrow` cannot say this").
+  Both are prose *arguing this note's own thesis*, which is why they were there to be miscounted.
+
+| unit `assertNotNull`
+| 90 | 67 | 23
+| 22 `import static` lines + *1 prose occurrence*,
+  `auth/JwksTrustProfileResolverTest.java:54` -- the existing <<report-only>> entry, which
+  reproduces exactly at `3abc370`.
+
+| IT `assertNotNull`
+| 127 | 96 | 31
+| 31 `import static` lines and nothing else. The integration lane carries no prose occurrence.
+|===
+
+The unit lane's marker union is therefore *50 files* by raw occurrence and *49* by call site: the one
+file in the difference is `JwksTrustProfileResolverTest`, which matches the census while carrying no
+import and no call site at all.
+
+*The integration lane carries no `assertDoesNotThrow` at `3abc370` -- zero files.* At `497c592` it
+carried one file with two occurrences. The primary vacuity marker is now wholly absent from that lane.
+
+=== The pool, and what "all of it" means
+
+[cols="4,1,1",options="header"]
+|===
+| Population | Files | Declared test methods
+
+| `api-sheriff/src/test/**` at `3abc370`                            | 130 | 1934
+| -- declaring at least one `@Test` / `@ParameterizedTest`          | 117 | 1934
+| -- support classes declaring none (read, classified, no methods)  |  13 |    0
+| *-- read in full by this pass*                                    | *130* | *1934*
+| *-- not read*                                                     |   *0* |    *0*
+|===
+
+The thirteen support classes are the seven `arch/specimen/*` fixtures
+(`LoopbackEphemeralBindSpecimen`, `NullableFieldSpecimen`, `OptionalFieldSpecimen`,
+`PinnedEgressClientSpecimen`, `StaticSecureRandomSpecimen`, `UnpinnedEgressClientSpecimen`,
+`WildcardEphemeralBindSpecimen`), `auth/SanMismatchedJwksServer`, `auth/TestTlsConfigurationRegistry`,
+and the four under `testsupport/` (`Awaits`, `EgressTrustProfiles`, `LoopbackHost`, `SocketSnapshot`).
+
+They are counted rather than skipped for the same reason <<pro-forma-audit>> counts its four: several
+of them *are* the mechanism under discussion. The seven specimens are the negative-control fixtures
+the `arch/*ArchTest` guards are pointed at -- delete one and its guard becomes an always-passing
+assertion in ADR-0030's own sense. `Awaits` owns every polling ceiling in the live-server tests and
+`SocketSnapshot` owns the diagnostic that explains a breached one; a pass that skipped "files with no
+tests" would have classified `AwaitsTest` without reading what it controls.
+
+The `@ParameterizedTest`-carrying set is a strict subset of the `@Test`-carrying set -- the union is
+117 files, the same as `@Test` alone -- so every parameterized file also declares a plain `@Test`. A
+`@Test`-only census would have under-reported the unit lane's method population by 201 methods
+(10.4%), which is the mandatory both-annotations rule paying for itself at a larger scale than the
+integration lane's two.
+
+=== Verdict distribution
+
+[cols="4,1,3",options="header"]
+|===
+| Population | Methods | Note
+
+| Declared test methods in the pool | 1934 |
+| -- flagged (F1 / F2)              |   44 | every row below carries a `file:line`, exactly one shape and exactly one verdict
+| -- unflagged                      | 1890 |
+| *verdict* `strengthen`            |  *14* |
+| *verdict* `keep`                  |  *30* | flagged and then attributed -- a matched control, a neutralised fixture, or a correctly narrow scope
+| *verdict* `delete`                |   *0* |
+|===
+
+*A 2.3% flag rate and a 0.7% strengthen rate over an exhaustive pass -- roughly a quarter of the
+integration lane's -- is this pass's headline, and like that lane's it is a finding about the corpus
+rather than about the audit.* The comparison is like-for-like: both passes read their whole pool,
+both classify against the same taxonomy, and both count methods by the both-annotations union.
+
+[cols="3,1,1,1,1",options="header"]
+|===
+| Lane | Files read | Declared methods | Flagged | `strengthen`
+
+| integration (<<pro-forma-audit>>, `497c592`) |  56 |  203 | 20 (9.9%) | 14 (6.9%)
+| unit (this pass, `3abc370`)                  | 130 | 1934 | 44 (2.3%) | 14 (0.7%)
+|===
+
+Read the two rates together rather than either alone. The integration lane is small, young and
+built around end-to-end probes whose claims are easy to overstate; the unit lane is large, older, and
+has already absorbed the first pass's eighteen strengthenings. The honest statement is not "the unit
+lane is better written" but *"the unit lane has already been worked on, and this pass measures the
+result"* -- see <<strengthenings-survive>>.
+
+[[unit-density-finding]]
+=== Density is a screen, not a verdict -- the larger sample
+
+<<density-finding>> made this claim from three files. This pass is the exhaustive sample, and it says
+the same thing considerably louder: *six of the unit lane's largest and most marker-dense fixtures
+carry no vacuity marker at all between them, and every admission in them is paired with a matched
+refusal control.*
+
+[cols="3,1,3",options="header"]
+|===
+| File | Lines | Why it is stronger than a density ranking would guess
+
+| `config/validation/ConfigValidatorTest.java`   | 3347 | no vacuity marker; every admit paired with a matched refusal
+| `config/load/ConfigLoaderTest.java`            | 2146 | four `assertNotNull`, every one a structural precondition ahead of a substantive assertion
+| `forward/ForwardPolicyStageTest.java`          | 1300 | no vacuity marker; carries the corpus's own worked example of ADR-0030's matched-positive-control leg (below)
+| `edge/GatewayEdgeQueryHandoffTest.java`        |  526 | no vacuity marker
+| `events/EventTypeTest.java`                    |  263 | no vacuity marker; derives its swept population from the production enum and guards the derivation
+| `http/ConnectionHeadersTest.java`              |  226 | no vacuity marker
+|===
+
+The consequence for a future sweep is the one <<density-finding>> already states, at a scale that
+makes it unarguable: *a sweep that ranks by density and acts without reading would rewrite
+correctly-scoped tests.* Counting markers finds candidates; only reading finds vacuity.
+
+[[adr-0030-worked-examples]]
+=== The corpus is already implementing ADR-0030, and this is where
+
+ADR-0030 names four vacuity sources. Three of them map directly onto this note's taxonomy, and the
+unit lane turns out to contain a worked example of each -- which is worth more to a reader than the
+flagged rows, because it says what the fix looks like in this codebase rather than in the abstract.
+
+*Non-vacuity guard* ("the selection predicate resolves to at least one subject today"). Four sites
+guard a runtime-derived population at its binding site, so a derivation that silently emptied fails
+loudly instead of passing over nothing:
+
+* `edge/RedirectStageTest.admittedRedirectStatuses`:113 -- fails rather than yielding an empty stream;
+* `events/EventTypeTest.shouldClaimEveryConstantExactlyOnce`:233;
+* `config/model/ConfigModelContractTest.everyComponentIsClassified`:1287;
+* `forward/ForwardPolicyStageTest.protocolSetIsDisjointFromTheRequestStrip`:629.
+
+Three more do the same for a *structural* guard rather than a parameter source:
+`quarkus/ConfigModelReflectionTest.shouldTraverseTheModelGraphRatherThanTheRootsAlone`:98 ("a
+traversal that silently stopped at the roots would make the guard vacuous"),
+`quarkus/TokenClientDslJsonReflectionTest.shouldEnumerateTheEngineConvertersRatherThanNothing`:97, and
+`pipeline/SecurityHeadersStageTest.removesSecurityNamesWhenRouteHasNoBlock`:517, whose own caption
+reads "precondition: stage 0 populated both maps, so the assertion below is not vacuous".
+
+*Negative control* ("a deliberately non-compliant fixture the rule must reject"). This is the standard
+every `keep` in this note is held to, and the unit lane implements it as a first-class idiom rather
+than incidentally. `tls/ServerTlsDeclarationGateTest` is the extreme case -- and the single densest
+`assertDoesNotThrow` file in the lane: *every one of its admissions names its own matched refusal*,
+four of them captioned "the matched negative control" in the source (`:266`, `:479`, `:554`, `:601`),
+and its class Javadoc refuses the weaker form outright -- "a test asserting only 'something was
+thrown' would pass just as happily against that message".
+
+*Matched positive control* ("a positive control asserts the near-miss property still holds *before*
+asserting exclusion"). `forward/ForwardPolicyStageTest` is the corpus's own worked example:
+`provenanceVariantsNeverCrossUnderPermissiveModes`:813 and
+`mixedSeparatorProvenanceSpellingsNeverCross`:855 each ride an
+`assertEquals("v2", …get("x-api-version"))` leg captioned *"control: forward-all really did copy the
+client's unowned header, so the absence above is a decision and not an empty mode copy"*.
+`routing/LocationRewriterTest` applies the same idiom to a whole file of "relays unchanged"
+assertions -- the shape most at risk of being always-passing, since a rewriter that did nothing would
+satisfy every one of them -- and closes it with four explicit positive controls
+(`mapsPathsWithoutAmbiguousSeparators`:299, `mapsOrdinaryAbsoluteUriOntoRoot`:306,
+`prefixRouteWithTheSameMatchKeyStillMapsBelowIt`:118, `mapsPathsWhoseSegmentsMerelyContainDots`:180).
+
+*The single best exhibit is `tls/TlsEdgeProducerTest`*, and it earns the place because it is a file
+that knew `assertDoesNotThrow` is weak, said so in its class Javadoc, and then engineered its fixture
+so that a quiet return becomes positive evidence. Its two negative cases *hold* a `ServerSocket` open
+on the port for the whole test, so "onStartup returned quietly" means "no bind was attempted" -- and
+`failsWhenThePublicPortIsHeld`:175 is the matched control that keeps the inference sound, narrowed at
+`:183` to the bind-failure branch specifically so an unrelated `IllegalStateException` cannot
+masquerade as it. The Javadoc states the dependency explicitly: "If `SniFrontListener` ever set
+`setReusePort`, that control fails and the negative cases lose their discriminator together." That is
+the standard this note asks for, written down by the test itself.
+
+[[strengthenings-survive]]
+=== The eighteen strengthenings re-verified at HEAD
+
+This note *asserts* that eighteen methods were strengthened, and nothing else re-checks that claim.
+An exhaustive re-read is the one pass that can, so it did. Every strengthened unit-lane site was
+re-read at `3abc370` and *survives in its strengthened form*; none has regressed to a marker-only
+body:
+
+[cols="3,3",options="header"]
+|===
+| Strengthened site | What it asserts at `3abc370`
+
+| `TlsEdgeProducerTest`:70, :101, :118
+| The public port itself -- `assertTrue(isListening(port))`:126 after startup,
+  `awaitNotListening`:133 after shutdown, with a pre-startup precondition control at `:118` and the
+  held-port matched control at `:175`.
+
+| `PassthroughHostGuardStageTest`:116, :126, :136, :146, :157, :167
+| Parameterized into `passesBenignHostToRouteSelection`:143, which asserts the untouched-state triple
+  (`host()` unrewritten, `selectedRoute()` and `canonicalPath()` still null), plus the attribution
+  control `benignPassIsAttributableToTheHostNotMatching`:164 that reserves the very Host under test.
+
+| `BasicChecksStageTest`:111
+| `assertEquals("/api/v1/users", request.canonicalPath())`:129 -- the value, with the reason for
+  asserting the value rather than the presence written at the site.
+
+| `ConfigProducerTest`:287
+| `shouldAssembleEagerlyOnStartupForValidConfig`:293 observes the `CONFIG_LOADED` record with no bean
+  accessor called, which is what pins assembly to the startup event.
+
+| `BffRuntimeProducerTest`:97
+| `shouldAssembleWithoutDiscovery`:179 now dials an RFC 5737 TEST-NET-1 issuer under
+  `assertTimeoutPreemptively`:197 and asserts the assembled runtime is active and its reserved
+  endpoints answer `401`.
+
+| `ThoroughChecksStageTest`:112, :123
+| `skipsReRunWhenRouteConfigEqualsDefault`:120 and
+  `fallsBackToBaselineWhenRouteDeclaresNoConfig`:146 each carry their matched control *inline in the
+  same method* (`:137` and `:164`), which is the strongest form: the control cannot drift away from
+  the case it attributes.
+
+| `RouteRuntimeAssemblerTest`:163
+| `shouldAssembleSessionRoutes`:168 asserts on the runtime it produced across all four legs, including
+  the gRPC route's captured `UpstreamTarget.forcedHttp2() == true` against a non-gRPC control.
+
+| `TokenValidatorProducerTest`:67, :85, :247
+| Absent from this pass's flagged set entirely -- the file's seven remaining flagged rows are all
+  `keep`, and none of them is an audience or allowlist row.
+
+| `AuthenticationStageTest`:66 (`delete`)
+| `passesRequireNone` is gone; `passesRequireNoneWithoutResolvingValidator`:65 remains and is
+  classified `keep` below.
+|===
+
+*This is the first independent confirmation the eighteen ever received*, and it matters because the
+`What Was Strengthened` table is prose about a diff. A reader now has a second, differently-motivated
+pass saying the diff is still in the tree and still says what it claimed.
+
+=== Classification -- the forty-four flagged methods
+
+One row per flagged method, with a `file:line` citation at `3abc370` and exactly one verdict.
+
+==== Verdict `strengthen` (14)
+
+[cols="3,1,1,1,4",options="header"]
+|===
+| Method (file) | Line | Class | Shape | Evidence, and what the strengthening would have to reach
+
+| `shouldConstructWithDefaultFetcher`
+  (`asset/UpstreamAssetSourceTest`)
+| 382 | F1 | (d)
+| The name claims the short constructor "wires the default confinement, transport fetcher, timeouts
+  and cap". Not throwing distinguishes none of the four, and no control exists in the file. Assert
+  the wired values.
+
+| `shouldBuildDefaultFetcher`
+  (`asset/UpstreamAssetSourceTest`)
+| 465 | F1 | (a)
+| `assertNotNull(fetcher)` cannot show the fetcher is SSRF-guarded, which is the property the name
+  claims and the only reason the default matters.
+
+| `closeAndToString`
+  (`auth/RetryingJwksLoaderTest`)
+| 273 | F2 | (d)
+| The name claims "close releases the delegate"; only the `toString` half is asserted. The release is
+  observable on the delegate.
+
+| `shouldSealRealisticPayload`
+  (`bff/cookie/SealedSessionCookieCodecTest`)
+| 331 | F1 | (d)
+| The name claims the sealed payload lands "well inside the budget"; no-throw shows only that the
+  seal completed. Assert the sealed length against the budget constant.
+
+| `shouldHonorValueObjectContract`
+  (`config/model/ConfigModelContractTest`)
+| 476 | F2 | (c)
+| The `toString` leg is `assertNotNull(subject.toString())`:482. *A record's generated `toString`
+  cannot return null*, so that leg is entailed by the arrange while the class Javadoc names the
+  `toString` contract as one of the three it verifies. This is ADR-0030's *always-passing assertion*
+  exactly -- see <<structurally-unfailable>>.
+
+| `rejectsDisallowedVerb`
+  (`edge/GatewayEdgePipelineTest`)
+| 260 | F2 | (d)
+| The `405` is asserted exactly; the `Allow` leg is `assertNotNull`:266 under the message "a 405 names
+  the permitted verbs". An `Allow` header naming the *refused* `DELETE` passes. The route declares
+  GET+POST, so the set is assertable.
+
+| `answersCorsPreflight`
+  (`edge/GatewayEdgePipelineTest`)
+| 352 | F2 | (d)
+| Same shape: `assertNotNull(Access-Control-Allow-Methods)`:361 under "the preflight advertises the
+  allowed methods". The fixture's CORS block declares `GET, POST`.
+
+| `shouldBootSessionRouteWithActiveRuntime`
+  (`edge/GatewayEdgeRouteBffWiringTest`)
+| 177 | F1 | (d)
+| The whole body is `assertDoesNotThrow(() -> newEdge(sessionTable, activeRuntime(…)))`:179 under a
+  name claiming the route boots "through the session-aware `AuthenticationStage`". *No matched
+  control in the file* -- `shouldRegisterCatchAll`:185 uses the same active runtime over an EMPTY
+  table and asserts only the route count. The sibling
+  `RouteRuntimeAssemblerTest.shouldAssembleSessionRoutes`:168 shows the available shape.
+
+| `shouldDispatchLogin`
+  (`edge/GatewayEdgeRouteBffWiringTest`)
+| 452 | F2 | (d)
+| `assertEquals(302, …)` is substantive; the second leg is
+  `assertTrue(response.locationOptional().isPresent())`:460 under a name claiming the short-circuit
+  goes "to the validated return URL". The arrange supplies `/home` and nothing asserts the `Location`
+  value. See <<census-evasion-unit>>.
+
+| `passesAllowedVerb`
+  (`pipeline/VerbGateStageTest`)
+| 56 | F1 | (d)
+| The whole body is `assertDoesNotThrow(() -> stage.process(request))`:62 under the name "passes an
+  allowed verb through *untouched*". A matched rejection control exists
+  (`rejectsDisallowedVerb`:41, which asserts the event type *and* `Allow: "GET, POST"`), so the gate
+  is provably not inert -- but the *untouched* half is unasserted: a stage that admitted the verb and
+  also wrote an `Allow` header stays green. Assert `request.responseHeaders()` carries no `Allow`.
+
+| `inertWhenPassthroughSetEmpty`
+  (`pipeline/PassthroughHostGuardStageTest`)
+| 211 | F1 | (d)
+| Reclassified. The earlier pass recorded this `keep` on the strength of
+  `rejectsSmuggledHost`, and that control does hold -- the same Host through the guarded stage is
+  rejected, so the admission is attributable. What is unasserted is the *other* half of the name: "is
+  a *no-op*". Its two siblings in the same class (`passesNullHost`:188,
+  `passesBenignHostToRouteSelection`:152) both assert the untouched-state triple, and this one asserts
+  nothing but the absence of a throw. Close it with the same `assertAll` those two already use.
+
+| `shouldBootCookieModeWithoutKey`
+  (`quarkus/BffRuntimeProducerTest`)
+| 367 | F1 | (d)
+| The name claims cookie mode boots "*generating one on startup*". `assertTrue(isActive())`:379 and
+  `assertNotNull(sessionStage())`:381 show the runtime came up; neither shows a key was generated. A
+  seal/unseal round-trip through the assembled codec, or the walk this file already owns
+  (`reachableInstancesOf`:284), reaches it.
+
+| `publicTierEntryPointsDelegateToTheInstrumentedCore`
+  (`testsupport/AwaitsTest`)
+| 401, 404 | F2 | (d)
+| The name claims *every* public tier entry point "delegates to the instrumented core". Three of the
+  five legs prove it by value pass-through (`:392`, `:395`, `:398`); the two void entry points --
+  `Awaits.connect(CountDownLatch, …)`:401 and `Awaits.until(…)`:404 -- are asserted by
+  `assertDoesNotThrow` alone, which an empty method body satisfies. Drive them to a real timeout
+  through the *public* method on the teardown tier and assert the label reaches the message; that
+  proves the instrumented core was entered, which is the claim.
+
+| `enabledRequiresClientAuthWithTrustAnchor`
+  (`tls/MtlsServerCustomizerTest`)
+| 64 | F1 | (a)
+| `assertNotNull(options.getTrustOptions())` under a name claiming the customizer "binds the
+  *`client_ca`* trust anchor". A customizer that bound *any* trust store -- the JVM default among
+  them -- passes, and on an mTLS listener that is the security-relevant failure. The inverse controls
+  exist and hold (`disabledLeavesClientAuthOff`:79 and `absentMtlsIsNoOp`:96 both assert
+  `assertNull(getTrustOptions())`), which is why this is shape (a) rather than a wholly unattributable
+  admission -- but identity is assertable here, and the corpus's own idiom is to assert it
+  (`BffRuntimeProducerTest`:1091 uses `assertSame` on the resolved context;
+  `testsupport/EgressTrustProfiles`:73 documents the anchors are "returned by the resolver as-is, so
+  a caller may assert on identity rather than on mere non-nullness").
+|===
+
+==== Verdict `keep` (30)
+
+Grouped by file. Every row names the thing that makes the admission attributable, per this note's
+`Standard for a Strengthened Assertion`.
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method (file) | Line | Shape | Attribution
+
+| `guardPassesOnPinnedSpecimen` (`arch/EgressTlsPostureArchTest`)      | 289 | (a) | matched negative control `guardFailsOnUnpinnedSpecimen`:270 plus the resolution guard at :292
+| `guardPassesOnLoopbackSpecimen` (`arch/LoopbackEphemeralBindArchTest`) | 1130 | (a) | matched negative control `guardFailsOnWildcardSpecimen`:1113
+| `guardPassesOnNullableSpecimen` (`arch/NoStoredOptionalArchTest`)    | 278 | (a) | matched negative control `guardFailsOnStoredOptionalSpecimen`:261
+| `shouldAcceptSingleFileName` (`asset/DirectoryAssetSourceTest`)      | 461 | (a) | matched control `shouldRefuseInvalidIndexOrFallbackName`:449
+| `passesRequireNoneWithoutResolvingValidator` (`auth/AuthenticationStageTest`) | 65 | (a) | neutralised fixture -- the provider raises when resolved
+| `acceptsValidBearerToken` (`auth/AuthenticationStageTest`)           | 79 | (a) | matched controls at :91, :106, :121
+| `shouldResolveBucketAtBootWithTrustMaterial` (`auth/MountedTlsMapKeyTest`) | 126 | (a) | anti-vacuity control `shouldNotResolveABucketTheDeploymentNeverDeclares`:147 plus the anchor assertion at :192
+| `fileSourceLoads` (`auth/RetryingJwksLoaderTest`)                    | 295 | (a) | narrow scope -- the claim is literally "a file loader holds nothing to close"
+| `listedHostIsExempted` (`auth/TokenValidatorProducerTest`)           | 263 | (a) | matched control `exemptionIsScopedToTheListedHost`:281
+| `severalHostsAreAllowlisted` (`auth/TokenValidatorProducerTest`)     | 299 | (a) | matched control :281
+| `omittedProfileNeverConsultsTheResolver` (`auth/TokenValidatorProducerTest`) | 411 | (a) | neutralised fixture -- an empty registry would throw
+| `profileAndEgressAllowlistCombine` (`auth/TokenValidatorProducerTest`) | 466 | (b) | matched control :281 for the egress leg
+| `relaxedHostnameWithoutTlsProfileAssembles` (`auth/TokenValidatorProducerTest`) | 669 | (a) | it IS the matched control for :640
+| `completesForAValidlyConfiguredValidator` (`auth/TokenValidatorProducerTest`) | 752 | (a) | matched control `forcesEagerAssemblyByInvokingTheValidator`:737
+| `safeMethodsBypass` (`bff/csrf/CsrfDefenceTest`)                     | 72 | (a) | matched control `bothHeadersAbsentRejected`:125
+| `unsafeMethodTrustedOriginAccepted` (`bff/csrf/CsrfDefenceTest`)     | 82 | (a) | matched control `unsafeMethodUntrustedOriginRejected`:91
+| `trustedOriginMatchIsCaseInsensitive` (`bff/csrf/CsrfDefenceTest`)   | 99 | (a) | matched control :91
+| `absentOriginSameOriginFetchAccepted` (`bff/csrf/CsrfDefenceTest`)   | 108 | (a) | matched control `absentOriginCrossSiteFetchRejected`:117
+| `theBarAppliesToTheDefaultProfile` (`config/SingleSourceTlsContractTest`) | 155 | (c) | self-declared standing guard; its own comment states the assertion is vacuous today, and the population is pinned by `ShippedApplicationPropertiesTest`
+| `resolvedRouteAcceptsEachSingleTerminalAction` (`config/model/ConfigModelContractTest`) | 998 | (a) | matched negative control `resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction`:962 refuses zero, two and three terminal actions over the same constructor
+| `anchorConfigExposesEveryPolicyBlock` (`config/model/ConfigModelContractTest`) | 1104 | (a) | narrow scope -- `securityFilter()` and `securityHeaders()` are distinctly typed, so presence IS the carried-through claim
+| `resolvedRouteCarriesTheMaterializedEffectivePosture` (`config/model/ConfigModelContractTest`) | 1117 | (a) | same shape; the anchor / auth / methods / forward / rewriteLocation legs are all substantive
+| `bootsCleanlyOverEmptyRouteTable` (`edge/GatewayEdgeRouteTest`)      | 148 | (a) | construction test, correctly scoped; `registersCatchAllRoute`:159 asserts on the assembled edge
+| `bootsSessionAuthRoute` (`edge/GatewayEdgeRouteTest`)                | 174 | (a) | regression guard for a *removed* boot rejection -- restoring it fails this test
+| `bootsGrpcProtocol` (`edge/GatewayEdgeRouteTest`)                    | 188 | (a) | same shape, gRPC
+| `bootsWebSocketProtocol` (`edge/GatewayEdgeRouteTest`)               | 201 | (a) | same shape, WebSocket
+| `bootsSessionAuthWebSocketRoute` (`edge/GatewayEdgeRouteTest`)       | 214 | (a) | same shape, WebSocket + session
+| `buildsWithFailureMapper` (`edge/GrpcDispatchStageTest`)             | 95 | (a) | matched negative control `rejectsNullFailureMapper`:88 asserts `NullPointerException` over the identical constructor differing only in the mapper argument
+| `shouldAssembleNoAssetProxyPathWithoutThrowing` (`edge/RouteRuntimeAssemblerTest`) | 436 | (a) | matched control `shouldAssembleAssetRouteWithoutClientOrGuard`:375 asserts the exact inverse shape
+| `acceptsCleanPath` (`pipeline/CanonicalPathGuardTest`)               | 62 | (a) | matched negative control `rejectsNonCanonicalPaths`:49 -- six non-canonical raw paths through the same guard, each asserted to raise `SECURITY_FILTER_VIOLATION`
+|===
+
+=== Findings from this pass
+
+[[census-evasion-unit]]
+==== `census-evasion` recurs in the unit lane, so both published marker counts are lower bounds
+
+`edge/GatewayEdgeRouteBffWiringTest`:460 asserts
+`assertTrue(response.locationOptional().isPresent())` -- an `assertNotNull` in everything but name,
+and invisible to the `assertNotNull` census exactly as `HostSmuggleGuardIT:73` is in the integration
+lane.
+
+*One occurrence found is not evidence that the shape is rare; it is evidence that nothing looks for
+it.* The consequence is stated plainly because it bears on every count in <<head-census>>: the
+published marker figures are a *lower bound* on the vacuous-shape population, not a measurement of
+it. That sentence already appears in this note for the integration lane. It now applies to both
+halves of the D1 surface, which means it applies to the surface.
+
+[[structurally-unfailable]]
+==== The structurally unfailable assertion -- distinct from shape (a)
+
+`config/model/ConfigModelContractTest.shouldHonorValueObjectContract`:482 asserts
+`assertNotNull(record.toString())`. A record's generated `toString` *cannot* return null, so the
+assertion could not have failed under any implementation -- the `toString` third of the class's
+declared three-part contract is asserted by nothing.
+
+This is strictly worse than shape (a) and worth distinguishing from it. Under (a) the object was
+merely un-inspected, and a wrong implementation could still have produced a null; here no
+implementation could have failed the check. It is ADR-0030's *always-passing assertion* -- "a rule
+that asserts only the absence of something passes when the subject is renamed, moved, or deleted" --
+reached from the other direction: not by the subject disappearing, but by the property being
+unfalsifiable in the first place.
+
+*It is deliberately not a sixth shape.* Like <<cumulative-finding>>, it is recorded as a finding so
+the taxonomy keeps meaning one thing; unlike that finding it *does* have a per-method row, and it has
+one above.
+
+A second spelling of the same idea appears in `tls/PassthroughRelayTest`:122 and :141, which read
+`assertNull(Awaits.connect(backendEnded, …))` over a `CompletableFuture<Void>`. That future can only
+ever yield null, so the `assertNull` is unfalsifiable -- but here the load-bearing assertion is the
+*await*, which fails by timeout if the half-close never arrives. The test is honest and only its
+spelling is odd. Named so a future census does not read the two cases as equivalent.
+
+==== `assertDoesNotThrow` used as a checked-exception adapter is not an assertion
+
+Two of the unit lane's 127 `assertDoesNotThrow` call sites are value-returning unwrappers around a
+reflective call rather than claims about behaviour:
+`pipeline/ThoroughChecksStageTest.assertDiffersFromRouteConfigInCapAlone`:799 and `:800`, which use it
+to invoke `RecordComponent.getAccessor()` without declaring the checked exception.
+
+It is a legitimate Java idiom and not a defect. It is recorded because it *inflates the primary
+vacuity marker's call-site count*, and a census that treats every call site as a candidate will
+rank a file on sites that assert nothing either way. The same applies, in the opposite direction, to
+`testsupport/AwaitsTest`:138 and `quarkus/BffRuntimeProducerTest`:615/:1022, where the returned value
+*is* then asserted -- those are substantive and would be mis-read as vacuous by a marker-only reading.
+
+==== An unguarded reflective sweep, and the file that shows the fix
+
+`pipeline/ThoroughChecksStageTest.assertDiffersFromRouteConfigInCapAlone`:795 sweeps
+`SecurityConfiguration.class.getRecordComponents()` and asserts each non-cap component equals the
+route's value. The sweep carries no non-vacuity guard at its binding site: were the component list
+ever empty, the loop would assert nothing and the calling test's two direct assertions would still
+pass.
+
+The risk is small -- the type is a record with many components -- and the site is *not* flagged,
+because this note's taxonomy is defined over assertion strength at a marker site and this is a
+population-derivation question. It is recorded because the same file's siblings already carry the
+guard (see <<adr-0030-worked-examples>>), and because
+`pipeline/SecurityHeadersStageTest.seedsOneHeaderPerDeclaredMode`:473 shows the fix in one line:
+compare the swept count against `HeaderModes.class.getRecordComponents().length` rather than trusting
+the sweep ran.
+
+==== A routing test that asserts only the intended destination
+
+`tls/SniFrontListenerTest`'s four routing cases each start *both* a passthrough and a terminated
+backend, then await bytes on the one the routing decision should reach. None asserts that the *other*
+backend received nothing, so a relay that fanned out to both would pass all four.
+
+Not flagged: the awaited assertion is substantive and a mis-routed connection fails by timeout, so
+the tests are capable of failing on the behaviour they name. Recorded because the missing leg is the
+cheap one -- the unused `Backend` record already holds its own future -- and because "the wrong party
+also received it" is a security-relevant outcome on a TLS passthrough front.
+
+[[websocket-heartbeat]]
+==== `WebSocketRelayStageTest.heartbeatKeepsRelayOpen` -- a timing margin, not a vacuity
+
+`edge/WebSocketRelayStageTest`:334 asserts `assertFalse(closed.isDone())` after three echo round-trips
+spaced by a real `Thread.sleep(400)` against a one-second idle window. It is *not* vacuous -- it can
+fail -- but it is an *absence-of-event* assertion whose entire margin is the difference between
+3×400 ms of wall-clock activity and the reclaim timer. The file's own `assertNoFurtherRelease`:480
+documents precisely why an absence cannot be polled.
+
+It belongs here rather than in the classification table because the taxonomy is defined over
+assertion *strength* and this is a question about timing margin. Any claim about the site's flakiness
+should be settled against this shape rather than against its assertion.
+
+[[websocket-handshake-flakiness]]
+==== `WebSocketRelayStageTest.preservesSecurityHeadersOnHandshakeFailure` was never recorded flaky
+
+A standing claim reached this plan that this method is unstable. It is settled here because it had
+been carried from plan to plan as narrative rather than as a citation, and each carry made it read
+more established than it was.
+
+*It has no artifact in the tree, MEASURED at `3abc370`.* A case-insensitive literal search for
+`flaky` over the module-attributed inventory returns *6 result rows across 3 files* --
+`demo-client/playwright.config.js`, `integration-tests/.../BffCookieSessionIT.java` and
+`doc/variants/README.adoc` -- the row count is inflated by the duplicated `api-sheriff-parent` /
+`demo-client-maven` / `demo-client-npm` module attribution that doubles or triples every sweep in
+this document; each file's own `match_count` is `1`, so the real occurrence count is *3*, one per
+file. In none of the three does the match name this method or its class. `@Disabled` returns
+*exactly one occurrence*, in `doc/quality-report/test-quality.adoc`, and *none in code*. The method
+is live, un-quarantined, and recorded as flaky nowhere in the repository.
+
+*It has no CI signal either, MEASURED 2026-09-21.* The *30* most recent `Maven Build` runs
+(2026-09-17T18:30Z through 2026-09-21T13:50Z, across `main`, merge-queue and pull-request events)
+carry *28 `success` and 2 `failure` conclusions*. The two failures are *the same commit* (`e98614e`)
+observed twice -- once on its `push` event and once on its `pull_request` event -- and in *both* the
+failing job is `build / sonar-build`: the test-executing `build (25)` and `build (26)` jobs were
+green on every one of the 30. So the api-sheriff unit suite executed *60* times in that window (two
+JDKs per run) with no test failure at all.
+
+*The class demonstrably ran, which is the part a zero needs.* In the most recent `main` run
+(`35608221222`, `main` at `36ccc2e`) `WebSocketRelayStageTest` reports
+`Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.648 s`. The class declares ten
+top-level `@Test` methods plus three inside its `@Nested` admission-release class, so 13 is the whole
+class and this method is inside the count. Read that line where it actually appears: it is attributed
+to the *nested* container's display name, while the *outer* class container reports `Tests run: 0` --
+the exact artifact `build-gate-discipline.adoc` warns produces a false "not covered in CI" reading
+for this very class. Grepping the class display name alone would have returned the zero.
+
+*The verdict, and its limits.* The method is routed *out* of the known-flaky reading: nothing in the
+tree or in 30 runs of CI supports it. That is a *zero-reproduction result reported with its `N`*,
+never an all-clear, and two limits travel with it:
+
+* *The Linux lane is the authority only for the 30-second stall signature*, which it has never
+  reproduced. It is not the authority for macOS behaviour, and the macOS-local wildcard-ephemeral-bind
+  condition is exactly the case a green Linux lane cannot clear.
+* *The class sits in the live-socket population that condition acts on.* `WebSocketRelayStageTest` is
+  one of the eleven classes constructing a live `Vertx.vertx()`, and the reading recorded against that
+  population is a *uniform per-attempt hazard* rather than particular fixtures being special -- so no
+  method in the class is exempt by name, including this one. What is settled is that *this method* was
+  never among the recorded occurrences; what is not settled is the hazard the class carries.
+
+Nothing was widened, quarantined or otherwise softened to reach this verdict, and no test or
+production file was modified by it: both are explicitly forbidden for this condition.
+
+==== `LogMessagesCatalogueTest`'s mirror is half closed
+
+The existing <<mirror-finding>> entry records that this test does not reconcile the declared records
+against `doc/LogMessages.adoc`. At `3abc370` the *first* half of that entry has closed: the test now
+derives the expected catalogue set from the module's own `*LogMessages.java` sources rather than from
+a hardcoded list. The original claim stands unchanged -- the rows of `doc/LogMessages.adoc` are still
+reconciled against nothing, and remain convention-maintained and unguarded.
+
+[[carried-figures]]
+=== Carried figures that did not reproduce
+
+Three numbers reached this pass from earlier work and do not reproduce at `3abc370`. Each is named
+rather than silently replaced, per the precedent this note sets in its own `497c592` re-census.
+
+Integration-lane `@Test` occurrences:: Carried as *292*; measured at *249* over the same commit.
+The de-duplicated per-path derivation above is reproducible from the published pattern and commit;
+the carried figure is not, and no reconciliation is offered because none can be verified.
+
+Unit-lane marker union:: Carried as *50 files / 254 occurrences*. That figure reproduces exactly --
+as the *raw occurrence* union. The *call-site* union is *49 files / 194 occurrences*, and the two are
+not interchangeable. Both are published in <<head-census>> so the distinction is explicit rather than
+resolved by whichever number a reader happens to quote.
+
+`ConfigModelContractTest` `assertNotNull` count:: The `497c592` backlog row records *7*; the file
+carries *8* call sites at `3abc370`. The file grew. This is the ordinary case the backlog's own
+"*new since*" markers exist for, and it is named because the backlog row it moves is one this pass
+retires.
+
+=== What this pass did not do
+
+It read every file and classified every flagged method; it did not *fix* any of them. The fourteen
+`strengthen` verdicts above were routed onward and applied in a separate step (`857822d`), whose own
+evidence is <<unit-lane-inversion-audit>>. A reader should take the verdict distribution above as a
+measurement of the lane and not as a record of work completed.
+
+It also did not extend the taxonomy. Two of its findings -- <<structurally-unfailable>> and the
+census-evading `assertTrue(optional.isPresent())` spelling -- are arguably new shapes, and both are
+deliberately recorded as findings instead. <<shape-e>> was added because it named a defect class the
+existing shapes structurally could not reach; neither of these two does. The first is a strictly
+stronger instance of (c), the second is (a) under a different spelling, and adding shapes for them
+would dilute a taxonomy whose value is that each entry means exactly one thing.
+
+[[unit-lane-inversion-audit]]
+== The Unit-Lane Inversion Audit
+
+The fourteen `strengthen` verdicts of <<unit-lane-audit>> were applied at `857822d`. A strengthened
+assertion is only worth the diff if it *fails* when the behaviour it claims is broken, so each one
+was put through the same inversion the first pass used: apply a transient mutation to the code under
+test, run the affected suite, observe the RED, revert.
+
+*The mutations are grouped by technique, not by site.* Ten of the fourteen strengthenings use a
+distinct technique between them, and one mutation per technique is what makes the audit an argument
+about the technique rather than an anecdote about one instance of it. The four sites not separately
+mutated are named in <<unit-inversion-per-site>> below, each against the technique row that carries
+its argument -- so a reader can see exactly which claims rest on an observed RED and which rest on
+"same technique as the row above".
+
+=== The mutations, and what each one broke
+
+[cols="2,2,3",options="header"]
+|===
+| Transient mutation | Expected to break | Observed
+
+| `VerbGateStage` appends the *refused* verb to the `Allow` header it seeds onto the 405
+| `GatewayEdgePipelineTest.rejectsDisallowedVerb`
+| failed: `a 405 names the route's permitted verbs -- and only those -- in the Allow header ==>
+  expected: <GET, POST> but was: <GET, POST, DELETE>`
+
+| `VerbGateStage.process` seeds `Allow` on the *pass* path as well as the refusal path
+| `VerbGateStageTest.passesAllowedVerb`
+| failed twice: `Allow belongs to the 405 refusal, never to an admitted verb ==> expected: <null> but
+  was: <GET, POST>`, and `the gate writes no response header at all on the pass path ==> expected:
+  <true> but was: <false>`
+
+| `MtlsServerCustomizer` binds `/etc/ssl/certs/ca-bundle.crt` instead of the configured `client_ca`
+| `MtlsServerCustomizerTest.enabledRequiresClientAuthWithTrustAnchor`
+| failed: `the bound anchor is exactly the configured client_ca, and nothing else ==> expected:
+  <[/etc/api-sheriff/client-ca.crt]> but was: <[/etc/ssl/certs/ca-bundle.crt]>`
+
+| `CookieKeyMaterial.generateKey` returns a fixed constant key rather than a fresh `SecureRandom` one
+| `BffRuntimeProducerTest.shouldBootCookieModeWithoutKey`
+| failed: `and the key is generated per startup: a second boot cannot open the first boot's cookie,
+  which a hard-coded or absent key would ==> expected: <true> but was: <false>`
+
+| `UpstreamAssetSource.httpFetcher` drops the read-timeout null check
+| `UpstreamAssetSourceTest.shouldBuildDefaultFetcher`
+| failed: `a seam without a read timeout is refused rather than built unbounded ==> Expected
+  java.lang.NullPointerException to be thrown, but nothing was thrown.`
+
+| `RetryingJwksLoader.close()` neither sets the closed flag nor cancels the pending retry
+| `RetryingJwksLoaderTest.closeAndToString`
+| failed: `a closed loader releases its delegate and issues no further fetch ==> expected: <1> but
+  was: <3>` -- the cancelled retry dialled twice more past the barrier
+
+| `LoginInitiationEndpoint` short-circuits to the requested return URL with no same-origin check
+| `GatewayEdgeRouteBffWiringTest.shouldDispatchLogin`
+| failed: `control: a cross-origin return URL is refused and replaced by the default ==> expected:
+  <Optional[/]> but was: <Optional[https://evil.example.com/home]>`
+
+| `Metadata` gains a `toString()` rendering a package-qualified identity hash
+| `ConfigModelContractTest.shouldHonorValueObjectContract`
+| failed on two cases: `[2] a diagnostic rendering names its own type rather than a package-qualified
+  identity hash: de.cuioss.sheriff.gateway.config.model.Metadata@1653b84e ==> expected: <true> but
+  was: <false>`, and `[1] equal instances render equally -- an identity-based rendering would not`
+
+| `SealedSessionCookieCodec.deflate` pads the plaintext with 2048 incompressible bytes before
+  compressing
+| `SealedSessionCookieCodecTest.shouldSealRealisticPayload`
+| failed: `a realistic single-session payload sealed to 3028 bytes, which is not well inside the
+  4019-byte budget ==> expected: <true> but was: <false>` -- the *seal itself still succeeded*, which
+  is why the pre-change no-throw form could not see it
+
+| `Awaits.until` returns without reaching the instrumented core
+| `AwaitsTest.publicTierEntryPointsDelegateToTheInstrumentedCore`
+| failed: `until reaches the core, which is what turns an unmet condition into a TimeoutException
+  rather than an Awaitility exception or nothing ==> Expected java.util.concurrent.TimeoutException
+  to be thrown, but nothing was thrown.`
+|===
+
+The last row's mutation targets `api-sheriff/src/test/java/.../testsupport/Awaits.java` rather than a
+`src/main` source, because `Awaits` *is* the code under test for `AwaitsTest`. Every other mutation
+above is a production source under `api-sheriff/src/main/java/**`.
+
+=== The contrast that carries the argument
+
+A RED alone proves the mutation reached the test; it does not prove the *strengthening* is what
+caught it. The same mutations were therefore re-run against the *pre-change* form of each test file,
+checked out from `b4fadd2` while the mutations stayed applied.
+
+[cols="3,1,1,4",options="header"]
+|===
+| Run | Strengthened forms | Pre-change forms | What the difference is
+
+| Eight mutations, 284 tests
+| 11 failures
+| 2 failures
+| The 9 that vanish are exactly the strengthened methods' assertions (`ConfigModelContractTest`
+  contributes two, being parameterized). The 2 survivors --
+  `VerbGateStageTest.rejectsDisallowedVerb` and `RetryingJwksLoaderTest.closeCancelsPendingRetry` --
+  are *pre-existing strong siblings* that already asserted the `Allow` value and the retry
+  cancellation before this sweep; neither is one of the fourteen.
+
+| Two mutations, 68 tests
+| 4 failures, 3 errors
+| 2 failures, 3 errors
+| The 2 that vanish are `shouldSealRealisticPayload` and
+  `publicTierEntryPointsDelegateToTheInstrumentedCore`. The survivors are the codec's own round-trip
+  and three-token-size tests, which the padding mutation breaks on their own merits and which the
+  sweep did not touch.
+|===
+
+*Not one of the fourteen survived its own inversion*, so none is sent back to the strengthening step.
+
+[[unit-inversion-per-site]]
+=== Per-site attribution -- observed RED vs covered by technique
+
+[cols="3,2,3",options="header"]
+|===
+| Strengthened method | Basis | Note
+
+| `UpstreamAssetSourceTest.shouldBuildDefaultFetcher`
+| observed RED
+| --
+
+| `RetryingJwksLoaderTest.closeAndToString`
+| observed RED
+| --
+
+| `SealedSessionCookieCodecTest.shouldSealRealisticPayload`
+| observed RED
+| --
+
+| `ConfigModelContractTest.shouldHonorValueObjectContract`
+| observed RED
+| two parameterized cases went red, `[1]` and `[2]`
+
+| `GatewayEdgePipelineTest.rejectsDisallowedVerb`
+| observed RED
+| --
+
+| `GatewayEdgeRouteBffWiringTest.shouldDispatchLogin`
+| observed RED
+| --
+
+| `VerbGateStageTest.passesAllowedVerb`
+| observed RED
+| --
+
+| `BffRuntimeProducerTest.shouldBootCookieModeWithoutKey`
+| observed RED
+| --
+
+| `AwaitsTest.publicTierEntryPointsDelegateToTheInstrumentedCore`
+| observed RED
+| --
+
+| `MtlsServerCustomizerTest.enabledRequiresClientAuthWithTrustAnchor`
+| observed RED
+| --
+
+| `GatewayEdgePipelineTest.answersCorsPreflight`
+| technique
+| The `Access-Control-Allow-Methods` leg is the `Allow` leg's technique exactly: an exact-value
+  assertion replacing a presence check on a response header whose permitted set the fixture declares.
+
+| `PassthroughHostGuardStageTest.inertWhenPassthroughSetEmpty`
+| technique
+| The untouched-state triple replacing a bare no-throw, inverted at
+  `VerbGateStageTest.passesAllowedVerb`.
+
+| `UpstreamAssetSourceTest.shouldConstructWithDefaultFetcher`
+| technique
+| Probing the wired collaborators through the constructed object's own surface, inverted at
+  `BffRuntimeProducerTest.shouldBootCookieModeWithoutKey`.
+
+| `GatewayEdgeRouteBffWiringTest.shouldBootSessionRouteWithActiveRuntime`
+| technique
+| The same probe-the-wired-collaborator technique, here through the wired stage's own login challenge
+  with an inert-runtime control.
+|===
+
+=== Why the audit runs after the strengthening is committed
+
+The same reason the first pass gives, and it is not a formality. With the strengthened files already
+in `HEAD`, reverting a transient mutation is a `git checkout` against committed content rather than a
+destructive discard of uncommitted work -- and so is the swap to the pre-change forms the contrast
+needs, which is a checkout of `b4fadd2` and back. Every transient mutation was reverted and
+`git status --porcelain` was empty afterwards; the working tree carries no residue.
+
+[[awaits-reassertion-guard]]
+== The Until-Then-Re-Assert Fitness Function
+
+`api-sheriff/src/test/java/de/cuioss/sheriff/gateway/arch/AwaitsReassertionArchTest.java` ships the
+one comment-only invariant this plan converts into a guard: *a declared test that waits on a
+condition with `Awaits.until(..)` must assert the state it waited for after the wait returns.*
+
+=== Why a wait is not an assertion
+
+`Awaits.until` polls and either returns or throws a `TimeoutException`. A test whose last word on the
+awaited state is the poll therefore records only that the condition held at some instant *during*
+polling -- never that it holds at the point the test finishes reasoning about it. Remove the
+behaviour the test names and the poll can still be satisfied transiently by a neighbouring effect,
+and the method still returns green. Re-asserting after the wait moves the evidence onto the
+post-state, which is what the test's name actually claims.
+
+`edge/WebSocketRelayStageTest.awaitReleases`:469 is the corpus's own worked example: the
+`Awaits.until(..)` is immediately followed by `assertEquals(1, releases.get(), message)`.
+
+=== Why a source sweep rather than an ArchUnit rule
+
+The discriminator is the *order* of two calls inside one method body, and whether the second is an
+assertion. ArchUnit reads bytecode, where an assertion call and an await call are both method calls
+from the same code unit with no recoverable ordering -- the bytecode rule that would express this
+does not exist. The sweep therefore reads source text, the same shape
+`LoopbackEphemeralBindArchTest`'s wildcard-host-literal sweep uses and for the same reason.
+
+The sweep is phrased *positively*: it collects offenders and asserts the collection is empty, naming
+each offender in the failure message. The inverted `no...should` spelling is deliberately not used --
+ArchUnit inverts a condition's event polarity under it, so such a rule reports nothing and stays
+green over an arbitrarily dirty corpus.
+
+=== The four ADR-0030 control legs
+
+Non-vacuity guard:: `guardIsNonVacuous` asserts the source root resolves, the selection is non-empty,
+it contains declared test methods, and at least one of those methods really calls `Awaits.until`.
+Without the last, "zero offenders" cannot be told apart from a sweep whose pattern stopped matching.
+
+Negative control:: `arch/specimen/AwaitsWithoutReassertionSpecimen` carries *two* deliberate
+violations the sweep must report -- a test that asserts nothing at all, and one that asserts *before*
+the wait and not after. The second exists because a guard that asked only "does this test assert
+anything?" would accept it, and the control's exact count of two is what keeps that guard honest.
+
+Matched positive controls:: `arch/specimen/AwaitsWithReassertionSpecimen` carries the compliant shape
+and the helper-tier near miss. Each control asserts its near-miss property *first* -- that the file
+still carries an awaited test method, and that the helper-tier await is still un-reasserted -- and
+only then that the sweep does not report it. Reversed, either control would pass just as happily over
+a file that had quietly become compliant, which is the always-passing failure one level down.
+
+Specimen carve-out:: the specimen package is excluded from the production selection *by name* in
+`isCarvedOutSource`, not by relying on a package or import filter, and the carve-out has its own
+control that first proves the specimen still violates the rule.
+
+[[awaits-guard-limits]]
+=== Accepted limits
+
+Both limits below are bounds on what the guard reaches, stated here rather than left to be
+discovered from a green run.
+
+The selection is declared test methods, not every method:: At `3abc370` the lane carries *10*
+`Awaits.until` occurrences across *6* files. *Five* sit inside a declared test method and are the
+guard's live population (`auth/RetryingJwksLoaderTest` ×3, `auth/TokenValidatorProducerTest` ×1,
+`testsupport/AwaitsTest` ×1). The other five are *wait primitives* -- `RetryingJwksLoaderTest.awaitLog`,
+`edge/GatewayEdgeRouteTest.connectWhenAdmitted` and `.awaitReleased`,
+`edge/WebSocketRelayStageTest.awaitReleases`, `tls/TlsEdgeProducerTest.awaitNotListening` -- named
+helpers whose re-assertion obligation belongs to whichever test calls them, and several of which
+legitimately end with the await. Sweeping every method body would report four of those five, which is
+a noisy guard rather than a finding, so the scope is the declared test. *The cost is real and is not
+hidden*: a helper that both waits and never re-asserts is out of reach, and so is a test that
+delegates its entire wait to such a helper.
+
+The lane is `api-sheriff` only:: `integration-tests` depends on `api-sheriff`, not the reverse, so an
+ArchTest living in `api-sheriff` structurally cannot see integration-lane sources. *Mirroring the
+sweep into `integration-tests` is explicitly not taken.* The integration lane carries no
+`Awaits.until` call at all today, so a second copy would guard an empty set -- a standing vacuous
+guard, which is the defect this note exists to remove -- while doubling the maintenance surface of a
+hand-rolled source scanner. If the integration lane ever adopts `Awaits`, that decision is the trigger
+to revisit this, and nothing else is.
+
 [[backlog]]
 == The Countable Backlog
 
+[IMPORTANT]
+====
+*The backlog is empty at `3abc370`.* <<unit-lane-audit>> read all 130 files under
+`api-sheriff/src/test/**` -- which is a superset of the 29 rows below and of the 50 marker-carrying
+unit-lane files in <<head-census>> -- and <<pro-forma-audit>> had already read all 56 under
+`integration-tests/src/test/**`. Between the three passes *every file in the D1 surface has been read
+in full*, so no marker-carrying file remains censused-but-unclassified in either lane.
+
+[cols="4,1,1",options="header"]
+!===
+! Population at `3abc370` ! Files ! Marker occurrences
+
+! Marker-carrying files in the D1 surface (raw occurrence union) ! 81 ! 381
+! -- read in full: <<pro-forma-audit>>, the whole integration lane ! 31 ! 127
+! -- read in full: <<unit-lane-audit>>, the whole unit lane ! 50 ! 254
+! *-- censused, not individually classified (the backlog)* ! *0* ! *0*
+!===
+
+What replaces it is not "nothing left to do" but a *different* residue, and the twenty-eight
+`strengthen` verdicts split cleanly in two. The fourteen in <<unit-lane-audit>> are no longer
+outstanding at all: they were applied at `857822d` and each one was inversion-verified in
+<<unit-lane-inversion-audit>>. The fourteen in <<pro-forma-audit>> are the work that remains, every
+one of them a named method with a `file:line` and a stated gap. Neither half is a coverage gap --
+the applied fourteen are closed, the remaining fourteen are a work list -- and that distinction is
+the one this section was built to keep.
+
+The `497c592` derivation and the 29 rows are kept below *as history*, because the earlier passes'
+selection and cap were derived from them. Read them as the record of what was outstanding, not as a
+present claim.
+====
+
 *29 files carrying 87 vacuous-shape marker occurrences were censused but not individually
-classified.* That is the standing backlog, and it is the honest measure of what these two passes did
-not cover between them.
+classified.* That was the standing backlog at `497c592`, and it was the honest measure of what the
+first two passes did not cover between them.
 
 *This table is corpus-wide, and that scope is load-bearing.* Its population is the whole D1 surface,
 not the integration lane <<pro-forma-audit>> read -- so the *43* marker-carrying `api-sheriff` files
-recorded in <<recensus-497c592>>, less the 14 read in full by the earlier passes, land *in the
-backlog*, because no pass has read the remaining 29. A reader must not take the exhaustive
+recorded in <<recensus-497c592>>, less the 14 read in full by the earlier passes, landed *in the
+backlog*, because no pass had then read the remaining 29. A reader must not take the exhaustive
 integration-lane pass as coverage of the rows below: every one of them is under
-`api-sheriff/src/test/**`, and none was opened.
+`api-sheriff/src/test/**`, and none had been opened at that commit. All 29 have since been read by
+<<unit-lane-audit>>.
 
 The growth from 93 to 103 `api-sheriff` files recorded in the same recensus is a *declared-surface*
 figure, not a marker-carrying one, so it does not size this table: a file can declare tests and carry
@@ -1293,10 +2243,11 @@ contribute nothing to a marker-defined population. The original control sample's
 `EgressAllowlistActivationWiringTest`, has moved from the control row into the integration-lane row,
 where it is now covered exhaustively rather than as a sample.
 
-*The integration-lane half of the backlog is now empty*, and that is the one substantive change this
-pass makes to the count. The 19 integration-tests rows the previous derivation listed -- including the
-three named gate-1 exclusions, `BffCookieSessionIT` among them -- are all classified in
-<<pro-forma-audit>>. What remains is entirely `api-sheriff`.
+*The integration-lane half of the backlog was emptied here*, and that was the one substantive change
+that pass made to the count. The 19 integration-tests rows the previous derivation listed -- including
+the three named gate-1 exclusions, `BffCookieSessionIT` among them -- are all classified in
+<<pro-forma-audit>>. What remained at that commit was entirely `api-sheriff`, and
+<<unit-lane-audit>> has since read all of it.
 
 === Backlog rows -- `api-sheriff/src/test/**` (29 files, 87 occurrences)
 
@@ -1345,17 +2296,22 @@ scope note above is warning about.
 
 === What the backlog is not
 
-It is *not* "various remaining tests". Every entry is a named file with its measured marker density,
-and where a gate excluded it that gate is named. Draining it means reading those 29 files and
-classifying their flagged methods -- work that is bounded and countable, not open-ended.
+It was *not* "various remaining tests". Every entry was a named file with its measured marker density,
+and where a gate excluded it that gate was named. Draining it meant reading those 29 files and
+classifying their flagged methods -- work that was bounded and countable, not open-ended. That is
+precisely what <<unit-lane-audit>> did, and the bound is why it could be planned at all.
 
-*Two independent samples now bound its expected yield, and they agree.* The original three-file
-control sample produced 0 `strengthen` verdicts from 6 flagged methods; <<pro-forma-audit>>'s
-exhaustive 56-file pass produced 14 from 203 declared methods, a 7% strengthen rate over a population
-selected by nothing at all. Both point the same way -- the corpus is stronger than a density ranking
-suggests -- and neither is a proof about the 29 files nobody has opened. What has changed since the
-first pass is only that the second sample is exhaustive over its own pool rather than a 6.5% slice,
-so "the yield is probably low" is now a claim with a real denominator behind it.
+*Two independent samples bounded its expected yield before it was drained, and the drain confirmed
+them.* The original three-file control sample produced 0 `strengthen` verdicts from 6 flagged
+methods; <<pro-forma-audit>>'s exhaustive 56-file pass produced 14 from 203 declared methods, a 7%
+strengthen rate over a population selected by nothing at all. Both pointed the same way -- the corpus
+is stronger than a density ranking suggests -- and neither was a proof about the 29 files nobody had
+opened.
+
+*They were right, and by a wider margin than they claimed.* The exhaustive unit-lane pass measured a
+0.7% strengthen rate over 1934 declared methods -- an order of magnitude below the integration lane's
+6.9% and below both predictions. The prediction is now retired along with the backlog it was about:
+what the samples were estimating has been counted.
 
 == Findings
 

@@ -162,6 +162,26 @@ public final class UpstreamAssetSource implements AssetSource {
     }
 
     /**
+     * The fetch seam this source will use — the one supplied to the
+     * {@linkplain #UpstreamAssetSource(ResolvedUpstream, AccessLevel, PathConfinement, UpstreamFetcher,
+     * long, Map) explicit-seam constructor}, or the one the
+     * {@linkplain #UpstreamAssetSource(ResolvedUpstream, AccessLevel, Map) short constructor} built.
+     * <p>
+     * It exists so the short constructor's wiring is verifiable: paired with
+     * {@link HttpUpstreamFetcher}'s budget accessors it makes the timeouts that constructor actually
+     * passed readable, where re-reading {@link #DEFAULT_CONNECT_TIMEOUT} and
+     * {@link #DEFAULT_READ_TIMEOUT} from their own declarations would establish nothing about what
+     * the constructor did with them. Package-private on purpose — this is a verification seam, not a
+     * configuration surface.
+     *
+     * @return the fetch seam this source fetches through
+     * @since 1.0
+     */
+    UpstreamFetcher fetcher() {
+        return fetcher;
+    }
+
+    /**
      * Serves the confined upstream asset addressed by {@code remainder}.
      *
      * @param method    the request verb; only {@code GET} and {@code HEAD} are served
@@ -261,14 +281,57 @@ public final class UpstreamAssetSource implements AssetSource {
      * @return the SSRF-guarded fetch seam
      */
     public static UpstreamFetcher httpFetcher(Duration connectTimeout, Duration readTimeout, long maxBytes) {
-        Objects.requireNonNull(connectTimeout, "connectTimeout");
-        Objects.requireNonNull(readTimeout, "readTimeout");
-        HttpClient client = HttpClient.newBuilder()
-                .sslContext(defaultSslContext())
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .connectTimeout(connectTimeout)
-                .build();
-        return target -> {
+        return new HttpUpstreamFetcher(connectTimeout, readTimeout, maxBytes);
+    }
+
+    /**
+     * The default fetch seam {@link #httpFetcher(Duration, Duration, long)} builds, as a named type
+     * rather than a lambda.
+     * <p>
+     * The behaviour is the lambda's, unchanged. What the named type adds is that the budgets it was
+     * constructed with stay readable afterwards: a lambda closing over two {@link Duration}s is
+     * opaque, so nothing downstream could tell which values a caller passed, and an assertion about
+     * a constructor's timeout wiring had no choice but to re-read the constants and establish
+     * nothing. Package-private, with package-private accessors — a verification seam, not a
+     * configuration surface.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    static final class HttpUpstreamFetcher implements UpstreamFetcher {
+
+        private final HttpClient client;
+        private final Duration connectTimeout;
+        private final Duration readTimeout;
+        private final long maxBytes;
+
+        HttpUpstreamFetcher(Duration connectTimeout, Duration readTimeout, long maxBytes) {
+            this.connectTimeout = Objects.requireNonNull(connectTimeout, "connectTimeout");
+            this.readTimeout = Objects.requireNonNull(readTimeout, "readTimeout");
+            this.maxBytes = maxBytes;
+            this.client = HttpClient.newBuilder()
+                    .sslContext(defaultSslContext())
+                    .followRedirects(HttpClient.Redirect.NEVER)
+                    .connectTimeout(connectTimeout)
+                    .build();
+        }
+
+        /**
+         * @return the connect budget this seam was built with
+         */
+        Duration connectTimeout() {
+            return connectTimeout;
+        }
+
+        /**
+         * @return the per-request read budget this seam was built with
+         */
+        Duration readTimeout() {
+            return readTimeout;
+        }
+
+        @Override
+        public Fetched fetch(URI target) throws IOException {
             HttpRequest request = HttpRequest.newBuilder(target).timeout(readTimeout).GET().build();
             HttpResponse<byte[]> response;
             try {
@@ -297,7 +360,7 @@ public final class UpstreamAssetSource implements AssetSource {
                 }
             });
             return new UpstreamFetcher.Fetched(response.statusCode(), headers, body, truncated);
-        };
+        }
     }
 
     /**

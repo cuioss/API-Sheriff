@@ -16,11 +16,11 @@
 package de.cuioss.sheriff.gateway.asset;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -378,10 +378,36 @@ class UpstreamAssetSourceTest {
     }
 
     @Test
-    @DisplayName("Should construct the default source with the SSRF-guarded transport fetcher")
+    @DisplayName("Should wire the default confinement, the verb gate and the declared timeout budgets")
     void shouldConstructWithDefaultFetcher() {
-        assertDoesNotThrow(() -> new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of()),
-                "the short constructor wires the default confinement, transport fetcher, timeouts, and cap");
+        UpstreamAssetSource source = new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of());
+
+        // The budgets are read off the seam the constructor actually built, not off the constants it is
+        // supposed to pass. Re-reading DEFAULT_CONNECT_TIMEOUT.toSeconds() would assert a constant
+        // against its own declaration and stay green if the constructor started passing something else
+        // entirely — the shape this suite's audit exists to remove.
+        UpstreamAssetSource.HttpUpstreamFetcher wired = assertInstanceOf(
+                UpstreamAssetSource.HttpUpstreamFetcher.class, source.fetcher(),
+                "the short constructor must wire the SSRF-guarded default seam — it is the object that "
+                        + "carries the budgets it was built with, so anything else leaves the two "
+                        + "assertions below with nothing to read");
+
+        // Both serve() legs below are answered before the default transport fetcher is ever reached, so
+        // neither touches the network. That is exactly what makes them assertable here: a short
+        // constructor that wired no confinement, or an anchor that confines nothing, would fall through
+        // to a real upstream fetch and answer 502 instead of 404.
+        assertAll(
+                () -> assertEquals(NOT_FOUND, source.serve(HttpMethod.GET, "../../secret").status(),
+                        "the default confinement is wired: an escape is refused before the upstream is touched"),
+                () -> assertEquals(METHOD_NOT_ALLOWED, source.serve(HttpMethod.POST, "app.js").status(),
+                        "the read-only verb gate governs the default source too"),
+                // Constant REFERENCE expected, method CALL actual — already AssertionsArgumentOrder's
+                // fixed point, so the gate leaves the order alone rather than inverting expected and
+                // actual (and with them every failure message these two could produce).
+                () -> assertEquals(UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT, wired.connectTimeout(),
+                        "the connect budget the short constructor passes is the declared five seconds"),
+                () -> assertEquals(UpstreamAssetSource.DEFAULT_READ_TIMEOUT, wired.readTimeout(),
+                        "the read budget the short constructor passes is the declared ten seconds"));
     }
 
     @Test
@@ -461,14 +487,32 @@ class UpstreamAssetSourceTest {
     }
 
     @Test
-    @DisplayName("Should build the default SSRF-guarded fetcher without error")
+    @DisplayName("Should build a default fetcher that refuses a non-HTTP target and demands both timeouts")
     void shouldBuildDefaultFetcher() {
         UpstreamFetcher fetcher = UpstreamAssetSource.httpFetcher(
                 UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT,
                 UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
                 AssetSource.DEFAULT_MAX_BYTES);
+        // Parsed outside the assertThrows lambda on purpose. Inside it, URI.create(..) and
+        // fetcher.fetch(..) are two invocations that can each raise IllegalArgumentException, so the
+        // assertion would not pin WHICH one refused the target — while its message claims the fetcher
+        // refused the scheme. Hoisting leaves fetch(..) as the lambda's only throwing invocation, so a
+        // pass is evidence for the message it carries.
+        URI fileTarget = URI.create("file:///etc/passwd");
 
-        assertNotNull(fetcher, "the default transport fetcher is wired");
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> fetcher.fetch(fileTarget),
+                        "the default seam is a real HTTP client confined to http/https — a file: target is "
+                                + "refused, where a hand-rolled stream-opening fetcher would read it"),
+                () -> assertThrows(NullPointerException.class,
+                        () -> UpstreamAssetSource.httpFetcher(null, UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
+                                AssetSource.DEFAULT_MAX_BYTES),
+                        "a seam without a connect timeout is refused rather than built unbounded"),
+                () -> assertThrows(NullPointerException.class,
+                        () -> UpstreamAssetSource.httpFetcher(UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT, null,
+                                AssetSource.DEFAULT_MAX_BYTES),
+                        "a seam without a read timeout is refused rather than built unbounded"));
     }
 
     private static void assertArrayEqualsBody(byte[] expected, byte[] actual) {

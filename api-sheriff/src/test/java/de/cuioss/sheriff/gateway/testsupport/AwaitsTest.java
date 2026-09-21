@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.testsupport;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -378,15 +379,18 @@ class AwaitsTest {
     }
 
     /**
-     * The public tier methods take no duration, so they cannot be driven to a timeout cheaply. What
-     * this pins instead is that each one genuinely reaches the instrumented core — a satisfied
-     * await returns through it rather than around it.
+     * Each public tier entry point must genuinely reach the instrumented core rather than around it.
+     * <p>
+     * The three value-returning entry points prove it by pass-through. The two {@code void} ones
+     * cannot, and an {@code assertDoesNotThrow} on them proves nothing at all — an empty method body
+     * satisfies it. Each is therefore driven to a failure only the core can produce: the latch entry
+     * point reports an interrupted caller, which an entry point that never awaited would not, and the
+     * condition entry point turns an unmet condition into the core's enriched, labelled timeout.
      */
     @Test
     @DisplayName("every public tier entry point delegates to the instrumented core")
     void publicTierEntryPointsDelegateToTheInstrumentedCore() {
         String expected = Generators.letterStrings(8, 16).next();
-        CountDownLatch alreadyAtZero = new CountDownLatch(0);
 
         assertAll("public tier surface",
                 () -> assertEquals(expected,
@@ -398,11 +402,34 @@ class AwaitsTest {
                 () -> assertEquals(expected,
                         Awaits.teardown(Future.succeededFuture(expected), CONTROL_LABEL),
                         "teardown returns the value of a succeeded Vert.x future"),
-                () -> assertDoesNotThrow(() -> Awaits.connect(alreadyAtZero, CONTROL_LABEL),
-                        "connect accepts a latch that has already reached zero"),
-                () -> assertDoesNotThrow(
-                        () -> Awaits.until(() -> true, CONTROL_LABEL, Awaits.TEARDOWN_CEILING_SECONDS),
-                        "until accepts a condition that already holds"));
+                () -> {
+                    CountDownLatch neverReachesZero = new CountDownLatch(1);
+                    Thread.currentThread().interrupt();
+                    try {
+                        assertThrows(InterruptedException.class,
+                                () -> Awaits.connect(neverReachesZero, CONTROL_LABEL),
+                                "connect(latch) awaits inside the core: an already-interrupted caller is "
+                                        + "reported as interrupted, where a body that never awaited returns");
+                        assertFalse(Thread.interrupted(),
+                                "the await consumed the interrupt, so no flag leaks into the next assertion");
+                    } finally {
+                        // Clear on every exit path, not only the one that reaches the assertFalse above.
+                        // Should connect(latch) wrongly RETURN, assertThrows raises before the flag is
+                        // consumed, and assertAll runs the remaining legs on this same thread — the next
+                        // one calls Awaits.until, which would then fail for the leaked interrupt rather
+                        // than for its own reason, reporting one real failure as two.
+                        Thread.interrupted();
+                    }
+                },
+                () -> {
+                    TimeoutException failure = assertThrows(TimeoutException.class,
+                            () -> Awaits.until(() -> false, CONTROL_LABEL,
+                                    Awaits.TEARDOWN_CEILING_SECONDS),
+                            "until reaches the core, which is what turns an unmet condition into a "
+                                    + "TimeoutException rather than an Awaitility exception or nothing");
+                    assertTrue(failure.getMessage().contains(CONTROL_LABEL),
+                            "and the caller's label reaches the diagnostics the core builds");
+                });
     }
 
     @Test
