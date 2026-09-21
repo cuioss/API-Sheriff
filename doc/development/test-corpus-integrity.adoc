@@ -1966,8 +1966,7 @@ its argument -- so a reader can see exactly which claims rest on an observed RED
 | `ConfigModelContractTest.shouldHonorValueObjectContract`
 | failed on two cases: `[2] a diagnostic rendering names its own type rather than a package-qualified
   identity hash: de.cuioss.sheriff.gateway.config.model.Metadata@1653b84e ==> expected: <true> but
-  was: <false>`, and `[1] equal instances render equally -- an identity-based rendering would not`,
-  because `GatewayConfig`'s own rendering embeds the record's
+  was: <false>`, and `[1] equal instances render equally -- an identity-based rendering would not`
 
 | `SealedSessionCookieCodec.deflate` pads the plaintext with 2048 incompressible bytes before
   compressing

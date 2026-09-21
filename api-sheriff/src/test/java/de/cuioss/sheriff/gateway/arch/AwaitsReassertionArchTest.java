@@ -157,9 +157,8 @@ class AwaitsReassertionArchTest {
      * @return {@code true} when the sweep must not scan it
      */
     private static boolean isCarvedOutSource(Path path) {
-        String normalised = path.toString().replace('\\', '/');
-        return normalised.contains("/" + SPECIMEN_DIRECTORY + "/")
-                || normalised.endsWith("/AwaitsReassertionArchTest.java");
+        return isSpecimenSource(path)
+                || path.toString().replace('\\', '/').endsWith("/AwaitsReassertionArchTest.java");
     }
 
     /**
