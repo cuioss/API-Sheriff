@@ -2192,10 +2192,13 @@ in full*, so no marker-carrying file remains censused-but-unclassified in either
 ! *-- censused, not individually classified (the backlog)* ! *0* ! *0*
 !===
 
-What replaces it is not "nothing left to do" but a *different* residue: the fourteen `strengthen`
-verdicts in <<unit-lane-audit>> and the fourteen in <<pro-forma-audit>>, every one of them a named
-method with a `file:line` and a stated gap. That is a work list, not a coverage gap, and the
-distinction is the one this section was built to keep.
+What replaces it is not "nothing left to do" but a *different* residue, and the twenty-eight
+`strengthen` verdicts split cleanly in two. The fourteen in <<unit-lane-audit>> are no longer
+outstanding at all: they were applied at `857822d` and each one was inversion-verified in
+<<unit-lane-inversion-audit>>. The fourteen in <<pro-forma-audit>> are the work that remains, every
+one of them a named method with a `file:line` and a stated gap. Neither half is a coverage gap --
+the applied fourteen are closed, the remaining fourteen are a work list -- and that distinction is
+the one this section was built to keep.
 
 The `497c592` derivation and the 29 rows are kept below *as history*, because the earlier passes'
 selection and cap were derived from them. Read them as the record of what was outstanding, not as a

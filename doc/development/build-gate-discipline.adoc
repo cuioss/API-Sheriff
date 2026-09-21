@@ -157,11 +157,13 @@ OpenRewrite was inactive. When it disagrees with the log, the log wins.
 
 === Never hand-edit formatter-owned whitespace, wrapping or import order
 
-Whitespace, line wrapping and import order belong to the formatter. Editing them by hand puts you
-in a loop against a mechanism that is not idempotent: two rounds of "reformat by hand, re-run the
-gate, get a different result" is not bad luck, it is a proof of the non-idempotency described
-above. Stop at that point and revert the cosmetic edits rather than trying to find the arrangement
-the formatter will accept -- there is not one.
+Whitespace, line wrapping and import order belong to the formatter -- not in the sense that it
+prefers them, but in the sense that it *writes* them, on every run, from its own rules. Editing
+them by hand therefore puts you in a loop against ownership: the gate reasserts its own output and
+your arrangement is reverted, so "reformat by hand, re-run the gate, get a different result" is the
+mechanism working exactly as specified rather than a fault in it. Stop at that point and revert the
+cosmetic edits rather than trying to find the arrangement the formatter will accept -- the only
+arrangement it accepts is the one it produces itself.
 
 == The revert rule, and the objection to it
 
