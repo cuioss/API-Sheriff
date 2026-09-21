@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   integration-tests:
-    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-integration-tests.yml@9cffe3a2febb07d668784a1257b025101228754d # v0.27.0
+    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-integration-tests.yml@7f1bac840abf425e30dcc8b01b45fdf9b74889bd # v0.28.0
     with:
       # This job's own history sits at ~16 minutes (15m33s - 16m39s over the last
       # four green runs), against the reusable workflow's 20-minute default. ~20%
