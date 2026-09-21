@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.gateway.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -207,8 +206,20 @@ class PassthroughHostGuardStageTest {
             // Arrange — with no passthrough SNI configured there is no reserved identity to smuggle
             PipelineRequest request = requestWithHost(PASSTHROUGH_SNI);
 
-            // Act + Assert
-            assertDoesNotThrow(() -> inertStage.process(request));
+            // Act
+            inertStage.process(request);
+
+            // Assert — the admission is already attributable via rejectsSmuggledHost, which refuses
+            // this very Host through a guarded stage. What not throwing cannot carry is the other
+            // half of the name: that the pass is a *no-op*. Both siblings in this class assert the
+            // untouched-state triple, and an inert guard owes exactly the same.
+            assertAll("inert guard leaves the request as it arrived",
+                    () -> assertEquals(PASSTHROUGH_SNI, request.host(),
+                            "The inert guard must not rewrite the Host it did not reserve"),
+                    () -> assertNull(request.selectedRoute(),
+                            "The guard runs before route selection and must select no route"),
+                    () -> assertNull(request.canonicalPath(),
+                            "The guard must not canonicalize the request it passes through"));
         }
     }
 

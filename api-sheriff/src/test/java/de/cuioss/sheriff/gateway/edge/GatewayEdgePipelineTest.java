@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -263,7 +262,10 @@ class GatewayEdgePipelineTest {
 
         // Assert
         assertEquals(405, response.status());
-        assertNotNull(response.headers().get("Allow"), "a 405 names the permitted verbs in the Allow header");
+        // The route declares GET and POST, so the permitted set is assertable exactly. Presence alone
+        // would be satisfied by an Allow header naming the very verb that was just refused.
+        assertEquals("GET, POST", response.headers().get("Allow"),
+                "a 405 names the route's permitted verbs — and only those — in the Allow header");
     }
 
     @Test
@@ -358,8 +360,10 @@ class GatewayEdgePipelineTest {
         assertEquals(204, response.status());
         assertEquals(ORIGIN, response.headers().get("Access-Control-Allow-Origin"),
                 "the preflight reflects the allow-listed origin");
-        assertNotNull(response.headers().get("Access-Control-Allow-Methods"),
-                "the preflight advertises the allowed methods");
+        // The fixture's CORS block declares GET and POST, so what is advertised is assertable exactly.
+        // Presence alone would be satisfied by a preflight advertising a verb the policy never allowed.
+        assertEquals("GET, POST", response.headers().get("Access-Control-Allow-Methods"),
+                "the preflight advertises the configured allowed methods, and only those");
     }
 
     @Test

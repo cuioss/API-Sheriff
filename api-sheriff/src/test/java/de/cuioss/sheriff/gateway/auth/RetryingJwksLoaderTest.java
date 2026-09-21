@@ -271,12 +271,24 @@ class RetryingJwksLoaderTest {
         @Test
         @DisplayName("close releases the delegate and describes the loader without its URL")
         void closeAndToString() throws Exception {
-            // Arrange
-            RetryingJwksLoader loader = httpLoader();
+            // Arrange — the endpoint never succeeds, so a retry episode is live and a re-dial is
+            // already scheduled: there is something for close() to release.
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            Duration retryDelay = Duration.ofMillis(250);
+            RetryingJwksLoader loader = httpLoader(retryDelay, REFRESH_INTERVAL);
             initialise(loader);
+            int requestsBeforeClose = server.getRequestCount();
 
-            // Act + Assert
-            assertDoesNotThrow(loader::close);
+            // Act
+            loader.close();
+            drainScheduler(retryDelay.multipliedBy(4));
+
+            // Assert — the release is observable on the delegate rather than only on the flag: past
+            // the barrier the cancelled retry has not dialled. A close() that rendered a tidy
+            // toString while leaving the delegate running would have fetched at least once more,
+            // which is the half the old assertDoesNotThrow(loader::close) could not distinguish.
+            assertEquals(requestsBeforeClose, server.getRequestCount(),
+                    "a closed loader releases its delegate and issues no further fetch");
             String rendered = loader.toString();
             assertTrue(rendered.contains(ISSUER_NAME));
             assertFalse(rendered.contains(String.valueOf(server.getPort())), "the JWKS URL is never rendered");

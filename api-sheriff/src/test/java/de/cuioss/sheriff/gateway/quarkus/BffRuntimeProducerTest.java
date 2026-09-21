@@ -66,6 +66,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
@@ -375,10 +377,50 @@ class BffRuntimeProducerTest {
                     .build();
 
             BffRuntime generated = producer(noKey).bffRuntime();
+            BffRuntime secondBoot = producer(noKey).bffRuntime();
 
-            assertTrue(generated.isActive(),
-                    "omitting the key selects generate-on-startup, a supported production mode — not a boot failure");
-            assertNotNull(generated.sessionStage());
+            // isActive() and a non-null sessionStage say the runtime came up; neither says a key was
+            // generated, and both are satisfied by a cookie-mode runtime that came up with no key at
+            // all. Reach the codec the producer actually assembled and make it do the one thing a key
+            // is for — then prove the key is fresh per startup rather than a shipped constant.
+            SealedSessionCookieCodec codec = assembledCodecOf(generated);
+            SealedSessionPayload session = cookieSession();
+            String sealed = assertDoesNotThrow(() -> codec.seal(session));
+
+            assertAll("cookie mode generated a usable, per-startup key",
+                    () -> assertTrue(generated.isActive(),
+                            "omitting the key selects generate-on-startup, a supported production mode "
+                                    + "— not a boot failure"),
+                    () -> assertNotNull(generated.sessionStage()),
+                    () -> assertEquals(Optional.of(new SealedSessionCookieCodec.Unsealed(session)),
+                            codec.unseal(sealed),
+                            "the generated key seals and unseals a real session"),
+                    () -> assertTrue(assembledCodecOf(secondBoot).unseal(sealed).isEmpty(),
+                            "and the key is generated per startup: a second boot cannot open the first "
+                                    + "boot's cookie, which a hard-coded or absent key would"));
+        }
+
+        /**
+         * The single {@link SealedSessionCookieCodec} the cookie-mode producer wired, located by the
+         * same bounded object-graph walk the query-mode assertions use.
+         *
+         * @param runtime the assembled cookie-mode runtime
+         * @return the codec the producer built
+         */
+        private SealedSessionCookieCodec assembledCodecOf(BffRuntime runtime) {
+            List<SealedSessionCookieCodec> wired =
+                    reachableInstancesOf(runtime, SealedSessionCookieCodec.class);
+            assertFalse(wired.isEmpty(),
+                    "no SealedSessionCookieCodec was reachable from the cookie-mode runtime — this test "
+                            + "must never pass vacuously; if the producer's wiring moved, retarget the walk");
+            return wired.getFirst();
+        }
+
+        /** A minimal but real cookie session; the login instant carries no sub-second part the wire form would drop. */
+        private static SealedSessionPayload cookieSession() {
+            return new SealedSessionPayload("raw-access-token", null, "raw-id-token", "user-sub-1",
+                    null, null, null, Instant.ofEpochSecond(Instant.now().getEpochSecond()),
+                    "session-nonce-material");
         }
 
         @Test

@@ -16,17 +16,17 @@
 package de.cuioss.sheriff.gateway.asset;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -378,10 +378,23 @@ class UpstreamAssetSourceTest {
     }
 
     @Test
-    @DisplayName("Should construct the default source with the SSRF-guarded transport fetcher")
+    @DisplayName("Should wire the default confinement, the verb gate and the declared timeout budgets")
     void shouldConstructWithDefaultFetcher() {
-        assertDoesNotThrow(() -> new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of()),
-                "the short constructor wires the default confinement, transport fetcher, timeouts, and cap");
+        UpstreamAssetSource source = new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of());
+
+        // Both serve() legs below are answered before the default transport fetcher is ever reached, so
+        // neither touches the network. That is exactly what makes them assertable here: a short
+        // constructor that wired no confinement, or an anchor that confines nothing, would fall through
+        // to a real upstream fetch and answer 502 instead of 404.
+        assertAll(
+                () -> assertEquals(NOT_FOUND, source.serve(HttpMethod.GET, "../../secret").status(),
+                        "the default confinement is wired: an escape is refused before the upstream is touched"),
+                () -> assertEquals(METHOD_NOT_ALLOWED, source.serve(HttpMethod.POST, "app.js").status(),
+                        "the read-only verb gate governs the default source too"),
+                () -> assertEquals(Duration.ofSeconds(5), UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT,
+                        "the connect budget the short constructor passes is the declared five seconds"),
+                () -> assertEquals(Duration.ofSeconds(10), UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
+                        "the read budget the short constructor passes is the declared ten seconds"));
     }
 
     @Test
@@ -461,14 +474,26 @@ class UpstreamAssetSourceTest {
     }
 
     @Test
-    @DisplayName("Should build the default SSRF-guarded fetcher without error")
+    @DisplayName("Should build a default fetcher that refuses a non-HTTP target and demands both timeouts")
     void shouldBuildDefaultFetcher() {
         UpstreamFetcher fetcher = UpstreamAssetSource.httpFetcher(
                 UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT,
                 UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
                 AssetSource.DEFAULT_MAX_BYTES);
 
-        assertNotNull(fetcher, "the default transport fetcher is wired");
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> fetcher.fetch(URI.create("file:///etc/passwd")),
+                        "the default seam is a real HTTP client confined to http/https — a file: target is "
+                                + "refused, where a hand-rolled stream-opening fetcher would read it"),
+                () -> assertThrows(NullPointerException.class,
+                        () -> UpstreamAssetSource.httpFetcher(null, UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
+                                AssetSource.DEFAULT_MAX_BYTES),
+                        "a seam without a connect timeout is refused rather than built unbounded"),
+                () -> assertThrows(NullPointerException.class,
+                        () -> UpstreamAssetSource.httpFetcher(UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT, null,
+                                AssetSource.DEFAULT_MAX_BYTES),
+                        "a seam without a read timeout is refused rather than built unbounded"));
     }
 
     private static void assertArrayEqualsBody(byte[] expected, byte[] actual) {

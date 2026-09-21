@@ -15,9 +15,11 @@
  */
 package de.cuioss.sheriff.gateway.pipeline;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -58,8 +60,18 @@ class VerbGateStageTest {
         PipelineRequest request = requestFor(HttpMethod.GET);
         request.selectedRoute(routeAllowing(EnumSet.of(HttpMethod.GET, HttpMethod.POST)));
 
-        // Act + Assert
-        assertDoesNotThrow(() -> stage.process(request));
+        // Act
+        stage.process(request);
+
+        // Assert — "untouched" is the half a bare no-throw cannot carry. The matched rejection control
+        // above already proves the gate is not inert; what is left unasserted by not throwing is that an
+        // admitted verb leaves no refusal state behind — a stage that let GET through and still seeded
+        // the 405's Allow header onto the response would stay green.
+        assertAll("an admitted verb leaves no refusal state behind",
+                () -> assertNull(request.responseHeaders().get("Allow"),
+                        "Allow belongs to the 405 refusal, never to an admitted verb"),
+                () -> assertTrue(request.responseHeaders().isEmpty(),
+                        "the gate writes no response header at all on the pass path"));
     }
 
     private static RouteRuntime routeAllowing(EnumSet<HttpMethod> methods) {

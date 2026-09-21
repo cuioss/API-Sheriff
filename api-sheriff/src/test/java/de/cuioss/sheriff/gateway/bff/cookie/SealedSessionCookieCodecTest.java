@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.bff.cookie;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -328,8 +327,18 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should seal a realistic payload well inside the budget")
-        void shouldSealRealisticPayload() {
-            assertDoesNotThrow(() -> codec.seal(payload()));
+        void shouldSealRealisticPayload() throws Exception {
+            String sealed = codec.seal(payload());
+
+            int sealedBytes = sealed.getBytes(StandardCharsets.UTF_8).length;
+            // "Well inside" is a measurement, and only a measured length can carry it. Not throwing
+            // says the seal completed; it says nothing about where the emitted value landed against
+            // the budget, so a payload that grew to one byte under the ceiling would still pass.
+            assertTrue(sealedBytes <= BUDGET / 2,
+                    () -> "a realistic single-session payload sealed to " + sealedBytes
+                            + " bytes, which is not well inside the " + BUDGET + "-byte budget");
+            assertEquals(Optional.of(new Unsealed(payload())), codec.unseal(sealed),
+                    "a length that no longer unseals would be a meaningless measurement");
         }
     }
 
