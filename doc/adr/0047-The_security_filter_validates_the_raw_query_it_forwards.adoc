@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: The per-route security filter receives the query in its raw, still-percent-encoded wire form — names through cui-http's PARAMETER_NAME pipeline, values through PARAMETER_VALUE — and the forward path emits exactly those validated pairs verbatim and in wire order (an ordered pair sequence, never a name-keyed map), so the validated form equals the forwarded form, except that a raw ';' is written as %3B on every route to prevent parameter smuggling (CWE-235); the forward allow/deny lists compare the percent-decoded name while the raw pair crosses, and the reserved BFF parameters read their decoded value from the transport.
+// summary: Routes using parameter validation receive the query in its raw, still-percent-encoded wire form — names through cui-http's PARAMETER_NAME pipeline, values through PARAMETER_VALUE — and the forward path emits exactly those validated pairs verbatim and in wire order (an ordered pair sequence, never a name-keyed map), so the validated form equals the forwarded form, except that a raw ';' is written as %3B on every route to prevent parameter smuggling (CWE-235); the forward allow/deny lists compare the percent-decoded name while the raw pair crosses, and the reserved BFF parameters read their decoded value from the transport.
 // tags: request-pipeline, security-filter, query-validation, forward-policy, cui-http, canonicalization
 // affects: api-sheriff
 // supersedes:
