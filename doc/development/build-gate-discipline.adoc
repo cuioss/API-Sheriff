@@ -23,6 +23,24 @@ lost the moment a change lands that the recipes want to rewrite, and nothing ann
 The three mechanisms below are what happens on that run. They are dormant, not retired, and every
 rule on this page is written for the run on which they wake up.
 
+[[fixed-point-2026-09-21]]
+*MEASURED (2026-09-21), and it is the inherited tree that is at the fixed point, not every tree.*
+Re-measured against `main` at `3abc370`. The inherited sources still produce zero attributions --
+so the sentence above holds, and specifically *the standing two-file churn that a plan had predicted
+for `SniFrontListener.java` and `LoopbackEphemeralBindArchTest.java` did not reproduce*: neither file
+appeared in `git status --porcelain` after the gate, and neither appeared in any attribution block.
+That prediction is recorded here as *refuted by measurement* rather than dropped, because acting on
+it would have meant changing an `activeRecipes` list that nothing was wrong with.
+
+What the same run did rewrite was *four test sources the branch had just authored* -- and that is the
+distinction the paragraph above hides. "At the fixed point" is a property of the sources already in
+the tree. Sources a branch adds have never been past the recipes, so the first gate run that sees
+them pulls them in, and it does so by construction rather than by drift. The recipes involved are
+named in <<junit5-best-practices>>. Read the practical consequence off the revert rule further down
+rather than off the count: churn in files the branch itself authored is *kept*, and the fixed point
+is regained by committing the normalized form -- which is a different disposition from the unrelated
+churn the same rule says to revert.
+
 === OpenRewrite import-group churn
 
 The `pre-commit` profile's `activeRecipes` override in the root `pom.xml` activates
@@ -67,13 +85,51 @@ The prior claim that "`main` is at the fixed point today" was also false at the 
 `main` was 180 files away from it. That is what this change lands -- the fixed point itself, so the
 claim becomes true rather than aspirational.
 
-=== `SimplifyTestThrows` silently reverts an accepted narrowing
+*MEASURED (2026-09-21) -- convergence re-confirmed, on a much smaller sample.* A branch adding four
+test sources ran the gate four times in sequence. Run 1 rewrote all four and printed their
+attribution blocks. The rewrite was kept, three further corrections were authored on top, and run 2
+produced *zero* attribution blocks -- so one pass reached the fixed point here too. The normalized
+form was then committed, and runs 3 and 4 over that committed tree each exited 0 and left
+`git status --porcelain` *empty*. `rewrite:run` was confirmed active on every one of them
+(`Using active recipe(s) [...]`, seventeen recipes, in every module), which is what separates a
+converged tree from the `Using active recipe(s) []` false negative the
+<<the-recipe-scoping-trap,recipe-scoping trap>> describes.
+
+Read the sample for what it is -- four files rather than 180, and a different recipe set doing the
+rewriting -- so it corroborates the 2026-09-01 measurement rather than re-establishing it.
+
+[[junit5-best-practices]]
+=== `JUnit5BestPractices` rewrites test sources, and one of its sub-recipes inverts an assertion
 
 `org.openrewrite.java.testing.junit5.JUnit5BestPractices` -- also in the `pre-commit` profile's
-recipe list -- reaches `SimplifyTestThrows`, which broadens a narrowed `throws` clause on a test
-method back to `throws Exception`. When a review bot asks for a narrower clause and the narrowing
-is implemented and then run through the gate, the recipe reverts it, and the gate exits 0 over the
-reverted form. The change is gone and every visible signal says the work landed.
+recipe list -- is a composite, and three of the sub-recipes it reaches rewrite ordinary,
+correctly-written test code. All three were *MEASURED (2026-09-21)* on one branch's four
+newly-authored test sources, each read out of the gate log's own attribution blocks:
+
+`SimplifyTestThrows`:: Broadens a narrowed `throws` clause on a test method back to
+`throws Exception`. When a review bot asks for a narrower clause and the narrowing is implemented and
+then run through the gate, the recipe reverts it, and the gate exits 0 over the reverted form. The
+change is gone and every visible signal says the work landed. It also strands the Javadoc: an
+`@throws TimeoutException` tag survives a signature the recipe has rewritten to `Exception`, and
+nothing in the gate notices.
+
+`TestsShouldNotBePublic`:: Drops `public` from a test class. Harmless where nothing outside the
+package needs the type -- but it is a *visibility* change applied to source the author just wrote,
+so it belongs on this page rather than in the surprise column.
+
+`AssertionsArgumentOrder`:: *The one to watch.* It moves what it takes to be the expected value into
+the first argument -- and it reads a *constant reference* as the expected value and a *method call*
+as the actual. So `assertEquals(Duration.ofSeconds(5), SOME_CONSTANT)` is rewritten to
+`assertEquals(SOME_CONSTANT, Duration.ofSeconds(5))`, which **inverts expected and actual** and
+therefore inverts every failure message that assertion can produce. The assertion still passes, so
+nothing draws attention to it; only a later failure shows the inversion, at the moment it is least
+convenient. Write the assertion with a *literal* in the expected position -- `assertEquals(5,
+SOME_CONSTANT.toSeconds(), "...")` -- which is already at the recipe's fixed point and keeps the
+conventional order.
+
+The general point is the one the revert rule makes: a branch's own new test sources get rewritten on
+their first gate run, that rewrite is *kept* rather than reverted, and it is reviewed before it is
+kept. `AssertionsArgumentOrder` is why the review is not a formality.
 
 == The three operational consequences
 
@@ -125,6 +181,7 @@ run the churn is back and the revert-versus-commit question is live again, with 
 Running `git status --porcelain` after the gate is what tells a contributor which kind of run they
 are on -- there is no other signal, because the gate exits 0 either way.
 
+[[the-recipe-scoping-trap]]
 == The recipe-scoping trap
 
 A reproduction that drops the profile does not reproduce anything. `rewrite:run` *without*

@@ -26,7 +26,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -391,9 +390,15 @@ class UpstreamAssetSourceTest {
                         "the default confinement is wired: an escape is refused before the upstream is touched"),
                 () -> assertEquals(METHOD_NOT_ALLOWED, source.serve(HttpMethod.POST, "app.js").status(),
                         "the read-only verb gate governs the default source too"),
-                () -> assertEquals(Duration.ofSeconds(5), UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT,
+                // Asserted in seconds rather than against a Duration.ofSeconds(..) call, and not because
+                // seconds read better. AssertionsArgumentOrder treats a constant REFERENCE as the
+                // expected value and a method CALL as the actual, so the Duration spelling is rewritten
+                // by the gate into assertEquals(DEFAULT_CONNECT_TIMEOUT, Duration.ofSeconds(5)) — which
+                // inverts expected and actual and so inverts every failure message this assertion could
+                // produce. A literal in the expected position is already at that recipe's fixed point.
+                () -> assertEquals(5, UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT.toSeconds(),
                         "the connect budget the short constructor passes is the declared five seconds"),
-                () -> assertEquals(Duration.ofSeconds(10), UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
+                () -> assertEquals(10, UpstreamAssetSource.DEFAULT_READ_TIMEOUT.toSeconds(),
                         "the read budget the short constructor passes is the declared ten seconds"));
     }
 

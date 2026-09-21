@@ -45,7 +45,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
-public final class AwaitsWithReassertionSpecimen {
+final class AwaitsWithReassertionSpecimen {
 
     private static final String LABEL = "a condition that already holds";
 
@@ -56,10 +56,13 @@ public final class AwaitsWithReassertionSpecimen {
      * The compliant shape: the wait is followed by an assertion on the state it waited for, so the
      * post-state — not the poll — is the evidence the method leaves behind.
      *
-     * @throws TimeoutException never, because the condition is already satisfied
+     * @throws Exception never, because the condition is already satisfied. The clause is
+     *                   {@code Exception} rather than the {@code TimeoutException} the wait declares
+     *                   because {@code SimplifyTestThrows} broadens it on every declared test; the
+     *                   helper below keeps the narrow clause precisely because it is not one
      */
     @Test
-    void waitsThenReasserts() throws TimeoutException {
+    void waitsThenReasserts() throws Exception {
         Awaits.until(SETTLED::get, LABEL, Awaits.TEARDOWN_CEILING_SECONDS);
 
         assertTrue(SETTLED.get(), "the awaited state, re-asserted after the wait");

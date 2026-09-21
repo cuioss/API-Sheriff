@@ -247,7 +247,7 @@ class AwaitsReassertionArchTest {
             if (close < 0) {
                 continue;
             }
-            bodies.add(new int[] {open + 1, close});
+            bodies.add(new int[]{open + 1, close});
             from = close;
         }
         return bodies;
@@ -371,7 +371,7 @@ class AwaitsReassertionArchTest {
 
     @Test
     @DisplayName("Every declared test that waits on a condition re-asserts it after the wait")
-    void everyAwaitedTestReassertsAfterTheWait() throws IOException {
+    void everyAwaitedTestReassertsAfterTheWait() throws Exception {
         List<String> offenders = new ArrayList<>();
         for (Path source : guardedSources()) {
             offenders.addAll(offendersIn(source.getFileName().toString(), Files.readString(source)));
@@ -399,7 +399,7 @@ class AwaitsReassertionArchTest {
      */
     @Test
     @DisplayName("Until-then-re-assert guard is non-vacuous: sources, test methods and awaited sites all resolve")
-    void guardIsNonVacuous() throws IOException {
+    void guardIsNonVacuous() throws Exception {
         List<Path> sources = guardedSources();
         int testMethods = 0;
         int awaitedSites = 0;
@@ -441,7 +441,7 @@ class AwaitsReassertionArchTest {
          */
         @Test
         @DisplayName("Sweep reports both deliberate violations in the specimen (negative control)")
-        void sweepReportsTheSpecimenWithoutReassertion() throws IOException {
+        void sweepReportsTheSpecimenWithoutReassertion() throws Exception {
             Path specimen = TEST_SOURCE_ROOT.resolve(WITHOUT_REASSERTION_SPECIMEN);
             assertTrue(Files.exists(specimen),
                     "The negative-control specimen is missing at " + specimen
@@ -464,7 +464,7 @@ class AwaitsReassertionArchTest {
          */
         @Test
         @DisplayName("Sweep accepts the re-asserting test in the matched specimen (positive control)")
-        void sweepAcceptsTheReassertingTest() throws IOException {
+        void sweepAcceptsTheReassertingTest() throws Exception {
             Path specimen = TEST_SOURCE_ROOT.resolve(WITH_REASSERTION_SPECIMEN);
             assertTrue(Files.exists(specimen),
                     "The positive-control specimen is missing at " + specimen
@@ -490,7 +490,7 @@ class AwaitsReassertionArchTest {
          */
         @Test
         @DisplayName("Sweep leaves the helper-tier await alone, and the near miss still holds (positive control)")
-        void sweepLeavesTheHelperTierAwaitAlone() throws IOException {
+        void sweepLeavesTheHelperTierAwaitAlone() throws Exception {
             Path specimen = TEST_SOURCE_ROOT.resolve(WITH_REASSERTION_SPECIMEN);
             String content = Files.readString(specimen);
             String code = blankNonCode(content);
@@ -519,7 +519,7 @@ class AwaitsReassertionArchTest {
          */
         @Test
         @DisplayName("The specimen package is excluded from the production selection by name (carve-out)")
-        void specimenPackageIsExcludedFromTheProductionSelection() throws IOException {
+        void specimenPackageIsExcludedFromTheProductionSelection() throws Exception {
             Path specimen = TEST_SOURCE_ROOT.resolve(WITHOUT_REASSERTION_SPECIMEN);
 
             assertFalse(offendersIn(specimen.getFileName().toString(), Files.readString(specimen)).isEmpty(),

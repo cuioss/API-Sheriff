@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.arch.specimen;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 
@@ -49,7 +48,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
-public final class AwaitsWithoutReassertionSpecimen {
+final class AwaitsWithoutReassertionSpecimen {
 
     private static final String LABEL = "a condition that already holds";
 
@@ -60,10 +59,13 @@ public final class AwaitsWithoutReassertionSpecimen {
      * The deliberate violation in its plainest spelling: the wait is the whole test, so the only
      * evidence the method ever produces is that the condition held at some point during polling.
      *
-     * @throws TimeoutException never, because the condition is already satisfied
+     * @throws Exception never, because the condition is already satisfied. The clause is
+     *                   {@code Exception} rather than the {@code TimeoutException} the wait declares
+     *                   because {@code SimplifyTestThrows} broadens it; see
+     *                   {@code doc/development/build-gate-discipline.adoc}
      */
     @Test
-    void waitsAndAssertsNothing() throws TimeoutException {
+    void waitsAndAssertsNothing() throws Exception {
         Awaits.until(SETTLED::get, LABEL, Awaits.TEARDOWN_CEILING_SECONDS);
     }
 
@@ -72,10 +74,10 @@ public final class AwaitsWithoutReassertionSpecimen {
      * pre-state, then waits, and stops — so the post-state is still unasserted. A guard that asked
      * only "does this test assert anything?" would accept it.
      *
-     * @throws TimeoutException never, because the condition is already satisfied
+     * @throws Exception never, because the condition is already satisfied
      */
     @Test
-    void assertsBeforeTheWaitAndNotAfter() throws TimeoutException {
+    void assertsBeforeTheWaitAndNotAfter() throws Exception {
         assertTrue(SETTLED.get(), "the pre-state, asserted before the wait");
         Awaits.until(SETTLED::get, LABEL, Awaits.TEARDOWN_CEILING_SECONDS);
     }
