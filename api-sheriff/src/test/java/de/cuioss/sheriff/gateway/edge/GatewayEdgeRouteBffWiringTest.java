@@ -511,7 +511,8 @@ class GatewayEdgeRouteBffWiringTest {
             // is set would pass for a short-circuit to any target at all, including the attacker's.
             assertEquals(Optional.of("/home"), response.locationOptional(),
                     "the short-circuit goes to the requested same-origin return URL");
-            assertEquals(Optional.of(LoginFlow.DEFAULT_RETURN_URL), crossOrigin.locationOptional(),
+            // "/" is this fixture's configured default return URL (no oidc.login.default_return_url).
+            assertEquals(Optional.of("/"), crossOrigin.locationOptional(),
                     "control: a cross-origin return URL is refused and replaced by the default, which is "
                             + "what makes the assertion above one about validation rather than about "
                             + "there being any Location header at all");
