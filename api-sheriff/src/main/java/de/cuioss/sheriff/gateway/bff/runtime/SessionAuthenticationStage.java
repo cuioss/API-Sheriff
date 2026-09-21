@@ -63,7 +63,11 @@ import org.jspecify.annotations.Nullable;
  *       {@code application/problem+json} for every request, navigation included;</li>
  *   <li>records the mediated access token on the request for automatic upstream injection as
  *       {@code Authorization: Bearer} ({@link PipelineRequest#mediatedBearer(String)} — never an
- *       operator-configured header). The token material is never disclosed to the browser up to
+ *       operator-configured header) — but only when the route's effective {@code auth.token_relay}
+ *       is {@code true} (the default). With {@code token_relay: false} the session is still
+ *       resolved, refreshed and required, so the unauthenticated {@code 302}/{@code 401}
+ *       negotiation is unchanged, yet no bearer is recorded and the upstream receives no
+ *       {@code Authorization} header. The token material is never disclosed to the browser up to
  *       this point; the forward stage renders the bearer and the session cookie never crosses.</li>
  * </ol>
  * An <strong>unauthenticated</strong> request is content-negotiated: a <em>navigation</em> request
@@ -146,7 +150,11 @@ public final class SessionAuthenticationStage {
         switch (refreshed) {
             case RefreshResult.Mediate(SessionBinding.BoundSession bound) -> {
                 emitSetCookies(request, bound.setCookieHeaders());
-                request.mediatedBearer(bound.session().accessToken());
+                // token_relay: false keeps the session fully in force — resolved, refreshed and
+                // required — but withholds the access token from the upstream: no Authorization.
+                if (route.getEffectiveAuth().effectiveTokenRelay()) {
+                    request.mediatedBearer(bound.session().accessToken());
+                }
             }
             case RefreshResult.SessionEnded() -> {
                 // The seam destroyed the session (the identity provider rejected the refresh token —
