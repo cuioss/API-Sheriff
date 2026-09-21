@@ -410,9 +410,15 @@ class BffRuntimeProducerTest {
         private SealedSessionCookieCodec assembledCodecOf(BffRuntime runtime) {
             List<SealedSessionCookieCodec> wired =
                     reachableInstancesOf(runtime, SealedSessionCookieCodec.class);
-            assertFalse(wired.isEmpty(),
-                    "no SealedSessionCookieCodec was reachable from the cookie-mode runtime — this test "
-                            + "must never pass vacuously; if the producer's wiring moved, retarget the walk");
+            // Exactly one, not merely at least one. The walk de-duplicates by identity but returns every
+            // DISTINCT codec, so a second one reaching the graph would leave getFirst() free to hand back
+            // the codec the runtime path does not use — and every assertion built on it would then be
+            // about the wrong object while still passing.
+            assertEquals(1, wired.size(),
+                    "the cookie-mode runtime must expose exactly one reachable SealedSessionCookieCodec — "
+                            + "zero means this test would pass vacuously and the walk needs retargeting "
+                            + "because the producer's wiring moved; more than one means getFirst() can no "
+                            + "longer be assumed to be the codec the runtime actually seals with");
             return wired.getFirst();
         }
 

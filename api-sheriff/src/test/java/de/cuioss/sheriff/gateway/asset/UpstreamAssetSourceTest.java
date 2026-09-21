@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.asset;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -381,6 +382,16 @@ class UpstreamAssetSourceTest {
     void shouldConstructWithDefaultFetcher() {
         UpstreamAssetSource source = new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of());
 
+        // The budgets are read off the seam the constructor actually built, not off the constants it is
+        // supposed to pass. Re-reading DEFAULT_CONNECT_TIMEOUT.toSeconds() would assert a constant
+        // against its own declaration and stay green if the constructor started passing something else
+        // entirely — the shape this suite's audit exists to remove.
+        UpstreamAssetSource.HttpUpstreamFetcher wired = assertInstanceOf(
+                UpstreamAssetSource.HttpUpstreamFetcher.class, source.fetcher(),
+                "the short constructor must wire the SSRF-guarded default seam — it is the object that "
+                        + "carries the budgets it was built with, so anything else leaves the two "
+                        + "assertions below with nothing to read");
+
         // Both serve() legs below are answered before the default transport fetcher is ever reached, so
         // neither touches the network. That is exactly what makes them assertable here: a short
         // constructor that wired no confinement, or an anchor that confines nothing, would fall through
@@ -390,15 +401,12 @@ class UpstreamAssetSourceTest {
                         "the default confinement is wired: an escape is refused before the upstream is touched"),
                 () -> assertEquals(METHOD_NOT_ALLOWED, source.serve(HttpMethod.POST, "app.js").status(),
                         "the read-only verb gate governs the default source too"),
-                // Asserted in seconds rather than against a Duration.ofSeconds(..) call, and not because
-                // seconds read better. AssertionsArgumentOrder treats a constant REFERENCE as the
-                // expected value and a method CALL as the actual, so the Duration spelling is rewritten
-                // by the gate into assertEquals(DEFAULT_CONNECT_TIMEOUT, Duration.ofSeconds(5)) — which
-                // inverts expected and actual and so inverts every failure message this assertion could
-                // produce. A literal in the expected position is already at that recipe's fixed point.
-                () -> assertEquals(5, UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT.toSeconds(),
+                // Constant REFERENCE expected, method CALL actual — already AssertionsArgumentOrder's
+                // fixed point, so the gate leaves the order alone rather than inverting expected and
+                // actual (and with them every failure message these two could produce).
+                () -> assertEquals(UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT, wired.connectTimeout(),
                         "the connect budget the short constructor passes is the declared five seconds"),
-                () -> assertEquals(10, UpstreamAssetSource.DEFAULT_READ_TIMEOUT.toSeconds(),
+                () -> assertEquals(UpstreamAssetSource.DEFAULT_READ_TIMEOUT, wired.readTimeout(),
                         "the read budget the short constructor passes is the declared ten seconds"));
     }
 
@@ -485,10 +493,16 @@ class UpstreamAssetSourceTest {
                 UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT,
                 UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
                 AssetSource.DEFAULT_MAX_BYTES);
+        // Parsed outside the assertThrows lambda on purpose. Inside it, URI.create(..) and
+        // fetcher.fetch(..) are two invocations that can each raise IllegalArgumentException, so the
+        // assertion would not pin WHICH one refused the target — while its message claims the fetcher
+        // refused the scheme. Hoisting leaves fetch(..) as the lambda's only throwing invocation, so a
+        // pass is evidence for the message it carries.
+        URI fileTarget = URI.create("file:///etc/passwd");
 
         assertAll(
                 () -> assertThrows(IllegalArgumentException.class,
-                        () -> fetcher.fetch(URI.create("file:///etc/passwd")),
+                        () -> fetcher.fetch(fileTarget),
                         "the default seam is a real HTTP client confined to http/https — a file: target is "
                                 + "refused, where a hand-rolled stream-opening fetcher would read it"),
                 () -> assertThrows(NullPointerException.class,

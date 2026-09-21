@@ -405,12 +405,21 @@ class AwaitsTest {
                 () -> {
                     CountDownLatch neverReachesZero = new CountDownLatch(1);
                     Thread.currentThread().interrupt();
-                    assertThrows(InterruptedException.class,
-                            () -> Awaits.connect(neverReachesZero, CONTROL_LABEL),
-                            "connect(latch) awaits inside the core: an already-interrupted caller is "
-                                    + "reported as interrupted, where a body that never awaited returns");
-                    assertFalse(Thread.interrupted(),
-                            "the await consumed the interrupt, so no flag leaks into the next assertion");
+                    try {
+                        assertThrows(InterruptedException.class,
+                                () -> Awaits.connect(neverReachesZero, CONTROL_LABEL),
+                                "connect(latch) awaits inside the core: an already-interrupted caller is "
+                                        + "reported as interrupted, where a body that never awaited returns");
+                        assertFalse(Thread.interrupted(),
+                                "the await consumed the interrupt, so no flag leaks into the next assertion");
+                    } finally {
+                        // Clear on every exit path, not only the one that reaches the assertFalse above.
+                        // Should connect(latch) wrongly RETURN, assertThrows raises before the flag is
+                        // consumed, and assertAll runs the remaining legs on this same thread — the next
+                        // one calls Awaits.until, which would then fail for the leaked interrupt rather
+                        // than for its own reason, reporting one real failure as two.
+                        Thread.interrupted();
+                    }
                 },
                 () -> {
                     TimeoutException failure = assertThrows(TimeoutException.class,
