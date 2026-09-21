@@ -63,6 +63,9 @@ class BearerValidationIT extends BaseIntegrationTest {
             "https://" + BffKeycloakLoginFlow.KEYCLOAK_HOST_AUTHORITY
                     + "/realms/integration/protocol/openid-connect/token";
 
+    /** The gateway's {@code oidc.scopes}, which every bearer route checks on a presented token. */
+    static final String OIDC_SCOPE = "openid profile email";
+
     @Test
     @DisplayName("a request with no bearer token is rejected 401 and never forwarded")
     void missingTokenRejected() {
@@ -144,6 +147,13 @@ class BearerValidationIT extends BaseIntegrationTest {
      * issuer declares — the host-published mint port does not change the issuer claim.
      *
      * <p>
+     * <strong>The requested scope is explicit.</strong> Every bearer route of the gateway checks the
+     * presented token against its {@code neededScopes}, which include the gateway's
+     * {@code oidc.scopes} ({@code openid profile email}) once an {@code oidc} block exists; a token
+     * lacking a member is answered {@code 403 insufficient_scope}. The grant therefore requests
+     * exactly those scopes instead of inheriting them from the realm's default client scopes, so the
+     * fixture states the dependency rather than relying on a realm default staying in place.
+     * <p>
      * Package-private rather than private so {@code BearerSecurityFilterInteractionIT} drives the same
      * acquisition instead of introducing a second token helper — one realm/client/user fixture, one
      * place to fix when the realm import changes.
@@ -151,6 +161,18 @@ class BearerValidationIT extends BaseIntegrationTest {
      * @return the raw access token
      */
     static String mintIntegrationRealmAccessToken() {
+        return mintIntegrationRealmAccessToken(OIDC_SCOPE);
+    }
+
+    /**
+     * Mints a real access token like {@link #mintIntegrationRealmAccessToken()}, requesting the given
+     * space-separated {@code scope} instead of the gateway's {@code oidc.scopes}. {@code BearerScopeIT}
+     * uses it to mint a token with and without an endpoint-specific scope.
+     *
+     * @param scope the space-separated scope the password grant requests
+     * @return the raw access token
+     */
+    static String mintIntegrationRealmAccessToken(String scope) {
         Response response = given()
                 .contentType(ContentType.URLENC)
                 .formParam("grant_type", "password")
@@ -158,6 +180,7 @@ class BearerValidationIT extends BaseIntegrationTest {
                 .formParam("client_secret", CLIENT_SECRET)
                 .formParam("username", BffKeycloakLoginFlow.USERNAME)
                 .formParam("password", BffKeycloakLoginFlow.PASSWORD)
+                .formParam("scope", scope)
                 .when()
                 .post(TOKEN_ENDPOINT)
                 .then()

@@ -7,6 +7,14 @@
  * the whole run, so the run measures the gateway's per-request validation + proxy overhead
  * rather than Keycloak's token-issuance cost.
  *
+ * The benchmark stack's bearer route checks the gateway's `oidc.scopes` (`openid profile email`)
+ * on every token: once an `oidc` block exists, a bearer route needs `oidc.scopes` united with its
+ * endpoint's `scopes`, and a token lacking a member is answered `403 insufficient_scope`. The
+ * password grant in {@link setup} therefore requests exactly those scopes explicitly rather than
+ * inheriting them from the realm's default client scopes, so the fixture states the dependency
+ * instead of relying on a realm default staying in place. A token that lost one would turn the run
+ * into an all-403 run, which the `checks` threshold below fails loudly.
+ *
  * This is the `bearer` matrix aspect, and it is new CI coverage: the wrk-era
  * `bearer_proxied_benchmark.sh` was registered in no Maven execution, so bearer did not run in
  * CI before this migration.
@@ -85,6 +93,8 @@ export function setup() {
             client_secret: KEYCLOAK_CLIENT_SECRET,
             username: KEYCLOAK_USERNAME,
             password: KEYCLOAK_PASSWORD,
+            // The gateway's oidc.scopes, which the bearer route checks on every token.
+            scope: 'openid profile email',
         },
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
     );

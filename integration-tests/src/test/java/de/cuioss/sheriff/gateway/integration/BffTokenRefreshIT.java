@@ -30,6 +30,8 @@ import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 
@@ -61,6 +63,13 @@ import org.junit.jupiter.api.Test;
  *       {@code Authorization} header. The proof is the changed upstream bearer, never session
  *       continuity: a session that merely still works proves only that it was not destroyed, which is
  *       equally true of {@code CURRENT}.</li>
+ *   <li>{@code REFRESHED} on a scoped route — after a login on {@code /bff-session/scoped}, whose
+ *       endpoint adds {@code sheriff_it_endpoint} to {@code oidc.scopes} (ADR-0048), the rotated
+ *       mediated token still carries {@code sheriff_it_endpoint}. The refresh requests the session's
+ *       active scope set rather than {@code oidc.scopes}, and since the scope is optional on
+ *       {@code refresh-client} a refresh that dropped it would be issued a token without it. The leg
+ *       first confirms this instance serves the scoped route and asserts the rotation before the
+ *       scope, so the scope assertion is about the refreshed token and never the login-time one.</li>
  *   <li>{@code FAILED} — after the IdP revokes the session, a mediated call once the window has
  *       opened is rejected as unauthenticated and the session cookie is cleared. The rejection is
  *       pinned to its <em>named reason</em>: the admin logout makes Keycloak answer the refresh
@@ -256,6 +265,46 @@ class BffTokenRefreshIT {
     }
 
     @Test
+    @DisplayName("REFRESHED on the scoped route: the rotated mediated token keeps the endpoint scope")
+    void refreshedOutcomeKeepsTheEndpointScope() {
+        // Arrange — first confirm this instance serves the scoped session route at all. It mounts the
+        // shared endpoints/ tree under its own gateway.yaml, so bff-scoped is present only if that
+        // overlay still declares the bff-session anchor; an unauthenticated navigation that is
+        // redirected into the IdP requesting the endpoint scope proves both the route and its
+        // scope set, and rules out a 404 masquerading as a scope failure further down.
+        Response initiation = BffKeycloakLoginFlow
+                .gateway(Map.of(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
+                .header("Accept", "text/html")
+                .redirects().follow(false)
+                .when().get(BffEndpointScopesIT.SCOPED_SESSION_PATH)
+                .then().statusCode(302)
+                .extract().response();
+        assertEquals(BffEndpointScopesIT.SCOPED_ROUTE_SCOPES, BffEndpointScopesIT.requestedScopeSet(initiation),
+                "the refresh instance must serve /bff-session/scoped and request its united scope set");
+
+        Session session = BffKeycloakLoginFlow.login(BffEndpointScopesIT.SCOPED_SESSION_PATH,
+                BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
+                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+        String beforeRefresh = authorizationOf(mediatedCall(session, BffEndpointScopesIT.SCOPED_SESSION_PATH));
+        assertTrue(BffEndpointScopesIT.grantedScopes(beforeRefresh).contains(BffEndpointScopesIT.ENDPOINT_SCOPE),
+                "precondition: the login on the scoped route must mediate a token carrying "
+                        + BffEndpointScopesIT.ENDPOINT_SCOPE);
+
+        // Act
+        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+        String afterRefresh = authorizationOf(mediatedCall(session, BffEndpointScopesIT.SCOPED_SESSION_PATH));
+
+        // Assert — the rotation is proven first, so the scope assertion is about the REFRESHED token
+        // and cannot be satisfied by the login-time token merely being reused.
+        assertNotEquals(beforeRefresh, afterRefresh,
+                "the call inside the near-expiry window must mediate a rotated token");
+        Set<String> refreshedScopes = BffEndpointScopesIT.grantedScopes(afterRefresh);
+        assertTrue(refreshedScopes.contains(BffEndpointScopesIT.ENDPOINT_SCOPE),
+                "the refresh must request the session's active scope set, so the rotated token must keep "
+                        + BffEndpointScopesIT.ENDPOINT_SCOPE + "; granted " + refreshedScopes);
+    }
+
+    @Test
     @DisplayName("FAILED: an XHR after IdP-side revocation is rejected 401 problem+json and clears the cookie")
     void failedOutcomeRejectsXhrAndClearsTheSession() {
         Session session = loginToRefreshInstance();
@@ -312,9 +361,13 @@ class BffTokenRefreshIT {
     }
 
     private static Response mediatedCall(Session session) {
+        return mediatedCall(session, MEDIATED_PATH);
+    }
+
+    private static Response mediatedCall(Session session, String path) {
         return BffKeycloakLoginFlow
                 .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
-                .when().get(MEDIATED_PATH)
+                .when().get(path)
                 .then().statusCode(200)
                 .extract().response();
     }
