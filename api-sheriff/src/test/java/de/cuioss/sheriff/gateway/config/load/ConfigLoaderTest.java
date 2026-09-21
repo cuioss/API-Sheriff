@@ -784,7 +784,41 @@ class ConfigLoaderTest {
                 Arguments.of("an oidc scope containing a double quote",
                         gatewayDeclaringOidcScope("'orders\"read'"), "/oidc/scopes/0"),
                 Arguments.of("an oidc scope containing a backslash",
-                        gatewayDeclaringOidcScope("'orders\\read'"), "/oidc/scopes/0"));
+                        gatewayDeclaringOidcScope("'orders\\read'"), "/oidc/scopes/0"),
+                // The scope names reach the WWW-Authenticate challenge and the authorize request, so a
+                // CR/LF pair, a non-ASCII letter and an empty name are refused too. The trailing-newline
+                // row pins the negative-lookahead terminator: a '$' anchor would admit it.
+                Arguments.of("an oidc scope containing a CR/LF pair",
+                        gatewayDeclaringOidcScope("\"orders\\r\\nread\""), "/oidc/scopes/0"),
+                Arguments.of("an oidc scope ending in a newline",
+                        gatewayDeclaringOidcScope("\"orders\\n\""), "/oidc/scopes/0"),
+                Arguments.of("an oidc scope containing a non-ASCII letter",
+                        gatewayDeclaringOidcScope("\"ord\\u00e9rs\""), "/oidc/scopes/0"),
+                Arguments.of("an empty oidc scope",
+                        gatewayDeclaringOidcScope("\"\""), "/oidc/scopes/0"));
+    }
+
+    /**
+     * The scope-token pattern must also govern a scope list supplied through a {@code ${VAR}}
+     * placeholder: substitution runs before schema validation, so a malformed element resolved from
+     * the environment is refused at its own item pointer rather than bypassing the schema.
+     */
+    @Test
+    void rejectsMalformedOidcScopeSuppliedThroughPlaceholder() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  scopes: "${OIDC_SCOPES}"
+                """);
+
+        ConfigLoader loader = loader(Map.of("OIDC_SCOPES", "openid,orders\"read"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("/oidc/scopes/1")),
+                () -> "a malformed scope resolved from a placeholder must be refused by the schema, got: "
+                        + exception.errors());
     }
 
     @ParameterizedTest(name = "{0}")
