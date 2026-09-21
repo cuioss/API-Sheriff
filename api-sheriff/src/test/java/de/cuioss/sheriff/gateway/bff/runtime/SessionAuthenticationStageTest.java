@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
@@ -45,6 +46,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
@@ -519,6 +521,80 @@ class SessionAuthenticationStageTest {
                     "an unauthenticated non-navigation request is the 401 application/problem+json path");
             assertTrue(request.shortCircuitStatus().isEmpty(),
                     "no short-circuit is set, so the edge renders the problem response rather than a redirect");
+        }
+    }
+
+    @Nested
+    @DisplayName("Post-login return URL")
+    class ReturnUrl {
+
+        @Test
+        @DisplayName("records the canonical path alone when the request carries no query")
+        void pathOnly() {
+            assertEquals("/x", recordedReturnUrl("/x", List.of()),
+                    "no '?' is appended when there is no query");
+        }
+
+        @Test
+        @DisplayName("records the path plus the raw query, bare names kept bare")
+        void pathPlusQuery() {
+            List<QueryParameter> query = List.of(new QueryParameter("tab", "a"), new QueryParameter("b", null));
+
+            assertEquals("/x?tab=a&b", recordedReturnUrl("/x", query),
+                    "the recorded return URL is exactly the navigated path plus its query");
+        }
+
+        @Test
+        @DisplayName("keeps repeated and interleaved names in wire order")
+        void repeatedAndInterleavedNamesKeepWireOrder() {
+            List<QueryParameter> query = List.of(new QueryParameter("a", "1"), new QueryParameter("b", "2"),
+                    new QueryParameter("a", "3"));
+
+            assertEquals("/x?a=1&b=2&a=3", recordedReturnUrl("/x", query),
+                    "pairs are never regrouped by name");
+        }
+
+        @Test
+        @DisplayName("keeps a bare name bare and an empty value as name=")
+        void bareNameStaysBare() {
+            List<QueryParameter> query = List.of(new QueryParameter("flag", null), new QueryParameter("empty", ""));
+
+            assertEquals("/x?flag&empty=", recordedReturnUrl("/x", query),
+                    "a pair without '=' is never rendered as 'flag='");
+        }
+
+        @Test
+        @DisplayName("keeps percent-encoded bytes verbatim, never decoding or re-encoding them")
+        void percentEncodedBytesKeptVerbatim() {
+            List<QueryParameter> query = List.of(new QueryParameter("q", "a%20b%2Fc+d"),
+                    new QueryParameter("n%C3%A4me", "%26"));
+
+            assertEquals("/x?q=a%20b%2Fc+d&n%C3%A4me=%26", recordedReturnUrl("/x", query),
+                    "the rebuilt query is byte-identical to the inbound one");
+        }
+
+        private String recordedReturnUrl(String path, List<QueryParameter> query) {
+            AtomicReference<String> recorded = new AtomicReference<>();
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, now) -> {
+                recorded.set(returnUrl);
+                return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+            });
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.GET)
+                    .requestPath(path)
+                    .queryParameters(query)
+                    .headers(navigationHeaders())
+                    .build();
+            request.canonicalPath(path);
+            request.selectedRoute(RouteRuntime.builder().id("orders")
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .neededScopes(Set.of())
+                    .build());
+
+            stage.process(request);
+
+            assertEquals(Optional.of(302), request.shortCircuitStatus(), "the navigation is redirected into login");
+            return recorded.get();
         }
     }
 

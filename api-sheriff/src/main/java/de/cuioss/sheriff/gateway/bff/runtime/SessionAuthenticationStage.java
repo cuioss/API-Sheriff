@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.StringJoiner;
 
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
@@ -28,6 +29,7 @@ import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
@@ -216,9 +218,26 @@ public final class SessionAuthenticationStage {
                 .anyMatch(value -> value.toLowerCase(Locale.ROOT).contains(TEXT_HTML));
     }
 
+    /**
+     * The post-login return target: the canonical path plus, when the request carried a query, a
+     * {@code ?} and the raw query rebuilt from {@link PipelineRequest#queryParameters()}. The pairs
+     * are the raw, still-percent-encoded wire bytes in wire order, so the rebuilt query is
+     * byte-identical to the inbound one — repeated and interleaved names keep their order, a bare
+     * name stays bare (never {@code name=}), and no pair is decoded or re-encoded. No {@code ?} is
+     * appended when there is no query.
+     */
     private static String returnUrl(PipelineRequest request) {
         String canonicalPath = request.canonicalPath();
-        return canonicalPath != null ? canonicalPath : request.requestPath();
+        String path = canonicalPath != null ? canonicalPath : request.requestPath();
+        List<QueryParameter> query = request.queryParameters();
+        if (query.isEmpty()) {
+            return path;
+        }
+        StringJoiner rawQuery = new StringJoiner("&", path + "?", "");
+        for (QueryParameter pair : query) {
+            rawQuery.add(pair.value() == null ? pair.name() : pair.name() + "=" + pair.value());
+        }
+        return rawQuery.toString();
     }
 
     private static RouteRuntime requireSelectedRoute(PipelineRequest request) {
@@ -360,7 +379,8 @@ public final class SessionAuthenticationStage {
         /**
          * Initiates a fresh login for an unauthenticated navigation request.
          *
-         * @param returnUrl the post-login return target (the path the browser was navigating to)
+         * @param returnUrl the post-login return target (the path the browser was navigating to, plus
+         *                  its raw query verbatim when it carried one)
          * @param now       the reference instant (the pending record's TTL anchor)
          * @return the redirect target and the browser-binding {@code Set-Cookie}
          */

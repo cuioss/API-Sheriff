@@ -72,15 +72,13 @@ public final class StepUpCoordinator {
 
     private static final CuiLogger LOGGER = new CuiLogger(StepUpCoordinator.class);
 
-    /** The safe default replay target when no valid same-origin replay URL is supplied. */
-    public static final String DEFAULT_RETURN_URL = "/";
-
     private final StepUpChallengeParser challengeParser;
     private final SilentSatisfaction silentSatisfaction;
     private final StepUpInitiation stepUpInitiation;
     private final PendingAuthorizationStore pendingStore;
     private final BindingCookieCodec bindingCookieCodec;
     private final String gatewayOrigin;
+    private final String defaultReturnUrl;
 
     /**
      * Assembles the coordinator with the engine step-up seams and the gateway-side stores.
@@ -94,15 +92,20 @@ public final class StepUpCoordinator {
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
      *                           same-origin-validate the replay return URL
+     * @param defaultReturnUrl   the resolved {@code oidc.login.default_return_url} ({@code /} when
+     *                           unset): the replay target when no valid same-origin replay URL is
+     *                           supplied
      */
     public StepUpCoordinator(SilentSatisfaction silentSatisfaction, StepUpInitiation stepUpInitiation,
-            PendingAuthorizationStore pendingStore, BindingCookieCodec bindingCookieCodec, String gatewayOrigin) {
+            PendingAuthorizationStore pendingStore, BindingCookieCodec bindingCookieCodec, String gatewayOrigin,
+            String defaultReturnUrl) {
         this.challengeParser = new StepUpChallengeParser();
         this.silentSatisfaction = Objects.requireNonNull(silentSatisfaction, "silentSatisfaction");
         this.stepUpInitiation = Objects.requireNonNull(stepUpInitiation, "stepUpInitiation");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
+        this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
     }
 
     /**
@@ -146,7 +149,7 @@ public final class StepUpCoordinator {
         StepUpHandler.StepUpRequest request = stepUpInitiation.initiate(challenge);
         String returnUrl = replayUrl != null
                 && PendingAuthorizationRecord.sameOrigin(replayUrl, gatewayOrigin)
-                ? replayUrl : DEFAULT_RETURN_URL;
+                ? replayUrl : defaultReturnUrl;
         PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(request.context(), returnUrl, now);
         pendingStore.store(pending);
         LOGGER.debug("Step-up challenge requires re-authentication — re-driving the auth-code flow");

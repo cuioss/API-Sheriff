@@ -176,6 +176,8 @@ public class BffRuntimeProducer {
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
+    /** The post-login fallback return target when {@code oidc.login.default_return_url} is omitted. */
+    private static final String ROOT_RETURN_URL = "/";
     /** The gateway key a named BFF back-channel trust profile is declared under, for error context. */
     private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
     /** The RFC 7009 {@code token_type_hint} sent when a live refresh token is revoked. */
@@ -323,9 +325,13 @@ public class BffRuntimeProducer {
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
+        // Resolved once: the login flow, the login-initiation endpoint (through the flow) and the step-up
+        // re-drive all fall back to the same configured post-login target.
+        String defaultReturnUrl = defaultReturnUrl(oidc);
+
         // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime.
         LoginFlow loginFlow = new LoginFlow(() -> authorizationCodeFlow.authorize(metadata.get()),
-                pendingStore, bindingCookieCodec, gatewayOrigin);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
         // then hands the result to the refresh policy, which is where the exchange's refresh token is
@@ -379,7 +385,7 @@ public class BffRuntimeProducer {
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
                 (sessionRecord, challenge, now) -> Optional.empty(),
                 challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),
-                pendingStore, bindingCookieCodec, gatewayOrigin);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
         // JSON types, capped by the allowlist.
@@ -513,6 +519,22 @@ public class BffRuntimeProducer {
                     "oidc.session.refresh.on_failure '" + declared + "' is not recognised — use '"
                             + ON_FAILURE_REAUTHENTICATE + "' or '" + ON_FAILURE_REJECT + "'");
         };
+    }
+
+    /**
+     * Resolves {@code oidc.login.default_return_url} — the post-login target the login flow, the
+     * login-initiation endpoint and the step-up re-drive fall back to when no usable same-origin return
+     * URL is supplied. An omitted key (or an omitted {@code login} block) resolves to {@code /}. Boot
+     * validation has already refused a declared value that is not same-origin with
+     * {@code redirect_uri}, so the value is used as declared.
+     *
+     * @param oidc the bound {@code oidc} block
+     * @return the configured default return URL, {@code /} when unset
+     */
+    static String defaultReturnUrl(OidcConfig oidc) {
+        OidcConfig.Login login = oidc.login();
+        String declared = login == null ? null : login.defaultReturnUrl();
+        return declared == null ? ROOT_RETURN_URL : declared;
     }
 
     /**

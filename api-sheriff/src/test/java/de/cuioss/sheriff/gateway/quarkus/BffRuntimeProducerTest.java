@@ -68,8 +68,10 @@ import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
+import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
+import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -678,6 +680,87 @@ class BffRuntimeProducerTest {
 
         private OidcConfig onFailureOidc(@Nullable String onFailure) {
             return refreshOidc(Boolean.TRUE, onFailure);
+        }
+    }
+
+    /**
+     * {@code oidc.login.default_return_url} is proven to <em>act</em>: the assembled runtime is walked
+     * for the {@link LoginFlow} it actually holds (the login-initiation endpoint and the session stage's
+     * login seam both reach it), and the step-up coordinator is read for the fallback it was built with.
+     * Deleting the key from the declaring descriptor — or the producer no longer passing it — turns
+     * {@link #shouldHandDeclaredDefaultToLoginFlowAndStepUp()} red; the omitted-key case is the matched
+     * control proving the walk sees the flow at all and that the fallback is {@code /}.
+     */
+    @Nested
+    @DisplayName("Post-login default return URL (oidc.login.default_return_url)")
+    class DefaultReturnUrl {
+
+        private static final String CONFIGURED_DEFAULT = "/home";
+
+        @Test
+        @DisplayName("Should hand a declared default_return_url to the login flow and the step-up coordinator")
+        void shouldHandDeclaredDefaultToLoginFlowAndStepUp() {
+            BffRuntime runtime = producer(loginOidc(OidcConfig.Login.builder()
+                    .path("/auth/login").defaultReturnUrl(CONFIGURED_DEFAULT).build())).bffRuntime();
+
+            assertLoginFlowsFallBackTo(runtime, CONFIGURED_DEFAULT);
+            assertEquals(CONFIGURED_DEFAULT, stepUpFallback(runtime),
+                    "the step-up re-drive falls back to the same configured target");
+        }
+
+        @Test
+        @DisplayName("Should fall back to '/' when default_return_url is omitted (matched control)")
+        void shouldFallBackToRootWhenOmitted() {
+            BffRuntime runtime = producer(loginOidc(OidcConfig.Login.builder().path("/auth/login").build()))
+                    .bffRuntime();
+
+            assertLoginFlowsFallBackTo(runtime, "/");
+            assertEquals("/", stepUpFallback(runtime), "an omitted key resolves to '/' on the step-up leg too");
+        }
+
+        @Test
+        @DisplayName("Should resolve a declared value, an omitted key and an omitted login block")
+        void shouldResolveDeclaredAndOmitted() {
+            assertAll("declared, key omitted, block omitted",
+                    () -> assertEquals(CONFIGURED_DEFAULT, BffRuntimeProducer.defaultReturnUrl(loginOidc(
+                            OidcConfig.Login.builder().defaultReturnUrl(CONFIGURED_DEFAULT).build()))),
+                    () -> assertEquals("/", BffRuntimeProducer.defaultReturnUrl(loginOidc(
+                            OidcConfig.Login.builder().path("/auth/login").build()))),
+                    () -> assertEquals("/", BffRuntimeProducer.defaultReturnUrl(loginOidc(null))));
+        }
+
+        private void assertLoginFlowsFallBackTo(BffRuntime runtime, String expected) {
+            List<LoginFlow> flows = reachableInstancesOf(runtime, LoginFlow.class);
+
+            assertFalse(flows.isEmpty(), "no LoginFlow was reachable from the assembled runtime — this test "
+                    + "must never pass vacuously; if the producer's wiring moved, retarget the walk");
+            assertAll("every reachable login flow carries the resolved default",
+                    flows.stream().map(flow -> (Executable) () -> assertEquals(expected, flow.defaultReturnUrl())));
+        }
+
+        private static String stepUpFallback(BffRuntime runtime) {
+            StepUpCoordinator coordinator = runtime.stepUpCoordinator();
+            assertNotNull(coordinator, "an active runtime exposes the step-up coordinator");
+            try {
+                Field field = StepUpCoordinator.class.getDeclaredField("defaultReturnUrl");
+                field.setAccessible(true);
+                return (String) field.get(coordinator);
+            } catch (ReflectiveOperationException e) {
+                throw new AssertionError("StepUpCoordinator no longer holds a defaultReturnUrl field — retarget "
+                        + "this read to where the step-up fallback now lives", e);
+            }
+        }
+
+        private static OidcConfig loginOidc(OidcConfig.@Nullable Login login) {
+            return OidcConfig.builder()
+                    .issuer(ISSUER)
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .login(login)
+                    .build();
         }
     }
 

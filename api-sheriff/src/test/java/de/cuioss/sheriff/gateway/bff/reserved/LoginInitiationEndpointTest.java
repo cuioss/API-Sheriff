@@ -67,6 +67,8 @@ class LoginInitiationEndpointTest {
     private static final String AUTHORIZATION_URL = "https://idp.example.com/authorize?client_id=api-sheriff";
     private static final String SESSION_ID = "opaque-session-1";
     private static final String SUBJECT = "user-sub-1";
+    /** A configured {@code oidc.login.default_return_url} distinct from {@code /}. */
+    private static final String CONFIGURED_DEFAULT = "/home";
 
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -87,7 +89,8 @@ class LoginInitiationEndpointTest {
             authorizeCalls.incrementAndGet();
             return redirect;
         };
-        LoginFlow loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN);
+        LoginFlow loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN,
+                CONFIGURED_DEFAULT);
 
         sessionStore = new InMemorySessionStore(16);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
@@ -143,13 +146,21 @@ class LoginInitiationEndpointTest {
             assertEquals("/dashboard", consumeBoundRecord(outcome).returnUrl());
         }
 
-        @ParameterizedTest(name = "off-origin returnUrl \"{0}\" falls back to the default landing")
+        @ParameterizedTest(name = "off-origin returnUrl \"{0}\" falls back to the configured default")
         @ValueSource(strings = {"https://evil.example.com/app", "//evil.example.com", "javascript:alert(1)"})
-        @DisplayName("Should fall back to the default landing for an off-origin return URL (never an open redirect)")
+        @DisplayName("Should fall back to the configured default for an off-origin return URL (never an open redirect)")
         void shouldRejectOffOriginReturnUrl(String returnUrl) {
             LoginInitiationOutcome outcome = endpoint.initiate(returnUrl, null, T0);
 
-            assertEquals(LoginFlow.DEFAULT_RETURN_URL, consumeBoundRecord(outcome).returnUrl());
+            assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(outcome).returnUrl());
+        }
+
+        @Test
+        @DisplayName("Should fall back to the configured default when no return URL is supplied")
+        void shouldFallBackForNullReturnUrl() {
+            LoginInitiationOutcome outcome = endpoint.initiate(null, null, T0);
+
+            assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(outcome).returnUrl());
         }
 
         @Test
@@ -189,18 +200,18 @@ class LoginInitiationEndpointTest {
 
             LoginInitiationOutcome outcome = endpoint.initiate(returnUrl, cookie, T0);
 
-            assertEquals(LoginFlow.DEFAULT_RETURN_URL, outcome.location(), "an off-origin target can never be the location");
+            assertEquals(CONFIGURED_DEFAULT, outcome.location(), "an off-origin target can never be the location");
             assertEquals(0, authorizeCalls.get());
         }
 
         @Test
-        @DisplayName("Should fall back to the default landing when no return URL is supplied")
+        @DisplayName("Should fall back to the configured default when no return URL is supplied")
         void shouldFallBackForNullReturnUrl() {
             String cookie = liveSessionCookie();
 
             LoginInitiationOutcome outcome = endpoint.initiate(null, cookie, T0);
 
-            assertEquals(LoginFlow.DEFAULT_RETURN_URL, outcome.location());
+            assertEquals(CONFIGURED_DEFAULT, outcome.location());
         }
     }
 

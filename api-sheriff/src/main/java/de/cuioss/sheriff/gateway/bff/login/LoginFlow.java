@@ -41,8 +41,10 @@ import org.jspecify.annotations.Nullable;
  * another (the pre-session analogue of the session cookie).
  * <p>
  * The post-login return URL is same-origin-validated ({@link PendingAuthorizationRecord#sameOrigin})
- * before it is recorded — a cross-origin or unparseable target falls back to {@link #DEFAULT_RETURN_URL},
- * so the post-login redirect is never an open redirect. The engine authorization is reached through
+ * before it is recorded — an absent, cross-origin or unparseable target falls back to the configured
+ * {@linkplain #defaultReturnUrl() default return URL} ({@code oidc.login.default_return_url}, {@code /}
+ * when unset), so the post-login redirect is never an open redirect. A same-origin target is recorded
+ * verbatim, query included. The engine authorization is reached through
  * the {@link AuthorizationInitiation} seam, keeping the flow decoupled from the confidential-client
  * wiring (discovery metadata) and unit-testable without a live IdP.
  * <p>
@@ -59,13 +61,11 @@ public final class LoginFlow {
 
     private static final CuiLogger LOGGER = new CuiLogger(LoginFlow.class);
 
-    /** The safe default post-login landing when no valid same-origin return URL is supplied. */
-    public static final String DEFAULT_RETURN_URL = "/";
-
     private final AuthorizationInitiation authorization;
     private final PendingAuthorizationStore pendingStore;
     private final BindingCookieCodec bindingCookieCodec;
     private final String gatewayOrigin;
+    private final String defaultReturnUrl;
 
     /**
      * Assembles the login flow with the engine authorization seam and the gateway-side stores.
@@ -75,13 +75,25 @@ public final class LoginFlow {
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
      *                           same-origin-validate the post-login return URL
+     * @param defaultReturnUrl   the resolved {@code oidc.login.default_return_url} ({@code /} when
+     *                           unset): the post-login landing when no valid same-origin return URL
+     *                           is supplied
      */
     public LoginFlow(AuthorizationInitiation authorization, PendingAuthorizationStore pendingStore,
-            BindingCookieCodec bindingCookieCodec, String gatewayOrigin) {
+            BindingCookieCodec bindingCookieCodec, String gatewayOrigin, String defaultReturnUrl) {
         this.authorization = Objects.requireNonNull(authorization, "authorization");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
+        this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
+    }
+
+    /**
+     * @return the configured post-login landing used when no valid same-origin return URL is
+     *         supplied ({@code oidc.login.default_return_url}, {@code /} when unset)
+     */
+    public String defaultReturnUrl() {
+        return defaultReturnUrl;
     }
 
     /**
@@ -97,7 +109,7 @@ public final class LoginFlow {
         AuthorizationCodeFlow.AuthorizationRedirect redirect = authorization.authorize();
         String returnUrl = requestedReturnUrl != null
                 && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
-                ? requestedReturnUrl : DEFAULT_RETURN_URL;
+                ? requestedReturnUrl : defaultReturnUrl;
         PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(redirect.context(), returnUrl, now);
         pendingStore.store(pending);
         LOGGER.debug("Initiated OIDC login; pending record persisted, redirecting to the IdP");

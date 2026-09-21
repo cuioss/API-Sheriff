@@ -57,6 +57,8 @@ class StepUpCoordinatorTest {
     private static final String STEP_UP_URL = "https://idp.example.com/authorize?acr_values=urn:example:gold";
     private static final String REPLAY_URL = "/orders/42";
     private static final String ACR = "urn:example:gold";
+    /** The injected {@code oidc.login.default_return_url}, distinct from {@code /}. */
+    private static final String CONFIGURED_DEFAULT = "/home";
 
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -86,7 +88,8 @@ class StepUpCoordinatorTest {
     }
 
     private StepUpCoordinator coordinator(SilentSatisfaction silent, StepUpInitiation initiation) {
-        return new StepUpCoordinator(silent, initiation, pendingStore, bindingCodec, GATEWAY_ORIGIN);
+        return new StepUpCoordinator(silent, initiation, pendingStore, bindingCodec, GATEWAY_ORIGIN,
+                CONFIGURED_DEFAULT);
     }
 
     private StepUpCoordinator reDrivingCoordinator() {
@@ -179,7 +182,7 @@ class StepUpCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should fall back to the default return URL for an off-origin replay target")
+        @DisplayName("Should fall back to the injected default return URL for an off-origin replay target")
         void shouldRejectOffOriginReplayUrl() {
             StepUpCoordinator coordinator = reDrivingCoordinator();
 
@@ -187,8 +190,19 @@ class StepUpCoordinatorTest {
                     "https://evil.example.com/steal", NOW);
 
             PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
-            assertEquals(StepUpCoordinator.DEFAULT_RETURN_URL, pending.returnUrl(),
+            assertEquals(CONFIGURED_DEFAULT, pending.returnUrl(),
                     "an off-origin replay target is never an open redirect");
+        }
+
+        @Test
+        @DisplayName("Should fall back to the injected default return URL when no replay target is supplied")
+        void shouldFallBackForAbsentReplayUrl() {
+            StepUpCoordinator coordinator = reDrivingCoordinator();
+
+            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), null, NOW);
+
+            PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
+            assertEquals(CONFIGURED_DEFAULT, pending.returnUrl());
         }
     }
 

@@ -45,9 +45,10 @@ import org.jspecify.annotations.Nullable;
  * <strong>Return-URL safety (never an open redirect).</strong> The {@code returnUrl} parameter is
  * same-origin-validated exactly as D2b requires
  * ({@link PendingAuthorizationRecord#sameOrigin(String, String)}). On the unauthenticated path the
- * validation is {@link LoginFlow}'s (a cross-origin or unparseable target falls back to
- * {@link LoginFlow#DEFAULT_RETURN_URL}); on the already-authenticated path this endpoint applies the
- * identical validation before it redirects. Either way an off-origin, schema-relative
+ * validation is {@link LoginFlow}'s (an absent, cross-origin or unparseable target falls back to the
+ * configured {@linkplain LoginFlow#defaultReturnUrl() default return URL}); on the
+ * already-authenticated path this endpoint applies the identical validation, with the identical
+ * fallback, before it redirects. Either way an off-origin, schema-relative
  * ({@code //host}), blank, or unparseable target can never become the redirect location — the
  * login-initiation URL is not an open redirect.
  * <p>
@@ -110,7 +111,7 @@ public final class LoginInitiationEndpoint {
         if (session.isPresent()) {
             String returnUrl = requestedReturnUrl != null
                     && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
-                    ? requestedReturnUrl : LoginFlow.DEFAULT_RETURN_URL;
+                    ? requestedReturnUrl : loginFlow.defaultReturnUrl();
             LOGGER.debug("Login initiation with a live session — short-circuiting to the validated "
                     + "return URL, no fresh auth-code flow");
             return LoginInitiationOutcome.redirect(returnUrl, List.of());

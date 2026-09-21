@@ -51,10 +51,13 @@ class LoginFlowTest {
     private static final Instant T0 = Instant.parse("2026-07-23T10:00:00Z");
     private static final String GATEWAY_ORIGIN = "https://gw.example.com";
     private static final String AUTHORIZATION_URL = "https://idp.example.com/authorize?client_id=api-sheriff";
+    /** A configured {@code oidc.login.default_return_url} distinct from {@code /}. */
+    private static final String CONFIGURED_DEFAULT = "/home";
 
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
     private FlowContext flowContext;
+    private AuthorizationInitiation authorization;
     private LoginFlow loginFlow;
 
     @BeforeEach
@@ -64,8 +67,8 @@ class LoginFlowTest {
         flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =
                 new AuthorizationCodeFlow.AuthorizationRedirect(AUTHORIZATION_URL, flowContext);
-        AuthorizationInitiation authorization = () -> redirect;
-        loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN);
+        authorization = () -> redirect;
+        loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
     }
 
     private PendingAuthorizationRecord consumeBoundRecord(LoginRedirect result) {
@@ -106,29 +109,48 @@ class LoginFlowTest {
     class ReturnUrlGuard {
 
         @ParameterizedTest(name = "same-origin return URL \"{0}\" is recorded verbatim")
-        @ValueSource(strings = {"/dashboard", "/app/page?x=1", "https://gw.example.com/app"})
-        @DisplayName("Should record a same-origin return URL verbatim")
+        @ValueSource(strings = {"/dashboard", "/app/page?x=1", "/x?tab=a&b", "/x?a=1&b=2&a=3&q=a%20b",
+                "https://gw.example.com/app"})
+        @DisplayName("Should record a same-origin return URL verbatim, query included")
         void shouldRecordSameOriginReturnUrl(String returnUrl) {
             LoginRedirect result = loginFlow.initiate(returnUrl, T0);
 
             assertEquals(returnUrl, consumeBoundRecord(result).returnUrl());
         }
 
-        @ParameterizedTest(name = "off-origin return URL \"{0}\" falls back to the default landing")
+        @ParameterizedTest(name = "off-origin return URL \"{0}\" falls back to the configured default")
         @ValueSource(strings = {"https://evil.example.com/app", "//evil.example.com", "javascript:alert(1)"})
-        @DisplayName("Should fall back to the default landing for a cross-origin or unparseable return URL")
+        @DisplayName("Should fall back to the configured default for a cross-origin or unparseable return URL")
         void shouldFallBackForOffOrigin(String returnUrl) {
             LoginRedirect result = loginFlow.initiate(returnUrl, T0);
 
-            assertEquals(LoginFlow.DEFAULT_RETURN_URL, consumeBoundRecord(result).returnUrl());
+            assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
         }
 
         @Test
-        @DisplayName("Should fall back to the default landing when no return URL is supplied")
+        @DisplayName("Should fall back to the configured default when no return URL is supplied")
         void shouldFallBackForNull() {
             LoginRedirect result = loginFlow.initiate(null, T0);
 
-            assertEquals(LoginFlow.DEFAULT_RETURN_URL, consumeBoundRecord(result).returnUrl());
+            assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
+        }
+
+        @Test
+        @DisplayName("Should fall back to '/' when the flow is assembled with the unset default")
+        void shouldFallBackToRootDefault() {
+            LoginFlow rootDefault = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, "/");
+
+            LoginRedirect absent = rootDefault.initiate(null, T0);
+            LoginRedirect offOrigin = rootDefault.initiate("https://evil.example.com/app", T0);
+
+            assertEquals("/", consumeBoundRecord(absent).returnUrl(), "an absent target lands on '/'");
+            assertEquals("/", consumeBoundRecord(offOrigin).returnUrl(), "an off-origin target lands on '/'");
+        }
+
+        @Test
+        @DisplayName("Should expose the configured default return URL")
+        void shouldExposeConfiguredDefault() {
+            assertEquals(CONFIGURED_DEFAULT, loginFlow.defaultReturnUrl());
         }
     }
 
@@ -140,6 +162,13 @@ class LoginFlowTest {
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
             assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", null));
+        }
+
+        @Test
+        @DisplayName("Should reject a null default return URL")
+        void shouldRejectNullDefaultReturnUrl() {
+            assertThrows(NullPointerException.class,
+                    () -> new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, null));
         }
     }
 }

@@ -114,6 +114,8 @@ class GatewayEdgeRouteBffWiringTest {
 
     private static final String OIDC_HOST = "gw.example.com";
     private static final String ORIGIN = "https://gw.example.com";
+    /** The fixture's configured post-login fallback — the resolved {@code oidc.login.default_return_url} when unset. */
+    private static final String ROOT_RETURN_TARGET = "/";
     private static final String CALLBACK_PATH = "/auth/callback";
     private static final String LOGOUT_PATH = "/auth/logout";
     private static final String LOGOUT_RETURN_PATH = "/auth/logout/return";
@@ -339,7 +341,8 @@ class GatewayEdgeRouteBffWiringTest {
      * {@link LoginInitiationEndpoint}'s own documented surface, but the only place it is actually read
      * is the edge's reserved dispatch — so a rename there silently breaks the whole login flow with no
      * compile error anywhere: every internal identifier on the path is already {@code returnUrl}, and a
-     * value the edge fails to extract simply degrades to {@link LoginFlow#DEFAULT_RETURN_URL}. That
+     * value the edge fails to extract simply degrades to the configured default return URL
+     * ({@link LoginFlow#defaultReturnUrl()}, {@code /} in this fixture). That
      * degradation is invisible to a type checker and to every test that does not drive a real request
      * through the edge, which is why these two run over a live Vert.x server rather than calling
      * {@link BffRuntime#dispatch} directly.
@@ -423,7 +426,7 @@ class GatewayEdgeRouteBffWiringTest {
             // Assert — the regression pin. If the wire name ever reverts to return_to, this request
             // would be honoured and the Location would be RETURN_TARGET instead of the default.
             assertEquals(302, response.statusCode(), "the live-session login short-circuit is a 302");
-            assertEquals(LoginFlow.DEFAULT_RETURN_URL, response.getHeader("Location"),
+            assertEquals(ROOT_RETURN_TARGET, response.getHeader("Location"),
                     "return_to is not the login wire parameter, so it must not reach the login fold");
         }
 
@@ -647,10 +650,10 @@ class GatewayEdgeRouteBffWiringTest {
                     challenge -> {
                         throw new AssertionError("engine step-up must not be reached");
                     },
-                    pendingStore, bindingCodec, ORIGIN);
+                    pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
             LoginFlow loginFlow = new LoginFlow(() -> {
                 throw new AssertionError("engine authorize must not be reached");
-            }, pendingStore, bindingCodec, ORIGIN);
+            }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
             BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
                             rawToken -> {
                                 throw new AssertionError("engine verify must not be reached");
@@ -708,7 +711,7 @@ class GatewayEdgeRouteBffWiringTest {
 
         LoginFlow loginFlow = new LoginFlow(() -> {
             throw new AssertionError("engine authorize must not be reached");
-        }, pendingStore, bindingCodec, ORIGIN);
+        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
 
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
                 (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
@@ -724,7 +727,7 @@ class GatewayEdgeRouteBffWiringTest {
                 challenge -> {
                     throw new AssertionError("engine step-up must not be reached");
                 },
-                pendingStore, bindingCodec, ORIGIN);
+                pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
 
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
             throw new AssertionError("engine exchange must not be reached");
