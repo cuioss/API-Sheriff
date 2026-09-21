@@ -76,7 +76,6 @@ import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackHandler;
 import de.cuioss.sheriff.token.client.flow.IssValidator;
-import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
@@ -111,16 +110,18 @@ import org.jspecify.annotations.Nullable;
  * defence, the token-refresh / step-up coordinators, the
  * reserved-endpoint handlers, and the {@code require: session} stage-4 runtime, and binds the
  * {@code token-sheriff-client} engine seams — {@link ScopedEngineFlows#authorize} for login,
- * {@code AuthorizationCodeFlow#exchange} for the callback, {@code RefreshFlow#refresh} for transparent
- * refresh, and {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is reached at
- * runtime.
+ * {@code AuthorizationCodeFlow#exchange} for the callback, {@link ScopedEngineFlows#refresh} for
+ * transparent refresh, and {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is
+ * reached at runtime.
  * <p>
- * <strong>Per-request login scope (ADR-0048).</strong> The login leg requests the scope set the
+ * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
  * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
- * resolves for a {@code /auth/login?returnUrl=} target — through {@link ScopedEngineFlows}, which
- * drives a flow over a {@link ClientConfiguration} built for exactly that set by
+ * resolves for a {@code /auth/login?returnUrl=} target — and the refresh leg requests the session's
+ * active scope set {@code A}, both through {@link ScopedEngineFlows}, which drives a flow over a
+ * {@link ClientConfiguration} built for exactly that set by
  * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, step-up and revocation
- * stay on the base configuration carrying {@code oidc.scopes}.
+ * stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is handed that
+ * static set as the scope set its re-drive requests.
  * <p>
  * <strong>Response mode.</strong> Both authorization-URL seams are wired with the gateway-owned
  * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
@@ -309,7 +310,7 @@ public class BffRuntimeProducer {
 
         // The base configuration carries the static oidc.scopes and serves every leg that does not
         // request a per-request scope set: discovery, the callback code exchange, step-up and
-        // revocation. The login leg requests per scope set through ScopedEngineFlows below, whose
+        // revocation. The login and refresh legs request per scope set through ScopedEngineFlows below, whose
         // factory is this same method — so every scoped variant carries the identical pinned posture.
         reportBackChannelPosture();
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
@@ -332,10 +333,9 @@ public class BffRuntimeProducer {
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
                 tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
                 new CallbackHandler(), null);
-        RefreshFlow refreshFlow = new RefreshFlow(clientConfiguration, tokenEndpointClient, tokenBridge,
-                clientAuthentication);
         // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so a login that
-        // requests a route's neededScopes rides a configuration built for exactly that set.
+        // requests a route's neededScopes, and a refresh that requests the session's active scope set,
+        // each ride a configuration built for exactly that set.
         ScopedEngineFlows scopedFlows = new ScopedEngineFlows(scopes -> backChannelConfiguration(oidc, scopes),
                 tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication);
 
@@ -375,12 +375,14 @@ public class BffRuntimeProducer {
         // gateway mediates the current token verbatim until the session's absolute TTL expires.
         // The revocation client is built from the SAME back-channel configuration, so a refresh token
         // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
+        // The refresh grant requests the session's active scope set A through ScopedEngineFlows, never
+        // the static oidc.scopes the base configuration carries.
         RevocationClient revocationClient = new RevocationClient(clientConfiguration);
         SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
                 ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
-                refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
+                (refreshToken, activeScopes) -> scopedFlows.refresh(metadata.get(), refreshToken, activeScopes),
                 sessionBinding,
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
                         clientAuthentication),
@@ -406,11 +408,13 @@ public class BffRuntimeProducer {
         // constructs its own authorization URL through an AuthorizationRequestBuilder, so leaving it on
         // the default builder would keep the step-up re-drive emitting response_mode=form_post and
         // reintroduce the dropped-binding-cookie failure on that leg alone.
+        // The step-up request is built from the base configuration, so the re-drive records the static
+        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0048).
         StepUpHandler stepUpHandler = new StepUpHandler(authorizationRequestBuilder);
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
                 (sessionRecord, challenge, now) -> Optional.empty(),
                 challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),
-                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes());
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
         // JSON types, capped by the allowlist.

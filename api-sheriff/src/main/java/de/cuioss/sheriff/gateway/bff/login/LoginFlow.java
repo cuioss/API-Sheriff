@@ -54,7 +54,8 @@ import org.jspecify.annotations.Nullable;
  * selected route's {@code neededScopes}, the login-initiation endpoint the set
  * {@link ReturnTargetScopes} resolves for the return target. The runtime binds the seam to
  * {@link ScopedEngineFlows}, which renders an authorization URL whose {@code scope} is exactly that
- * set (ADR-0048).
+ * set (ADR-0048). The same set is recorded on the {@link PendingAuthorizationRecord}, so the callback
+ * can use it as the session's active scope set when the access token carries no {@code scope} claim.
  * <p>
  * <strong>Response mode.</strong> The authorization URL the seam yields carries
  * {@code response_mode=query} — see {@link QueryResponseModeAuthorizationRequestBuilder}, which the
@@ -122,7 +123,10 @@ public final class LoginFlow {
         String returnUrl = requestedReturnUrl != null
                 && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
                 ? requestedReturnUrl : defaultReturnUrl;
-        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(redirect.context(), returnUrl, now);
+        // The requested set rides the pending record so the callback can fall back to it as the
+        // session's active scope set when the issued access token carries no scope claim.
+        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(redirect.context(), returnUrl, scopes,
+                now);
         pendingStore.store(pending);
         LOGGER.debug("Initiated OIDC login; pending record persisted, redirecting to the IdP");
         List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));

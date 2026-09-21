@@ -560,7 +560,8 @@ class GatewayEdgeRouteBffWiringTest {
 
             FlowContext flow = FlowContext.create(ORIGIN + CALLBACK_PATH);
             state = flow.state();
-            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, now);
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, List.of("openid"),
+                    now);
             pendingStore.store(pending);
             bindingCookieHeader = bindingCodec.toSetCookieHeader(pending.id()).split(";", 2)[0];
 
@@ -651,7 +652,7 @@ class GatewayEdgeRouteBffWiringTest {
                     challenge -> {
                         throw new AssertionError("engine step-up must not be reached");
                     },
-                    pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+                    pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
             LoginFlow loginFlow = new LoginFlow(scopes -> {
                 throw new AssertionError("engine authorize must not be reached");
             }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
@@ -729,7 +730,7 @@ class GatewayEdgeRouteBffWiringTest {
                 challenge -> {
                     throw new AssertionError("engine step-up must not be reached");
                 },
-                pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+                pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
 
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
             throw new AssertionError("engine exchange must not be reached");

@@ -24,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.Set;
 
 
 import org.jspecify.annotations.Nullable;
@@ -308,17 +310,75 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should accept absent nullable components and reject null mandatory components")
         void shouldAcceptAbsentAndReject() {
-            SessionRecord sparse = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null);
+            SessionRecord sparse = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
+                    null);
             assertNull(sparse.refreshToken());
             assertNull(sparse.sid());
             assertNull(sparse.acr());
             assertNull(sparse.authTime());
             assertNull(sparse.sessionNonce(), "an absent session nonce stays null");
+            assertTrue(sparse.activeScopes().isEmpty(), "an absent active scope set normalizes to empty");
 
             assertThrows(NullPointerException.class,
-                    () -> new SessionRecord(null, "at", null, "it", "sub", null, FUTURE, null, null, null));
+                    () -> new SessionRecord(null, "at", null, "it", "sub", null, FUTURE, null, null, null, Set.of()));
             assertThrows(NullPointerException.class,
-                    () -> new SessionRecord("s", "at", null, "it", null, null, FUTURE, null, null, null));
+                    () -> new SessionRecord("s", "at", null, "it", null, null, FUTURE, null, null, null, Set.of()));
+        }
+
+        @Test
+        @DisplayName("Should hold the active scope set as an immutable defensive copy")
+        void shouldCopyActiveScopes() {
+            Set<String> source = new HashSet<>(Set.of("openid", "orders:read"));
+            SessionRecord session = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
+                    source);
+            source.add("profile");
+
+            assertEquals(Set.of("openid", "orders:read"), session.activeScopes());
+            Set<String> held = session.activeScopes();
+            assertThrows(UnsupportedOperationException.class, () -> held.add("email"));
+        }
+
+        @Test
+        @DisplayName("Should render the active scope names in toString — they are not credentials")
+        void shouldRenderActiveScopes() {
+            SessionRecord session = SessionRecord.builder()
+                    .sessionId("s").accessToken("AT-SECRET").idToken("IT-SECRET").sub("user-123")
+                    .expiresAt(FUTURE).activeScopes(Set.of("orders:read")).build();
+
+            assertTrue(session.toString().contains("orders:read"), session.toString());
+        }
+    }
+
+    @Nested
+    @DisplayName("Active scope set in the server-mode store")
+    class ActiveScopes {
+
+        @Test
+        @DisplayName("Should resolve the active scope set a stored session was created with")
+        void shouldKeepActiveScopesAcrossStore() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            Set<String> scopes = Set.of("openid", "profile", "email", "orders:read");
+            SessionRecord scoped = SessionRecord.builder()
+                    .sessionId("s1").accessToken("at").idToken("it").sub("sub1").expiresAt(FUTURE)
+                    .activeScopes(scopes).build();
+
+            store.create(scoped, T0);
+
+            assertEquals(scopes, store.resolve("s1", T0).orElseThrow().activeScopes());
+        }
+
+        @Test
+        @DisplayName("Should resolve the replaced active scope set after an upsert")
+        void shouldReplaceActiveScopesOnUpsert() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            store.create(SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
+                    .expiresAt(FUTURE).activeScopes(Set.of("openid", "orders:read")).build(), T0);
+
+            store.create(SessionRecord.builder().sessionId("s1").accessToken("at2").idToken("it").sub("sub1")
+                    .expiresAt(FUTURE).activeScopes(Set.of("openid")).build(), T0);
+
+            assertEquals(Set.of("openid"), store.resolve("s1", T0).orElseThrow().activeScopes(),
+                    "a refresh persisted through an upsert carries the narrowed set to the next request");
         }
     }
 }

@@ -23,7 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -59,6 +61,8 @@ class StepUpCoordinatorTest {
     private static final String ACR = "urn:example:gold";
     /** The injected {@code oidc.login.default_return_url}, distinct from {@code /}. */
     private static final String CONFIGURED_DEFAULT = "/home";
+    /** The static {@code oidc.scopes} the step-up authorization request is built from. */
+    private static final List<String> STEP_UP_SCOPES = List.of("openid", "profile", "email");
 
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -89,7 +93,7 @@ class StepUpCoordinatorTest {
 
     private StepUpCoordinator coordinator(SilentSatisfaction silent, StepUpInitiation initiation) {
         return new StepUpCoordinator(silent, initiation, pendingStore, bindingCodec, GATEWAY_ORIGIN,
-                CONFIGURED_DEFAULT);
+                CONFIGURED_DEFAULT, STEP_UP_SCOPES);
     }
 
     private StepUpCoordinator reDrivingCoordinator() {
@@ -204,6 +208,23 @@ class StepUpCoordinatorTest {
             PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
             assertEquals(CONFIGURED_DEFAULT, pending.returnUrl());
         }
+
+        @Test
+        @DisplayName("Should record the configured step-up scope set on the re-drive pending record")
+        void shouldRecordStepUpScopes() {
+            StepUpCoordinator coordinator = reDrivingCoordinator();
+            SessionRecord scopedSession = SessionRecord.builder()
+                    .sessionId("session-1").accessToken("access-current").idToken("id-current").sub("sub-1")
+                    .expiresAt(NOW.plusSeconds(28800)).activeScopes(Set.of("openid", "profile", "email", "orders:read"))
+                    .build();
+
+            StepUpOutcome outcome = coordinator.coordinate(scopedSession, challenge(), REPLAY_URL, NOW);
+
+            PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
+            assertEquals(Set.copyOf(STEP_UP_SCOPES), pending.requestedScopes(),
+                    "the step-up request is built from the static oidc.scopes, so that is the set it records — "
+                            + "not the session's active set (the PLAN-20 residual)");
+        }
     }
 
     @Nested
@@ -223,6 +244,18 @@ class StepUpCoordinatorTest {
                     () -> coordinator.coordinate(validSession, null, REPLAY_URL, NOW));
             assertThrows(NullPointerException.class,
                     () -> coordinator.coordinate(validSession, validChallenge, REPLAY_URL, null));
+        }
+
+        @Test
+        @DisplayName("Should reject an absent step-up scope set")
+        void shouldRejectNullStepUpScopes() {
+            SilentSatisfaction silent = (s, c, now) -> Optional.empty();
+            StepUpInitiation initiation = c -> {
+                throw new IllegalStateException("never reached");
+            };
+
+            assertThrows(NullPointerException.class, () -> new StepUpCoordinator(silent, initiation, pendingStore,
+                    bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, null));
         }
 
         @Test

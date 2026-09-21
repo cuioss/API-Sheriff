@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.Set;
 
 
 import org.junit.jupiter.api.DisplayName;
@@ -61,7 +62,7 @@ class CookieKeyMaterialTest {
 
     private static SealedSessionPayload payload() {
         return new SealedSessionPayload("access", null, "id-token", "user-sub-1",
-                null, null, null, LOGIN, "session-nonce");
+                null, null, null, LOGIN, "session-nonce", Set.of("openid", "profile"));
     }
 
     /** Reads the key-id byte a sealed value is stamped with (value layout: version, key-id, …). */

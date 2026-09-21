@@ -28,8 +28,10 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import javax.crypto.spec.SecretKeySpec;
 
 
@@ -85,6 +87,7 @@ class CallbackEndpointTest {
     private static final String RAW_ID_TOKEN = "raw-id-token";
     private static final String RAW_REFRESH_TOKEN = "raw-refresh-token";
     private static final String IDP_SID = "idp-sid-9";
+    private static final List<String> REQUESTED_SCOPES = List.of("openid", "profile", "email", "orders:read");
 
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -108,7 +111,7 @@ class CallbackEndpointTest {
 
         FlowContext flow = FlowContext.create("https://gw.example.com/auth/callback");
         state = flow.state();
-        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, T0);
+        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, REQUESTED_SCOPES, T0);
         pendingStore.store(pending);
         recordId = pending.id();
         bindingCookieHeader = bindingCodec.toSetCookieHeader(recordId).split(";", 2)[0];
@@ -125,8 +128,19 @@ class CallbackEndpointTest {
      * issues no refresh token produces, without duplicating the claim fixtures.
      */
     private static CodeExchange exchangeReturning(@Nullable String refreshToken) {
+        return exchangeReturning(refreshToken, null);
+    }
+
+    /**
+     * A successful exchange whose access token carries {@code scopeClaim} as its {@code scope} claim,
+     * or no {@code scope} claim at all when {@code null}.
+     */
+    private static CodeExchange exchangeReturning(@Nullable String refreshToken, @Nullable ClaimValue scopeClaim) {
         Map<String, ClaimValue> accessClaims = new HashMap<>();
         accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+        if (scopeClaim != null) {
+            accessClaims.put(ClaimName.SCOPE.getName(), scopeClaim);
+        }
         AccessTokenContent access = new AccessTokenContent(accessClaims, RAW_ACCESS_TOKEN);
 
         Map<String, ClaimValue> idClaims = new HashMap<>(Map.of(
@@ -402,6 +416,55 @@ class CallbackEndpointTest {
             endpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
 
             assertTrue(pendingStore.consume(recordId, T0).isEmpty(), "the pending record was consumed by the callback");
+        }
+    }
+
+    @Nested
+    @DisplayName("Active scope set A")
+    class ActiveScopeSet {
+
+        private SessionRecord loginWith(@Nullable ClaimValue scopeClaim) {
+            CallbackEndpoint scoped = new CallbackEndpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim),
+                    pendingStore, bindingCodec, sessionBinding, SESSION_TTL);
+            CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
+            assertTrue(outcome.isRedirect(), "the login completes");
+            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(sessionId, T0).orElseThrow();
+        }
+
+        @Test
+        @DisplayName("Should set A to the access token's granted scope, not the requested set")
+        void shouldTakeGrantedScope() {
+            SessionRecord session = loginWith(ClaimValue.forPlainString("openid profile orders:read"));
+
+            assertEquals(Set.of("openid", "profile", "orders:read"), session.activeScopes(),
+                    "the identity provider may narrow the request, so the granted scope is authoritative");
+        }
+
+        @Test
+        @DisplayName("Should set A from a list-typed scope claim")
+        void shouldTakeListTypedGrantedScope() {
+            SessionRecord session = loginWith(ClaimValue.forList("openid orders:read",
+                    List.of("openid", "orders:read")));
+
+            assertEquals(Set.of("openid", "orders:read"), session.activeScopes());
+        }
+
+        @Test
+        @DisplayName("Should fall back to the pending record's requested set when the token has no scope claim")
+        void shouldFallBackToRequestedScopes() {
+            SessionRecord session = loginWith(null);
+
+            assertEquals(Set.copyOf(REQUESTED_SCOPES), session.activeScopes(),
+                    "without a scope claim the requested set is the only honest source for A");
+        }
+
+        @Test
+        @DisplayName("Should fall back to the requested set when the token's scope claim is blank")
+        void shouldFallBackOnBlankScopeClaim() {
+            SessionRecord session = loginWith(ClaimValue.forPlainString("   "));
+
+            assertEquals(Set.copyOf(REQUESTED_SCOPES), session.activeScopes());
         }
     }
 

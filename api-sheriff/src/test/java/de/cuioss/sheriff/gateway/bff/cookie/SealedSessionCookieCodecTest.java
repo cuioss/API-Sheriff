@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.zip.Deflater;
@@ -93,6 +94,7 @@ class SealedSessionCookieCodecTest {
     private static final String ID_TOKEN = "raw-id-token-SECRET-material";
     private static final String SUB = "user-sub-1";
     private static final String SESSION_NONCE = "session-nonce-SECRET-material";
+    private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
 
     private SecretKey key;
     private SealedSessionCookieCodec codec;
@@ -112,7 +114,7 @@ class SealedSessionCookieCodecTest {
     private static SealedSessionPayload payload() {
         return new SealedSessionPayload(ACCESS_TOKEN, REFRESH_TOKEN, ID_TOKEN, SUB,
                 "idp-sid-9", "urn:acr:silver",
-                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE);
+                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE, ACTIVE_SCOPES);
     }
 
     private static String flipByteAt(String sealedValue, int index) {
@@ -150,6 +152,21 @@ class SealedSessionCookieCodecTest {
 
             assertEquals(Optional.of(new Unsealed(original)), unsealed,
                     "the payload survives the round trip intact, authenticated by the sealing key");
+        }
+
+        @Test
+        @DisplayName("Should carry the active scope set through seal and unseal")
+        void shouldRoundTripActiveScopes() throws Exception {
+            SealedSessionPayload scoped = payload();
+            SealedSessionPayload unscoped = new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
+
+            Unsealed scopedBack = codec.unseal(codec.seal(scoped)).orElseThrow();
+            Unsealed unscopedBack = codec.unseal(codec.seal(unscoped)).orElseThrow();
+
+            assertEquals(ACTIVE_SCOPES, scopedBack.payload().activeScopes(),
+                    "the active scope set is sealed with the tokens and comes back unchanged");
+            assertTrue(unscopedBack.payload().activeScopes().isEmpty(), "an empty set stays empty");
         }
 
         @Test
@@ -315,7 +332,7 @@ class SealedSessionCookieCodecTest {
         void shouldRefuseOversizedPayload() {
             String huge = incompressible(BUDGET * 4);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
-                    null, null, null, LOGIN, SESSION_NONCE);
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));
@@ -434,7 +451,7 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should round-trip a payload whose fields deflate to less than they measure")
         void shouldRoundTripAcrossCompression() throws Exception {
             SealedSessionPayload highlyCompressible = new SealedSessionPayload("a".repeat(4096),
-                    "b".repeat(4096), "c".repeat(4096), SUB, null, null, null, LOGIN, SESSION_NONCE);
+                    "b".repeat(4096), "c".repeat(4096), SUB, null, null, null, LOGIN, SESSION_NONCE, ACTIVE_SCOPES);
 
             String sealed = codec.seal(highlyCompressible);
 
@@ -537,7 +554,9 @@ class SealedSessionCookieCodecTest {
             new SecureRandom().nextBytes(nonceMaterial);
             return new SealedSessionPayload(accessToken(), refreshToken(), idToken(), SUBJECT,
                     IDP_SESSION, "1", Instant.parse("2026-07-27T09:59:59Z"), LOGIN,
-                    Base64.getUrlEncoder().withoutPadding().encodeToString(nonceMaterial));
+                    Base64.getUrlEncoder().withoutPadding().encodeToString(nonceMaterial),
+                    // The realm's granted scope, carried as the session's active scope set.
+                    Set.of("openid", "email", "profile"));
         }
 
         @Test
@@ -809,7 +828,7 @@ class SealedSessionCookieCodecTest {
         void shouldNotLeakKeyMaterialIntoTheOverBudgetMessage() {
             String huge = incompressible(BUDGET * 4);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
-                    null, null, null, LOGIN, SESSION_NONCE);
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));

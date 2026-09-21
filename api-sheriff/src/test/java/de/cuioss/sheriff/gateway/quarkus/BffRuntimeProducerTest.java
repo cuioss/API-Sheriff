@@ -57,6 +57,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -120,6 +121,7 @@ import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import jakarta.enterprise.inject.Instance;
+import jakarta.enterprise.inject.Vetoed;
 import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
@@ -941,7 +943,7 @@ class BffRuntimeProducerTest {
         void shouldEndSessionOnRefreshFailure() {
             SessionRecord live = storedSession(token());
             TokenRefreshCoordinator rejecting = new TokenRefreshCoordinator(LEEWAY, sessionRecord -> NOW,
-                    refreshToken -> {
+                    (refreshToken, _) -> {
                         throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
                     },
                     binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
@@ -959,7 +961,7 @@ class BffRuntimeProducerTest {
         void shouldMediateOnDeferredRefresh() {
             SessionRecord live = storedSession(token());
             TokenRefreshCoordinator unreachable = new TokenRefreshCoordinator(LEEWAY,
-                    sessionRecord -> NOW.plusSeconds(30), refreshToken -> {
+                    sessionRecord -> NOW.plusSeconds(30), (refreshToken, _) -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
                     binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
@@ -976,7 +978,7 @@ class BffRuntimeProducerTest {
         void shouldFailRequestOnUnavailableRefresh() {
             SessionRecord live = storedSession(token());
             TokenRefreshCoordinator unreachable = new TokenRefreshCoordinator(LEEWAY, sessionRecord -> NOW,
-                    refreshToken -> {
+                    (refreshToken, _) -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
                     binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
@@ -999,7 +1001,7 @@ class BffRuntimeProducerTest {
 
         private TokenRefreshCoordinator coordinator(Instant accessTokenExpiry, AtomicInteger engineCalls) {
             return new TokenRefreshCoordinator(LEEWAY, sessionRecord -> accessTokenExpiry,
-                    refreshToken -> {
+                    (refreshToken, _) -> {
                         engineCalls.incrementAndGet();
                         return rotation();
                     },
@@ -1354,6 +1356,57 @@ class BffRuntimeProducerTest {
         }
 
         /**
+         * The refresh binding the producer hands the coordinator is driven directly, against the
+         * fixture's discovery document, and the back-channel configuration factory is recorded: the
+         * engine sends exactly the {@code scope} of the configuration it is driven over, so the scope
+         * list that configuration is built for IS the refresh grant's {@code scope}
+         * ({@code ScopedEngineFlowsTest} proves that last step on the wire). The fixture serves no token
+         * endpoint, so the grant itself is refused — the factory call happens before the post.
+         */
+        @Test
+        @DisplayName("the assembled refresh binding requests the session's active scope set A, never the static oidc.scopes")
+        void refreshBindingRequestsActiveScopes() {
+            RecordingProducer recording = recordingProducer();
+            TokenRefreshCoordinator coordinator = single(
+                    reachableInstancesOf(recording.bffRuntime(), TokenRefreshCoordinator.class), "refresh coordinator");
+            TokenRefreshCoordinator.RefreshExchange exchange = single(
+                    reachableInstancesOf(coordinator, TokenRefreshCoordinator.RefreshExchange.class),
+                    "refresh exchange the coordinator holds");
+            Set<String> activeScopes = Set.of("openid", "profile", "email", SCOPED_ENDPOINT_SCOPE);
+            String refreshToken = token();
+            recording.requested.clear();
+
+            assertThrows(RuntimeException.class, () -> exchange.exchange(refreshToken, activeScopes),
+                    "the fixture serves no token endpoint, so the grant is refused after the configuration is built");
+
+            assertEquals(List.of(List.of("email", "openid", SCOPED_ENDPOINT_SCOPE, "profile")), recording.requested,
+                    "the refresh rides a configuration built for exactly A (canonical order) — the pre-change "
+                            + "binding drove a flow over the base configuration and asked the factory for nothing");
+            assertFalse(recording.requested.contains(List.of("openid")),
+                    "the static oidc.scopes are never what a refresh requests");
+        }
+
+        private RecordingProducer recordingProducer() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer(server.issuer())
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .build();
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
+                    .egressTls(oidcHostname(false)).build();
+            return new RecordingProducer(gatewayConfig, tokenValidator);
+        }
+
+        private static <T> T single(List<T> found, String what) {
+            assertEquals(1, found.size(), "exactly one " + what + " is reachable from the assembled runtime — "
+                    + "this test must never pass vacuously; if the producer's wiring moved, retarget the walk");
+            return found.getFirst();
+        }
+
+        /**
          * An active server-mode runtime whose discovery reaches the SAN-mismatch fixture over the relaxed
          * hostname posture, over a route table carrying one scoped session route.
          */
@@ -1405,6 +1458,29 @@ class BffRuntimeProducerTest {
 
         private static EgressTlsConfig oidcHostname(boolean verify) {
             return new EgressTlsConfig(true, true, null, verify, null);
+        }
+    }
+
+    /**
+     * A producer that records every scope list its back-channel configuration factory is asked for,
+     * then builds the configuration exactly as the production method does. Only the recording is added.
+     * {@link Vetoed} because {@code @ApplicationScoped} is inherited: without it the test-class index a
+     * {@code @QuarkusTest} run builds would see a second producer bean.
+     */
+    @Vetoed
+    private static final class RecordingProducer extends BffRuntimeProducer {
+
+        private final List<List<String>> requested = new CopyOnWriteArrayList<>();
+
+        RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator) {
+            super(gatewayConfig, new RouteTable(List.of()), new SingletonInstance<>(tokenValidator),
+                    new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR);
+        }
+
+        @Override
+        ClientConfiguration backChannelConfiguration(OidcConfig oidc, List<String> scopes) {
+            requested.add(List.copyOf(scopes));
+            return super.backChannelConfiguration(oidc, scopes);
         }
     }
 
