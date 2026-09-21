@@ -10,7 +10,7 @@
       "description": "The deployable Quarkus gateway application. A Vert.x GatewayEdgeRoute runs every request through the security pipeline (cui-http basic and thorough checks, canonical-path and framing guards, verb gate, route selection, offline bearer authentication via token-sheriff-validation, forward policy, security headers) and dispatches to HTTP, gRPC, WebSocket or asset-serving targets. It also hosts the server-session and sealed-cookie BFF runtimes on token-sheriff-client, the TLS edge (SNI front listener with L4 passthrough, mTLS, egress trust profiles), boot-time YAML plus JSON Schema config loading and validation, CDI producers, health and metrics. Published as a GraalVM/Mandrel native executable on a distroless container image (ADR-0042).",
       "generation": {
         "by": "architecture",
-        "tree_sha": "5aaada3706cf5f90b2363eb30e0bd80e2ae87566bbfe53522d5114d358c9ac88"
+        "tree_sha": "7c91e2d55eade6d5fa6b8618ea6b8c0fd9a920c7e91cc16f7cb5af5b19ffa505"
       }
     },
     "api-sheriff-build-parent": {
