@@ -145,9 +145,10 @@ Duration ttl) {
      * Whether {@code returnUrl} is safe to redirect a browser to after login: a gateway-relative
      * path ({@code /...}), or an absolute URL whose origin (scheme + host + port) matches
      * {@code gatewayOrigin}. A schema-relative ({@code //host}) value, a backslash-authority
-     * ({@code /\host}, which browsers normalize to {@code //host}) value, a cross-origin absolute
-     * URL, a blank value, or an unparseable value is rejected — the post-login redirect is never
-     * an open redirect.
+     * ({@code /\host}, which browsers normalize to {@code //host}) value, a value carrying any
+     * control character ({@code /\t/host}, which browsers strip to {@code //host}), a cross-origin
+     * absolute URL, a blank value, or an unparseable value is rejected — the post-login redirect is
+     * never an open redirect.
      *
      * @param returnUrl     the candidate post-login redirect target (may be absent/blank)
      * @param gatewayOrigin the gateway's own origin (e.g. the {@code redirect_uri} origin)
@@ -162,6 +163,14 @@ Duration ttl) {
         // gateway-relative path or an absolute gateway URL — never carries a raw backslash, so any
         // backslash is rejected outright (closes /\evil.com, /\/evil.com, \evil.com).
         if (returnUrl.indexOf('\\') >= 0) {
+            return false;
+        }
+        // The WHATWG URL parser removes every ASCII tab and newline from a Location value before
+        // parsing it, so /<TAB>/evil.com (a decoded ?returnUrl=/%09/evil.com) would pass the checks
+        // above yet land as the protocol-relative //evil.com. A legitimate return URL carries no raw
+        // control character (the gateway-built one is a canonical path plus a still-encoded query),
+        // so any control character is rejected outright.
+        if (returnUrl.chars().anyMatch(Character::isISOControl)) {
             return false;
         }
         if (returnUrl.startsWith("/")) {
