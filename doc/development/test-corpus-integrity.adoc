@@ -4,9 +4,10 @@
 :sectnums:
 
 Which test methods in the API Sheriff corpus carry assertions that *cannot support the behaviour
-their names claim*, what verdict each one received, which eighteen were strengthened, and -- the part
-that makes this note auditable rather than anecdotal -- exactly how much of the surface was left
-un-classified, counted.
+their names claim*, what verdict each one received, which thirty-two were strengthened -- the first
+pass's eighteen and the unit-lane pass's fourteen, each set proved by its own inversion audit -- and,
+the part that makes this note auditable rather than anecdotal, exactly how much of the surface was
+left un-classified, counted.
 
 Three passes are recorded. The first ranked the corpus by vacuity-marker density and read the ranked
 files; the second (<<pro-forma-audit>>) read *every* file in the integration lane, because the defect
@@ -1843,9 +1844,9 @@ retires.
 === What this pass did not do
 
 It read every file and classified every flagged method; it did not *fix* any of them. The fourteen
-`strengthen` verdicts above are routed onward, not absorbed, exactly as <<pro-forma-audit>>'s fourteen
-were. A reader should take the verdict distribution as a measurement of the lane and not as a record
-of work completed.
+`strengthen` verdicts above were routed onward and applied in a separate step (`857822d`), whose own
+evidence is <<unit-lane-inversion-audit>>. A reader should take the verdict distribution above as a
+measurement of the lane and not as a record of work completed.
 
 It also did not extend the taxonomy. Two of its findings -- <<structurally-unfailable>> and the
 census-evading `assertTrue(optional.isPresent())` spelling -- are arguably new shapes, and both are
@@ -1853,6 +1854,194 @@ deliberately recorded as findings instead. <<shape-e>> was added because it name
 existing shapes structurally could not reach; neither of these two does. The first is a strictly
 stronger instance of (c), the second is (a) under a different spelling, and adding shapes for them
 would dilute a taxonomy whose value is that each entry means exactly one thing.
+
+[[unit-lane-inversion-audit]]
+== The Unit-Lane Inversion Audit
+
+The fourteen `strengthen` verdicts of <<unit-lane-audit>> were applied at `857822d`. A strengthened
+assertion is only worth the diff if it *fails* when the behaviour it claims is broken, so each one
+was put through the same inversion the first pass used: apply a transient mutation to the code under
+test, run the affected suite, observe the RED, revert.
+
+*The mutations are grouped by technique, not by site.* Ten of the fourteen strengthenings use a
+distinct technique between them, and one mutation per technique is what makes the audit an argument
+about the technique rather than an anecdote about one instance of it. The four sites not separately
+mutated are named in <<unit-inversion-per-site>> below, each against the technique row that carries
+its argument -- so a reader can see exactly which claims rest on an observed RED and which rest on
+"same technique as the row above".
+
+=== The mutations, and what each one broke
+
+[cols="2,2,3",options="header"]
+|===
+| Transient mutation | Expected to break | Observed
+
+| `VerbGateStage` appends the *refused* verb to the `Allow` header it seeds onto the 405
+| `GatewayEdgePipelineTest.rejectsDisallowedVerb`
+| failed: `a 405 names the route's permitted verbs -- and only those -- in the Allow header ==>
+  expected: <GET, POST> but was: <GET, POST, DELETE>`
+
+| `VerbGateStage.process` seeds `Allow` on the *pass* path as well as the refusal path
+| `VerbGateStageTest.passesAllowedVerb`
+| failed twice: `Allow belongs to the 405 refusal, never to an admitted verb ==> expected: <null> but
+  was: <GET, POST>`, and `the gate writes no response header at all on the pass path ==> expected:
+  <true> but was: <false>`
+
+| `MtlsServerCustomizer` binds `/etc/ssl/certs/ca-bundle.crt` instead of the configured `client_ca`
+| `MtlsServerCustomizerTest.enabledRequiresClientAuthWithTrustAnchor`
+| failed: `the bound anchor is exactly the configured client_ca, and nothing else ==> expected:
+  <[/etc/api-sheriff/client-ca.crt]> but was: <[/etc/ssl/certs/ca-bundle.crt]>`
+
+| `CookieKeyMaterial.generateKey` returns a fixed constant key rather than a fresh `SecureRandom` one
+| `BffRuntimeProducerTest.shouldBootCookieModeWithoutKey`
+| failed: `and the key is generated per startup: a second boot cannot open the first boot's cookie,
+  which a hard-coded or absent key would ==> expected: <true> but was: <false>`
+
+| `UpstreamAssetSource.httpFetcher` drops the read-timeout null check
+| `UpstreamAssetSourceTest.shouldBuildDefaultFetcher`
+| failed: `a seam without a read timeout is refused rather than built unbounded ==> Expected
+  java.lang.NullPointerException to be thrown, but nothing was thrown.`
+
+| `RetryingJwksLoader.close()` neither sets the closed flag nor cancels the pending retry
+| `RetryingJwksLoaderTest.closeAndToString`
+| failed: `a closed loader releases its delegate and issues no further fetch ==> expected: <1> but
+  was: <3>` -- the cancelled retry dialled twice more past the barrier
+
+| `LoginInitiationEndpoint` short-circuits to the requested return URL with no same-origin check
+| `GatewayEdgeRouteBffWiringTest.shouldDispatchLogin`
+| failed: `control: a cross-origin return URL is refused and replaced by the default ==> expected:
+  <Optional[/]> but was: <Optional[https://evil.example.com/home]>`
+
+| `Metadata` gains a `toString()` rendering a package-qualified identity hash
+| `ConfigModelContractTest.shouldHonorValueObjectContract`
+| failed on two cases: `[2] a diagnostic rendering names its own type rather than a package-qualified
+  identity hash: de.cuioss.sheriff.gateway.config.model.Metadata@1653b84e ==> expected: <true> but
+  was: <false>`, and `[1] equal instances render equally -- an identity-based rendering would not`,
+  because `GatewayConfig`'s own rendering embeds the record's
+
+| `SealedSessionCookieCodec.deflate` pads the plaintext with 2048 incompressible bytes before
+  compressing
+| `SealedSessionCookieCodecTest.shouldSealRealisticPayload`
+| failed: `a realistic single-session payload sealed to 3028 bytes, which is not well inside the
+  4019-byte budget ==> expected: <true> but was: <false>` -- the *seal itself still succeeded*, which
+  is why the pre-change no-throw form could not see it
+
+| `Awaits.until` returns without reaching the instrumented core
+| `AwaitsTest.publicTierEntryPointsDelegateToTheInstrumentedCore`
+| failed: `until reaches the core, which is what turns an unmet condition into a TimeoutException
+  rather than an Awaitility exception or nothing ==> Expected java.util.concurrent.TimeoutException
+  to be thrown, but nothing was thrown.`
+|===
+
+The last row's mutation targets `api-sheriff/src/test/java/.../testsupport/Awaits.java` rather than a
+`src/main` source, because `Awaits` *is* the code under test for `AwaitsTest`. Every other mutation
+above is a production source under `api-sheriff/src/main/java/**`.
+
+=== The contrast that carries the argument
+
+A RED alone proves the mutation reached the test; it does not prove the *strengthening* is what
+caught it. The same mutations were therefore re-run against the *pre-change* form of each test file,
+checked out from `b4fadd2` while the mutations stayed applied.
+
+[cols="3,1,1,4",options="header"]
+|===
+| Run | Strengthened forms | Pre-change forms | What the difference is
+
+| Eight mutations, 284 tests
+| 11 failures
+| 2 failures
+| The 9 that vanish are exactly the strengthened methods' assertions (`ConfigModelContractTest`
+  contributes two, being parameterized). The 2 survivors --
+  `VerbGateStageTest.rejectsDisallowedVerb` and `RetryingJwksLoaderTest.closeCancelsPendingRetry` --
+  are *pre-existing strong siblings* that already asserted the `Allow` value and the retry
+  cancellation before this sweep; neither is one of the fourteen.
+
+| Two mutations, 68 tests
+| 4 failures, 3 errors
+| 2 failures, 3 errors
+| The 2 that vanish are `shouldSealRealisticPayload` and
+  `publicTierEntryPointsDelegateToTheInstrumentedCore`. The survivors are the codec's own round-trip
+  and three-token-size tests, which the padding mutation breaks on their own merits and which the
+  sweep did not touch.
+|===
+
+*Not one of the fourteen survived its own inversion*, so none is sent back to the strengthening step.
+
+[[unit-inversion-per-site]]
+=== Per-site attribution -- observed RED vs covered by technique
+
+[cols="3,2,3",options="header"]
+|===
+| Strengthened method | Basis | Note
+
+| `UpstreamAssetSourceTest.shouldBuildDefaultFetcher`
+| observed RED
+| --
+
+| `RetryingJwksLoaderTest.closeAndToString`
+| observed RED
+| --
+
+| `SealedSessionCookieCodecTest.shouldSealRealisticPayload`
+| observed RED
+| --
+
+| `ConfigModelContractTest.shouldHonorValueObjectContract`
+| observed RED
+| two parameterized cases went red, `[1]` and `[2]`
+
+| `GatewayEdgePipelineTest.rejectsDisallowedVerb`
+| observed RED
+| --
+
+| `GatewayEdgeRouteBffWiringTest.shouldDispatchLogin`
+| observed RED
+| --
+
+| `VerbGateStageTest.passesAllowedVerb`
+| observed RED
+| --
+
+| `BffRuntimeProducerTest.shouldBootCookieModeWithoutKey`
+| observed RED
+| --
+
+| `AwaitsTest.publicTierEntryPointsDelegateToTheInstrumentedCore`
+| observed RED
+| --
+
+| `MtlsServerCustomizerTest.enabledRequiresClientAuthWithTrustAnchor`
+| observed RED
+| --
+
+| `GatewayEdgePipelineTest.answersCorsPreflight`
+| technique
+| The `Access-Control-Allow-Methods` leg is the `Allow` leg's technique exactly: an exact-value
+  assertion replacing a presence check on a response header whose permitted set the fixture declares.
+
+| `PassthroughHostGuardStageTest.inertWhenPassthroughSetEmpty`
+| technique
+| The untouched-state triple replacing a bare no-throw, inverted at
+  `VerbGateStageTest.passesAllowedVerb`.
+
+| `UpstreamAssetSourceTest.shouldConstructWithDefaultFetcher`
+| technique
+| Probing the wired collaborators through the constructed object's own surface, inverted at
+  `BffRuntimeProducerTest.shouldBootCookieModeWithoutKey`.
+
+| `GatewayEdgeRouteBffWiringTest.shouldBootSessionRouteWithActiveRuntime`
+| technique
+| The same probe-the-wired-collaborator technique, here through the wired stage's own login challenge
+  with an inert-runtime control.
+|===
+
+=== Why the audit runs after the strengthening is committed
+
+The same reason the first pass gives, and it is not a formality. With the strengthened files already
+in `HEAD`, reverting a transient mutation is a `git checkout` against committed content rather than a
+destructive discard of uncommitted work -- and so is the swap to the pre-change forms the contrast
+needs, which is a checkout of `b4fadd2` and back. Every transient mutation was reverted and
+`git status --porcelain` was empty afterwards; the working tree carries no residue.
 
 [[awaits-reassertion-guard]]
 == The Until-Then-Re-Assert Fitness Function
