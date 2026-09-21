@@ -188,8 +188,9 @@ class ConfigLoaderTest {
                   id: orders
                   base_url: ORDERS
                   auth:
-                    require: bearer
-                    required_scopes: ["orders.read"]
+                    require: session
+                    token_relay: false
+                  scopes: ["orders.read", "orders.write"]
                   allowed_methods: ["GET", "POST"]
                   upstream_defaults:
                     retry:
@@ -219,11 +220,116 @@ class ConfigLoaderTest {
         assertTrue(endpoint.enabled(), "an endpoint omitting 'enabled' defaults to enabled");
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), endpoint.allowedMethods());
         assertEquals(new UpstreamDefaultsConfig(false, true), endpoint.upstreamDefaults());
+        assertEquals(List.of("orders.read", "orders.write"), endpoint.scopes(),
+                "endpoint.scopes must bind outside the auth block");
+        assertFalse(endpoint.auth().effectiveTokenRelay(), "a declared token_relay: false must bind");
         assertEquals(1, endpoint.routes().size());
         RouteConfig route = endpoint.routes().getFirst();
         assertEquals("orders-read", route.id());
         assertEquals(Protocol.HTTP, route.protocol());
+        assertNull(route.auth().tokenRelay(), "an omitted token_relay binds as absent");
+        assertTrue(route.auth().effectiveTokenRelay(), "an omitted token_relay resolves to relaying");
         assertNotNull(route.upstream().retry());
+    }
+
+    @Test
+    void bindsOidcLoginDefaultReturnUrl() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  redirect_uri: https://gateway.example.com/callback
+                  login:
+                    path: /auth/login
+                    default_return_url: /app/home?tab=overview
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals("/app/home?tab=overview", loaded.gateway().oidc().login().defaultReturnUrl());
+    }
+
+    @Test
+    void omittedOidcLoginDefaultReturnUrlBindsAsAbsent() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  login:
+                    path: /auth/login
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertNull(loaded.gateway().oidc().login().defaultReturnUrl());
+    }
+
+    @Test
+    void omittedEndpointScopesBindToEmptyList() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: bearer
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(List.of(), loaded.endpoints().getFirst().scopes());
+    }
+
+    @Test
+    void rejectsRemovedRequiredScopesInEndpointAuth() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: bearer
+                    required_scopes: ["orders.read"]
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.pointer().contains("/endpoint/auth")),
+                () -> "expected the removed required_scopes key to be refused by the schema, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void rejectsRemovedRequiredScopesInAnchorAuth() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    type: proxy
+                    access: authenticated
+                    auth:
+                      require: bearer
+                      required_scopes: ["api.read"]
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("/anchors/api/auth")),
+                () -> "expected the removed required_scopes key to be refused by the schema, got: "
+                        + exception.errors());
     }
 
     @Test
@@ -1418,10 +1524,11 @@ class ConfigLoaderTest {
 
     @Test
     void typesAScalarReachedThroughALocalSchemaRef() throws Exception {
-        // Arrange — /endpoint/auth is declared as `$ref: #/$defs/auth`, so required_scopes is only
-        // reachable by following the indirection. Stop at the $ref node and the destination type is
-        // left unpinned, which sends "123" through shape inference and retypes it to an integer —
-        // and the referenced subschema declares the items string, so the document stops binding.
+        // Arrange — /endpoint/routes/*/security_filter is declared as `$ref: #/$defs/securityFilter`,
+        // so allowed_paths is only reachable by following the indirection. Stop at the $ref node and
+        // the destination type is left unpinned, which sends "123" through shape inference and
+        // retypes it to an integer — and the referenced subschema declares the items string, so the
+        // document stops binding.
         writeConfig("gateway.yaml", "version: 1\n");
         writeConfig("endpoints/api.yaml", """
                 endpoint:
@@ -1429,18 +1536,20 @@ class ConfigLoaderTest {
                   base_url: alias-api
                   auth:
                     require: bearer
-                    required_scopes: ["${SHERIFF_SCOPE}"]
                   routes:
                     - id: r1
                       match:
                         path_prefix: /api
+                      security_filter:
+                        allowed_paths: ["${SHERIFF_PATH}"]
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_SCOPE", "123")).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_PATH", "123")).load();
 
         // Assert
-        assertEquals(List.of("123"), loaded.endpoints().getFirst().auth().requiredScopes(),
+        assertEquals(List.of("123"),
+                loaded.endpoints().getFirst().routes().getFirst().securityFilter().allowedPaths(),
                 "a scalar behind a local $ref must be typed from the REFERENCED subschema — without "
                         + "following the $ref the type is unpinned, \"123\" is inferred as an integer, "
                         + "and the declared string items refuse the document");

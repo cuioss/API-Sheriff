@@ -639,7 +639,6 @@ class GatewayEdgeRouteBffWiringTest {
             SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                     (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                             new SessionBinding.BoundSession(session, List.of())),
-                    (token, scopes) -> true,
                     (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                     SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                     Clock.systemUTC());
@@ -714,7 +713,6 @@ class GatewayEdgeRouteBffWiringTest {
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
                 (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
-                (token, scopes) -> true,
                 (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 Clock.systemUTC());

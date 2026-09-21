@@ -34,6 +34,7 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -76,7 +77,8 @@ import org.jspecify.annotations.Nullable;
  * inheritance), the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
  * wholesale, deny lists included), and the effective upstream base path (the route-level
- * {@code upstream.path} appended to the alias-derived base path when declared)
+ * {@code upstream.path} appended to the alias-derived base path when declared), and the
+ * needed scope set ({@code oidc.scopes} united with the owning endpoint's {@code scopes})
  * into a {@link ResolvedRoute}. The inheritance chains
  * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
  * step — ADR-0007) are resolved here, once, so the request pipeline never
@@ -269,7 +271,8 @@ public final class RouteTableBuilder {
                 .rewriteLocation(routeUpstream != null && Boolean.TRUE.equals(routeUpstream.rewriteLocation()))
                 .effectiveForward(effectiveForward)
                 .effectiveAllowedOrigins(allowedOrigins)
-                .effectiveWebSocketIdleTimeoutSeconds(idleTimeout);
+                .effectiveWebSocketIdleTimeoutSeconds(idleTimeout)
+                .neededScopes(neededScopes(gateway, endpoint));
         // A route resolves to exactly one terminal action (ADR-0014 and its Amendment A1): an asset
         // action when the route declares an asset block, a redirect action when it declares a
         // redirect block, otherwise the route proxies to its endpoint upstream. The upstream is
@@ -311,6 +314,28 @@ public final class RouteTableBuilder {
                             .formatted(route.id()));
         }
         return auth;
+    }
+
+    /**
+     * Materializes the scope set a request on a route of this endpoint needs:
+     * {@code oidc.scopes} united with the endpoint's additive {@code scopes}, or the endpoint's
+     * {@code scopes} alone when no {@code oidc} block is configured. The union is additive by
+     * construction — an endpoint can add scopes but never remove an {@code oidc.scopes} member.
+     * It is the single derivation the bearer {@code insufficient_scope} check, the session-route
+     * login request and the {@code /auth/login?returnUrl=} resolution all read.
+     *
+     * @param gateway  the bound gateway document supplying {@code oidc.scopes}
+     * @param endpoint the route's owning endpoint supplying its additive {@code scopes}
+     * @return the needed scope set, empty when neither level declares a scope
+     */
+    private static Set<String> neededScopes(GatewayConfig gateway, EndpointConfig endpoint) {
+        Set<String> needed = new LinkedHashSet<>();
+        OidcConfig oidc = gateway.oidc();
+        if (oidc != null) {
+            needed.addAll(oidc.scopes());
+        }
+        needed.addAll(endpoint.scopes());
+        return needed;
     }
 
     /**

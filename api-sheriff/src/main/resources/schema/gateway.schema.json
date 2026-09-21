@@ -22,7 +22,11 @@
       "required": ["require"],
       "properties": {
         "require": { "type": "string", "enum": ["none", "bearer", "session"] },
-        "required_scopes": { "type": "array", "items": { "type": "string" } }
+        "token_relay": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether a require: session route relays the session's access token to the upstream as Authorization: Bearer. Defaults to true. With false the session is still resolved, refreshed and required, but no Authorization header is sent upstream. Acts only on require: session; it has no effect on bearer or none routes. Combining false with a forward.headers_allow that names Authorization is refused at boot (enforced in code)."
+        }
       }
     },
     "securityFilter": {
@@ -429,7 +433,11 @@
           "additionalProperties": false,
           "description": "Login-initiation reserved-path settings (fold). Mirrors the logout shape so the login-initiation endpoint reads as oidc.login.path.",
           "properties": {
-            "path": { "type": "string" }
+            "path": { "type": "string" },
+            "default_return_url": {
+              "type": "string",
+              "description": "Post-login return target used when a login carries no usable return URL: an absent, cross-origin or unparseable target falls back to it. Defaults to / when omitted. It must be same-origin with redirect_uri (a relative path, or an absolute URL on the redirect_uri origin); a cross-origin value is refused at boot (enforced in code)."
+            }
           }
         }
       }

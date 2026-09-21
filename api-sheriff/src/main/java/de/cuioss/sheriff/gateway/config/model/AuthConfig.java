@@ -15,41 +15,55 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import java.util.List;
 import java.util.Objects;
 
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
- * The {@code auth} block, declarable at endpoint level (mandatory default
- * posture) and per route (wholesale override).
+ * The {@code auth} block, declarable on an anchor (policy floor), at endpoint level (default
+ * posture) and per route (override).
  * <p>
  * {@code require} is a {@link Require} posture ({@code none} / {@code bearer} /
  * {@code session}); the value set is declared in the JSON schemas and refused there
- * before binding. {@code required_scopes} is valid at either level; because override
- * is wholesale, a route-level block that omits it drops endpoint-level scope
- * enforcement for that route.
+ * before binding. {@code token_relay} decides whether a {@code require: session} route
+ * relays the session's access token upstream as {@code Authorization: Bearer}; it acts on
+ * {@code session} routes only and resolves to {@code true} when absent (see
+ * {@link #effectiveTokenRelay()}). The block is replaced <em>wholesale</em> through the
+ * route &rarr; endpoint &rarr; anchor cascade, so a route-level block that omits
+ * {@code token_relay} resolves it to the default rather than inheriting a lower-level value.
+ * <p>
+ * The block carries no scope list: the scopes a route needs are declared additively by the
+ * owning endpoint's {@code scopes} key, outside {@code auth}, and materialized once per route
+ * as {@link ResolvedRoute#neededScopes()}.
  * <p>
  * <strong>Thread safety.</strong> This immutable record is thread-safe and may be shared
- * freely across request threads: {@link Require} is an enum, and the canonical constructor
- * defensively copies {@code requiredScopes} into an unmodifiable list, so no caller can
- * mutate an instance after construction.
+ * freely across request threads: {@link Require} is an enum and {@link Boolean} is immutable.
  *
- * @param require        the authentication requirement (mandatory)
- * @param requiredScopes the scopes enforced for this posture, empty when none
+ * @param require    the authentication requirement (mandatory)
+ * @param tokenRelay whether a {@code require: session} route relays the session's access
+ *                   token upstream, {@code null} when omitted (resolves to {@code true})
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record AuthConfig(Require require, List<String> requiredScopes) {
+public record AuthConfig(Require require, @Nullable Boolean tokenRelay) {
 
     /**
-     * Canonical constructor defensively copying {@code requiredScopes} into an
-     * unmodifiable list and normalizing an absent list to empty.
+     * Canonical constructor requiring {@code require}.
      */
     public AuthConfig {
         Objects.requireNonNull(require, "require");
-        requiredScopes = requiredScopes == null ? List.of() : List.copyOf(requiredScopes);
+    }
+
+    /**
+     * Resolves the declared {@code token_relay} value: an omitted key relays the token.
+     *
+     * @return {@code false} only when {@code token_relay: false} is declared, {@code true}
+     *         otherwise
+     */
+    public boolean effectiveTokenRelay() {
+        return !Boolean.FALSE.equals(tokenRelay);
     }
 }

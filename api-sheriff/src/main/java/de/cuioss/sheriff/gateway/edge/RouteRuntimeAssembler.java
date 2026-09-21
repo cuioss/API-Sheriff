@@ -130,7 +130,7 @@ public final class RouteRuntimeAssembler {
                     .protocolProcessor(processor)
                     .effectiveAllowedMethods(toMethodSet(route.effectiveAllowedMethods()))
                     .effectiveAuth(route.effectiveAuth())
-                    .requiredScopes(route.effectiveAuth().requiredScopes())
+                    .neededScopes(route.neededScopes())
                     // Both set unconditionally: RouteRuntime's @Builder.Default STRICT and its null
                     // securityConfiguration default exist for the builder's test call sites, never as
                     // a stand-in for the production resolution.

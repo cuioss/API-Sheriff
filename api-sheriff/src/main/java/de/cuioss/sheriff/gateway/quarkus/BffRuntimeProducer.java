@@ -357,11 +357,10 @@ public class BffRuntimeProducer {
                 endedRefreshTokens(session)))
                 : sessionUnchanged();
 
-        // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
+        // D4 session stage-4 runtime — binds refresh and the login-redirect seam. A session route runs
+        // no scope check: the scopes it needs are requested at login, never enforced per request.
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                 tokenRefresh,
-                (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)
-                        .providesScopes(requiredScopes),
                 (returnUrl, now) -> {
                     LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),

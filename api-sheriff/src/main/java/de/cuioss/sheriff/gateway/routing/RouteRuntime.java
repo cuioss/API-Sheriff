@@ -71,8 +71,14 @@ public final class RouteRuntime {
     /** The materialized auth posture. */
     private final AuthConfig effectiveAuth;
 
-    /** The required scopes enforced for this route (empty when none). */
-    private final List<String> requiredScopes;
+    /**
+     * The scope set a request on this route needs — {@code oidc.scopes} united with the owning
+     * endpoint's {@code scopes}, materialized once at boot. A bearer route checks the token against
+     * it ({@code 403 insufficient_scope} on a shortfall) and a session route requests it at login;
+     * empty when neither level declares a scope, which skips the bearer check.
+     */
+    @Builder.Default
+    private final Set<String> neededScopes = Set.of();
 
     /**
      * The deduplicated cui-http security configuration carrying this route's limits. Resolved for

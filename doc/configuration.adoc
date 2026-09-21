@@ -3378,14 +3378,13 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   *mechanically verified* against those files: `DocumentedSetsContractTest` derives both sets from
   the schemas and fails the build when a listed key, a stated count or the object-item set drifts
   from them. A key defined once and referenced from several places -- `allowed_methods` at the
-  global and anchor level, the `auth`, `security_filter` and `security_headers` blocks -- is one
+  global and anchor level, the `security_filter` and `security_headers` blocks -- is one
   key, named by the block it is declared under; an endpoint document's keys are named relative to
   its `endpoint` block.
 +
 --
-In `gateway.yaml` the schema declares 18 such keys, of which 17 declare string items and are the
-usable set: `allowed_methods` (global and anchor), `auth.required_scopes`,
-`security_filter.allowed_paths`, `security_filter.allowed_header_names`,
+In `gateway.yaml` the schema declares 17 such keys, of which 16 declare string items and are the
+usable set: `allowed_methods` (global and anchor), `security_filter.allowed_paths`, `security_filter.allowed_header_names`,
 `security_filter.blocked_header_names`, `security_filter.allowed_content_types`,
 `security_headers.cors.allowed_origins`, `security_headers.cors.allowed_methods`,
 `security_headers.cors.allowed_headers`, `tls.cipher_suites`, `tls.alpn`,
@@ -3393,8 +3392,8 @@ usable set: `allowed_methods` (global and anchor), `auth.required_scopes`,
 `oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims` and
 `oidc.user_info.default_view`.
 
-An `endpoints/*.yaml` document declares the same-named `auth.required_scopes`, `allowed_methods`
-and four `security_filter` lists, and adds 6 further string-item keys of its own:
+An `endpoints/*.yaml` document declares the same-named `allowed_methods` and four
+`security_filter` lists, and adds 7 further string-item keys of its own: `scopes`,
 `routes[].match.methods`, `routes[].forward.headers_allow`, `routes[].forward.headers_deny`,
 `routes[].forward.query_allow`, `routes[].forward.query_deny` and
 `routes[].websocket.allowed_origins`.

@@ -37,6 +37,12 @@ import org.jspecify.annotations.Nullable;
  * per route) — so downstream pipeline code consumes the already resolved values and
  * never re-implements the inheritance. Anchors (ADR-0007) vanish here: only the
  * resolving anchor's {@code anchor} name is retained, for the boot-log posture line.
+ * <p>
+ * {@code neededScopes} is the scope set a request on this route needs:
+ * the union of {@code oidc.scopes} and the owning endpoint's {@code scopes}, or the latter alone when
+ * no {@code oidc} block is configured. It is derived exactly once, here, so the session-route
+ * login request, the {@code /auth/login?returnUrl=} resolution and the bearer-route
+ * {@code insufficient_scope} check all read one value and can never drift apart.
  *
  * @param id                     the route id (mandatory)
  * @param protocol               the effective protocol (defaults to
@@ -85,6 +91,9 @@ import org.jspecify.annotations.Nullable;
  * @param effectiveWebSocketIdleTimeoutSeconds the materialized idle timeout for a
  *                               WebSocket route with the {@code 300}-second default
  *                               applied, {@code null} for a non-WebSocket route
+ * @param neededScopes           the materialized scope set a request on this route needs
+ *                               ({@code oidc.scopes} united with {@code endpoint.scopes}),
+ *                               empty when none
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -107,11 +116,13 @@ boolean rewriteLocation,
 @Nullable RedirectConfig redirect,
 ForwardConfig effectiveForward,
 Set<String> effectiveAllowedOrigins,
-@Nullable Integer effectiveWebSocketIdleTimeoutSeconds) {
+@Nullable Integer effectiveWebSocketIdleTimeoutSeconds,
+Set<String> neededScopes) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying
-     * {@code effectiveAllowedMethods} and {@code effectiveAllowedOrigins}, defaulting
+     * {@code effectiveAllowedMethods}, {@code effectiveAllowedOrigins} and
+     * {@code neededScopes} (an absent set normalizing to empty), defaulting
      * an absent {@code protocol} to {@link Protocol#HTTP}, defaulting an absent
      * {@code effectiveForward} to an all-absent {@link ForwardConfig} — the
      * <em>forward-all</em> posture on both dimensions, not a nothing-crosses one — and
@@ -131,6 +142,7 @@ Set<String> effectiveAllowedOrigins,
         }
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
         effectiveAllowedOrigins = effectiveAllowedOrigins == null ? Set.of() : Set.copyOf(effectiveAllowedOrigins);
+        neededScopes = neededScopes == null ? Set.of() : Set.copyOf(neededScopes);
     }
 
     /**

@@ -61,9 +61,6 @@ import org.jspecify.annotations.Nullable;
  *       ({@code oidc.session.refresh.on_failure}): {@link OnFailure#REAUTHENTICATE} re-drives the same
  *       negotiation as a missing session, {@link OnFailure#REJECT} answers {@code 401}
  *       {@code application/problem+json} for every request, navigation included;</li>
- *   <li>enforces the route's {@code required_scopes} against the <em>mediated</em> token's granted
- *       scopes through the {@link GrantedScopes} seam — a shortfall is {@code 403}
- *       {@link EventType#SCOPE_MISSING} (the D2c residual);</li>
  *   <li>records the mediated access token on the request for automatic upstream injection as
  *       {@code Authorization: Bearer} ({@link PipelineRequest#mediatedBearer(String)} — never an
  *       operator-configured header). The token material is never disclosed to the browser up to
@@ -73,6 +70,12 @@ import org.jspecify.annotations.Nullable;
  * (its {@code Accept} offers {@code text/html}) is redirected {@code 302} into the auth-code flow via
  * the {@link LoginInitiation} seam (short-circuiting the pipeline); anything else (an XHR / API call)
  * gets {@code 401} {@code application/problem+json} via {@link EventType#TOKEN_MISSING}.
+ * <p>
+ * The stage runs <strong>no scope check</strong>: no session-route path answers
+ * {@link EventType#SCOPE_MISSING}. The scopes a session route needs
+ * ({@link RouteRuntime#getNeededScopes()}) are <em>requested</em> when the session is established,
+ * not enforced against the session's token on every request; the {@code 403 insufficient_scope}
+ * check belongs to the bearer route alone.
  * <p>
  * The stage is framework-agnostic and driven entirely through its collaborators and seams, so it is
  * unit-testable without a container or a live IdP. The engine-side and edge-side wiring (the refresh
@@ -94,7 +97,6 @@ public final class SessionAuthenticationStage {
 
     private final SessionBinding sessionBinding;
     private final TokenRefresh tokenRefresh;
-    private final GrantedScopes grantedScopes;
     private final LoginInitiation loginInitiation;
     private final OnFailure onFailure;
     private final Clock clock;
@@ -105,17 +107,15 @@ public final class SessionAuthenticationStage {
      *
      * @param sessionBinding  the mode-neutral session binding resolving the request's live session
      * @param tokenRefresh    the single-flight near-expiry refresh seam (the D9 hook)
-     * @param grantedScopes   the mediated-token scope-membership seam backing {@code required_scopes}
      * @param loginInitiation the auth-code-flow initiation seam for a navigation redirect
      * @param onFailure       the resolved {@code oidc.session.refresh.on_failure} policy applied when a
      *                        refresh leaves the request without a token to mediate
      * @param clock           the reference clock (TTL anchor for session resolution and refresh)
      */
     public SessionAuthenticationStage(SessionBinding sessionBinding, TokenRefresh tokenRefresh,
-            GrantedScopes grantedScopes, LoginInitiation loginInitiation, OnFailure onFailure, Clock clock) {
+            LoginInitiation loginInitiation, OnFailure onFailure, Clock clock) {
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.tokenRefresh = Objects.requireNonNull(tokenRefresh, "tokenRefresh");
-        this.grantedScopes = Objects.requireNonNull(grantedScopes, "grantedScopes");
         this.loginInitiation = Objects.requireNonNull(loginInitiation, "loginInitiation");
         this.onFailure = Objects.requireNonNull(onFailure, "onFailure");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -127,8 +127,7 @@ public final class SessionAuthenticationStage {
      * @param request the in-flight request; its route must be selected (stage 2)
      * @throws GatewayException {@code 401} when an unauthenticated non-navigation request is
      *                          challenged or a refresh failure is rejected under
-     *                          {@link OnFailure#REJECT}, or {@code 403} when the mediated token lacks a
-     *                          required scope
+     *                          {@link OnFailure#REJECT}
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
@@ -147,9 +146,7 @@ public final class SessionAuthenticationStage {
         switch (refreshed) {
             case RefreshResult.Mediate(SessionBinding.BoundSession bound) -> {
                 emitSetCookies(request, bound.setCookieHeaders());
-                SessionRecord session = bound.session();
-                enforceScopes(route, session);
-                request.mediatedBearer(session.accessToken());
+                request.mediatedBearer(bound.session().accessToken());
             }
             case RefreshResult.SessionEnded() -> {
                 // The seam destroyed the session (the identity provider rejected the refresh token —
@@ -179,14 +176,6 @@ public final class SessionAuthenticationStage {
      */
     private static void emitSetCookies(PipelineRequest request, List<String> setCookieHeaders) {
         setCookieHeaders.forEach(request::addResponseSetCookie);
-    }
-
-    private void enforceScopes(RouteRuntime route, SessionRecord session) {
-        List<String> requiredScopes = route.getEffectiveAuth().requiredScopes();
-        if (!requiredScopes.isEmpty() && !grantedScopes.provides(session.accessToken(), requiredScopes)) {
-            throw new GatewayException(EventType.SCOPE_MISSING,
-                    "Mediated token missing a required scope for route " + route.getId());
-        }
     }
 
     /**
@@ -347,26 +336,6 @@ public final class SessionAuthenticationStage {
 
         /** {@code reject}: {@code 401} {@code application/problem+json} for every request, navigation included. */
         REJECT
-    }
-
-    /**
-     * The mediated-token scope-membership seam. The session runtime binds it to the engine token
-     * parsing so {@code required_scopes} is enforced against the mediated access token's granted
-     * scopes; a test binds it to a fixed predicate. Keeping the token parsing behind the seam
-     * decouples this stage from the engine and keeps it unit-testable.
-     *
-     * @author API Sheriff Team
-     * @since 1.0
-     */
-    @FunctionalInterface
-    public interface GrantedScopes {
-
-        /**
-         * @param accessToken    the mediated access token
-         * @param requiredScopes the route's non-empty {@code required_scopes}
-         * @return {@code true} when the token grants every required scope
-         */
-        boolean provides(String accessToken, List<String> requiredScopes);
     }
 
     /**
