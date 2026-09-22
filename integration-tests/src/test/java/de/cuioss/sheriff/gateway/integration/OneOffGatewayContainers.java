@@ -242,7 +242,7 @@ final class OneOffGatewayContainers {
      *                     the poll catch exactly that family rather than every runtime failure
      */
     @SuppressWarnings("java:S1130") // NOSONAR java:S1130 - RestAssured rethrows IOException undeclared (Groovy)
-    static Response readiness(String managementOrigin) throws IOException {
+    private static Response readiness(String managementOrigin) throws IOException {
         return given()
                 .relaxedHTTPSValidation()
                 .baseUri(managementOrigin)
@@ -420,7 +420,7 @@ final class OneOffGatewayContainers {
      * @param exitCode the process exit status
      * @param output   its merged stdout and stderr, stripped
      */
-    record DockerRun(int exitCode, String output) {
+    private record DockerRun(int exitCode, String output) {
     }
 
     /**
@@ -430,7 +430,7 @@ final class OneOffGatewayContainers {
      * @param arguments the docker arguments
      * @return the exit status and merged output
      */
-    static DockerRun runDocker(String... arguments) {
+    private static DockerRun runDocker(String... arguments) {
         List<String> command = new ArrayList<>();
         command.add("docker");
         command.addAll(List.of(arguments));
