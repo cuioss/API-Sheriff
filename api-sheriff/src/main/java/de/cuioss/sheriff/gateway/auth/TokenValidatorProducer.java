@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.auth;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -56,6 +58,14 @@ import org.jspecify.annotations.Nullable;
  * {@link de.cuioss.sheriff.token.validation.IssuerConfig}: an {@code http} JWKS source becomes an
  * {@link HttpJwksLoaderConfig}, a {@code file} source becomes a JWKS file path. Validation is fully
  * offline once the key material has loaded.
+ * <p>
+ * <strong>Every JWKS misconfiguration is a boot refusal.</strong> An issuer without a usable JWKS
+ * source, an {@code http} source without a url, a {@code jwks.url} without a host, an unresolvable
+ * {@code jwks.tls_profile}, and a {@code jwks.tls_profile} together with
+ * {@code egress_tls.jwks_verify_hostname: false} all fail startup with
+ * {@link EventType#CONFIG_INVALID} (the validator is assembled eagerly at startup), never a runtime
+ * rejection. An {@code http} source's SSRF egress allowance is its explicit
+ * {@code allowed_egress_hosts} list or, when none is declared, the host of its own {@code jwks.url}.
  * <p>
  * <strong>The gateway owns each issuer's loader.</strong> Every issuer's library loader is wrapped in
  * a {@link RetryingJwksLoader} installed through the library's public
@@ -122,8 +132,9 @@ public class TokenValidatorProducer {
 
     /**
      * Forces the validator to be assembled at boot rather than on the first bearer request, so a
-     * misconfigured issuer — an unresolvable {@code jwks.tls_profile}, a missing JWKS source —
-     * fails startup instead of surfacing as a runtime rejection once traffic arrives.
+     * misconfigured issuer — an unresolvable {@code jwks.tls_profile}, a missing JWKS source, a
+     * {@code jwks.url} without a host — fails startup instead of surfacing as a runtime rejection
+     * once traffic arrives.
      * <p>
      * Merely observing {@link StartupEvent} with the validator as a parameter is NOT enough: an
      * {@code @ApplicationScoped} bean is injected as a lazy client proxy, and ArC does not invoke
@@ -150,6 +161,8 @@ public class TokenValidatorProducer {
      * @return the gateway {@link TokenValidator}
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when {@code token_validation} is
      *                          absent, an issuer declares no usable JWKS source, an
+     *                          {@code http}-sourced issuer declares no {@code allowed_egress_hosts}
+     *                          and its {@code jwks.url} names no host, an
      *                          {@code http}-sourced issuer names a {@code jwks.tls_profile} the
      *                          deployment does not define, or an {@code http}-sourced issuer names a
      *                          {@code jwks.tls_profile} while
@@ -201,7 +214,7 @@ public class TokenValidatorProducer {
     /**
      * Builds the gateway-owned loader for one issuer. The loader configuration and the first delegate
      * are created here, eagerly, so every boot refusal of the JWKS source (a missing url or file path,
-     * an unresolvable {@code tls_profile}, a {@code tls_profile} together with
+     * a url without a host, an unresolvable {@code tls_profile}, a {@code tls_profile} together with
      * {@code jwks_verify_hostname: false}, an unsupported source) still aborts assembly. The first
      * delegate consumes that eagerly built configuration; every later delegate the wrapper builds for a
      * retry reads a <em>fresh</em> one. An {@code http} source bounds the wrapper's retry delay by the
@@ -257,19 +270,24 @@ public class TokenValidatorProducer {
     }
 
     /**
-     * Builds the loader config for an {@code http} JWKS source, applying the issuer's
-     * {@code allowed_egress_hosts} allowlist on top of token-sheriff's SSRF egress guard and
-     * the trust anchors its {@code tls_profile} names.
+     * Builds the loader config for an {@code http} JWKS source, applying the issuer's egress
+     * allowance on top of token-sheriff's SSRF egress guard and the trust anchors its
+     * {@code tls_profile} names.
      * <p>
-     * <strong>Secure by default.</strong> When {@code allowed_egress_hosts} is absent or
-     * empty this method calls no egress builder method at all, so the built config keeps
-     * {@link de.cuioss.sheriff.token.commons.transport.EgressPolicy#secureDefault()} — a
+     * <strong>The egress allowance is derived unless declared.</strong> token-sheriff's
+     * {@link de.cuioss.sheriff.token.commons.transport.EgressPolicy#secureDefault()} refuses a
      * JWKS URL resolving to a loopback, link-local, site-local, any-local, multicast, or
-     * unique-local address is refused. Each configured host is passed to
-     * {@link HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder#allowedEgressHost(String)},
-     * which exempts that single host and nothing else; the allowlist is host-exact, never
-     * a wildcard or a suffix match. This is the narrow widening the threat model's GW-05
-     * and BFF-07 prescribe for a trusted IdP that lives on a private network.
+     * unique-local address, and exempts only the hosts passed to
+     * {@link HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder#allowedEgressHost(String)} — host-exact,
+     * never a wildcard or a suffix match. When {@code allowed_egress_hosts} is absent or empty, this
+     * method derives exactly one entry, the host of {@code jwks.url} ({@link URI#getHost()}: the port
+     * is dropped and the spelling is kept), so the issuer's own key endpoint is reachable wherever it
+     * resolves, including a private network. That derived entry exempts the {@code jwks.url} host from
+     * the private-address check in every deployment, and it widens nothing else: TLS chain trust and
+     * hostname verification are untouched, so a JWKS endpoint presenting an untrusted or mismatching
+     * certificate is still refused. A non-empty list is authoritative: each entry is passed as
+     * declared, and the derived host is never merged into it, so an operator pins the allowance — the
+     * narrow widening the threat model's GW-05 and BFF-07 prescribe — by declaring it.
      * <p>
      * <strong>Default trust unless a profile is named.</strong> When {@code tls_profile} is
      * absent no SSL context is set, so the JWKS client keeps the JVM's default trust store —
@@ -294,9 +312,11 @@ public class TokenValidatorProducer {
      * @param jwks   the issuer's {@code http} JWKS block
      * @return the loader config carrying the resolved egress policy, hostname posture and trust anchors
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the block
-     *                          declares no url, names an unresolvable {@code tls_profile}, or names a
-     *                          {@code tls_profile} while {@code egress_tls.jwks_verify_hostname} is
-     *                          {@code false}
+     *                          declares no url, declares no {@code allowed_egress_hosts} while its url
+     *                          names no host (or does not parse as a URI) — the message names the
+     *                          issuer but never echoes the url — names an unresolvable
+     *                          {@code tls_profile}, or names a {@code tls_profile} while
+     *                          {@code egress_tls.jwks_verify_hostname} is {@code false}
      */
     HttpJwksLoaderConfig toHttpJwksLoaderConfig(IssuerConfig issuer, IssuerConfig.Jwks jwks) {
         String url = jwks.url();
@@ -327,12 +347,47 @@ public class TokenValidatorProducer {
                 // TokenValidatorProducerTest.JwksVerifyHostname's two matched controls red (the JWKS
                 // fetch then fails hostname verification and the issuer never becomes healthy).
                 .verifyHostname(jwksVerifyHostname);
-        for (String host : jwks.allowedEgressHosts()) {
-            builder.allowedEgressHost(host);
+        List<String> allowedEgressHosts = jwks.allowedEgressHosts();
+        if (allowedEgressHosts.isEmpty()) {
+            builder.allowedEgressHost(jwksUrlHost(issuer, url));
+        } else {
+            // Authoritative: the declared entries only, never merged with the derived jwks.url host.
+            for (String host : allowedEgressHosts) {
+                builder.allowedEgressHost(host);
+            }
         }
         if (tlsProfile != null) {
             builder.sslContext(trustProfileResolver.resolve(issuer, tlsProfile));
         }
         return builder.build();
+    }
+
+    /**
+     * Derives the single egress allowance of an {@code http} issuer that declares no
+     * {@code allowed_egress_hosts}: the host of its {@code jwks.url}, exactly as
+     * {@link URI#getHost()} spells it.
+     * <p>
+     * The refusal message names the issuer and the key but never the url itself: the value may carry
+     * user-info or control characters, and it is written to the boot log. For the same reason the
+     * {@link URISyntaxException} is not chained as the cause — its message quotes the input verbatim.
+     *
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the url does not parse as a
+     *                          URI or names no host (for example {@code file:/x} or
+     *                          {@code https:///path})
+     */
+    private static String jwksUrlHost(IssuerConfig issuer, String url) {
+        String host;
+        try {
+            host = new URI(url).getHost();
+        } catch (URISyntaxException _) {
+            host = null;
+        }
+        if (host == null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    ISSUER_PREFIX + issuer.name() + "' jwks source 'http' declares no allowed_egress_hosts and its "
+                            + "jwks.url names no host to derive the egress allowance from; declare a jwks.url "
+                            + "with a host, or list the JWKS host in allowed_egress_hosts");
+        }
+        return host;
     }
 }

@@ -52,12 +52,15 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
      * @param file               the JWKS file path (for {@code source: file}), {@code null}
      *                           otherwise
      * @param allowedEgressHosts the SSRF egress allowlist for {@code source: http}, empty
-     *                           when omitted. An empty list keeps token-sheriff's
-     *                           {@code EgressPolicy.secureDefault()}, which refuses a JWKS
-     *                           URL resolving to a loopback, link-local, site-local,
-     *                           any-local, multicast, or unique-local address. Each entry
-     *                           exempts exactly one trusted IdP host from that check
-     *                           (threat model GW-05 / BFF-07); there is no wildcard form.
+     *                           when omitted. token-sheriff's {@code EgressPolicy.secureDefault()}
+     *                           refuses a JWKS URL resolving to a loopback, link-local,
+     *                           site-local, any-local, multicast, or unique-local address,
+     *                           except for the hosts this allowance exempts (threat model
+     *                           GW-05 / BFF-07). An empty list means: derive the single host of
+     *                           {@code jwks.url} and exempt that host. A non-empty list is
+     *                           authoritative and host-exact: each entry exempts exactly one
+     *                           host, the {@code jwks.url} host is never added to it, and
+     *                           there is no wildcard form.
      * @param tlsProfile         the name of the logical trust profile the JWKS client uses
      *                           to verify the IdP's server certificate, {@code null} when omitted.
      *                           This is a name in API Sheriff's own vocabulary, deliberately
@@ -81,8 +84,8 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
 
         /**
          * Canonical constructor requiring {@code source} and defensively copying the
-         * egress allowlist — an absent list normalizes to {@link List#of()}, which
-         * preserves the secure egress default rather than widening it.
+         * egress allowlist — an absent list normalizes to {@link List#of()}, which means
+         * the single host of {@code jwks.url} is derived as the egress allowance.
          */
         public Jwks {
             Objects.requireNonNull(source, "source");

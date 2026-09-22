@@ -56,6 +56,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -136,6 +137,12 @@ import org.jspecify.annotations.Nullable;
  * declaring {@code scopes} must have at least one route that is not {@code require: none}, since
  * scopes act only on authenticated routes; and a declared {@code oidc.login.default_return_url}
  * must be same-origin with {@code redirect_uri}.
+ * <p>
+ * The JWKS egress-allowlist refusal adds one more: every {@code allowed_egress_hosts} entry of an
+ * {@code http}-sourced issuer must be usable as the host-exact exemption token-sheriff's SSRF egress
+ * guard matches on, so a blank or whitespace-only entry and a {@code host:port} entry are refused (a
+ * bare IPv6 literal is not a {@code host:port} entry and is admitted). The schema declares the entries
+ * unrestricted strings; this rule is the single enforcing authority.
  * <p>
  * The application-portal rules ({@link PortalRules}) add four more, run after every rule above: a
  * declared {@code portal.path} must be canonical, must not equal a reserved OIDC path (compared
@@ -250,6 +257,19 @@ public final class ConfigValidator {
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
 
+    /** The {@code jwks.source} whose {@code allowed_egress_hosts} feed token-sheriff's egress guard. */
+    private static final String JWKS_SOURCE_HTTP = "http";
+
+    /**
+     * An {@code allowed_egress_hosts} entry carrying a port, matched against the WHOLE entry
+     * ({@link java.util.regex.Matcher#matches()}): a single-colon {@code name:digits} form, or a
+     * bracketed {@code [v6]:digits} form. The name part of the first alternative excludes every colon,
+     * so a bare IPv6 literal such as {@code fd00::1} — whose second colon cannot be followed by digits
+     * only — never matches. Every quantifier is possessive; the character classes are disjoint from
+     * the delimiters that follow them, so no give-back could ever succeed.
+     */
+    private static final Pattern HOST_WITH_PORT = Pattern.compile("[^:\\[\\]]*+:\\d++|\\[[^\\]]*+\\]:\\d++");
+
     /** The only schemes an {@code allow_external} redirect location may carry. */
     private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
 
@@ -292,7 +312,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateTokenRelayForwardConflict(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
                     errors),
-            (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateJwksEgressHosts(gateway, errors));
 
     /** The core rules followed by the application-portal rules, which run after every core rule. */
     private static final List<ValidationRule> DEFAULT_RULES =
@@ -689,6 +710,71 @@ public final class ConfigValidator {
                             + "'/' or an absolute URL on the redirect_uri origin")
                             .formatted(renderForMessage(declared))));
         }
+    }
+
+    /**
+     * Rule: every {@code allowed_egress_hosts} entry of an {@code http}-sourced issuer must name a
+     * bare host.
+     * <p>
+     * Each entry is handed to token-sheriff's egress guard, which exempts exactly the host it names
+     * from the private-address refusal and matches it host-exact — the port of the JWKS url plays no
+     * part. Two shapes can therefore never match anything, and an operator declaring one believes an
+     * exemption is in force that no fetch ever meets:
+     * <ul>
+     *   <li>a <strong>blank or whitespace-only</strong> entry names no host at all;</li>
+     *   <li>a <strong>{@code host:port}</strong> entry — a single-colon {@code name:digits} form or a
+     *       bracketed {@code [v6]:digits} form ({@link #HOST_WITH_PORT}) — names a host the guard never
+     *       compares against. A bare IPv6 literal such as {@code fd00::1} is a host, not a
+     *       {@code host:port} pair, and is admitted.</li>
+     * </ul>
+     * The host part is never compared with the {@code jwks.url} host: a non-empty list is
+     * authoritative, and whether it names the key endpoint's host is the operator's decision. Because
+     * an explicit list replaces the allowance otherwise derived from {@code jwks.url}, an unusable
+     * entry is refused at boot rather than left to fail every JWKS fetch at runtime.
+     * <p>
+     * A {@code file} issuer (its list feeds no egress guard), an issuer without a {@code jwks} block
+     * and an absent {@code token_validation} block are skipped. The offending entry and the issuer
+     * name are echoed through {@link #renderForMessage}, so a hostile value cannot forge boot log
+     * lines (CWE-117). Every offending entry is collected rather than failing on the first, per
+     * ADR-0009.
+     */
+    private static void validateJwksEgressHosts(GatewayConfig gateway, List<ConfigError> errors) {
+        TokenValidationConfig tokenValidation = gateway.tokenValidation();
+        if (tokenValidation == null) {
+            return;
+        }
+        List<IssuerConfig> issuers = tokenValidation.issuers();
+        for (int index = 0; index < issuers.size(); index++) {
+            IssuerConfig issuer = issuers.get(index);
+            IssuerConfig.Jwks jwks = issuer.jwks();
+            if (jwks == null || !JWKS_SOURCE_HTTP.equals(jwks.source())) {
+                continue;
+            }
+            String pointer = "/token_validation/issuers/%d/jwks/allowed_egress_hosts".formatted(index);
+            for (String entry : jwks.allowedEgressHosts()) {
+                jwksEgressHostRefusal(entry).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                        "issuer '%s' jwks.allowed_egress_hosts entry '%s' is refused: %s"
+                                .formatted(renderForMessage(issuer.name()), renderForMessage(entry), reason))));
+            }
+        }
+    }
+
+    /**
+     * The shape review of one {@code allowed_egress_hosts} entry; see {@link #validateJwksEgressHosts}
+     * for the rules and why each exists.
+     *
+     * @return the refusal reason, or empty when the entry names a bare host
+     */
+    private static Optional<String> jwksEgressHostRefusal(String entry) {
+        if (entry.isBlank()) {
+            return Optional.of("a blank entry names no host to exempt from the SSRF egress guard — remove it, "
+                    + "or omit allowed_egress_hosts to derive the host of jwks.url");
+        }
+        if (HOST_WITH_PORT.matcher(entry).matches()) {
+            return Optional.of("the allowlist matches hosts only (host-exact), so an entry carrying a port "
+                    + "never matches — declare the bare host");
+        }
+        return Optional.empty();
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {

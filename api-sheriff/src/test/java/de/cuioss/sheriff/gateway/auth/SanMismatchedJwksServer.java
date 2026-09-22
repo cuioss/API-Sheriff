@@ -234,10 +234,11 @@ public final class SanMismatchedJwksServer implements AutoCloseable {
     }
 
     /**
-     * @return the host the {@link #jwksUrl()} dials, for the issuer's {@code allowed_egress_hosts}.
-     *         Loopback is refused by token-sheriff's SSRF egress guard unless it is named, so an
-     *         issuer pointing here must allowlist it or the dial never reaches the TLS handshake at
-     *         all — which would fail both legs for a reason unrelated to hostname verification
+     * @return the host the {@link #jwksUrl()} dials, for an issuer's explicit
+     *         {@code allowed_egress_hosts}. Loopback is refused by token-sheriff's SSRF egress guard
+     *         unless it is exempted — derived from {@code jwks.url} when no list is declared, or named
+     *         in an explicit list, which is authoritative. An explicit list that omits it keeps the
+     *         dial from ever reaching the TLS handshake
      */
     public static String dialledHost() {
         return LoopbackHost.ADDRESS;

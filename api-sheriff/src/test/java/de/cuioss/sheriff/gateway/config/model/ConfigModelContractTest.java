@@ -400,8 +400,9 @@ class ConfigModelContractTest {
                             new IssuerConfig.Jwks("http", "https://j", null, List.of(), null),
                             new IssuerConfig.Jwks("file", null, "/jwks.json", List.of(), null)),
                     // The egress allowlist participates in identity: two otherwise-identical
-                    // jwks blocks that differ only in allowed_egress_hosts are NOT equal, so a
-                    // widened block can never be mistaken for a secure-default one.
+                    // jwks blocks that differ only in allowed_egress_hosts are NOT equal, so an
+                    // explicit, authoritative list can never be mistaken for one that derives its
+                    // allowance from jwks.url.
                     voCase("IssuerConfig.Jwks.allowedEgressHosts",
                             new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null),
                             new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null),
