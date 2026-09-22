@@ -42,13 +42,13 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.yaml.snakeyaml.DumperOptions;
+import org.yaml.snakeyaml.Yaml;
 
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.yaml.snakeyaml.DumperOptions;
-import org.yaml.snakeyaml.Yaml;
 
 /**
  * Proves in the shipped native image that an explicit JWKS egress allowlist is <em>authoritative</em>:
@@ -145,7 +145,7 @@ class JwksEgressMismatchIT {
 
     @Test
     @DisplayName("DOWN and 401 while the explicit list names another host; UP and 200 once that key alone is removed")
-    void explicitAllowlistNamingAnotherHostKeepsTheKeySetRefused() throws IOException {
+    void explicitAllowlistNamingAnotherHostKeepsTheKeySetRefused() throws Exception {
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         String mismatch = "jwks-egress-mismatch-gateway-" + suffix;
         String control = "jwks-egress-mismatch-control-" + suffix;
