@@ -192,7 +192,8 @@ class SecurityProfileTest {
             case STRICT -> SecurityConfiguration.strict();
             case PARANOID -> SecurityConfiguration.paranoid();
             case LENIENT, MINIMAL -> throw new IllegalArgumentException(
-                    profile + " is not a tightened mode; TIGHTENED_MODES and this helper have drifted apart");
+                    profile + " is not a tightened mode; MODE_STRICT/MODE_PARANOID and this helper"
+                            + " have drifted apart");
         };
     }
 
