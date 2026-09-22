@@ -156,6 +156,21 @@ final class BffKeycloakLoginFlow {
     static final String REFRESH_PASSWORD = "refresh-password";
 
     /**
+     * The seeded test user dedicated to the back-channel logout suite (see
+     * {@code integration-realm.json}).
+     * <p>
+     * A third identity exists for the same reason {@link #REFRESH_USERNAME} is the second one:
+     * {@code BffBackchannelLogoutIT} triggers an IdP-initiated logout through the Keycloak admin API,
+     * which is realm-wide for the user it names. Driving it against {@link #USERNAME} would destroy
+     * the sessions every other {@code Bff*IT} suite establishes, and driving it against
+     * {@link #REFRESH_USERNAME} would collide with the refresh suite's own revocation step.
+     */
+    static final String BACKCHANNEL_USERNAME = "backchannel-user";
+
+    /** The back-channel logout suite's test user password. */
+    static final String BACKCHANNEL_PASSWORD = "backchannel-password";
+
+    /**
      * The per-cookie byte budget a browser guarantees, as RFC 6265 §6.1 states it: at least 4096
      * bytes measured over the cookie's name, value <em>and</em> attributes — that is, over the whole
      * {@code Set-Cookie} header value, which is exactly what
