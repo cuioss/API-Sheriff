@@ -29,7 +29,7 @@ would otherwise force a retrofit.
      Paste the returned block verbatim between the markers. -->
 
 <!-- BEGIN GENERATED: resume-summary -->
-**Resume anchor**: === RESTART-READY. Full cleanup pass 2026-09-22 at af63895 (117 commits / 253 files since 95dd566). NEXT ACTION: emit. ===
+**Resume anchor**: === RESTART-READY. Full cleanup pass 2026-09-22, ORIGINALLY GROUNDED at af63895 (117 commits / 253 files since 95dd566) -- HEAD THEN ADVANCED MID-PASS to 69b322b (PR #343, portal/HTML-error-pages; see the HEAD-ADVANCED paragraph below for the consequences already reconciled). CURRENT HEAD IS 69b322b, NOT af63895. NEXT ACTION: emit. ===
 
 STATE: 4 shipped (V02-02 #198, V02-03 #197, V02-16 #199, V02-17 #200) / 0 running / 0 launched / 14 staged. All three parallel slots free. Inbox empty, 25 archived. Tree clean. EPIC MIGRATED to the git-tracked .plan/orchestrator/api-sheriff-0-2-0/ address (was .plan/local/orchestrator/, PR pending). The project's plan-marshall executor was found badly stale (embedded version 0.1.1292, ~450 releases behind) and a full /marshall-steward upgrade landed (PR #339, merged) before any of this pass could run.
 
