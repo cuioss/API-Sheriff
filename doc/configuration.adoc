@@ -448,10 +448,10 @@ portal:                            # OPTIONAL application portal; omitted => off
                                    #   reserved OIDC path, or when equal to an enabled exact route
   title: Example Corp Applications # page title; always HTML-escaped
   template_dir: /etc/sheriff/portal   # OPTIONAL directory holding an operator portal.html; omit
-                                   #   => the built-in, CSS-free template. Parsed at boot on a
-                                   #   standalone engine; raw/safe and namespaces refused at boot
+                                   #   => the built-in, CSS-free template. Parsed at boot; the
+                                   #   template language is defined in the portal guide
   cache_seconds: 60                # OPTIONAL, default 0: max-age of a session-free page. A page
-                                   #   naming a signed-in user and every error page are no-store
+                                   #   for an authenticated session and every error page are no-store
   error_pages: false               # OPTIONAL, default false: render HTML-eligible gateway errors
                                    #   through the template when Accept lists text/html
                                    #   EXPLICITLY; status unchanged, origin responses never replaced
@@ -556,18 +556,17 @@ link:#_endpoint_catalog[`endpoint.catalog`] block. Unknown keys are refused by t
 
 | `template_dir`
 | *Optional* string. A directory holding an operator-authored `portal.html`, which replaces the
-  built-in template. It is read and parsed once at boot on a standalone Qute engine that has no
-  namespaces and only the `if`, `for`/`each`, `let`/`set` and `when`/`switch` sections. The boot is
-  refused with `ApiSheriff-202` when the file is missing or unreadable, when it cannot be parsed (an
-  unsupported section such as `eval`, `include` or `insert` included), or when an expression uses
-  `raw`, `safe` or a namespace. Omitted: the built-in template, which carries no stylesheet and no
-  script.
+  built-in template. It is read and parsed once at boot, and a template the boot refuses aborts the
+  start with `ApiSheriff-202`. The template language is defined in the operator guide, in one place:
+  link:user/portal.adoc#_qute_subset[the supported Qute subset] and
+  link:user/portal.adoc#_template_refusals[when the boot refuses a template]. Omitted: the built-in
+  template, which carries no stylesheet and no script.
 
 | `cache_seconds`
 | *Optional* integer, minimum `0`, *default `0`*. The `Cache-Control: max-age` of a portal page that
   carries no session data. With an active BFF runtime such a page also carries `Vary: Cookie`. A page
-  naming a signed-in user, every HTML error page and the `405` are `Cache-Control: no-store`
-  whatever the value.
+  for an authenticated session (with or without a username), every HTML error page and the `405` are
+  `Cache-Control: no-store` whatever the value.
 
 | `error_pages`
 | *Optional* boolean, *default `false`*. When `true`, an HTML-eligible gateway-originated error is

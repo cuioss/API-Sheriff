@@ -130,7 +130,9 @@ owned. After stage 1 the Host-vs-SNI smuggle guard rejects before route selectio
 (<<_tls_edge_accept_time_sni_split>>). Then the gateway's own reserved paths are answered: first the
 reserved OIDC paths, exact and on the OIDC host only (<<_bff_session_runtime>>), and then the
 application portal's `portal.path`, exact and on *any* host (<<_application_portal>>). A prefix route
-covering either therefore never sees a request for it. All three answer before stage 2a, so they carry
+covering `portal.path` therefore never sees a request for it on any host; a prefix route covering a
+reserved OIDC path never sees a request for it on the configured OIDC host, while the same path on
+another host still reaches route selection. All three answer before stage 2a, so they carry
 the global security-header block. The portal additionally replaces the `Content-Security-Policy` and
 `X-Content-Type-Options` of that block with its own fixed values.
 
@@ -931,9 +933,11 @@ edge (below) reads its snapshots. The `cui-http` filter contributes its own
 === Error Contract
 
 Every gateway-generated rejection is an `application/problem+json` (RFC 9457) response that
-names the category but leaks no internal detail. The one negotiated exception is the HTML error page
-of <<_html_error_pages>>: the same status, rendered as HTML for a browser navigation when the
-application portal's `error_pages` is on. The consolidated status mapping:
+names the category but leaks no internal detail. There are two exceptions. A rejection on a
+`protocol: grpc` route is a trailers-only gRPC response rather than a problem document
+(<<_grpc_error_contract>>). And the HTML error page of <<_html_error_pages>> is negotiated: the same
+status, rendered as HTML for a browser navigation when the application portal's `error_pages` is on.
+The consolidated status mapping:
 
 [cols="1,2,2"]
 |===

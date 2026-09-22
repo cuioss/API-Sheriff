@@ -33,8 +33,9 @@ portal:
 ----
 
 At boot the gateway logs `ApiSheriff-19` naming the path, the number of active catalog entries and
-the template source (`built-in` or the operator template file). A template it cannot render safely
-aborts the boot with `ApiSheriff-202` (see <<_template_refusals>>). Both records are listed in
+the template source (`built-in` or the operator template file). A template that is missing,
+unreadable, unparseable or able to bypass escaping aborts the boot with `ApiSheriff-202` (see
+<<_template_refusals>>). Both records are listed in
 link:../LogMessages.adoc[Log Messages].
 
 [[_catalog]]
@@ -148,7 +149,7 @@ The cache headers follow what the page carries, not what you configure alone:
   `Vary: Cookie`, merged into any `Vary` already on the response, so a cache never serves the
   anonymous page to a browser that has since signed in.
 
-| Page naming a signed-in user
+| Page for an authenticated session, with or without a username
 | `Cache-Control: no-store`, whatever `cache_seconds` says.
 
 | HTML error page, and the `405`
@@ -295,7 +296,10 @@ file is concerned) and the reason, when:
 * the template cannot be parsed, including when it uses a section outside the subset above;
 * the template uses `raw`, `safe` or a namespaced expression.
 
-A gateway therefore never serves with a template it cannot render safely.
+A gateway that boots therefore serves only a template that was found, parsed and cleared of every
+escape bypass and namespaced expression, so every value it writes is escaped. The boot does not check
+the keys a template references against the data model: a reference to a key that does not exist
+parses cleanly and fails at render time, as described under strict rendering above.
 
 [[_template_assets]]
 === Serve the template's stylesheet and images

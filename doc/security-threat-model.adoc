@@ -1962,15 +1962,16 @@ boot with `ApiSheriff-202`; a model value containing template syntax renders as 
 [#html-03]
 === HTML-03 -- Cache leakage of session data
 
-A page naming a signed-in user that a shared or browser cache stores can be served to a different
-user, or to the same browser after sign-out. The reverse also leaks: an anonymous page cached across
+A page rendered for an authenticated session that a shared or browser cache stores can be served to
+a different user, or to the same browser after sign-out. The reverse also leaks: an anonymous page cached across
 a sign-in hides the session state.
 
 *Evidence.* The failure class is web cache deception and misconfigured caching of personalised
 responses (CWE-524, CWE-525). It is configuration-shaped rather than tied to one CVE.
 
-*Control.* The cache policy follows what the body carries, not configuration alone. A page naming a
-signed-in user is `Cache-Control: no-store` whatever `cache_seconds` says. Every HTML error page and
+*Control.* The cache policy follows what the body carries, not configuration alone. A page rendered
+for an authenticated session is `Cache-Control: no-store` whatever `cache_seconds` says, whether or
+not the session carries a usable `preferred_username`. Every HTML error page and
 the `405` are `no-store`. Only a session-free page is cacheable (`max-age=<cache_seconds>`, default
 `0`), and with an active BFF runtime it carries `Vary: Cookie`, merged into any existing `Vary`, so a
 cache keys it on the session cookie. A portal response never sets a cookie. Error pages are always
@@ -1980,7 +1981,7 @@ rendered anonymously, so they carry no session data at all.
 `PortalEndpointTest` pins the session-bearing `no-store`; `PortalIT` asserts `max-age` and `Vary: Cookie` on the
 anonymous page against the native image; `HtmlErrorPageIT` asserts `no-store` on every error page.
 
-*Assertion.* A response carrying a username is `no-store`; a session-free page carries
+*Assertion.* A response rendered for an authenticated session is `no-store`; a session-free page carries
 `Vary: Cookie` whenever the BFF runtime is active; no portal response carries `Set-Cookie` of its
 own.
 

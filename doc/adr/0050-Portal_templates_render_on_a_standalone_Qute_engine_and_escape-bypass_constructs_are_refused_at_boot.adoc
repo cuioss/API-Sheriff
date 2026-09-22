@@ -91,7 +91,10 @@ section parameters and virtual-method arguments. Any expression part naming `raw
 spelling including a filter-style `x|raw`, and any namespaced expression refuses the template with
 the file and line. A missing, unreadable or unparseable template is refused the same way. The refusal
 aborts startup through the structured `ApiSheriff-202` record, so a gateway either serves a template
-known to be usable or does not start. The template is read once at boot and never reloaded.
+that was found, parsed and cleared of every escape bypass and namespaced expression, or does not
+start. The walk does not check the keys a template references against the data model: a reference to
+a key the model does not carry parses cleanly and fails at render time under strict rendering. The
+template is read once at boot and never reloaded.
 
 *A reservation seam of its own.* `portal.path` is answered by `PortalEndpoint`, consulted after the
 reserved OIDC paths and before the route table, by exact string equality with the canonical request
@@ -124,7 +127,9 @@ declares for those names. The other gateway-owned headers keep their block (ADR-
   alone would hold.
 * A template reaches nothing but the data model: no beans, no configuration, no class loader.
   Server-side template injection has no target, and a model value containing template syntax is only text.
-* Template failures surface at boot, with a file and line, instead of as a broken page under load.
+* A missing, unparseable or escape-bypassing template surfaces at boot, with a file and line, instead
+  of as a broken page under load. A reference to an unknown key is the exception and surfaces at
+  render time (see Negative).
 * Rendering is native-image safe without reflection registration, because the model is plain values.
 * The portal is additive. A deployment without a `portal` block reserves nothing and behaves as
   before, and the OIDC reserved-path set keeps its closed, host-scoped definition.
