@@ -503,8 +503,8 @@ class PortalEndpointTest {
             assertAll(
                     () -> assertEquals(status, response.status()),
                     () -> assertEquals("E:" + status + "/" + ErrorPageClassifier.titleFor(status)
-                                    + "|S:false|U:-|L:" + LOGIN_PATH + "?returnUrl=" + ENCODED_PORTAL_PATH
-                                    + "|N:-|A:[Orders]", response.body(),
+                            + "|S:false|U:-|L:" + LOGIN_PATH + "?returnUrl=" + ENCODED_PORTAL_PATH
+                            + "|N:-|A:[Orders]", response.body(),
                             "the page carries the status, the fixed title, the links and the catalog — nothing else"),
                     () -> assertEquals(0, resolutions.get(), "no session is resolved on a failure path"),
                     () -> assertEquals(PortalResponseEnvelope.NO_STORE,
