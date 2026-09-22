@@ -90,12 +90,70 @@ rejection is CALLED (D1) and how it is RENDERED (D2)**; V02-06 owns **whether an
 sees the honest code at all**, and its uniform-404 must work *through* the negotiation this plan
 installs. **This plan goes first** and should be treated as the head of the WS-03 chain.
 
+## Re-Grounded (3) 2026-09-22 at `69b322b` — a same-day, unrelated landing discharged most of D2/D3
+
+**PR #343 ("feat(portal): add application catalog, overview page and HTML error pages") landed
+between this epic's cleanup pass and this plan's own D6/D7 fold, 148 files. It independently built
+almost exactly what D2/D3 describe, by a different mechanism than either assumed. This section
+outranks Re-Grounded (2) wherever they conflict, and the Objective/reported-cost narrative below is
+now HISTORICAL — the bug it describes is fixed — but D1's taxonomy work stands on its own merits
+independent of that narrative.**
+
+**D2 — substantially DISCHARGED, not by content negotiation reuse but by a new
+`portal.ErrorPageClassifier` + `GatewayEdgeRoute.answeredWithErrorPage()` pair.**
+`ErrorPageClassifier.classify(EventType)` is an exhaustive, default-free switch sorting every
+`EventType` into `HTML_ELIGIBLE` or `KEEP_SHAPE`; `renderProblem` (five call sites unchanged:
+:664/:792/:871/:896/:1436, def :1447) calls `answeredWithErrorPage()`, which renders the portal's
+HTML page only when `portal.error_pages` is enabled, the event is `HTML_ELIGIBLE`, **and** `Accept`
+explicitly offers `text/html` (wildcards never qualify — `offersHtml` already implements D3's
+constraint), else falling through to today's `problem+json` unchanged. **`NO_ROUTE_MATCHED` — this
+plan's own flagship "Input Validation" misdiagnosis story — is already `HTML_ELIGIBLE` and
+negotiated.** `METHOD_NOT_ALLOWED` and `PASSTHROUGH_HOST_SMUGGLED` (two of D1's three
+re-categorisation targets) are currently `KEEP_SHAPE`; `RESERVED_BODY_TOO_LARGE` is deliberately
+`KEEP_SHAPE` too, and correctly so — it lands only on reserved (API-only) paths, consistent with
+D4's own reachability filter below. **D2 is narrowed to one decision, not a build**: once D1 lands
+the new category, decide whether `METHOD_NOT_ALLOWED` and `PASSTHROUGH_HOST_SMUGGLED` should also
+flip to `HTML_ELIGIBLE` in `ErrorPageClassifier.classify()` — a one-line-per-event change plus a
+test, never a new negotiation mechanism. There is no "reuse `acceptsHtml`'s semantics" work left to
+do; that mechanism was superseded before this plan reached it.
+
+**D3 — DISCHARGED as a byproduct of D2's mechanism**, not built to this plan's original
+specification but satisfying its constraints: status is preserved either way (no redirect involved
+at all), `offersHtml` structurally excludes `Accept: */*`, and the rendered titles are fixed,
+non-interpolated strings per status code. Nothing further to build; verify at outline that a test
+already exercises these three constraints and add one only if a gap is found.
+
+**D7 (this plan's own 2026-09-22 GW-09 fold) — WRONG AS WRITTEN, and the error is this plan's own,
+not this PR's.** `D7` was authored from `doc/security-threat-model.adoc`'s prose alone, without
+checking the pipeline code first — the mistake the epic's verify-first discipline exists to catch.
+**`pipeline/OriginValidationStage.java` already exists and already implements GW-09 generically**,
+predating even `af63895`: its own class Javadoc is headed *"The WebSocket-upgrade Origin gate
+(GW-09, cross-site WebSocket hijacking)"*, it is NOT scoped to bearer routes, and it fail-closed
+rejects an upgrade with a foreign/absent `Origin` against any route's configured `allowed_origins`
+allowlist, `require: session` included. **The real, narrower gap**: `ConfigValidator.
+validateWebSocketRoute` (:2192) only *requires* a non-empty `allowed_origins` at boot for
+`effective auth 'bearer'` — a `require: session` WebSocket route with an empty (unconfigured)
+allowlist boots successfully with **no enforcement**, because `OriginValidationStage`'s own contract
+is explicit that an empty allowlist "declares no enforcement." D7 is corrected below to close that
+boot-time gap rather than build a mechanism that already exists.
+
+**D8 (this plan's sibling `PLAN-V02-06` GW-08 fold) — provisionally UNAFFECTED**, checked only
+time-boxed: no HTTP/2 or gRPC pipeline file appears in this PR's diff. Re-verify at that plan's
+outline rather than trusting this note.
+
+**ADR corpus is now 50, not 49** — PR #343 landed `escape-bypass_constructs_are_refused_at_boot` as
+part of the same change. Re-check against `main` and every open branch at write time, as always.
+
 ## Objective
 
-Make a terminal rejection say what actually happened, to whoever is actually reading it. Today a
-routing miss is titled *"Input Validation"* and is rendered as `problem+json` into a browser
-viewport — so the only human-readable field in the response is wrong, and the only reader present
-cannot use the format it arrives in.
+Make a terminal rejection say what actually happened, to whoever is actually reading it. **This
+narrative is now HISTORICAL as of Re-Grounded (3) above** — `PR #343` independently fixed the
+render-format half of the bug it describes. D1's taxonomy work (below) is retained on its own
+merits: a routing miss and a filter violation sharing one category is still a real observability
+defect, regardless of what format either renders as. Originally: today a routing miss is titled
+*"Input Validation"* and is rendered as `problem+json` into a browser viewport — so the only
+human-readable field in the response is wrong, and the only reader present cannot use the format it
+arrives in.
 
 ## The reported cost, stated once because it justifies the whole plan
 
@@ -206,6 +264,56 @@ from it.** That is a real diagnosis cost, not a style objection.
    > reference is discharged rather than edited — check before editing, and do not resurrect the
    > directory.
 
+6. **Folded in 2026-09-22 from `doc/security-threat-model.adoc` GAP row `gw-02` — reject ambiguous
+   HTTP framing (request smuggling/desync) at the earliest pipeline stage.**
+
+   Reject a request bearing both `Content-Length` and `Transfer-Encoding`; a body on a bodyless
+   method (HEAD/GET, unless `security_defaults.allow_get_with_content_length_body` is explicitly
+   enabled — that opt-in already exists and must be preserved unchanged); a bare-LF chunk
+   terminator or other non-RFC-9112 chunk framing; or a `Connection`-header cleanup attempt that
+   would strip `Content-Length`/`Transfer-Encoding` after the fact. Re-derive/validate framing
+   after any header mutation, and never pool an upstream connection whose framing was not fully
+   validated.
+
+   Categorise the new rejection consistent with D1's taxonomy decision (the `ROUTING` category if
+   adopted, or a similarly-scoped member — this is a framing/protocol violation, not the generic
+   `INPUT_VALIDATION` bucket the three misfiled members are being moved OUT of). Render it per D2's
+   content-negotiation contract like every other terminal rejection this plan touches.
+
+   Test against a CL.TE/TE.CL/TE.TE/CL.0 smuggling corpus and assert zero desyncs, plus a case
+   confirming `security_defaults.allow_get_with_content_length_body`'s existing behaviour is
+   unchanged when unset. **Verify the exact enforcement call site at outline** — this deliverable
+   was folded in from the threat-model catalogue, not independently re-grounded against the
+   pipeline code, so its anchor is not yet pinned the way D1/D2's are.
+
+7. **Folded in 2026-09-22 from `doc/security-threat-model.adoc` GAP row `gw-09`, CORRECTED
+   2026-09-22 same day per Re-Grounded (3) above — require the Origin allowlist at boot for
+   `require: session` WebSocket routes, not build the check.**
+
+   The enforcement mechanism already exists and is already generic: `pipeline/OriginValidationStage`
+   fail-closed rejects a WebSocket upgrade carrying a foreign or absent `Origin` against any route's
+   configured `allowed_origins`, `require: session` included — this predates the epic and this
+   plan. The actual gap is narrower and lives in `ConfigValidator.validateWebSocketRoute`: it
+   requires a non-empty `allowed_origins` at boot **only** for `effective auth 'bearer'`
+   (`Require.BEARER`); a `require: session` WebSocket route with no configured allowlist boots
+   successfully with the stage's own documented "no enforcement" fallback silently in effect.
+   **Extend that boot-time requirement to `Require.SESSION` routes too** — one additional condition
+   in `validateWebSocketRoute`'s existing bearer check, mirroring its shape exactly, plus a test
+   asserting a session WebSocket route with an empty allowlist now fails config validation the same
+   way a bearer one already does. Also confirm (or add) `SameSite` on the session cookie so ambient
+   cookies alone cannot authenticate the socket once the allowlist is enforced.
+
+   This is a config-validation-rule change, not a pipeline change — it does not touch D1's
+   taxonomy or D2's render contract, so it is not blocked by either.
+
+**Split-guard evaluation, 2026-09-22.** Seven deliverables — at the presumptive ~6 threshold,
+proceeding unsplit, rationale recorded. This is a count on paper only: D2 and D3 are now residual
+decisions rather than builds (Re-Grounded (3) above), and D6/D7 are each bounded, independently
+landable, and touch no file D1/D2/D4/D5 touch. **If it must split, D1+D2(residual)+D4+D5 (the
+taxonomy and its render/doc consequences) separates cleanly from D6 (framing rejection) and D7
+(config-validation extension)** — the latter two share no code with the former three or each
+other.
+
 ## Claim Labels
 
 - OBSERVED (2026-08-07, `b8dde22`): `EventType.java`:62/:69/:71 carry the three members against
@@ -223,10 +331,14 @@ from it.** That is a real diagnosis cost, not a style objection.
 
 ## Expected Surface
 
-- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java`, `EventCategory.java` — D1
-- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` — D2, D3
-- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java` — read-only reference for D2
-- `doc/architecture.adoc`, `doc/adr/00NN-*.adoc` (new) — D5
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java`, `EventCategory.java` — D1, D6
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` — D2 residual only (its five `renderProblem` call sites are unchanged), D6 (framing-rejection site, to confirm at outline)
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/ErrorPageClassifier.java` — D2 residual: flip `METHOD_NOT_ALLOWED`/`PASSTHROUGH_HOST_SMUGGLED` from `KEEP_SHAPE` to `HTML_ELIGIBLE` if D1's re-categorisation warrants it (OBSERVED 2026-09-22, landed by PR #343, not this plan)
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D7 (extend `validateWebSocketRoute`'s bearer-only allowlist requirement to `Require.SESSION`)
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/OriginValidationStage.java` — read-only reference for D7; OBSERVED, this plan does NOT edit it — the enforcement mechanism already exists
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java` — read-only reference for D1/D2 boundary reasoning only, per D4
+- `doc/security-threat-model.adoc` — flip `gw-02` (D6) and `gw-09` (D7) from `GAP` to `COVERED` on landing; `gw-02` is the only one this plan still builds new enforcement for
+- `doc/architecture.adoc`, `doc/adr/00NN-*.adoc` (new, next free is 0050 not 0038 as of 2026-09-22) — D5, D6, D7
 - OBSERVED (absence, asserted): `/auth/userinfo` and the reserved-path registry are **NOT** edited.
 
 ## Dependencies and Sequencing
