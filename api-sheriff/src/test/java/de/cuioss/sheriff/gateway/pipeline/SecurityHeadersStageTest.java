@@ -559,6 +559,106 @@ class SecurityHeadersStageTest {
         }
     }
 
+    @Nested
+    @DisplayName("applyPortalHeaders — the portal CSP and nosniff are forced in set-mode over any global block")
+    class PortalHeaders {
+
+        private static final String PORTAL_POLICY =
+                "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+        @Test
+        @DisplayName("replaces a global Content-Security-Policy declared in set mode")
+        void replacesSetModeGlobalPolicy() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            new SecurityHeadersStage(SecurityHeadersConfig.builder().contentSecurityPolicy(GLOBAL_POLICY).build())
+                    .process(request);
+
+            SecurityHeadersStage.applyPortalHeaders(request);
+
+            assertAll("the portal policy replaces the global one in the set-map",
+                    () -> assertEquals(PORTAL_POLICY, request.responseHeaders().get(CSP)),
+                    () -> assertNull(request.responseDefaultHeaders().get(CSP)),
+                    () -> assertEquals(PORTAL_POLICY, SecurityHeadersStage.PORTAL_CONTENT_SECURITY_POLICY,
+                            "the published constant is exactly the hardened portal policy, without 'unsafe-inline'"),
+                    () -> assertFalse(SecurityHeadersStage.PORTAL_CONTENT_SECURITY_POLICY.contains("unsafe-inline"),
+                            "the portal policy never permits inline script or style"));
+        }
+
+        @Test
+        @DisplayName("moves a global Content-Security-Policy declared in default mode into the set-map, once")
+        void replacesDefaultModeGlobalPolicy() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            new SecurityHeadersStage(SecurityHeadersConfig.builder()
+                    .contentSecurityPolicy(GLOBAL_POLICY)
+                    .contentTypeNosniff(true)
+                    .headerModes(HeaderModes.builder().contentSecurityPolicy(HeaderMode.DEFAULT)
+                            .contentTypeNosniff(HeaderMode.DEFAULT).build())
+                    .build()).process(request);
+
+            SecurityHeadersStage.applyPortalHeaders(request);
+
+            assertAll("each name lives in exactly one map afterwards, the set-map",
+                    () -> assertEquals(PORTAL_POLICY, request.responseHeaders().get(CSP)),
+                    () -> assertEquals("nosniff", request.responseHeaders().get(NOSNIFF)),
+                    () -> assertFalse(request.responseDefaultHeaders().containsKey(CSP),
+                            "the operator's default-mode policy must not survive to be applied a second time"),
+                    () -> assertFalse(request.responseDefaultHeaders().containsKey(NOSNIFF)),
+                    () -> assertEquals(PORTAL_POLICY, request.gatewayAuthoredResponseHeaders().get(CSP),
+                            "the merged gateway-authored view carries only the portal policy"));
+        }
+
+        @Test
+        @DisplayName("keeps HSTS and X-Frame-Options at their resolved block and mode")
+        void keepsOtherGatewayOwnedHeaders() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            new SecurityHeadersStage(SecurityHeadersConfig.builder()
+                    .hsts(new Hsts(600, true))
+                    .frameDeny(true)
+                    .contentSecurityPolicy(GLOBAL_POLICY)
+                    .headerModes(HeaderModes.builder().frameDeny(HeaderMode.DEFAULT).build())
+                    .build()).process(request);
+            request.responseHeaders().put(ACAO, "https://ok.example");
+
+            SecurityHeadersStage.applyPortalHeaders(request);
+
+            assertAll("only the two portal-owned names are touched",
+                    () -> assertEquals("max-age=600; includeSubDomains", request.responseHeaders().get(HSTS)),
+                    () -> assertEquals("DENY", request.responseDefaultHeaders().get(FRAME_OPTIONS),
+                            "a default-mode frame option stays default-mode"),
+                    () -> assertNull(request.responseHeaders().get(FRAME_OPTIONS)),
+                    () -> assertEquals("https://ok.example", request.responseHeaders().get(ACAO),
+                            "non-owned entries such as a CORS reflection are untouched"));
+        }
+
+        @Test
+        @DisplayName("forces nosniff even when the global block disabled it")
+        void forcesNosniffWhenGlobalBlockDisabledIt() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            new SecurityHeadersStage(SecurityHeadersConfig.builder().contentTypeNosniff(false).frameDeny(true).build())
+                    .process(request);
+
+            SecurityHeadersStage.applyPortalHeaders(request);
+
+            assertAll("nosniff and the portal policy are present although the global block emitted neither",
+                    () -> assertEquals("nosniff", request.responseHeaders().get(NOSNIFF)),
+                    () -> assertEquals(PORTAL_POLICY, request.responseHeaders().get(CSP)));
+        }
+
+        @Test
+        @DisplayName("removes a differently-cased copy of either name before seeding")
+        void removesDifferentlyCasedNames() {
+            PipelineRequest request = corsRequest(HttpMethod.GET, "https://ok.example", false);
+            request.responseHeaders().put("content-security-policy", GLOBAL_POLICY);
+            request.responseDefaultHeaders().put("x-content-type-options", "sniff");
+
+            SecurityHeadersStage.applyPortalHeaders(request);
+
+            assertAll("exactly one value per name remains, the portal's",
+                    () -> assertEquals(Set.of(CSP, NOSNIFF), request.responseHeaders().keySet()),
+                    () -> assertTrue(request.responseDefaultHeaders().isEmpty()));
+        }
+    }
+
     private static SecurityHeadersStage corsStage(List<String> allowedOrigins, boolean allowCredentials) {
         Cors cors = Cors.builder()
                 .enabled(Boolean.TRUE)

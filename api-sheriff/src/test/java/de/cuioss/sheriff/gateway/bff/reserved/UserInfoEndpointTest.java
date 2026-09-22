@@ -33,6 +33,7 @@ import java.util.Map;
 
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.ClaimSource;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.UserInfoOutcome;
+import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
@@ -305,6 +306,78 @@ class UserInfoEndpointTest {
             Map<String, Object> claims = claimsOf(outcome);
             assertFalse(claims.containsKey("secret_structure"), "a structured claim never widens disclosure");
             assertTrue(claims.keySet().containsAll(List.of("groups", "address", "exp", "email_verified")));
+        }
+    }
+
+    @Nested
+    @DisplayName("Session identity for a gateway-rendered page")
+    class SessionIdentityResolution {
+
+        private static final String PREFERRED_USERNAME = "alice";
+
+        private UserInfoEndpoint endpointWith(Map<String, Object> claims) {
+            return new UserInfoEndpoint(new ServerSessionBinding(sessionStore, sessionCodec), claimFilter,
+                    session -> claims);
+        }
+
+        @Test
+        @DisplayName("A live session with preferred_username yields an authenticated identity naming the user")
+        void shouldResolveUsernameOfLiveSession() {
+            UserInfoEndpoint withUsername = endpointWith(Map.of("sub", SUBJECT,
+                    UserInfoEndpoint.PREFERRED_USERNAME, PREFERRED_USERNAME));
+
+            SessionIdentity identity = withUsername.sessionIdentity(cookieHeader, T0);
+
+            assertEquals(new SessionIdentity(true, PREFERRED_USERNAME), identity);
+        }
+
+        @Test
+        @DisplayName("preferred_username is read even though it is outside the operator claim allowlist")
+        void shouldIgnoreAllowlistForOwnDisplayName() {
+            UserInfoEndpoint withUsername = endpointWith(Map.of(UserInfoEndpoint.PREFERRED_USERNAME,
+                    PREFERRED_USERNAME));
+
+            assertEquals(PREFERRED_USERNAME, withUsername.sessionIdentity(cookieHeader, T0).username());
+        }
+
+        @Test
+        @DisplayName("A live session whose ID token carries no preferred_username is authenticated without a name")
+        void shouldResolveAuthenticatedWithoutClaim() {
+            SessionIdentity identity = endpoint.sessionIdentity(cookieHeader, T0);
+
+            assertEquals(new SessionIdentity(true, null), identity);
+        }
+
+        @Test
+        @DisplayName("A blank or non-string preferred_username yields no name")
+        void shouldIgnoreBlankOrNonStringClaim() {
+            SessionIdentity blank = endpointWith(Map.of(UserInfoEndpoint.PREFERRED_USERNAME, "  "))
+                    .sessionIdentity(cookieHeader, T0);
+            SessionIdentity structured = endpointWith(Map.of(UserInfoEndpoint.PREFERRED_USERNAME, List.of("alice")))
+                    .sessionIdentity(cookieHeader, T0);
+
+            assertEquals(new SessionIdentity(true, null), blank);
+            assertEquals(new SessionIdentity(true, null), structured);
+        }
+
+        @Test
+        @DisplayName("No session cookie yields the anonymous identity")
+        void shouldResolveAnonymousWithoutSession() {
+            assertEquals(SessionIdentity.anonymous(), endpoint.sessionIdentity(null, T0));
+        }
+
+        @Test
+        @DisplayName("An expired session yields the anonymous identity")
+        void shouldResolveAnonymousForExpiredSession() {
+            Instant expired = T0.plus(TTL).plusSeconds(1);
+
+            assertEquals(SessionIdentity.anonymous(), endpoint.sessionIdentity(cookieHeader, expired));
+        }
+
+        @Test
+        @DisplayName("A null reference instant is rejected")
+        void shouldRejectNullNow() {
+            assertThrows(NullPointerException.class, () -> endpoint.sessionIdentity(cookieHeader, null));
         }
     }
 

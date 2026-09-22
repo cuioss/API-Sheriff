@@ -54,6 +54,16 @@ import org.jspecify.annotations.Nullable;
  * only {@code frame_deny} drops the global {@code Strict-Transport-Security} for its routes. CORS
  * headers and every non-security entry already on the map are left untouched.
  * <p>
+ * <strong>Portal responses — {@link #applyPortalHeaders}, on a portal-rendered response.</strong> A
+ * portal overview page or HTML error page is gateway-authored, so there is no origin value its
+ * {@code Content-Security-Policy} or {@code X-Content-Type-Options} could defer to: both names are
+ * removed from the set-map <em>and</em> the default-map and seeded again in set-mode — the fixed,
+ * hardened {@linkplain #PORTAL_CONTENT_SECURITY_POLICY portal policy}
+ * ({@code default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'}) and
+ * {@code nosniff} — so an operator block
+ * can neither weaken nor duplicate them. Every other gateway-owned header keeps the block and mode
+ * already resolved for the response.
+ * <p>
  * <strong>Precedence relative to origin headers.</strong> At both positions each gateway-owned header is
  * seeded according to its resolved {@code header_modes} entry: a {@code set} header goes into
  * {@link PipelineRequest#responseHeaders()} (overwrites an origin value), a {@code default} header into
@@ -71,6 +81,26 @@ public final class SecurityHeadersStage {
     private static final String VARY_HEADER = "Vary";
     /** The separator RFC 9110 section 12.5.5 uses between {@code Vary} field names. */
     private static final String VARY_SEPARATOR = ", ";
+
+    /**
+     * The fixed, hardened {@code Content-Security-Policy} of every portal-rendered response:
+     * <ul>
+     * <li>{@code default-src 'self'} — same-origin resources only and no {@code 'unsafe-inline'},
+     * which the script-free, style-free portal template never needs;</li>
+     * <li>{@code base-uri 'none'} — no {@code <base>} element can re-anchor the page's relative
+     * links;</li>
+     * <li>{@code form-action 'self'} — a form can only submit back to the gateway's own origin;</li>
+     * <li>{@code frame-ancestors 'none'} — the page cannot be framed by any origin (clickjacking),
+     * independently of whether the resolved block enables {@code X-Frame-Options}.</li>
+     * </ul>
+     * {@code base-uri}, {@code form-action} and {@code frame-ancestors} do not fall back to
+     * {@code default-src}, so each is spelled out.
+     */
+    public static final String PORTAL_CONTENT_SECURITY_POLICY =
+            "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+    /** The {@code X-Content-Type-Options} value forced on every portal-rendered response. */
+    private static final String NOSNIFF = "nosniff";
 
     /**
      * The gateway-owned response security headers — the single authoritative definition driving
@@ -118,7 +148,7 @@ public final class SecurityHeadersStage {
             @Override
             @Nullable
             String value(SecurityHeadersConfig headers) {
-                return Boolean.TRUE.equals(headers.contentTypeNosniff()) ? "nosniff" : null;
+                return Boolean.TRUE.equals(headers.contentTypeNosniff()) ? NOSNIFF : null;
             }
 
             @Override
@@ -252,6 +282,36 @@ public final class SecurityHeadersStage {
         for (String name : matchHeaderNames) {
             addVary(request, name);
         }
+    }
+
+    /**
+     * Composes the portal's fixed security headers onto a portal-rendered response (the overview page
+     * or an HTML error page) under the {@code header_modes} precedence.
+     * <p>
+     * The gateway-owned {@code Content-Security-Policy} and {@code X-Content-Type-Options} names are
+     * removed from both the set-map and the default-map — whatever mode the resolved block declared
+     * them in — and seeded again in set-mode with {@link #PORTAL_CONTENT_SECURITY_POLICY} and
+     * {@code nosniff}. The page is gateway-authored, so there is no origin value to defer to, and the
+     * response ends with exactly one value for each name even when the global block declared a policy
+     * of its own or disabled {@code nosniff}. Every other gateway-owned header — HSTS, frame options —
+     * keeps the block and mode already resolved for the response; CORS and non-security entries are
+     * untouched.
+     *
+     * @param request the in-flight request whose response is portal-rendered
+     */
+    public static void applyPortalHeaders(PipelineRequest request) {
+        Objects.requireNonNull(request, "request");
+        String cspName = OwnedHeader.CONTENT_SECURITY_POLICY.headerName();
+        String nosniffName = OwnedHeader.CONTENT_TYPE_OPTIONS.headerName();
+        removeIgnoringCase(request, cspName);
+        removeIgnoringCase(request, nosniffName);
+        seed(request, HeaderMode.SET, cspName, PORTAL_CONTENT_SECURITY_POLICY);
+        seed(request, HeaderMode.SET, nosniffName, NOSNIFF);
+    }
+
+    private static void removeIgnoringCase(PipelineRequest request, String name) {
+        request.responseHeaders().keySet().removeIf(name::equalsIgnoreCase);
+        request.responseDefaultHeaders().keySet().removeIf(name::equalsIgnoreCase);
     }
 
     private static boolean isGatewayOwned(String name) {

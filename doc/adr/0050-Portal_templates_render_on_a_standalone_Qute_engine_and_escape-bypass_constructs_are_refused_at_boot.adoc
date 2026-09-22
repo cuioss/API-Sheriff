@@ -1,0 +1,235 @@
+= ADR-0050: Portal templates render on a standalone Qute engine and escape-bypass constructs are refused at boot
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The application portal and its negotiated HTML error pages render through one standalone Qute engine built by the gateway (quarkus-qute, operator-approved dependency) and never through the Quarkus-managed engine, whose cdi:/config:/inject: namespaces would reach operator templates; the engine escapes every value, carries no raw resolver, no namespace resolver, no locator and no reflection resolver, knows only if/for/let/when, and sees a fixed Map-only data model, which also keeps rendering native-image safe; a boot-time walk of every expression independently refuses raw, safe and namespaced expressions with file and line; the portal path is its own exact, any-host reservation seam separate from the OIDC closed set; and an HTML error page is offered only to an explicit text/html Accept range on a gateway-originated exit, never replacing an origin response.
+// tags: portal, html, templates, qute, xss, ssti, error-pages, content-negotiation, native-image
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+The application portal is an optional HTML page on one reserved path. It lists the enabled
+applications behind the gateway and shows the browser's signed-in state. With `portal.error_pages`
+the same template also renders an HTML page for a gateway-originated error when a browser navigates
+into one. It is the first surface on which the gateway writes HTML. Two properties make HTML different
+from every JSON body the gateway emitted before:
+
+* *What the gateway writes is interpreted in the gateway's origin.* The page carries catalog values
+  (operator configuration), a `notice` query parameter (attacker-controlled), the signed-in user's
+  `preferred_username` (controlled by the identity provider and often by the user) and an error
+  status. A value written without escaping runs as script with the gateway's credentials.
+* *The markup is operator-authored.* Operators brand the page with their own template. A template is
+  a program: whatever the engine lets a template reach, the template author reaches, and so does
+  anyone who can write to the configuration volume.
+
+The choice of engine is therefore a security boundary, not a presentation detail. Four questions
+follow from it:
+
+. *Which engine instance renders?* Quarkus ships Qute with a managed, injectable `Engine` whose
+  `cdi:`, `config:` and `inject:` namespace resolvers expose beans and configuration properties to
+  any template it renders. Its build-time template discovery also claims every file under
+  `templates/`.
+. *How is escaping enforced?* Qute escapes HTML for a `text/html` template, but `raw` and `safe`
+  switch that off per expression. A policy that relies on template authors not writing them is a
+  policy an operator template can bypass.
+. *What does a template see?* A domain object reaches methods, and in a native image every reflective
+  access must be registered at build time. A template that can call methods is both an attack surface
+  and a native-image hazard.
+. *Where does the portal sit in the request flow, and when does an error become HTML?* The OIDC
+  reserved paths are a closed set matched on the OIDC host (ADR-0018). The portal answers on any host,
+  and an HTML error page must not change what API clients receive or hide what an origin said.
+
+== Decision
+
+*The portal renders through one standalone Qute engine that the gateway builds and constrains itself,
+over a fixed map of plain values. A template that could bypass that engine's escaping, or reach beyond
+the data model, is refused at boot.*
+
+*Standalone engine.* `quarkus-qute` is a dependency of the application module; it was approved by the
+operator for this feature and its version is managed by the Quarkus platform BOM. The portal never
+injects or renders through the Quarkus-managed `Engine`. `PortalRenderer` builds its own
+`io.quarkus.qute.Engine`:
+
+* the default value resolvers *except* the raw resolver, so `raw` and `safe` never resolve to an
+  unescaped value;
+* `HtmlEscaper` as the result mapper for the `text/html` variant every template is parsed with, so
+  every rendered value is escaped;
+* no namespace resolver, no template locator and no reflection resolver;
+* only the `if`, `for`/`each`, `let`/`set` and `when`/`switch` sections. `eval` is absent because it
+  would parse a model value as template code, and `include`/`insert` have no locator to resolve
+  against. Any other section is a parse error;
+* strict rendering, so a key outside the data model fails rather than printing nothing.
+
+The built-in template lives under `portal/` on the classpath rather than `templates/`, so the managed
+engine's build-time discovery never claims it. It is included in the native image explicitly.
+
+*Map-only data model.* `PortalPageModel` is the single definition of the template contract. It
+produces a map whose keys are always all present (an absent value is `null`) and whose values are
+limited to `String`, `Boolean`, `Integer`, `List` and `Map`. No domain object reaches a template.
+That gives a template nothing to call and keeps rendering free of reflection, so no reflection
+registration is needed for the native image.
+
+*Two-layer escape-bypass enforcement.* The missing raw resolver is the first layer. The second is
+independent of it: building a renderer parses the template and walks every expression, including
+section parameters and virtual-method arguments. Any expression part naming `raw` or `safe`, in any
+spelling including a filter-style `x|raw`, and any namespaced expression refuses the template with
+the file and line. A missing, unreadable or unparseable template is refused the same way. The refusal
+aborts startup through the structured `ApiSheriff-202` record, so a gateway either serves a template
+that was found, parsed and cleared of every escape bypass and namespaced expression, or does not
+start. The walk does not check the keys a template references against the data model: a reference to
+a key the model does not carry parses cleanly and fails at render time under strict rendering. The
+template is read once at boot and never reloaded.
+
+*A reservation seam of its own.* `portal.path` is answered by `PortalEndpoint`, consulted after the
+reserved OIDC paths and before the route table, by exact string equality with the canonical request
+path on every host. It is deliberately not added to the OIDC `ReservedPathRegistry`: that set is
+closed, derived from the `oidc` block and matched on the OIDC host only. Collisions are refused at
+boot instead: a non-canonical path, a path equal to a reserved OIDC path, or a path equal to an
+enabled endpoint's exact route. A prefix route covering the path is admitted, which is how the portal
+can claim the context root. Without a `portal` block an inert endpoint that never matches stands in,
+and the edge is unchanged. Following ADR-0005, the portal package is framework-agnostic and is wired
+by one CDI producer.
+
+*Explicit-`text/html` negotiation.* An HTML error page is rendered only when error pages are enabled,
+the exit is classified `HTML_ELIGIBLE`, and the request's `Accept` lists `text/html` explicitly with a
+quality above zero. Wildcards never qualify. The classification is a default-free `switch` over every
+event type and every non-event exit, so a new one fails compilation until it is classified. Only
+gateway-originated errors are eligible. A response relayed from an origin is never replaced. The
+status is the same for the HTML and the problem-JSON answer.
+
+Every portal response carries a fixed, hardened
+`Content-Security-Policy: default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`
+and `X-Content-Type-Options: nosniff`, set in place of whatever the resolved `security_headers` block
+declares for those names. The other gateway-owned headers keep their block (ADR-0007).
+
+== Consequences
+
+=== Positive
+
+* Escaping does not depend on template authors. An operator template cannot produce unescaped output,
+  and the property is enforced twice, by a missing resolver and by a boot-time refusal. Either layer
+  alone would hold.
+* A template reaches nothing but the data model: no beans, no configuration, no class loader.
+  Server-side template injection has no target, and a model value containing template syntax is only text.
+* A missing, unparseable or escape-bypassing template surfaces at boot, with a file and line, instead
+  of as a broken page under load. A reference to an unknown key is the exception and surfaces at
+  render time (see Negative).
+* Rendering is native-image safe without reflection registration, because the model is plain values.
+* The portal is additive. A deployment without a `portal` block reserves nothing and behaves as
+  before, and the OIDC reserved-path set keeps its closed, host-scoped definition.
+* API clients are unaffected by error pages: `fetch()`, XHR and REST clients send wildcard `Accept`
+  headers and keep the problem body and status, and origin responses always pass through.
+
+=== Negative
+
+* *A restricted Qute.* Operators get a subset: no includes, no layouts, no `eval`, no custom
+  extensions and no namespaces. A template repeats its markup rather than composing it from fragments.
+* *Strict rendering is unforgiving.* A misspelled key in an operator template fails the render. On an
+  error page the gateway falls back to the plain error response, while on the overview page the
+  failure is visible.
+* *One more dependency.* `quarkus-qute` enters the application module even though the managed engine
+  is deliberately unused. Its build-time processing must keep ignoring the portal template, which is
+  why the template stays out of `templates/`.
+* *No hot reload.* A template change needs a restart, consistent with the immutable, boot-validated
+  configuration everywhere else.
+
+=== Risks
+
+* *Operator markup is trusted.* The template can link to any origin and can present the page
+  misleadingly. It cannot execute code or unescape a value, and the portal CSP confines what the page
+  loads and where its forms submit. Write access to the configuration directory already amounts to
+  control of the gateway.
+* *Engine drift.* A future Qute release could add a default resolver or a section that reintroduces an
+  escape bypass. The engine is built from an explicit resolver and section list rather than the
+  defaults, and the boot-time walk refuses the known bypass names independently, so a new built-in
+  would have to be added explicitly to take effect.
+
+== Alternatives Considered
+
+*Render through the Quarkus-managed Qute engine.* This is the idiomatic Quarkus choice, with type-safe
+templates, build-time validation and hot reload in development. The managed engine carries the
+`cdi:`, `config:` and `inject:` namespaces. Every operator template could reach application beans and
+configuration properties, including resolved secrets, and removing the namespaces from the managed
+engine would change behaviour for every other template the application might ever render. Build-time
+validation also cannot see an operator template supplied at deployment time. Rejected: the
+configuration boundary would reach the application's internals.
+
+*Rely on Qute's default escaping and document that templates must not use `raw` or `safe`.* The
+escaping is on by default, so a well-behaved template is safe. But the guarantee would rest on every
+operator template, forever, and on review that a gateway cannot perform at boot. One `{title.raw}`
+would turn a catalog label or the username into stored XSS. Rejected: a security property the gateway
+can enforce should not be delegated to documentation.
+
+*Hand the template the configuration and session objects.* Passing `PortalConfig`, the catalog
+records and a session object directly would spare the map assembly and would let templates call
+convenience methods. It would expose every accessor to templates, require reflection registration for
+each type in the native image, and make the template contract whatever the Java types happen to
+expose. Rejected in favour of one explicit, documented model.
+
+*A different template engine, or string substitution.* A logic-less engine or placeholder
+substitution would remove the section surface entirely. It would bring a dependency the platform
+does not manage and its own escaping rules to audit, or it would give operators too little to brand a
+page (no conditionals for signed-in state, no loop over applications). Qute is already managed by the
+Quarkus BOM and runs in native images. Constraining it costs less than adopting and auditing
+another engine.
+
+*Add the portal path to the OIDC reserved-path registry.* One registry for every gateway-owned path
+is tidier. But the OIDC set is closed and derived from the `oidc` block, and it matches on the OIDC
+host only, while the portal must work without `oidc` and on every host. Merging them would either
+change the OIDC matching rule or special-case one member. Rejected in favour of a second, explicitly
+ordered seam with its own boot-time collision checks.
+
+*Negotiate HTML on any `Accept` that admits it, including wildcards.* This would show more users an
+HTML page. Every `fetch()` and REST client sends `+*/*+` by default and would start receiving HTML
+instead of the problem body its error handling parses, and a script could insert that markup into a
+page. Rejected: only an explicit `text/html` range is a browser navigation asking for a page.
+
+The rejected options share one shape. Each lets something outside the gateway's control decide a
+security property: a template's choice of expression, an engine's default resolver set, a Java type's
+accessor list, or a wildcard `Accept` header. The decision keeps each of those properties in code the
+gateway owns and verifies at boot.
+
+== References
+
+* link:0005-module-structure.adoc[ADR-0005]: framework-agnostic packages wired by CDI producers, the
+  seam the portal package and `PortalProducer` follow
+* link:0007-anchor-scoped-policy.adoc[ADR-0007]: the gateway-owned security-header blocks, whose CSP
+  and `nosniff` a portal response replaces with fixed values
+* link:0014-asset-serving-terminal-action.adoc[ADR-0014]: the asset terminal action an operator uses
+  to serve a template's stylesheets and images, and whose `source: directory` miss is an HTML-eligible
+  exit
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]:
+  the closed, OIDC-host reserved-path set the portal's own seam is kept separate from, and the
+  session binding the signed-in state is resolved through
+* link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]:
+  absence as a nullable value, which the data model carries as a present key mapped to `null`
+* link:../user/portal.adoc[Application Portal and HTML Error Pages]: the operator guide, including the
+  data model and the supported Qute subset
+* link:../configuration.adoc#_portal[Configuration Reference -- `portal`] and
+  link:../configuration.adoc#_endpoint_catalog[`endpoint.catalog`]
+* link:../architecture.adoc#_application_portal[Architecture -- Application portal] and
+  link:../architecture.adoc#_html_error_pages[Negotiated HTML error pages]
+* link:../security-threat-model.adoc#_html_surface_failure_catalogue[Threat model -- HTML surface]
+  (HTML-01 to HTML-06)
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/PortalRenderer.java`: the standalone
+  engine and the boot-time expression walk
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/PortalPageModel.java`: the data-model
+  contract
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/ErrorPageClassifier.java`: the
+  exhaustive classification and the `Accept` negotiation

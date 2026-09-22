@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# Toggle-acceptance endpoint for the application portal (PortalIT).
+#
+# It declares a catalog block like endpoints/assets.yaml, but its `enabled` flag resolves through the
+# ENDPOINT_PORTAL_HIDDEN_ENABLED placeholder. docker-compose.yml sets that variable to false on the
+# main api-sheriff service ONLY, so on the instance PortalIT drives the endpoint -- and therefore its
+# catalog entry -- is disabled: the portal must list the assets entry and must NOT list this one. A
+# catalog entry is active exactly when its endpoint is enabled after placeholder resolution, which is
+# the property this file exists to prove against the native image.
+#
+# Every other gateway instance mounts this same endpoints directory and resolves the placeholder to its
+# `true` default, so the file must be valid in each of them. It therefore reuses the EXISTING
+# 'assets-public' anchor -- declared by every gateway.yaml document, overlays included -- rather than
+# declaring a new one (see the endpoints/assets.yaml header for the same reasoning), and carries a
+# single EXACT redirect route: a redirect contacts no upstream (so no base_url is needed), is admitted
+# under an asset anchor, and claims one address that no other route serves. Its target is the demo
+# landing page served by the assets-demo route.
+#
+# require: none because 'assets-public' is access: public and carries no auth block (ADR-0013).
+endpoint:
+  id: portal-hidden
+  enabled: ${ENDPOINT_PORTAL_HIDDEN_ENABLED:-true}
+  anchor: assets-public
+  auth:
+    require: none
+  catalog:
+    title: Hidden Portal Entry
+    description: Listed only where ENDPOINT_PORTAL_HIDDEN_ENABLED leaves this endpoint enabled
+    entry: /assets/portal-hidden
+    order: 20
+  routes:
+    - id: portal-hidden-landing
+      anchor: assets-public
+      match:
+        path: /assets/portal-hidden
+      redirect:
+        location: /assets/demo/landing.html
+        status: 302

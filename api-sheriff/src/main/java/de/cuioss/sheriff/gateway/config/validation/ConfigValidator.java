@@ -31,6 +31,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
@@ -72,6 +73,7 @@ import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import de.cuioss.sheriff.gateway.http.LocationPathReview;
 import de.cuioss.tools.logging.CuiLogger;
@@ -134,6 +136,12 @@ import org.jspecify.annotations.Nullable;
  * declaring {@code scopes} must have at least one route that is not {@code require: none}, since
  * scopes act only on authenticated routes; and a declared {@code oidc.login.default_return_url}
  * must be same-origin with {@code redirect_uri}.
+ * <p>
+ * The application-portal rules ({@link PortalRules}) add four more, run after every rule above: a
+ * declared {@code portal.path} must be canonical, must not equal a reserved OIDC path (compared
+ * host-independently, since the portal matches on any host), and must not equal an enabled
+ * endpoint's exact route; and every enabled endpoint's {@code catalog.entry} must be an
+ * origin-relative path on the gateway's own origin.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -245,7 +253,7 @@ public final class ConfigValidator {
     /** The only schemes an {@code allow_external} redirect location may carry. */
     private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
 
-    private static final List<ValidationRule> DEFAULT_RULES = List.of(
+    private static final List<ValidationRule> CORE_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRouteIdUniqueness(endpoints, errors),
@@ -285,6 +293,10 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors));
+
+    /** The core rules followed by the application-portal rules, which run after every core rule. */
+    private static final List<ValidationRule> DEFAULT_RULES =
+            Stream.concat(CORE_RULES.stream(), PortalRules.RULES.stream()).toList();
 
     private final List<ValidationRule> rules;
 

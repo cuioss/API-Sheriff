@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
@@ -199,7 +200,7 @@ class GatewayEdgePipelineTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted());
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
@@ -273,6 +274,13 @@ class GatewayEdgePipelineTest {
     void metersDisallowedVerbUnderItsRoute() throws Exception {
         // Act — same refusal as above, read through the meter rather than the response
         assertEquals(405, send(io.vertx.core.http.HttpMethod.DELETE, "/echo/orders", Map.of(), null).status());
+        // The edge meters from RoutingContext.addEndHandler, which runs asynchronously with respect to
+        // the client receiving the response, so wait for it; find(..) keeps the poll read-only.
+        Awaits.until(() -> {
+            var counter = meterRegistry.find(SheriffMetrics.REQUESTS_TOTAL)
+                    .tags("route", "echo", "method", "DELETE", "status_family", "4xx").counter();
+            return counter != null && counter.count() >= 1.0;
+        }, "the edge end handler to meter the 405 under route echo", Awaits.CONNECT_CEILING_SECONDS);
 
         // Assert — the route WAS selected; the verb gate refused afterwards. Metering that under
         // <no-route> would hide it from the per-route view an operator uses to find a client calling a

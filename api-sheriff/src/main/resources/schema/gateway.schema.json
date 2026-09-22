@@ -445,6 +445,39 @@
           }
         }
       }
+    },
+    "portal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "title"],
+      "description": "The application portal: one exact, host-independent reserved path that renders an HTML overview of every enabled endpoint declaring an endpoint.catalog block, and — with error_pages — negotiated HTML pages for gateway-originated errors. Omitted keeps the portal off and the gateway behaves exactly as without it.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "The exact request path the portal answers on any host, matched before the route table (so it may claim the context root next to prefix routes). Must be canonical — a single leading '/', no '//', no dot segment, no '?' or '#' — and must not equal a reserved OIDC path or an enabled endpoint's exact route; each is refused at boot (enforced in code)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The page title rendered into the portal template. Always HTML-escaped."
+        },
+        "template_dir": {
+          "type": "string",
+          "description": "Directory holding an operator-authored portal.html Qute template replacing the built-in one. The template is parsed at boot on a standalone engine without namespaces; a missing or unparseable template, and any raw or safe escape-bypass construct, is refused at boot. Omitted renders the built-in template."
+        },
+        "cache_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Cache-Control max-age for a portal page that carries no session data. A session-bearing page and every HTML error page are always served no-store. Defaults to 0."
+        },
+        "error_pages": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether gateway-originated errors on an eligible exit are rendered as HTML through the portal template when the request's Accept header lists text/html explicitly. The status code never changes, and a response relayed from an origin is never replaced. Defaults to false."
+        }
+      }
     }
   }
 }

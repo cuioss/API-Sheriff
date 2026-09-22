@@ -17,9 +17,12 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
@@ -134,6 +137,69 @@ class ReservedPathRegistryTest {
             ReservedPathRegistry registry = ReservedPathRegistry.from(oidc);
             assertTrue(registry.isEmpty(), "no redirect_uri -> no OIDC host -> no reserved paths");
             assertFalse(registry.isReserved(OIDC_HOST, LOGOUT_PATH));
+        }
+    }
+
+    @Nested
+    @DisplayName("Host-independent reserved path set")
+    class ReservedPaths {
+
+        private static final String USER_INFO_PATH = "/session/userinfo";
+        private static final String LOGIN_PATH = "/session/login";
+
+        private OidcConfig allSixKinds() {
+            OidcConfig.Logout logout = OidcConfig.Logout.builder()
+                    .path(LOGOUT_PATH)
+                    .postLogoutRedirectUri("https://" + OIDC_HOST + LOGOUT_RETURN_PATH)
+                    .backchannelPath(BACKCHANNEL_PATH)
+                    .build();
+            return OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                    .logout(logout)
+                    .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
+                    .login(new OidcConfig.Login(LOGIN_PATH, null))
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should return every configured reserved path in declaration order")
+        void shouldReturnEveryConfiguredPath() {
+            assertEquals(List.of(CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, USER_INFO_PATH,
+                    LOGIN_PATH), List.copyOf(ReservedPathRegistry.reservedPaths(allSixKinds())));
+        }
+
+        @Test
+        @DisplayName("Should be empty without an oidc block")
+        void shouldBeEmptyWithoutOidc() {
+            assertTrue(ReservedPathRegistry.reservedPaths(null).isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should agree with the registry: every returned path matches on the OIDC host")
+        void shouldAgreeWithRegistryMatching() {
+            OidcConfig oidc = allSixKinds();
+            ReservedPathRegistry registry = ReservedPathRegistry.from(oidc);
+            Set<String> paths = ReservedPathRegistry.reservedPaths(oidc);
+            assertEquals(6, paths.size());
+            for (String path : paths) {
+                assertTrue(registry.isReserved(OIDC_HOST, path), path);
+            }
+        }
+
+        @Test
+        @DisplayName("Should derive the paths without an OIDC host, since the set is host-independent")
+        void shouldDeriveWithoutRedirectUri() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .logout(OidcConfig.Logout.builder().path(LOGOUT_PATH).build())
+                    .build();
+            assertEquals(Set.of(LOGOUT_PATH), ReservedPathRegistry.reservedPaths(oidc));
+        }
+
+        @Test
+        @DisplayName("Should return an unmodifiable set")
+        void shouldBeUnmodifiable() {
+            Set<String> paths = ReservedPathRegistry.reservedPaths(allSixKinds());
+            assertThrows(UnsupportedOperationException.class, () -> paths.add("/x"));
         }
     }
 }

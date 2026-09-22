@@ -72,6 +72,17 @@ public final class ApiSheriffLogMessages {
                 .identifier(7)
                 .template("Accept-time SNI front listener started on port %s (%s passthrough SNI mapping(s))")
                 .build();
+
+        /**
+         * The application portal is enabled: its reserved path, the number of active catalog entries
+         * and the template source ({@code built-in} or the operator template file) are reported once at
+         * boot. The template names operator configuration only — never request or session content.
+         */
+        public static final LogRecord PORTAL_ENABLED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(19)
+                .template("Application portal enabled at '%s' with %s active catalog entries, template: %s")
+                .build();
     }
 
     /**

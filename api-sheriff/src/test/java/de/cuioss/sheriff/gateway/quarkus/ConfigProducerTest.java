@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Locale;
 
 
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
@@ -34,6 +36,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -601,5 +604,54 @@ class ConfigProducerTest {
                 "the abort should carry the refusing-to-start summary");
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
                 "upstream alias 'ASSET_ORIGIN' does not resolve in the topology");
+    }
+
+    /**
+     * A catalog endpoint whose {@code enabled} value is a placeholder falling back to
+     * {@code enabledDefault}. The variable name is deliberately one no environment defines, so the
+     * default is what resolves — the same {@code ${VAR:-default}} path an operator's
+     * {@code ENDPOINT_<ID>_ENABLED} toggle travels.
+     */
+    private void writeCatalogEndpoint(String id, String enabledDefault) throws IOException {
+        Files.createDirectories(configDir.resolve("endpoints"));
+        Files.writeString(configDir.resolve("endpoints/" + id + ".yaml"), """
+                endpoint:
+                  id: %1$s
+                  enabled: ${SHERIFF_TEST_UNDEFINED_%2$s_ENABLED:-%3$s}
+                  auth:
+                    require: none
+                  catalog:
+                    title: %1$s title
+                    entry: /%1$s/
+                  routes:
+                    - id: %1$s-home
+                      match:
+                        path: /%1$s
+                      redirect:
+                        location: /%1$s/
+                        status: 302
+                """.formatted(id, id.toUpperCase(Locale.ROOT), enabledDefault));
+    }
+
+    @Test
+    void shouldPublishTheCatalogOfTheEnabledEndpointsOnly() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+        writeCatalogEndpoint("orders", "true");
+        writeCatalogEndpoint("hidden", "false");
+
+        producer.onStartup(null);
+        PortalCatalog catalog = producer.portalCatalog();
+
+        assertEquals(List.of(new PortalCatalog.Entry("orders title", null, "/orders/", null)), catalog.entries(),
+                "the endpoint disabled through its enabled placeholder must be absent from the catalog");
+        assertEquals(1, producer.routeTable().routes().size(),
+                "the catalog and the route table are derived from the same enabled endpoint list");
+    }
+
+    @Test
+    void shouldPublishAnEmptyCatalogWithoutCatalogEndpoints() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+
+        assertTrue(producer.portalCatalog().entries().isEmpty());
     }
 }

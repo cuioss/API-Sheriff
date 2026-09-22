@@ -59,6 +59,8 @@ import org.jspecify.annotations.Nullable;
  *                         upstream trust-profile name (ADR-0040), {@code null} when omitted so
  *                         {@link EgressTlsConfig#defaults()} applies. Disjoint from {@code tls},
  *                         which is the server-side surface (ADR-0025)
+ * @param portal           the application-portal settings, {@code null} when omitted — the portal
+ *                         path is then not reserved and no gateway error renders as HTML
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -79,7 +81,8 @@ Map<String, AnchorConfig> anchors,
 @Nullable TokenValidationConfig tokenValidation,
 @Nullable OidcConfig oidc,
 @Nullable EdgeHardeningConfig edgeHardening,
-@Nullable EgressTlsConfig egressTls) {
+@Nullable EgressTlsConfig egressTls,
+@Nullable PortalConfig portal) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and

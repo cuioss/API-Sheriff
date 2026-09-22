@@ -125,15 +125,46 @@ route) and nothing after it runs:
   policy, no upstream contact.
 |===
 
-Two checks sit ahead of route selection outside this numbering and are described where they are
-owned: the reserved OIDC paths are dispatched before the route table (<<_bff_session_runtime>>), and
-the Host-vs-SNI smuggle guard rejects before route selection (<<_tls_edge_accept_time_sni_split>>).
-Both answer before stage 2a, so they carry the global security-header block.
+Three checks sit ahead of route selection outside this numbering and are described where they are
+owned. After stage 1 the Host-vs-SNI smuggle guard rejects before route selection
+(<<_tls_edge_accept_time_sni_split>>). Then the gateway's own reserved paths are answered: first the
+reserved OIDC paths, exact and on the OIDC host only (<<_bff_session_runtime>>), and then the
+application portal's `portal.path`, exact and on *any* host (<<_application_portal>>). A prefix route
+covering `portal.path` therefore never sees a request for it on any host; a prefix route covering a
+reserved OIDC path never sees a request for it on the configured OIDC host, while the same path on
+another host still reaches route selection. All three answer before stage 2a, so they carry
+the global security-header block. The portal additionally replaces the `Content-Security-Policy` and
+`X-Content-Type-Options` of that block with its own fixed values.
 
 The authentication stage is where the three variants differ: offline bearer validation
 (link:variants/01-base-gateway.adoc[Variant 1]), OIDC session mediation
 (link:variants/02-bff-session.adoc[Variant 2]), or OIDC encrypted-cookie mediation
 (link:variants/03-bff-cookie.adoc[Variant 3]). Everything else in the pipeline is shared.
+
+[[_application_portal]]
+==== Application portal (reserved path and HTML error pages)
+
+The portal (link:user/portal.adoc[operator guide],
+link:adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050])
+lives in the framework-agnostic `de.cuioss.sheriff.gateway.portal` package and is wired by one CDI
+producer, `PortalProducer`, following the ADR-0005 seam rule:
+
+* `PortalEndpoint` is the portal's *own* reservation seam. It is not a member of the OIDC
+  `ReservedPathRegistry` closed set, because that registry matches only on the OIDC host while the
+  portal answers on every host. Without a `portal` block the producer supplies the inert endpoint,
+  which never matches, and the edge behaves exactly as without the feature.
+* `PortalRenderer` renders through one standalone Qute engine that never touches the Quarkus-managed
+  engine. It escapes every value, has no namespace or reflection resolver, and refuses an
+  escape-bypass or namespaced template at boot.
+* `PortalPageModel` is the fixed, Map-only data model, the template contract. `PortalCatalog` is
+  resolved once at boot from the enabled endpoints, and `PortalResponseEnvelope` owns the content type,
+  `nosniff` and the per-class cache headers.
+* The page is rendered on the request's virtual thread, because session resolution through
+  `BffRuntime.sessionIdentity` may reach the session store, and it is written on the event loop.
+
+The edge's three gateway-originated error writers negotiate an HTML error page through one method,
+guided by `ErrorPageClassifier`. Those writers are the problem renderer, a failed OIDC callback and a
+`source: directory` asset miss. See <<_html_error_pages>> for the rule.
 
 [[_tls_edge_accept_time_sni_split]]
 === TLS Edge (Accept-Time SNI Split)
@@ -902,7 +933,11 @@ edge (below) reads its snapshots. The `cui-http` filter contributes its own
 === Error Contract
 
 Every gateway-generated rejection is an `application/problem+json` (RFC 9457) response that
-names the category but leaks no internal detail. The consolidated status mapping:
+names the category but leaks no internal detail. There are two exceptions. A rejection on a
+`protocol: grpc` route is a trailers-only gRPC response rather than a problem document
+(<<_grpc_error_contract>>). And the HTML error page of <<_html_error_pages>> is negotiated: the same
+status, rendered as HTML for a browser navigation when the application portal's `error_pages` is on.
+The consolidated status mapping:
 
 [cols="1,2,2"]
 |===
@@ -919,6 +954,48 @@ names the category but leaks no internal detail. The consolidated status mapping
 | `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
 |===
+
+[[_html_error_pages]]
+==== Negotiated HTML error pages
+
+With `portal.error_pages: true` (see <<_application_portal>>), a gateway-originated error is answered
+with the portal template rendered as an error page instead of the problem body when *all three* of
+these hold:
+
+. error pages are enabled on an active portal;
+. `ErrorPageClassifier` classifies the exit `HTML_ELIGIBLE`;
+. the request's `Accept` header, all its lines joined, lists `text/html` explicitly with a quality
+  above zero. `+*/*+` and `+text/*+` never qualify, so `fetch()`, XHR and REST clients keep the
+  problem body.
+
+The status code is identical either way. The classification is exhaustive by construction: a
+`switch` without `default` over every `EventType` and over the closed set of non-event exits, so a new
+constant fails compilation until it is classified.
+
+[cols="1,3"]
+|===
+| Classification | Exits
+
+| `HTML_ELIGIBLE`
+| `SCOPE_MISSING` and `CSRF_REJECTED` (`403`); `NO_ROUTE_MATCHED` (`404`); `CONTENT_TOO_LARGE`
+  (`413`); `UPSTREAM_ERROR` (`502`), `UPSTREAM_CIRCUIT_OPEN` (`503`), `UPSTREAM_TIMEOUT` (`504`); a
+  failed OIDC callback (an error status without `Location`, whose own `Set-Cookie` lines ride on the
+  page); a `source: directory` asset miss (`404`).
+
+| `KEEP_SHAPE`
+| Every other event: the `400` security-filter and parameter rejections, `401` token rejections, the
+  `405` verb gate, `RESERVED_BODY_TOO_LARGE`, the passthrough-`Host` smuggle, WebSocket rejections and
+  the rest. Every response *relayed from an origin* (the proxy relay, the gRPC trailer relay, a
+  `source: upstream` asset, the WebSocket relay), a relay failure after the response head was sent, a
+  gRPC trailers-only rejection, the admission `503`, and an unexpected internal failure.
+|===
+
+An error page carries the unchanged status and a fixed per-status title. It never carries a problem
+detail, an exception message or an upstream address. It renders anonymously (no session is resolved
+on a failure path), is `Cache-Control: no-store`, and carries the portal
+`Content-Security-Policy: default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`
+and `nosniff`. A page that fails to render falls back to the exit's current shape, so the error still
+reaches the client.
 
 [[_grpc_error_contract]]
 ==== gRPC rejections (trailers-only)

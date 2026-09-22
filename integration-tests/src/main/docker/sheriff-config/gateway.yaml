@@ -331,3 +331,30 @@ oidc:
     default_view: ["sub", "preferred_username"]
   login:
     path: /auth/login
+# --- Application portal (PortalIT, HtmlErrorPageIT) --------------------------------
+# Appended at the END of the document on purpose: declared-limit-assertion-coverage.adoc cites keys
+# of this file by line number, and a block inserted above them would silently shift every citation.
+#
+# Declared on this base document, so the portal is live on the main instance (10443) and on
+# api-sheriff-plain-mgmt, the one instance that mounts this document as shipped. The one overlay
+# that mirrors it is sheriff-config-passthrough-empty, whose single-variable guard requires it to be
+# this document minus tls.passthrough_sni; every other overlay declares no portal block, so every
+# other instance behaves exactly as before.
+#
+#   * path: /portal is an otherwise-unrouted address -- no anchor prefix covers it and it is none of
+#     the reserved /auth paths -- so the portal is observably answered AHEAD of the route table
+#     rather than by an accident of routing, on any Host.
+#   * template_dir points at the operator template mounted with this directory
+#     (sheriff-config/portal/portal.html). It carries a unique marker, so PortalIT proves the
+#     runtime-parsed operator template renders in the native image rather than the built-in one.
+#   * cache_seconds: 60 is non-zero so the anonymous page's Cache-Control: max-age=60 is an
+#     observable of THIS declaration, not of the omitted-key default (0).
+#   * error_pages: true switches the negotiated HTML error pages on. Only a request whose Accept
+#     lists text/html explicitly is answered with HTML; every other client, a relayed origin
+#     response included, keeps the current shape and status (HtmlErrorPageIT).
+portal:
+  path: /portal
+  title: API Sheriff Integration Portal
+  template_dir: /app/sheriff-config/portal
+  cache_seconds: 60
+  error_pages: true

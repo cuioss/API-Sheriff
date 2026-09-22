@@ -15,12 +15,19 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
 
 
 import org.junit.jupiter.api.DisplayName;
@@ -60,11 +67,14 @@ import org.junit.jupiter.api.Test;
  * test-shaped in the shipped file, in any spelling — remains enforced by review. See
  * {@code doc/development/README.adoc}, section "Artifact Purity: No Test-Shaped Configuration in the
  * Shipped File".
+ * <p>
+ * The class also guards one packaging fact the native integration tests cannot observe: that
+ * {@code quarkus.native.resources.includes} covers the built-in portal template.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-@DisplayName("Shipped application.properties: artifact purity")
+@DisplayName("Shipped application.properties: artifact purity and native resource includes")
 class ShippedApplicationPropertiesTest {
 
     /**
@@ -74,6 +84,11 @@ class ShippedApplicationPropertiesTest {
      * caught here.
      */
     private static final Path PACKAGED_APPLICATION_PROPERTIES = Path.of("target/classes/application.properties");
+
+    private static final String NATIVE_RESOURCE_INCLUDES = "quarkus.native.resources.includes";
+
+    /** The built-in portal template's classpath location, as loaded by {@code PortalRenderer.builtIn()}. */
+    private static final String BUILT_IN_PORTAL_TEMPLATE = "portal/portal.html";
 
     @Test
     @DisplayName("The packaged file declares no %-profile key")
@@ -99,6 +114,46 @@ class ShippedApplicationPropertiesTest {
                         + "unconfigured. Do NOT delete a branch while leaving the default it was correcting. See "
                         + "doc/development/README.adoc, section \"Artifact Purity: No Test-Shaped Configuration in "
                         + "the Shipped File\".");
+    }
+
+    /**
+     * The built-in portal template is loaded from the classpath at runtime by the standalone portal
+     * renderer, so nothing at build time records it and the native image carries it only through
+     * {@code quarkus.native.resources.includes}. The native integration tests run with an operator
+     * {@code template_dir} and cannot observe the built-in file, so its inclusion is asserted here.
+     */
+    @Test
+    @DisplayName("The native resource includes cover the built-in portal template")
+    void nativeResourceIncludesCoverBuiltInPortalTemplate() throws Exception {
+        Properties shipped = new Properties();
+        try (Reader reader = Files.newBufferedReader(PACKAGED_APPLICATION_PROPERTIES, StandardCharsets.UTF_8)) {
+            shipped.load(reader);
+        }
+        String includes = shipped.getProperty(NATIVE_RESOURCE_INCLUDES, "");
+
+        assertTrue(Files.isRegularFile(Path.of("target/classes").resolve(BUILT_IN_PORTAL_TEMPLATE)),
+                () -> "expected the packaged built-in portal template at target/classes/" + BUILT_IN_PORTAL_TEMPLATE);
+        assertTrue(anyGlobMatches(includes, BUILT_IN_PORTAL_TEMPLATE),
+                () -> NATIVE_RESOURCE_INCLUDES + "=" + includes + " includes no glob matching "
+                        + BUILT_IN_PORTAL_TEMPLATE + " — the native image would boot without the built-in portal "
+                        + "template, and PortalRenderer.builtIn() would refuse startup there");
+    }
+
+    @Test
+    @DisplayName("The include matcher accepts a covering glob and rejects a non-covering one")
+    void includeMatcherControl() {
+        assertAll(
+                () -> assertTrue(anyGlobMatches("schema/*.json,portal/*.html", BUILT_IN_PORTAL_TEMPLATE)),
+                () -> assertFalse(anyGlobMatches("**/*.p12,schema/*.json,templates/*.html", BUILT_IN_PORTAL_TEMPLATE)),
+                () -> assertFalse(anyGlobMatches("", BUILT_IN_PORTAL_TEMPLATE)));
+    }
+
+    private static boolean anyGlobMatches(String commaSeparatedGlobs, String resource) {
+        Path candidate = Path.of(resource);
+        return Arrays.stream(commaSeparatedGlobs.split(","))
+                .map(String::strip)
+                .filter(glob -> !glob.isEmpty())
+                .anyMatch(glob -> FileSystems.getDefault().getPathMatcher("glob:" + glob).matches(candidate));
     }
 
     /**

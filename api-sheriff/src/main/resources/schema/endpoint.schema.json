@@ -103,6 +103,32 @@
           "$ref": "#/$defs/upstreamDefaults",
           "description": "Optional endpoint-level retry / not-modified defaults. When present, replaces the global upstream_defaults wholesale for this endpoint."
         },
+        "catalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["title", "entry"],
+          "description": "Optional portal overview entry. A catalog block lists this endpoint on the portal page, active exactly when the endpoint is enabled after placeholder resolution, so ENDPOINT_<ID>_ENABLED toggles the entry together with the routes. Every value is HTML-escaped when rendered.",
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The entry's display title."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional one-line description rendered under the title."
+            },
+            "entry": {
+              "type": "string",
+              "pattern": "^(?!.*//)/[^\\\\\\u0000-\\u001F\\u007F]*(?![\\s\\S])",
+              "description": "The link target: an origin-relative absolute path on the gateway's own origin — a single leading '/', no '//', no backslash, no control characters. A scheme, an authority or a scheme-relative '//host' value would turn the portal into an open redirect and is refused; the configuration validator additionally refuses encoded variants at boot, naming the offending endpoint."
+            },
+            "order": {
+              "type": "integer",
+              "description": "Optional sort key; entries are listed by ascending order, then by title. An entry without order sorts after every entry that declares one."
+            }
+          }
+        },
         "routes": {
           "type": "array",
           "items": {

@@ -21,6 +21,7 @@ import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -33,6 +34,7 @@ import de.cuioss.sheriff.gateway.config.model.ManagementConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RateLimitConfig;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
@@ -108,6 +110,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         RedirectConfig.class,
         RateLimitConfig.class,
         WebSocketConfig.class,
+        PortalConfig.class,
+        CatalogConfig.class,
         HttpMethod.class,
         Protocol.class,
         AnchorType.class,

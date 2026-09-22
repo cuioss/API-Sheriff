@@ -44,6 +44,7 @@ import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.topology.TopologyResolver;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.runtime.configuration.MemorySize;
@@ -71,8 +72,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * {@link ConfigLogMessages} records and throws, so Quarkus exits non-zero and never
  * serves on partial configuration. On success it emits the {@code CONFIG_LOADED}
  * INFO record carrying the audit {@code config_version} and publishes the bound
- * {@link GatewayConfig}, the assembled {@link RouteTable}, the {@link ResolvedTopology}
- * and the resolved {@link EdgeHardeningOptions} admission budget as beans.
+ * {@link GatewayConfig}, the assembled {@link RouteTable}, the {@link ResolvedTopology},
+ * the resolved {@link EdgeHardeningOptions} admission budget and the application portal's
+ * {@link PortalCatalog} — derived from the same enabled endpoint list as the route table — as beans.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -97,6 +99,7 @@ public class ConfigProducer {
     private GatewayConfig gateway;
     private RouteTable routeTable;
     private ResolvedTopology resolvedTopology;
+    private PortalCatalog portalCatalog;
     private boolean built;
 
     /**
@@ -166,6 +169,25 @@ public class ConfigProducer {
     }
 
     /**
+     * Produces the application portal's catalog: the ordered overview entries of every enabled
+     * endpoint declaring an {@code endpoint.catalog} block.
+     * <p>
+     * Built from exactly the enabled endpoint list the {@link RouteTable} is built from — after
+     * placeholder resolution — so an endpoint switched off through its {@code enabled} placeholder
+     * ({@code ENDPOINT_<ID>_ENABLED}) is absent from the portal as it is from the route table.
+     * {@link Singleton} (a pseudo-scope, no client proxy) because {@link PortalCatalog} is a
+     * {@code record}; the bean is immutable and assembled once at boot.
+     *
+     * @return the immutable {@link PortalCatalog}, empty when no enabled endpoint declares a catalog
+     */
+    @Produces
+    @Singleton
+    public PortalCatalog portalCatalog() {
+        buildOnce();
+        return portalCatalog;
+    }
+
+    /**
      * Produces the edge's transport bounds and admission budget, resolving the two operator-facing
      * caps from the {@code edge_hardening} block and falling back to
      * {@link EdgeHardeningConfig#defaults()} when the block is absent.
@@ -207,6 +229,7 @@ public class ConfigProducer {
             this.gateway = loaded.gateway();
             this.resolvedTopology = topology;
             this.routeTable = new RouteTableBuilder().build(loaded.gateway(), enabled, topology);
+            this.portalCatalog = PortalCatalog.from(enabled);
             this.built = true;
             LOGGER.info(ConfigLogMessages.INFO.CONFIG_LOADED, configVersion(gateway));
         } catch (ConfigLoadException e) {

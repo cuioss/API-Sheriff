@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *twenty-two files* under `integration-tests/src/main/docker/`.
+The declared surface is *twenty-four files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -64,14 +64,20 @@ disk without touching this table and the guard fails.
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 11
+| 12
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-scoped.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`, `sheriff-config/endpoints/grpc.yaml`,
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
+  `sheriff-config/endpoints/portal-hidden.yaml`,
   `sheriff-config/endpoints/secure.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
   `sheriff-config/endpoints/untrusted.yaml`,
   `sheriff-config/endpoints/websocket.yaml`
+
+| `sheriff-config/portal/portal.html`
+| 1
+| The operator portal template the base document's portal block names -- markup only, declares
+  *no* key at all
 
 | `sheriff-config/topology.properties`
 | 1
@@ -79,7 +85,7 @@ disk without touching this table and the guard fails.
 |===
 // end::inventory[]
 
-Only the base directory carries `endpoints/` and `topology.properties`; the eight overlay
+Only the base directory carries `endpoints/`, `portal/` and `topology.properties`; the eight overlay
 directories replace `gateway.yaml` and nothing else, which is why the endpoints tree resolves
 identically for every gateway instance the compose stack boots.
 
@@ -98,7 +104,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all twenty-two files it returns hits in exactly fifteen of them:
+Over all twenty-four files it returns hits in exactly fifteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -118,16 +124,18 @@ Over all twenty-two files it returns hits in exactly fifteen of them:
 * `sheriff-config/endpoints/websocket.yaml`
 // end::limit-bearing[]
 
-The remaining seven -- `sheriff-config/endpoints/assets.yaml`,
+The remaining nine -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/bff-scoped.yaml`,
-`sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
-`sheriff-config/endpoints/untrusted.yaml` and `sheriff-config/topology.properties` -- declare none.
+`sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/portal-hidden.yaml`,
+`sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
+`sheriff-config/portal/portal.html` and `sheriff-config/topology.properties` -- declare none.
 That complement is the other half of the same claim, so asserting the fifteen exactly asserts both
 halves at once.
 
 `sheriff-config/endpoints/origin-headers.yaml` is limit-free for the same structural reason as
-`untrusted.yaml`: its two routes back response-path assertions (header precedence and `Location`
-rewriting), so they declare a match prefix, an `upstream.path`, `rewrite_location` and a `profile`
+`untrusted.yaml`: its three routes back response-path assertions (header precedence, `Location`
+rewriting, and `HtmlErrorPageIT`'s relayed-origin-error control through go-httpbin's `/status`), so
+they declare a match prefix, an `upstream.path`, `rewrite_location` and a `profile`
 -- none of which matches the sweep -- and deliberately no `forward` list, since the query parameters
 that drive the origin must cross unfiltered.
 
@@ -165,12 +173,13 @@ removed, so every key the base declares it also declares, at the base's own rela
 The two `sheriff-config-egress-verify-*/gateway.yaml` overlays are outside it on the same reasoning,
 and for the same reason the `×4` rows are not re-cited as `×6`. Each is the base document with
 `tls.passthrough_sni` removed and one `egress_tls` block added, so every key the base declares it
-also declares -- with one exception: the global `security_headers` block and the `api` anchor's
+also declares -- with two exceptions. The global `security_headers` block and the `api` anchor's
 `security_headers` block that the base gained for `RoutingAndResponseHeadersIT` were *not* copied
-into these two overlays (the passthrough-empty and refresh overlays did receive them). The base-only
-`security_headers` rows below therefore do not derive onto the egress pair. The omission moves
-neither file across the limit-bearing partition, because both stay limit-bearing on the keys listed
-next.
+into these two overlays (the passthrough-empty and refresh overlays did receive them), and neither was
+the `portal` block the base gained for `PortalIT` / `HtmlErrorPageIT` (only the passthrough-empty
+overlay mirrors it). The base-only `security_headers` and `portal.cache_seconds` rows below therefore
+do not derive onto the egress pair. The omissions move neither file across the limit-bearing
+partition, because both stay limit-bearing on the keys listed next.
 
 Their `egress_tls` block adds *no* limit-shaped key: neither `upstream_verify_hostname` nor
 `upstream_tls_profile` matches any alternative in the sweep pattern above. Both files are
@@ -184,7 +193,9 @@ sweep does not match at all.
 `×4` rows are **not** re-cited to include it either. It is the base document with
 `tls.passthrough_sni` removed and two per-instance values repointed -- `oidc.client_id` to
 `refresh-client` and the gateway origin from 10443 to 10452 -- so every key the base declares it also
-declares, at the base's own relative order. Neither repointed value is limit-shaped: `client_id`
+declares, at the base's own relative order, except the base's `portal` block, which it does not
+carry; the `portal.cache_seconds` row therefore does not derive onto it. Neither repointed value is
+limit-shaped: `client_id`
 matches no alternative in the sweep pattern, and the origin appears inside `redirect_uri`,
 `post_logout_redirect_uri` and `csrf.trusted_origins`, whose *keys* are already cited against the
 base. It is limit-bearing purely on the base keys it inherits, so it needs no Coverage Matrix row of
@@ -234,19 +245,20 @@ cap -- through this instance's pre-route floor, and fetches the key set through 
 private address, so both keys are in effect on the positive leg. Their *boundaries* remain those the
 *G1* and *G2* rows record against the base document.
 
-*Sixteen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
-`csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *nine* base-only
+*Seventeen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
+`csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *ten* base-only
 `sheriff-config/gateway.yaml:N` rows (`security_defaults.profile`,
 `allow_get_with_content_length_body`, `allowed_methods`, `tls.passthrough_sni`,
-`asset_defaults.content_types`, `security_headers.hsts.max_age`, `security_headers.cors`, G1, G11).
+`asset_defaults.content_types`, `security_headers.hsts.max_age`, `security_headers.cors`,
+`portal.cache_seconds`, G1, G11).
 Citing this overlay per row would add a *fifth* line number to each of the seven `×4` rows and a
-*second* to eight of the nine base-only rows -- *fifteen* rows, restating one fact fifteen times where
+*second* to nine of the ten base-only rows -- *sixteen* rows, restating one fact sixteen times where
 it is better stated once: *derive it from the base citation.*
 The two remaining `gateway.yaml` rows in the matrix cite an overlay only
 (`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`) and declare keys
 the base does not, so they are outside this derivation entirely.
 
-The fifteenth-versus-sixteenth row is not an off-by-one: the base-only row that would gain *no*
+The sixteenth-versus-seventeenth row is not an off-by-one: the base-only row that would gain *no*
 citation is `tls.passthrough_sni` itself, the one key this overlay does **not** carry -- and that
 absence is precisely the property the instance exists to provide (see the descriptor's own header
 comment). It is the single consequence of the derivation.
@@ -408,6 +420,18 @@ declaration's *existence* is proven while its *boundary* is not.
   no foreign-origin preflight proves the allowlist *withholds* the grant, and neither the method nor
   the header list is exercised at its boundary. CORS is also *client-enforced*, so the third question
   applies here too.
+
+| `portal.cache_seconds: 60`
+  `sheriff-config/gateway.yaml:359`
+| `PortalResponseEnvelope` (`Cache-Control` of a session-free portal page)
+| PARTIAL
+| `PortalIT` -- the anonymous portal page carries exactly `Cache-Control: max-age=60` together with
+  `Vary: Cookie`, the value being an observable of this declaration rather than of the omitted-key
+  default `0`; `HtmlErrorPageIT` is the matched control that an HTML error page rendered through the
+  same portal is `no-store` whatever `cache_seconds` says. The emission is asserted on the wire; the
+  limit itself is *client-enforced* -- a browser or shared cache, not the gateway, honours `max-age`
+  -- and the integration client runs no cache, so the third question in the preamble is unanswered,
+  which is what keeps this row off `COVERED`.
 
 | `oidc.session.refresh.leeway_seconds: 30`
   `gateway.yaml` ×4 -- base:324, cookie:175, mtls:154, ws:133
@@ -660,12 +684,13 @@ so the assertion's granularity is the file and never the key.
 
 The consequence: adding a limit-shaped key to one of the *fifteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
-row is forced. Only a key that makes one of the remaining seven --
+row is forced. Only a key that makes one of the remaining nine --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
 `sheriff-config/endpoints/bff-scoped.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
-`sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml` or
+`sheriff-config/endpoints/portal-hidden.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
+`sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Fifteen of twenty-two is the *majority* of the surface,
+Fifteen of twenty-four is the *majority* of the surface,
 so this is the ordinary case rather than an edge one: for those fifteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
@@ -694,14 +719,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (twenty-two files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (twenty-four files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
   -- the inventory table, the sweep pattern and the fifteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the fifteen/seven partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the fifteen/nine partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -710,7 +735,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the twenty-two files, add its row here in the same change --
+When you add a limit-shaped key to any of the twenty-four files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix

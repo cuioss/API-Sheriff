@@ -54,6 +54,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -162,7 +163,7 @@ class WebSocketRelayStageTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted());
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

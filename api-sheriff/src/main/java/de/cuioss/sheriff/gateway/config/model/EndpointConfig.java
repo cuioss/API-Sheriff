@@ -66,6 +66,9 @@ import org.jspecify.annotations.Nullable;
  * @param upstreamDefaults the endpoint-level retry/not-modified defaults, {@code null}
  *                         when the global block applies
  * @param routes           the routes declared by this endpoint, empty when none
+ * @param catalog          the portal overview entry, {@code null} when the endpoint is not listed.
+ *                         A catalog block makes the endpoint an overview entry, active exactly when
+ *                         the endpoint is enabled after placeholder resolution
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -80,7 +83,8 @@ boolean enabled,
 List<String> scopes,
 List<HttpMethod> allowedMethods,
 @Nullable UpstreamDefaultsConfig upstreamDefaults,
-List<RouteConfig> routes) {
+List<RouteConfig> routes,
+@Nullable CatalogConfig catalog) {
 
     /**
      * Canonical constructor requiring {@code id}, defensively copying the collections and

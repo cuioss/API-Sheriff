@@ -86,6 +86,8 @@ import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.pipeline.ThoroughChecksStage;
 import de.cuioss.sheriff.gateway.pipeline.VerbGateStage;
+import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
@@ -144,6 +146,10 @@ import org.jspecify.annotations.Nullable;
  *       before route selection and authentication);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
  *       guard, and the framing gate;</li>
+ *   <li>the gateway's own reserved paths, ahead of the route table and after the passthrough host
+ *       guard: first the OIDC reserved paths (exact, on the OIDC host), then the application
+ *       portal's {@code portal.path} (exact, on any host) — so a prefix route never swallows
+ *       either;</li>
  *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
  *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
  *       then the per-route verb gate;</li>
@@ -162,7 +168,15 @@ import org.jspecify.annotations.Nullable;
  *       challenged before the location is disclosed.</li>
  * </ol>
  * A {@link GatewayException} at any stage is rendered as an RFC 9457 {@code application/problem+json}
- * response carrying the failing event's status and problem type, never leaking internal detail. On
+ * response carrying the failing event's status and problem type, never leaking internal detail.
+ * <strong>Negotiated HTML error pages.</strong> With {@code portal.error_pages} on, the three
+ * gateway-originated error writers — the problem renderer, a failed OIDC callback and a
+ * {@code source: directory} asset miss — answer an {@link ErrorPageClassifier HTML-eligible} exit with
+ * the portal's HTML error page instead, when the request's {@code Accept} lists {@code text/html}
+ * explicitly; the status is identical either way. A response relayed from an origin
+ * ({@code ResponseStage.relay}, the gRPC trailer relay, an {@code upstream} asset, the WebSocket
+ * relay), an admission {@code 503}, a gRPC trailers-only rejection and a relay failure are never
+ * negotiated. On
  * {@code SIGTERM} the edge stops admitting new requests and drains in-flight ones within a bounded
  * window.
  *
@@ -186,6 +200,8 @@ public class GatewayEdgeRoute {
      */
     private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
     private static final String COOKIE_HEADER = "Cookie";
+    /** The request header whose explicit {@code text/html} range selects an HTML error page. */
+    private static final String ACCEPT_HEADER = "Accept";
     private static final String LOCATION_HEADER = "Location";
     /** The {@code Cache-Control} response header the redirect terminal action governs. */
     private static final String CACHE_CONTROL_HEADER = "Cache-Control";
@@ -201,6 +217,8 @@ public class GatewayEdgeRoute {
     private static final String STATE_PARAM = "state";
     private static final int SERVICE_UNAVAILABLE = 503;
     private static final int INTERNAL_ERROR = 500;
+    private static final int NOT_FOUND = 404;
+    private static final int FIRST_ERROR_STATUS = 400;
     private static final int BAD_GATEWAY = 502;
     private static final long DRAIN_POLL_INTERVAL_MILLIS = 50L;
     // Fail-closed deadline for reading a tiny reserved-POST form body (a back-channel logout_token —
@@ -240,6 +258,7 @@ public class GatewayEdgeRoute {
     private final SheriffMetrics sheriffMetrics;
     private final ReservedPathRegistry reservedPathRegistry;
     private final BffRuntime bffRuntime;
+    private final PortalEndpoint portalEndpoint;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
@@ -295,17 +314,22 @@ public class GatewayEdgeRoute {
      *                              logical name to the deployment's trust anchors. Consulted once at
      *                              boot, and only when the document names a profile; a gateway that
      *                              names none never reaches it and keeps the JVM default trust store
+     * @param portalEndpoint        the application portal's own reserved path, consulted after the
+     *                              OIDC reserved paths and before route selection; the
+     *                              {@linkplain PortalEndpoint#inert() inert} endpoint (no
+     *                              {@code portal} block) never matches and leaves the edge unchanged
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator, Vertx vertx,
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
-            EgressTrustProfileResolver egressTrustProfileResolver) {
+            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
         this.bffRuntime = bffRuntime;
+        this.portalEndpoint = Objects.requireNonNull(portalEndpoint, "portalEndpoint");
         this.admission = new Semaphore(hardening.admissionCap());
         this.webSocketRelayAdmission = new Semaphore(hardening.webSocketRelayCap());
 
@@ -783,6 +807,9 @@ public class GatewayEdgeRoute {
             if (handleReservedPath(ctx, request)) {
                 return;
             }
+            if (handlePortal(ctx, request)) {
+                return;
+            }
             routeSelectionStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
             // Stash the metrics label the moment the route is known, not after the stages below have
@@ -872,6 +899,138 @@ public class GatewayEdgeRoute {
     }
 
     /**
+     * Answers the application portal's own reserved path. It runs immediately after
+     * {@link #handleReservedPath} and before route selection: the stage-0/1 checks and the passthrough
+     * host guard have already run, an OIDC reserved path has already won, and a prefix route covering
+     * {@code portal.path} never sees the request. The match is exact and host-independent (see
+     * {@link PortalEndpoint#matches}); the {@linkplain PortalEndpoint#inert() inert} endpoint never
+     * matches.
+     * <p>
+     * The page is rendered here, on the virtual thread — session resolution may reach the session
+     * store — and the response is written on the event loop by {@link #writePortal}. The {@code notice}
+     * parameter is handed over in its raw, still-encoded wire form, so only an exact vocabulary value
+     * is ever recognised.
+     *
+     * @return {@code true} when the request addressed the portal path and has been answered (the
+     *         caller must stop processing); {@code false} when normal routing continues
+     */
+    private boolean handlePortal(RoutingContext ctx, PipelineRequest request) {
+        if (!portalEndpoint.matches(requireCanonicalPath(request))) {
+            return false;
+        }
+        PortalEndpoint.PortalResponse response = portalEndpoint.handle(request.method(),
+                firstRawQueryValue(request, PortalEndpoint.NOTICE_PARAM),
+                request.firstHeader(COOKIE_HEADER).orElse(null), Instant.now());
+        writePortal(ctx, request, response, List.of());
+        return true;
+    }
+
+    /**
+     * The single negotiation point of the gateway-originated error writers ({@link #renderProblem},
+     * {@link #renderReserved} for a failed callback, {@link #writeBufferedAsset} for a directory-asset
+     * miss): answers the error with the portal's HTML error page — and reports {@code true} — only when
+     * all three hold:
+     * <ol>
+     *   <li>{@code portal.error_pages} is on ({@link PortalEndpoint#errorPagesEnabled()});</li>
+     *   <li>the {@link ErrorPageClassifier} classifies the exit
+     *       {@link ErrorPageClassifier.Classification#HTML_ELIGIBLE HTML_ELIGIBLE};</li>
+     *   <li>the request's {@code Accept} lists {@code text/html} explicitly
+     *       ({@link ErrorPageClassifier#offersHtml(String)} — a wildcard never qualifies).</li>
+     * </ol>
+     * Otherwise it writes nothing and reports {@code false}, and the caller answers in the exit's
+     * current shape. The status is preserved either way; the page carries the stage headers, the
+     * stage {@code Set-Cookie} lines plus {@code extraSetCookies}, and the portal
+     * {@code Content-Security-Policy} / {@code nosniff} composed by
+     * {@link SecurityHeadersStage#applyPortalHeaders}. A response relayed from an origin never reaches
+     * this method.
+     * <p>
+     * A page that fails to render falls back to the current shape rather than leaving the response
+     * unanswered: the error being reported must still reach the client.
+     *
+     * @param request         the pipeline request, {@code null} for an exit answered before one was
+     *                        built — such an exit never negotiates
+     * @param classification  the exit's classification
+     * @param status          the status the exit answers with
+     * @param extraSetCookies {@code Set-Cookie} lines the exit itself emits beyond the stage's own
+     * @return {@code true} when the HTML error page was written and the caller must stop
+     */
+    private boolean answeredWithErrorPage(RoutingContext ctx, @Nullable PipelineRequest request,
+            ErrorPageClassifier.Classification classification, int status, List<String> extraSetCookies) {
+        if (request == null || !portalEndpoint.errorPagesEnabled()
+                || classification != ErrorPageClassifier.Classification.HTML_ELIGIBLE
+                || !ErrorPageClassifier.offersHtml(acceptHeader(request))) {
+            return false;
+        }
+        PortalEndpoint.PortalResponse page;
+        // A deliberate last-resort net for one error response: the page renders an operator-authored
+        // template, and a failure there must degrade to the exit's current shape instead of escaping
+        // an error writer and abandoning the response. The failure goes to the debug log only.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            page = portalEndpoint.renderError(status);
+        } catch (RuntimeException renderFailure) {
+            LOGGER.debug(renderFailure, "HTML error page rendering failed — answering in the current shape: %s",
+                    renderFailure.getMessage());
+            return false;
+        }
+        writePortal(ctx, request, page, extraSetCookies);
+        return true;
+    }
+
+    /**
+     * Every {@code Accept} line of the request joined into one list value, or {@code null} when the
+     * request carries none — so a range sent on a second header line still counts.
+     */
+    private static @Nullable String acceptHeader(PipelineRequest request) {
+        List<String> values = request.headerValues(ACCEPT_HEADER);
+        return values.isEmpty() ? null : String.join(",", values);
+    }
+
+    /**
+     * Writes a portal answer on the event loop: the portal's fixed security headers are composed
+     * onto the stage headers first ({@link SecurityHeadersStage#applyPortalHeaders} — the portal
+     * {@code Content-Security-Policy} and {@code nosniff} replace whatever the resolved block declared),
+     * then the envelope headers are written last so they win any name collision. {@code Vary} is the
+     * one merge: the envelope's {@code Cookie} joins, never displaces, a {@code Vary} the stage
+     * already announced (the CORS reflection's {@code Origin}). The stage's {@code Set-Cookie} lines
+     * ride along as on every gateway-authored response, followed by {@code extraSetCookies} — the
+     * lines an answered exit emits itself (a failed callback's clearing cookie), each on its own line.
+     */
+    private static void writePortal(RoutingContext ctx, PipelineRequest request,
+            PortalEndpoint.PortalResponse portal, List<String> extraSetCookies) {
+        SecurityHeadersStage.applyPortalHeaders(request);
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            HttpServerResponse response = ctx.response();
+            if (response.ended()) {
+                return;
+            }
+            response.setStatusCode(portal.status());
+            stageHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, stageSetCookies);
+            applyStageSetCookies(response, extraSetCookies);
+            portal.headers().forEach((name, value) -> response.putHeader(name, VARY_HEADER.equalsIgnoreCase(name)
+                    ? SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), List.of(value))
+                    : value));
+            response.end(portal.body());
+        });
+    }
+
+    /**
+     * The raw, still-encoded value of the first query pair named exactly {@code name}, or {@code null}
+     * when no such pair exists or it is bare (no {@code =}).
+     */
+    private static @Nullable String firstRawQueryValue(PipelineRequest request, String name) {
+        for (QueryParameter parameter : request.queryParameters()) {
+            if (name.equals(parameter.name())) {
+                return parameter.value();
+            }
+        }
+        return null;
+    }
+
+    /**
      * Meters and renders a categorized {@link GatewayException} rejection: increments the event counter
      * (except for upstream failures already metered inside {@code UpstreamFailureMapper}), emits the
      * security-relevant WARN for filter violations and smuggled passthrough hosts, records the error
@@ -918,11 +1077,23 @@ public class GatewayEdgeRoute {
                 ctx.request().query(), cookieHeader, firstQueryParam(ctx, CLAIMS_PARAM),
                 firstQueryParam(ctx, RETURN_URL_PARAM), firstQueryParam(ctx, STATE_PARAM), rawFormBody, method);
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
-        renderReserved(ctx, request, response);
+        renderReserved(ctx, request, kind, response);
     }
 
-    private void renderReserved(RoutingContext ctx, PipelineRequest request,
+    /**
+     * Writes a dispatched reserved path's normalized response. A failed OIDC callback — an error
+     * status without a {@code Location} — is the one reserved outcome that negotiates an HTML error
+     * page ({@link ErrorPageClassifier.Exit#CALLBACK_FAILURE}); its own {@code Set-Cookie} lines ride
+     * on the page. Every other reserved outcome, the user-info JSON and every redirect included, is
+     * written in its current shape.
+     */
+    private void renderReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind,
             BffRuntime.ReservedHttpResponse response) {
+        if (isFailedCallback(kind, response) && answeredWithErrorPage(ctx, request,
+                ErrorPageClassifier.classify(ErrorPageClassifier.Exit.CALLBACK_FAILURE), response.status(),
+                response.setCookieHeaders())) {
+            return;
+        }
         Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
@@ -939,6 +1110,14 @@ public class GatewayEdgeRoute {
             response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
             response.jsonBodyOptional().ifPresentOrElse(httpResponse::end, httpResponse::end);
         });
+    }
+
+    /**
+     * @return {@code true} for a callback outcome answering an error status without a redirect
+     */
+    private static boolean isFailedCallback(ReservedEndpoint kind, BffRuntime.ReservedHttpResponse response) {
+        return kind == ReservedEndpoint.CALLBACK && response.status() >= FIRST_ERROR_STATUS
+                && response.locationOptional().isEmpty();
     }
 
     /**
@@ -1123,10 +1302,22 @@ public class GatewayEdgeRoute {
             throw new IllegalStateException("asset dispatch requires an asset source");
         }
         AssetSource.Served served = DispatchStage.serveAsset(source, request.method(), remainder);
-        writeBufferedAsset(ctx, request, served);
+        writeBufferedAsset(ctx, request, served, source instanceof DirectoryAssetSource);
     }
 
-    private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served) {
+    /**
+     * Writes a buffered asset response. A {@code source: directory} miss ({@code 404}) is the one asset
+     * outcome that negotiates an HTML error page ({@link ErrorPageClassifier.Exit#DIRECTORY_ASSET_NOT_FOUND});
+     * every other outcome — and every {@code source: upstream} response, which relays what a secondary
+     * origin said ({@link ErrorPageClassifier.Exit#UPSTREAM_ASSET}) — is written in its governed shape.
+     */
+    private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served,
+            boolean directorySource) {
+        if (directorySource && served.status() == NOT_FOUND && answeredWithErrorPage(ctx, request,
+                ErrorPageClassifier.classify(ErrorPageClassifier.Exit.DIRECTORY_ASSET_NOT_FOUND), served.status(),
+                List.of())) {
+            return;
+        }
         Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
@@ -1245,19 +1436,33 @@ public class GatewayEdgeRoute {
         renderProblem(ctx, request, eventType);
     }
 
+    /**
+     * Renders a gateway rejection — every {@link GatewayException} outside a gRPC route, the
+     * unrouted/unreserved {@code 404} and an unexpected internal failure ({@code eventType == null}).
+     * An {@link ErrorPageClassifier#classify(EventType) HTML-eligible} event negotiates the portal's
+     * HTML error page first ({@link #answeredWithErrorPage}); otherwise, or when the request does not
+     * explicitly accept {@code text/html}, the RFC 9457 {@code application/problem+json} body is
+     * written with the same status.
+     */
     private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType) {
         int status;
         String type;
         String title;
+        ErrorPageClassifier.Classification classification;
         if (eventType == null) {
             status = INTERNAL_ERROR;
             type = "about:blank";
             title = "Internal Server Error";
+            classification = ErrorPageClassifier.classify(ErrorPageClassifier.Exit.UNEXPECTED_INTERNAL);
         } else {
             status = eventType.hasHttpMapping() ? eventType.httpStatus() : INTERNAL_ERROR;
             EventCategory category = eventType.category();
             type = category != null ? category.problemType() : "about:blank";
             title = category != null ? category.title() : "Internal Server Error";
+            classification = ErrorPageClassifier.classify(eventType);
+        }
+        if (answeredWithErrorPage(ctx, request, classification, status, List.of())) {
+            return;
         }
         String body = "{\"type\":\"" + type + "\",\"title\":\"" + title + "\",\"status\":" + status + "}";
         Map<String, String> responseHeaders = request != null ? request.gatewayAuthoredResponseHeaders() : Map.of();

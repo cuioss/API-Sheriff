@@ -439,11 +439,27 @@ oidc:                              # only used by the BFF variants (2 and 3)
   step_up:                         # RFC 9470
     enabled: true
     honor_upstream_challenge: true
+
+portal:                            # OPTIONAL application portal; omitted => off, no path reserved
+                                   #   (see "portal" below and the portal guide)
+  path: /                          # EXACT, host-independent reserved path, answered BEFORE the
+                                   #   route table -- may claim the context root next to prefix
+                                   #   routes. Refused at boot when not canonical, when equal to a
+                                   #   reserved OIDC path, or when equal to an enabled exact route
+  title: Example Corp Applications # page title; always HTML-escaped
+  template_dir: /etc/sheriff/portal   # OPTIONAL directory holding an operator portal.html; omit
+                                   #   => the built-in, CSS-free template. Parsed at boot; the
+                                   #   template language is defined in the portal guide
+  cache_seconds: 60                # OPTIONAL, default 0: max-age of a session-free page. A page
+                                   #   for an authenticated session and every error page are no-store
+  error_pages: false               # OPTIONAL, default false: render HTML-eligible gateway errors
+                                   #   through the template when Accept lists text/html
+                                   #   EXPLICITLY; status unchanged, origin responses never replaced
 ----
 
 == Operator-Layer Sections
 
-This document carries the design-layer preamble above and the field reference below. Three
+This document carries the design-layer preamble above and the field reference below. Four
 operator-layer topics live in their own pages -- linked here, never copied:
 
 * link:user/anchors.adoc#_anchors[Anchors -- namespace-scoped policy] (the `gateway.yaml`
@@ -456,6 +472,9 @@ operator-layer topics live in their own pages -- linked here, never copied:
   and the link:user/endpoint-routes.adoc#_edge_hardening_defaults[edge-hardening defaults].
 * link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology
   (`topology.properties`)] -- alias resolution and the environment-variable override.
+* link:user/portal.adoc[Application portal and HTML error pages] (the `gateway.yaml` `portal`
+  block and the endpoint `catalog` block) -- writing an operator template, the supported Qute
+  subset and serving the template's assets.
 
 == Field Reference
 
@@ -501,8 +520,111 @@ proxy route]), `anchor`
 (link:user/anchors.adoc#_anchors[Anchors] -- the normative reference for both the gateway `anchors` block and
 the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
 `scopes` (link:#_endpoint_scopes[`endpoint.scopes`]),
+`catalog` (link:#_endpoint_catalog[`endpoint.catalog`]),
 `allowed_methods` (link:#_allowed_methods[`allowed_methods`]), and
 `routes` (link:user/endpoint-routes.adoc#_route_ordering[Route ordering] + the per-route field headings).
+
+[[_portal]]
+=== `portal`
+
+The application portal (link:user/portal.adoc[operator guide],
+link:adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050]).
+An optional `gateway.yaml` block. When it is omitted the portal is off, no path is reserved, and the
+gateway behaves exactly as without it. When it is declared the gateway reserves one exact,
+host-independent path and answers it with an HTML overview of every enabled endpoint that declares an
+link:#_endpoint_catalog[`endpoint.catalog`] block. Unknown keys are refused by the schema.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `path`
+| *Mandatory* string. The exact request path the portal answers, on *any* `Host`, compared by exact
+  string equality with the canonical request path (a trailing-slash or prefix variant never
+  matches). It is answered after the pre-route checks and the reserved OIDC paths and *before* the
+  route table, so it may claim the context root (`/`) next to prefix routes. The schema requires a
+  leading `/`. The validator refuses at boot, with `ApiSheriff-200` at `/portal/path`: a path that is
+  not canonical (a `//`, a dot segment, a `?` or `#`, a percent-encoded separator, or anything the URL
+  path review refuses); a path equal to a reserved OIDC path (callback, logout, logout return,
+  back-channel logout, user-info, login), compared host-independently; and a path equal to the exact
+  `match.path` of an *enabled* endpoint's route. `GET` renders the page, `HEAD` answers the same
+  headers with an empty body, and any other method is `405` with `Allow: GET, HEAD`.
+
+| `title`
+| *Mandatory* string, at least one character. Rendered into the template as `title` and always
+  HTML-escaped.
+
+| `template_dir`
+| *Optional* string. A directory holding an operator-authored `portal.html`, which replaces the
+  built-in template. It is read and parsed once at boot, and a template the boot refuses aborts the
+  start with `ApiSheriff-202`. The template language is defined in the operator guide, in one place:
+  link:user/portal.adoc#_qute_subset[the supported Qute subset] and
+  link:user/portal.adoc#_template_refusals[when the boot refuses a template]. Omitted: the built-in
+  template, which carries no stylesheet and no script.
+
+| `cache_seconds`
+| *Optional* integer, minimum `0`, *default `0`*. The `Cache-Control: max-age` of a portal page that
+  carries no session data. With an active BFF runtime such a page also carries `Vary: Cookie`. A page
+  for an authenticated session (with or without a username), every HTML error page and the `405` are
+  `Cache-Control: no-store` whatever the value.
+
+| `error_pages`
+| *Optional* boolean, *default `false`*. When `true`, an HTML-eligible gateway-originated error is
+  answered with the portal template rendered as an error page, provided the request's `Accept`
+  lists `text/html` explicitly with a quality above zero (`+*/*+` and `+text/*+` do not qualify). The
+  status is unchanged, the page is anonymous and `no-store`, and a response relayed from an origin is
+  never replaced. The eligible exits are listed under
+  link:architecture.adoc#_error_contract[Error Contract].
+|===
+
+Every portal response carries `Content-Type: text/html; charset=utf-8`, `X-Content-Type-Options:
+nosniff` and the fixed portal policy
+`Content-Security-Policy: default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
+which replaces any `security_headers.content_security_policy` in either `header_modes` mode. The
+other gateway-owned headers keep the global `security_headers` block. A portal response never sets a
+cookie of its own.
+
+*Session and links.* Without an active BFF runtime (no `oidc` block) every page renders anonymously
+and carries no login or logout link. With one, a signed-in user is shown by the `preferred_username`
+claim of the validated ID token, independently of `oidc.user_info.allowed_claims`. The login link is
+`oidc.login.path?returnUrl=<url-encoded portal.path>` and the logout link is `oidc.logout.path`. Each
+is present only when that path is declared. `oidc.logout.final_redirect: <portal.path>?notice=logged-out`
+lands the verified logout on the portal with its signed-out notice. `notice` is a closed vocabulary
+(`logged-out`) and its raw value is never echoed.
+
+[[_endpoint_catalog]]
+=== `endpoint.catalog`
+
+An optional block on the `endpoint` of an endpoint file: the endpoint's entry on the
+link:#_portal[portal] overview. The entry is active *exactly when the endpoint is enabled* after
+placeholder resolution, so `ENDPOINT_<ID>_ENABLED` toggles the entry together with the endpoint's
+routes. Without a `portal` block the catalog is resolved but never shown. Unknown keys are refused by
+the schema.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `title`
+| *Mandatory* string, at least one character. The entry's display title, HTML-escaped when rendered.
+
+| `description`
+| *Optional* string. A one-line description rendered with the title, HTML-escaped. Omitted: `null`
+  in the data model.
+
+| `entry`
+| *Mandatory* string. The link target: an origin-relative absolute path on the gateway's own origin.
+  The schema requires a single leading `/`, no `//` anywhere, no backslash and no control character.
+  The validator additionally refuses at boot, with `ApiSheriff-200` at `/endpoint/catalog/entry` of
+  the endpoint's file and without echoing the value, a percent-encoded `/` or `\`, and a path part
+  (the text before the first `?` or `#`) that the URL path review refuses. A scheme, an authority or a
+  scheme-relative `//host` would turn the portal into an open redirect. A query or fragment is
+  allowed. The link is not routed by the portal: following it is an ordinary request.
+
+| `order`
+| *Optional* integer. The sort key. Entries are listed by `order` ascending, an entry without `order`
+  after every entry that declares one, then by `title`.
+|===
 
 === `tls`
 
@@ -3400,6 +3522,18 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * `upstream.rewrite_location: true` is refused on `grpc` and `websocket` routes.
 * `asset.index` and `asset.fallback` are refused on a `source: upstream` asset block, and each value
   must be a single file-name segment (no `/`, `\`, `..` or control character, not empty).
+* `portal.path` must be canonical (a single leading `/`, no `//`, no dot segment, no `?` or `#`, no
+  percent-encoded separator, admitted by the URL path review), must not equal a reserved OIDC path
+  (compared host-independently), and must not equal the exact `match.path` of an enabled endpoint's
+  route; a prefix route covering it is admitted. Each violation fails the boot (see
+  link:#_portal[`portal`]).
+* Every enabled endpoint's `catalog.entry` must be an origin-relative path on the gateway's own
+  origin: a single leading `/`, no scheme or authority, no backslash, no percent-encoded `/` or `\`,
+  and a path part the URL path review admits. A violation fails the boot without echoing the value
+  (see link:#_endpoint_catalog[`endpoint.catalog`]).
+* A `portal.template_dir` whose `portal.html` is missing, unreadable or unparseable, or that uses
+  `raw`, `safe` or a namespaced expression, aborts startup with `ApiSheriff-202` (a template refusal,
+  reported separately from the collected `ApiSheriff-200` violations).
 * `allowed_methods` (global, anchor, or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`,
   `PATCH`, `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint
   `allowed_methods` *replaces* the anchor/global list wholesale, an anchor's replaces the

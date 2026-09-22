@@ -95,6 +95,15 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   configuration that lets the gateway serve the bundle itself, and why `oidc.logout.final_redirect`
   must name a concrete file rather than `/`.
 
+| link:portal.adoc[Application Portal and HTML Error Pages]
+| Turning on the gateway-rendered application portal: the `portal` block and the per-endpoint
+  `catalog` entry, claiming the context root with an exact reserved path next to prefix routes,
+  toggling entries with `ENDPOINT_<ID>_ENABLED`, the signed-in state and the login/logout links, the
+  logout landing through `oidc.logout.final_redirect`, `cache_seconds`, the fixed portal CSP, writing
+  an operator template against the fixed data model and the supported Qute subset (escaping always
+  on, `raw`/`safe` and namespaces refused at boot), serving the template's assets through an ordinary
+  asset route, and the negotiated HTML error pages for gateway-originated errors.
+
 | link:environment-variable-overrides.adoc[Environment-Variable Overrides]
 | Which knobs the deployment owns and which `gateway.yaml` owns: the three-way classification
   (policy / deployment-bound / build-time), the precedence rule and why it has no exceptions, the

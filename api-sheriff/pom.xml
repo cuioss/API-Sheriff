@@ -101,6 +101,17 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-fault-tolerance</artifactId>
         </dependency>
+        <!-- Qute: the application portal renders its page and its HTML error pages through a
+             STANDALONE io.quarkus.qute.Engine built by portal.PortalRenderer — never the
+             Quarkus-managed injected Engine, whose cdi:/config:/inject: namespace resolvers would
+             expose beans and configuration to operator-authored templates. The portal template lives
+             under portal/ rather than templates/, so the extension's build-time template discovery
+             never claims it. Operator-approved for the portal plan; version managed by the Quarkus
+             BOM. -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-qute</artifactId>
+        </dependency>
 
         <!-- Token Sheriff: client engine + Quarkus extensions (versions managed by token-sheriff-bom) -->
         <dependency>
