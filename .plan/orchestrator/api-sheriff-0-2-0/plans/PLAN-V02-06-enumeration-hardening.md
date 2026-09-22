@@ -165,12 +165,44 @@ leaky bucket) that WS-05's later plans reuse.
    own named line item.** D3 ships the mechanism; D7 ships the *contract* that stops the next
    consumer having to generalise it. `PLAN-V02-07` is the named first consumer.
 
-**Split-guard re-evaluation, 2026-08-08.** Seven deliverables — **at the guard, proceeding unsplit,
-rationale recorded.** D7 is a documentation-and-API-shape obligation on D3 rather than independent
-work, and D5 is this plan's own tests; the substantive count is unchanged. **If it must split, the
-line is D1+D2 (the oracle and its timing) | D3+D4+D7 (the substrate and its contract)** — D5 and D6
-follow whichever half they test and document. Do not split between D3 and D7: shipping the substrate
-without its contract is the exact failure the retired merge existed to prevent.
+8. **Folded in 2026-09-22 from `doc/security-threat-model.adoc` GAP row `gw-08` — HTTP/2 & gRPC
+   stream-abuse bound (WEAK FIT, recorded honestly rather than forced quietly).**
+
+   Rate-limit stream creation and reset per connection (not only concurrent streams, which bounds a
+   different thing); bound total CONTINUATION/header-frame size and count per stream and drop
+   over-limit connections; re-derive `Content-Length` on any h2→h1 downgrade; never forward a
+   client's `Upgrade`/`Connection` (h2c) headers to the backend. API Sheriff terminates h2 via ALPN
+   and proxies gRPC over upstream h2, so both sides inherit this requirement.
+
+   **Why it landed here despite the mismatch**: D7's general-purpose substrate contract is explicitly
+   designed to "admit an arbitrary weighted event (not only 4xx recon codes)" — a stream-reset-rate
+   trip is a plausible second consumer of that same substrate, by source connection rather than by
+   source client. It is NOT a natural fit for this plan's existence-oracle/enumeration subject, and
+   the operator chose this placement over leaving it untracked. **If outline finds the substrate's
+   per-source (+host) keying does not generalise cleanly to per-connection HTTP/2 state, say so and
+   re-scope rather than force it** — this deliverable's fit was never verified against the substrate's
+   actual shape, only against its stated intent.
+
+   Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
+   `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives
+   framing. **Verify the exact enforcement call site at outline** — not independently re-grounded
+   against the pipeline code.
+
+   **Provisional check, 2026-09-22 same day, at `69b322b` (a PR landed between the fold and now):**
+   the portal/HTML-error-pages PR #343's diff touches no HTTP/2 or gRPC pipeline file, so this
+   deliverable is provisionally still fully open — but the check was time-boxed against a 148-file
+   diff, not a targeted read of the h2/gRPC termination layer. Re-verify properly at outline rather
+   than trusting this note; D7's sibling fold in `PLAN-V02-13` turned out wrong under exactly this
+   kind of unverified inference, so this one is flagged rather than assumed safe.
+
+**Split-guard re-evaluation, 2026-09-22.** Eight deliverables — **past the ~6 presumptive-split
+threshold a second time, proceeding unsplit, rationale recorded.** D8 is the newest and weakest-fit
+addition and shares no code with D1/D2's oracle work; it is the first candidate to peel off if
+outline finds the combined scope too heavy. **Updated split line: D1+D2 (the oracle and its timing) |
+D3+D4+D7 (the substrate and its contract) | D8 alone (HTTP/2 stream abuse, if the substrate does not
+generalise cleanly)** — D5 and D6 still follow whichever half they test and document. Do not split
+between D3 and D7 for the same reason as before: shipping the substrate without its contract is the
+exact failure the retired merge existed to prevent.
 
 ## Claim Labels
 
@@ -207,6 +239,8 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED: `events/EventType.java` / `GatewayEventCounter.java` — a new trip event + counter
 - OBSERVED: `config/model/**` — config for the threshold / trusted-source predicate / response action
 - OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`; `api-sheriff/src/test/**`
+- `doc/security-threat-model.adoc` — flip `gw-08` from `GAP` to `COVERED` once D8 lands — D8
+- HTTP/2 termination site (ALPN, the h2/gRPC frame-handling layer) — D8, to locate at outline
 
 ## Dependencies and Sequencing
 

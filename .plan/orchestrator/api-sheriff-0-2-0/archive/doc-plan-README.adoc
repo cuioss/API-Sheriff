@@ -1,0 +1,116 @@
+// ARCHIVED 2026-09-22 by the api-sheriff-0-2-0 orchestrator, from doc/plan/README.adoc.
+//
+// The index for the doc/plan/ directory, retired alongside its last two entries (01 and 09) by
+// PLAN-V02-18-retire-doc-plan-survivors.md on explicit operator instruction, overriding
+// PLAN-V02-03's landing ruling that had kept both files open. See the sibling archive files
+// doc-plan-01-base-implementation.adoc and doc-plan-09-release-readiness.adoc for their content
+// and provenance, and PLAN-V02-18 for the reasoning.
+//
+// This index already carried a stale reference of its own at archival time: its "Those landing
+// records are local orchestrator artifacts..." paragraph points at
+// `.plan/local/archived-orchestrators/api-sheriff-roadmap/landings/`, which no longer exists (the
+// api-sheriff-roadmap epic's tree is gone from this checkout; verified absent 2026-09-22). Recorded
+// here rather than silently dropped.
+//
+// Content below is verbatim as of removal.
+
+= API Sheriff -- Implementation Plans
+:toc:
+:toclevels: 2
+
+Sequenced implementation plans deriving from the link:../README.adoc[design documentation].
+Each plan lists its *required reading* -- read those design documents in full before
+implementing; the design docs govern, the plans only sequence the work. Deviations discovered
+during implementation are fixed in the design docs (same PR), never silently in code.
+
+== Plan Sequence
+
+This is the index of the *surviving* plan documents. Most of the original sequence has been
+retired: each retired plan was superseded by a landing record written when its work shipped, and
+those records -- not a plan document -- are the authoritative account of what landed.
+
+Those landing records are *local orchestrator artifacts, not tracked documentation*. They are
+written as one `PLAN-*.md` file per plan under
+`.plan/local/archived-orchestrators/api-sheriff-roadmap/landings/`, and because `.plan/` is
+git-ignored they exist only in a working copy that ran the roadmap -- there is nothing here for a
+reader to browse in the repository or on the published site.
+
+The two plans below survive for different reasons: plan 01 is merged but predates the landing
+corpus, so no record supersedes it; plan 09 is not yet delivered.
+
+[cols="1,3,3"]
+|===
+| Plan | Delivers | Depends on
+
+| link:01-base-implementation.adoc[01 -- Base Implementation]
+| Verified green builds (local + CI), TokenSheriff-aligned structure, a minimal
+  property-configured pass-through proxy, the `go-httpbin` upstream target in the
+  integration setup, a proxied-route WRK benchmark, stale scaffolding removed.
+| --
+
+| link:09-release-readiness.adoc[09 -- Release Readiness (1.0 cut)]
+| The operator configuration guide, the ADR-0005 module-extraction checkpoint, a
+  full-surface security audit, benchmark completion with per-variant baselines, native +
+  container hardening, the 1.0.0 release (and the flip of the pre-1.0 rules).
+| All previously delivered work -- described by the link:../README.adoc[design documentation]
+  and dated by the repository's own git history, both readable here. The landing records above
+  are the orchestrator's audit trail of *how* that work landed, not a source a reader must open
+  to understand this dependency.
+|===
+
+Explicitly *not* on the roadmap: *rate limiting* (out of scope -- the `rate_limit`
+config stays reserved/accepted-and-ignored, no `429` is produced), and, deferred by
+link:../adr/0002-initial-scope.adoc[ADR-0002], dynamic configuration/discovery and HTTP/3.
+
+== Execution Workflow (every plan)
+
+The same fixed sequence applies to every plan (and to every PR, when a plan splits into
+several -- the build must be green after each one, not only at plan completion):
+
+. Create a feature branch from up-to-date `main` (each plan names its branch).
+. Implement the plan's work breakdown.
+. Verify locally -- both must pass with zero errors/warnings: the quality gate
+  (`verify -Ppre-commit`) and the full verify (`verify`), run via the canonical build
+  commands in `CLAUDE.md`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+Each plan's own *Execution Workflow* section only names its branch and any plan-specific
+deviation (e.g. an expected multi-PR split); it does not restate this sequence.
+
+== Conventions
+
+* *Integration tests are part of the plan, never deferred*: a plan is complete only when
+  every behaviour it delivers is exercised by the `integration-tests` suite (positive and
+  negative paths) and the full integration profile is green -- locally and on CI -- before
+  the plan's final merge. A follow-up plan may *extend* coverage; it never *supplies* missing
+  coverage for a predecessor.
+* *Benchmarks follow the same rule for the hot path*: every plan that adds a runtime
+  data-plane behaviour ships a k6 benchmark for it in the same plan (a `k6-scripts/*.js`
+  aspect script declaring native k6 thresholds and exporting the shared `handleSummary()`
+  helper, so the pages pipeline picks it up unchanged), so regressions stay attributable to
+  the plan that caused them. A plan that adds no hot-path behaviour is exempt -- there is
+  nothing to measure; so is a plan whose subject *is* the benchmark harness, which repairs or
+  replaces the measuring instrument rather than adding something to measure.
+  link:09-release-readiness.adoc[Plan 09] consolidates baselines and regression thresholds; it
+  does not create missing coverage.
+* *Dependency approvals*: every new Maven dependency a plan needs is flagged inside the plan
+  with an IMPORTANT block and requires explicit user approval before it is added
+  (CLAUDE.md rule). TokenSheriff artifacts use the released line (currently `0.9.2`, managed
+  by `token-sheriff-bom`), never snapshots. The whole stack (validation + client modules) is
+  already in the build, so a plan that consumes it wires an existing dependency rather than
+  adding one -- and the approval gate applies only to what a plan genuinely introduces.
+* Pre-1.0 rules apply throughout: delete instead of deprecate, break freely, keep APIs clean.
+* *Three-layer documentation*: project documentation is organized in three audience layers --
+  the *design and reference* layer under `doc/` (these design docs, the ADRs, and
+  link:../configuration.adoc[`configuration.adoc`] in its dual reference/design role), the
+  *operator* layer under link:../user/README.adoc[`doc/user/`] (deployment, configuration
+  operation, running the gateway), and the *contributor* layer under
+  link:../development/README.adoc[`doc/development/`] (build, test, module layout, conventions).
+  A new document lands in the layer that matches its audience; design rationale stays under
+  `doc/` and is never duplicated into the operator or contributor layers.

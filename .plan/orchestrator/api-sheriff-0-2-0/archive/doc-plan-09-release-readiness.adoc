@@ -1,0 +1,134 @@
+// ARCHIVED 2026-09-22 by the api-sheriff-0-2-0 orchestrator, from doc/plan/09-release-readiness.adoc.
+//
+// Provenance: one of three files that survived PLAN-V02-03's doc/plan/ retirement (9 of 12 deleted,
+// 2026-08-09, PR #197). That landing explicitly ruled this file "not superseded, NOT expected...
+// Carried to the epic as an open item that becomes actionable at the 1.0 cut" -- because its defining
+// deliverable (the 1.0.0 cut and the flip of the pre-1.0 rules) had not happened and API Sheriff was
+// still 0.1.1 alpha.
+//
+// STATUS AT ARCHIVAL (2026-09-22, still pre-1.0, CLAUDE.md still carries the Pre-1.0 Rules):
+// the operator explicitly instructed retirement now, ahead of the 1.0 cut, overriding that ruling --
+// see PLAN-V02-18-retire-doc-plan-survivors.md for the reasoning. A same-day coverage review found
+// five of the six work items below independently delivered or superseded across shipped and staged
+// plans (not one-to-one against this document's own framing):
+//   1. Operator configuration guide          -> delivered, doc/user/ (13 pages, far beyond scope)
+//   2. ADR-0005 checkpoint (extract/reaffirm) -> superseded by a stronger decision: PLAN-V02-01
+//                                                 reverts ADR-0005 entirely
+//   3. Full security-audit sweep              -> PARTIALLY open; the three specific gaps this
+//                                                 document's threat-model cousin still names
+//                                                 (GW-02, GW-08, GW-09) were folded into
+//                                                 PLAN-V02-13 (D6, D7) and PLAN-V02-06 (D8) on
+//                                                 2026-09-22, the same day as this archival
+//   4. Benchmark consolidation                -> delivered, benchmarks/ 12-execution CI baseline
+//                                                 lane + on-demand APISIX comparison lane
+//   5. Native + container hardening           -> delivered, SBOM/Trivy/Cosign in
+//                                                 .github/workflows/release.yml
+//   6. Release mechanics (the 1.0.0 cut itself, flipping the pre-1.0 rules in CLAUDE.md)
+//                                              -> NOT YET DONE -- this is the one item this
+//                                                 archival does not discharge. It is a terminal
+//                                                 milestone act, not pre-stageable work, and this
+//                                                 document was its only textual reminder in `doc/`.
+//                                                 THE 1.0.0 CUT AND THE CLAUDE.md PRE-1.0-RULE
+//                                                 FLIP REMAIN OPEN, TRACKED NOW ONLY IN THIS
+//                                                 ARCHIVE AND IN THE EPIC LEDGER (see
+//                                                 PLAN-V02-18's Objective) -- NOT IN doc/.
+//
+// Full git history of the original file is preserved (see
+// `git log --follow -- doc/plan/09-release-readiness.adoc` before this archival).
+//
+// Content below is verbatim as of removal.
+
+= Plan 09 -- Release Readiness (1.0 Cut)
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Turn the feature-complete gateway (Plans 01-08) into a releasable 1.0: an operator-facing
+configuration guide (none exists today -- `doc/` is design documentation), the deliberate
+ADR-0005 module-structure checkpoint, a full security-audit sweep over the finished surface,
+benchmark-suite completion with per-variant overhead numbers, native-image and container
+hardening, and the versioned release itself. This plan adds *no features*; anything
+discovered here that is feature-shaped becomes its own follow-up.
+
+== Required Reading (before implementation)
+
+. link:../adr/0005-module-structure.adoc[ADR-0005], section "Revisit When" -- the explicit
+  criteria for extracting the framework-agnostic core module; this plan executes that
+  checkpoint.
+. link:../configuration.adoc[Configuration Model] + the shipped sample configs -- the source
+  material for the operator guide.
+. link:../architecture.adoc[Architecture] -- the security-audit scope map (trust boundaries,
+  error contract, forwarding, the no-response-cache rule).
+. link:README.adoc[Plan README] -- the conventions the release must retrospectively satisfy
+  (integration-test completeness per plan, pre-1.0 rules end here: 1.0 starts API stability).
+
+== Prerequisites
+
+* Plans 05-08 delivered; all integration suites green on `main`.
+
+== Work Breakdown
+
+. *Operator configuration guide* -- a task-oriented "configuring API Sheriff" document
+  (new top-level doc or `doc/guide/`): first boot with a minimal config, adding an endpoint,
+  anchors, topology + `${VAR:-default}` overrides in containers, TLS/mTLS/passthrough,
+  choosing and configuring a BFF variant, reading the boot log / effective-posture output,
+  every LogRecord an operator may see (link to `doc/LogMessages.adoc`), and the
+  observability surface: metrics, health, and how to enable per-request access logging
+  (the Quarkus HTTP access log -- the gateway deliberately ships events + metrics, not its
+  own access-log implementation; say so explicitly). Seeded from the
+  integration sample configs so every snippet is *tested* configuration. The design docs
+  stay design docs; the guide never duplicates normative rules, it links them.
+. *ADR-0005 checkpoint* -- measure the framework-agnostic surface (package sizes, arch-gate
+  history); decide extract-vs-reaffirm with the user; record the outcome as an ADR-0005
+  amendment (and execute the mechanical extraction if chosen -- the arch-gate has kept it
+  package-to-module by construction).
+. *Security-audit sweep* -- full-surface audit driven by
+  link:../security-threat-model.adoc[the Threat Model & CVE-Derived Validation Baseline]:
+  every COVERED/PARTIAL catalogue assertion must have a passing test, and every GAP row must
+  be closed or explicitly risk-accepted with rationale (config validation gaps, header
+  handling, cookie/CSRF/logout flows, forwarding trust, error-detail leakage, container
+  posture are all catalogue entries). Fresh dependency + container-image CVE pass; any new
+  CVE in a comparable gateway/OAuth stack is triaged into a new catalogue row. Consider a
+  short ADR recording that this baseline is a 1.0 release gate.
+. *Benchmark consolidation* -- the per-plan benchmarks (README convention: each hot-path
+  plan shipped its own) are consolidated into one side-by-side report -- baseline
+  (the management interface's aggregate health check, addressed beneath the configured management
+  context path -- see link:../user/context-path.adoc[The Context Path]), plain proxy, bearer,
+  WebSocket, gRPC, passthrough relay, BFF mediation
+  (server + cookie) -- published via the existing pages pipeline, with regression thresholds
+  recorded as the baseline contract for post-1.0 work. This item creates *no* missing
+  coverage; a gap found here is a defect of the plan that skipped it.
+. *Native + container hardening* -- native build + ITs against the native image in CI
+  (not only JVM mode) if not already the default; distroless image review (user, filesystem,
+  exposed ports, JFR variant, the default `quarkus.log.file.path` working under a read-only
+  root), resource-limit guidance measured (heap ceilings under the benchmark load);
+  graceful-shutdown drain re-verified under load (the Plan 04 behaviour, now with the full
+  feature set); SBOM generation for the released image as part of the CVE pass.
+. *Release mechanics* -- version 1.0.0, release notes generated from the plan/ADR trail,
+  tag + publish per cuioss release conventions; `doc/plan/README.adoc` updated to mark the
+  sequence delivered; declare the end of the pre-1.0 break-freely rules in `CLAUDE.md`
+  (from 1.0 on, breaking changes need deprecation strategy -- the rule flips).
+
+== Execution Workflow
+
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-09-release-readiness`. Several PRs are expected -- guide, audit fixes,
+benchmarks, release -- each following the standard workflow.
+
+== Acceptance Criteria
+
+* An operator can bring up a configured gateway (any variant) using only the guide and the
+  sample configs -- verified by walking the guide against a clean environment.
+* The ADR-0005 decision is recorded (amendment), and the codebase matches it.
+* Zero open unaccepted security findings; the audit report is archived in the repo.
+* Benchmark pages publish all suite results with recorded baselines.
+* Native-image integration tests green in CI; 1.0.0 tagged and released.
+
+== Out of Scope (explicit)
+
+* Any new gateway feature (rate limiting stays out of scope entirely; dynamic config and
+  HTTP/3 stay deferred per link:../adr/0002-initial-scope.adoc[ADR-0002]).
+* OpenTelemetry tracing (post-MVP hook per the architecture doc).
+* Multi-node/HA guidance beyond what the variants already document.
