@@ -27,6 +27,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -102,12 +104,21 @@ final class OneOffGatewayContainers {
      * instance whose descriptor declares no {@code passthrough_sni}, so Quarkus terminates TLS directly
      * on 8443; both ports are published on ephemeral loopback ports so the run cannot collide with the
      * live stack.
+     * <p>
+     * The descriptor must be readable by others before the container starts, and this is asserted
+     * rather than assumed: the image runs as its own non-root user, whose uid differs from the build's,
+     * and the descriptor is bind-mounted as a single file, so a mode readable by its owner only makes
+     * the gateway refuse its own configuration at boot. Without the assertion that surfaces only as an
+     * opaque "no public port published" once the exited container is probed.
      *
      * @param gateway    the unique container name
      * @param network    the docker network the container joins
-     * @param descriptor the standalone {@code gateway.yaml} mounted as the gateway's global document
+     * @param descriptor the standalone {@code gateway.yaml} mounted as the gateway's global document;
+     *                   must carry {@link PosixFilePermission#OTHERS_READ}, since the gateway image
+     *                   reads it as a different uid than the build that wrote or checked it out
      */
     static void startGateway(String gateway, String network, Path descriptor) {
+        assertReadableByTheGatewayUser(descriptor);
         docker("start the one-off gateway " + gateway, "run", "-d",
                 "--name", gateway,
                 "--network", network,
@@ -126,6 +137,28 @@ final class OneOffGatewayContainers {
                 "-v", ASSETS_SECURE_ENDPOINT.toAbsolutePath() + ":/app/sheriff-config/endpoints/assets-secure.yaml:ro",
                 "-v", ASSETS.toAbsolutePath() + ":/app/assets:ro",
                 IMAGE);
+    }
+
+    /**
+     * Fails fast when a descriptor about to be bind-mounted is not readable by others, naming the file
+     * and the cause instead of letting the gateway exit at boot.
+     *
+     * @param descriptor the descriptor the one-off gateway will mount
+     */
+    private static void assertReadableByTheGatewayUser(Path descriptor) {
+        Set<PosixFilePermission> permissions;
+        try {
+            permissions = Files.getPosixFilePermissions(descriptor);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read the file mode of the one-off gateway descriptor "
+                    + descriptor.toAbsolutePath(), e);
+        }
+        assertTrue(permissions.contains(PosixFilePermission.OTHERS_READ),
+                () -> "the one-off gateway descriptor " + descriptor.toAbsolutePath() + " has mode "
+                        + PosixFilePermissions.toString(permissions) + ", which is not readable by others: the "
+                        + IMAGE + " image runs as a different uid than this build, so the gateway could not read "
+                        + "its own configuration and would exit at boot. Make the descriptor world-readable "
+                        + "after writing it.");
     }
 
     /**

@@ -38,6 +38,7 @@ import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -112,6 +113,13 @@ class JwksEgressMismatchIT {
 
     /** Where the single-variable control descriptor is written; a build output, never committed. */
     private static final Path CONTROL_GATEWAY = Path.of("target", "jwks-egress-mismatch-control", "gateway.yaml");
+
+    /**
+     * The mode the control descriptor is given after every write: readable by the gateway image's own
+     * user, which is not the uid the build runs as. The committed mismatch descriptor is checked out
+     * with this mode already, so this is what keeps the two legs mounted on equal terms.
+     */
+    private static final String CONTROL_DESCRIPTOR_MODE = "rw-r--r--";
 
     /** The mismatch issuer's configured name — which the DOWN payload must never disclose. */
     private static final String ISSUER_NAME = "mismatch-keycloak";
@@ -194,8 +202,17 @@ class JwksEgressMismatchIT {
      * issuer's {@code allowed_egress_hosts} key removed and nothing else changed. The written file is
      * re-parsed and asserted to equal the parsed original minus that key, so the control cannot differ
      * from the refused instance in a second variable through a lossy YAML round trip.
+     * <p>
+     * The file is made world-readable ({@value #CONTROL_DESCRIPTOR_MODE}) after <em>every</em> write,
+     * not only when it is created: the distroless gateway runs as a different uid than the build, and
+     * under a restrictive build umask the written file would be readable by its owner only, so the
+     * control gateway could not read its own configuration and would exit at boot. Setting the mode
+     * explicitly also repairs a stale file a previous run left behind with that restrictive mode, which
+     * {@link Files#writeString} would otherwise keep. Only the file mode matters: the descriptor is
+     * bind-mounted as a single file, so its parent directory is never traversed inside the container.
      *
-     * @throws IOException when the committed descriptor cannot be read or the control cannot be written
+     * @throws IOException when the committed descriptor cannot be read, or the control cannot be
+     *                     written or given its readable mode
      */
     private static void writeControlDescriptor() throws IOException {
         Object control = loadYaml(MISMATCH_GATEWAY);
@@ -207,6 +224,7 @@ class JwksEgressMismatchIT {
         options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
         Files.createDirectories(CONTROL_GATEWAY.getParent());
         Files.writeString(CONTROL_GATEWAY, new Yaml(options).dump(control));
+        Files.setPosixFilePermissions(CONTROL_GATEWAY, PosixFilePermissions.fromString(CONTROL_DESCRIPTOR_MODE));
 
         Object original = loadYaml(MISMATCH_GATEWAY);
         Object written = loadYaml(CONTROL_GATEWAY);
