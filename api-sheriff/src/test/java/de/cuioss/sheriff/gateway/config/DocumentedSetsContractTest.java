@@ -63,11 +63,12 @@ import org.junit.jupiter.api.Test;
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Six shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Nine shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
- * {@link AssetResponseEnvelope#builtInExtensions()}, one lists the inbound-filter mode set
- * carried by {@link SecurityProfile}, and the two bundled JSON Schemas each list the authentication
- * posture set carried by {@link Require}. A restated list has no mechanical tie to its source, so
+ * {@link AssetResponseEnvelope#builtInExtensions()}, four list the inbound-filter mode set carried by
+ * {@link SecurityProfile} — {@code doc/configuration.adoc} plus the three symmetric {@code profile}
+ * enum sites the two bundled JSON Schemas declare — and those two schemas each additionally list the
+ * authentication posture set carried by {@link Require}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
  * still reads as authoritative while describing a gateway that no longer exists. The project's own review policy
  * treats a hardcoded list mirroring a set defined elsewhere as a defect unless it is derived from
@@ -176,6 +177,30 @@ class DocumentedSetsContractTest {
      * defeated by reformatting, and a moved definition fails naming this pointer.
      */
     private static final String REQUIRE_ENUM_POINTER = "/$defs/auth/properties/require/enum";
+
+    /**
+     * JSON pointer to the {@code profile} enum array declared on the shared {@code securityFilter}
+     * definition. Both bundled schemas carry that definition, so this one pointer names two of the
+     * three sites the mode set is gated at.
+     * <p>
+     * <strong>Why this guard exists.</strong> The value range of {@code profile} is enforced by the
+     * bundled schema rather than by {@code ConfigValidator}, and nothing mechanically tied those
+     * enum arrays to {@link SecurityProfile}. A mode added to the enum while one of the three sites
+     * was missed produced <em>unreachable configuration</em> — the mode exists, the operator writes
+     * it, and the boot refuses it with a value-range violation — while every unit test stayed green.
+     * That is the same drift class {@link #REQUIRE_ENUM_POINTER} closes for the posture set.
+     */
+    private static final String SECURITY_FILTER_PROFILE_ENUM_POINTER =
+            "/$defs/securityFilter/properties/profile/enum";
+
+    /**
+     * JSON pointer to the third {@code profile} site: the gateway-wide {@code security_defaults}
+     * block, which declares its own enum rather than referencing the {@code securityFilter}
+     * definition. Asserting it separately is what makes the guard cover all three sites — the two
+     * sharing a definition cannot stand in for it.
+     */
+    private static final String SECURITY_DEFAULTS_PROFILE_ENUM_POINTER =
+            "/properties/security_defaults/properties/profile/enum";
 
     /**
      * Anchor for {@code doc/configuration.adoc}'s bare extension enumeration. The stated count
@@ -493,6 +518,24 @@ class DocumentedSetsContractTest {
     @DisplayName("the bundled endpoint schema enumerates exactly the Require posture set")
     void endpointSchemaEnumeratesTheRequirePostures() throws Exception {
         assertRequirePostures(ENDPOINT_SCHEMA_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("the gateway schema's securityFilter profile enum equals the SecurityProfile mode set")
+    void gatewaySecurityFilterEnumeratesTheProfileModes() throws Exception {
+        assertProfileModes(GATEWAY_SCHEMA_RESOURCE, SECURITY_FILTER_PROFILE_ENUM_POINTER);
+    }
+
+    @Test
+    @DisplayName("the gateway schema's security_defaults profile enum equals the SecurityProfile mode set")
+    void gatewaySecurityDefaultsEnumeratesTheProfileModes() throws Exception {
+        assertProfileModes(GATEWAY_SCHEMA_RESOURCE, SECURITY_DEFAULTS_PROFILE_ENUM_POINTER);
+    }
+
+    @Test
+    @DisplayName("the endpoint schema's securityFilter profile enum equals the SecurityProfile mode set")
+    void endpointSecurityFilterEnumeratesTheProfileModes() throws Exception {
+        assertProfileModes(ENDPOINT_SCHEMA_RESOURCE, SECURITY_FILTER_PROFILE_ENUM_POINTER);
     }
 
     @Test
@@ -1059,7 +1102,7 @@ class DocumentedSetsContractTest {
      * @throws IOException when the bundled schema cannot be read
      */
     private static void assertRequirePostures(String resource) throws IOException {
-        TokenList declared = schemaRequireEnum(resource);
+        TokenList declared = schemaEnumAt(resource, REQUIRE_ENUM_POINTER);
 
         assertFalse(declared.tokens().isEmpty(), resource + ": " + REQUIRE_ENUM_POINTER + " resolved to"
                 + " an empty enum array — the guard would pass vacuously");
@@ -1076,20 +1119,60 @@ class DocumentedSetsContractTest {
     }
 
     /**
-     * The {@code auth.require} enum array of a bundled schema, read structurally through
-     * {@link #REQUIRE_ENUM_POINTER}.
+     * Asserts one {@code profile} enum array against {@link SecurityProfile} — the set it names, and
+     * how many entries it listed to name it.
+     * <p>
+     * The comparison is against the lower-cased constant names because that is the spelling an
+     * operator writes and the schema declares. Each of the three sites is asserted separately and
+     * names its own pointer on failure: the whole point of the guard is that a mode reaching two
+     * sites and missing the third is <em>unreachable configuration at the third</em>, so an assertion
+     * that pooled the sites would report the very drift it exists to localise as a single anonymous
+     * mismatch.
+     * <p>
+     * The listed-entry count rides along for the reason every other enumeration here asserts it: a
+     * {@link Set} cannot observe a duplicate, so an array naming {@code strict} twice collapses into
+     * exactly the set a correct array produces and would otherwise pass.
      *
-     * @param resource the classpath resource of the schema to read
-     * @return the de-duplicated posture values and the number of entries that produced them
+     * @param resource the classpath resource of the schema to assert
+     * @param pointer  the JSON pointer of the {@code profile} enum array within it
      * @throws IOException when the bundled schema cannot be read
      */
-    private static TokenList schemaRequireEnum(String resource) throws IOException {
-        JsonNode array = new ObjectMapper().readTree(readSchema(resource)).at(REQUIRE_ENUM_POINTER);
+    private static void assertProfileModes(String resource, String pointer) throws IOException {
+        TokenList declared = schemaEnumAt(resource, pointer);
+
+        assertFalse(declared.tokens().isEmpty(), resource + ": " + pointer + " resolved to an empty enum"
+                + " array — the guard would pass vacuously");
+        assertEquals(modeNames(), sorted(declared.tokens()),
+                resource + " enumerates the inbound-filter mode set at " + pointer + ", which is"
+                        + " authoritatively defined by SecurityProfile, and has drifted from it. The schema is"
+                        + " what refuses an unknown mode before binding ever reaches the type, so a mode the"
+                        + " enum declares and this site omits is unreachable configuration at this site even"
+                        + " when the other sites carry it, and one this site declares and the enum omits fails"
+                        + " the boot bind instead of the validation");
+        assertEquals(SecurityProfile.values().length, declared.rawCount(),
+                resource + " lists a different number of modes at " + pointer + " than SecurityProfile"
+                        + " declares. The count is taken over the raw array entries rather than over the"
+                        + " de-duplicated set, so a mode listed twice fails here even though the set equality"
+                        + " above still holds");
+    }
+
+    /**
+     * The enum array a bundled schema declares at a pointer, read structurally rather than scraped:
+     * the schema already models these as arrays, so extraction cannot be defeated by reformatting and
+     * a moved declaration fails naming the pointer that stopped resolving.
+     *
+     * @param resource the classpath resource of the schema to read
+     * @param pointer  the JSON pointer of the enum array
+     * @return the de-duplicated values and the number of entries that produced them
+     * @throws IOException when the bundled schema cannot be read
+     */
+    private static TokenList schemaEnumAt(String resource, String pointer) throws IOException {
+        JsonNode array = new ObjectMapper().readTree(readSchema(resource)).at(pointer);
         if (!array.isArray()) {
-            return fail(resource + ": nothing resolves at " + REQUIRE_ENUM_POINTER + ", so this contract"
-                    + " guard no longer reaches the posture enumeration it protects. Restore the auth"
-                    + " definition, or update REQUIRE_ENUM_POINTER in DocumentedSetsContractTest to match"
-                    + " where the schema now declares it.");
+            return fail(resource + ": nothing resolves at " + pointer + ", so this contract guard no"
+                    + " longer reaches the enumeration it protects. Restore the declaration, or update the"
+                    + " matching pointer constant in DocumentedSetsContractTest to match where the schema"
+                    + " now declares it.");
         }
         Set<String> tokens = new LinkedHashSet<>();
         int rawCount = 0;

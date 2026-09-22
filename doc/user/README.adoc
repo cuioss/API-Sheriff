@@ -161,7 +161,7 @@ resolution chain live in
 link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
 section is the operator's decision guide.
 
-=== The three modes
+=== The four modes
 
 [cols="1,2,3"]
 |===
@@ -174,6 +174,15 @@ section is the operator's decision guide.
   `Cookie` / `Set-Cookie` values are the one exception -- a cookie-mode BFF gateway validates them
   pre-route against a raised, gateway-wide cap derived from `oidc.session.max_cookie_size`. See
   link:../configuration.adoc#_oidc[Configuration Reference -- `oidc.session.max_cookie_size`].
+
+| `paranoid`
+| The surface really does reach a filesystem -- a document store, a static-asset origin, an
+  export/download API -- and you want path- and parameter-name content rejected on top of the
+  `strict` caps. *Do not reach for it as "strict, only more so" on an ordinary API*: it rejects a
+  parameter literally named `file`, `path` or `url`, which is everyday REST vocabulary.
+| Everything `strict` enforces, on identical caps, plus two block-lists: sensitive path segments
+  (filesystem paths and configuration filenames, matched per `/`-delimited segment) and suspicious
+  parameter names. Nothing is relaxed relative to `strict` -- this mode only adds.
 
 | `lenient`
 | A trusted internal caller legitimately needs headroom -- long tokens in headers, many query
@@ -226,9 +235,9 @@ specific public route that needs it.
 
 === An unrecognized `profile` value is a hard boot failure
 
-The mode set is exactly `strict`, `lenient`, `minimal`. Any other value makes the gateway *refuse to
-start*, with a value-range violation naming the offending site. There is no fallback and no
-warning-and-continue.
+The mode set is exactly `strict`, `paranoid`, `lenient`, `minimal`. Any other value makes the gateway
+*refuse to start*, with a value-range violation naming the offending site. There is no fallback and
+no warning-and-continue.
 
 The refusal applies at every site the key appears -- `security_defaults`, an anchor's
 `security_filter`, and a route's `security_filter`. `auth.require: none` is a *different* key in a
