@@ -17,13 +17,11 @@ package de.cuioss.sheriff.gateway.portal;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
-import org.jspecify.annotations.Nullable;
 
 /**
  * The gateway-owned header set of every portal-rendered response — the overview page and the HTML
@@ -36,9 +34,9 @@ import org.jspecify.annotations.Nullable;
  *       is {@code Cache-Control: no-store} — neither may ever be replayed from a cache;</li>
  *   <li>a session-free overview page is {@code Cache-Control: max-age=<cache_seconds>}; when the BFF
  *       runtime is active it additionally announces {@code Vary: Cookie}, because the anonymous page
- *       must never be served from cache to a browser that has since signed in. The {@code Cookie} name
- *       is merged into any {@code Vary} value already accumulated for the response (for example the
- *       CORS reflection's {@code Origin}) through {@link SecurityHeadersStage#mergedVary}.</li>
+ *       must never be served from cache to a browser that has since signed in. The edge merges the
+ *       {@code Cookie} name into any {@code Vary} value already accumulated for the response (for
+ *       example the CORS reflection's {@code Origin}) through {@link SecurityHeadersStage#mergedVary}.</li>
  * </ul>
  * The envelope never emits {@code Set-Cookie}. The portal {@code Content-Security-Policy} is not part of
  * this set: it is composed with the operator's {@code header_modes} precedence by
@@ -114,12 +112,10 @@ public final class PortalResponseEnvelope {
      * Composes the envelope headers of one portal-rendered response, in emission order.
      *
      * @param cacheability the cache class of the response
-     * @param currentVary  the {@code Vary} value already accumulated for the response, {@code null} when
-     *                     none; merged, never replaced, when the envelope announces {@code Cookie}
-     * @return an unmodifiable, insertion-ordered map of header name to value; it carries {@code Vary}
-     * only when the envelope adds {@code Cookie} to it
+     * @return an unmodifiable, insertion-ordered map of header name to value; it carries
+     * {@code Vary: Cookie} only for a session-free page while the BFF runtime is active
      */
-    public Map<String, String> headers(Cacheability cacheability, @Nullable String currentVary) {
+    public Map<String, String> headers(Cacheability cacheability) {
         Objects.requireNonNull(cacheability, "cacheability");
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put(CONTENT_TYPE_HEADER, HTML_CONTENT_TYPE);
@@ -127,7 +123,7 @@ public final class PortalResponseEnvelope {
         if (cacheability == Cacheability.SESSION_FREE) {
             headers.put(CACHE_CONTROL_HEADER, "max-age=" + cacheSeconds);
             if (bffActive) {
-                headers.put(VARY_HEADER, SecurityHeadersStage.mergedVary(currentVary, List.of(COOKIE_HEADER)));
+                headers.put(VARY_HEADER, COOKIE_HEADER);
             }
         } else {
             headers.put(CACHE_CONTROL_HEADER, NO_STORE);

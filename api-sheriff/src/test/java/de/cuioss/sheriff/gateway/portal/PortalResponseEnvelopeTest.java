@@ -51,7 +51,7 @@ class PortalResponseEnvelopeTest {
     @EnumSource(Cacheability.class)
     @DisplayName("Always carries the HTML content type and nosniff")
     void alwaysCarriesContentTypeAndNosniff(Cacheability cacheability) {
-        Map<String, String> headers = new PortalResponseEnvelope(60, true).headers(cacheability, null);
+        Map<String, String> headers = new PortalResponseEnvelope(60, true).headers(cacheability);
 
         assertAll("every portal-rendered response",
                 () -> assertEquals("text/html; charset=utf-8", headers.get(CONTENT_TYPE)),
@@ -69,7 +69,7 @@ class PortalResponseEnvelopeTest {
             int cacheSeconds = Generators.integers(1, 86_400).next();
 
             Map<String, String> headers = new PortalResponseEnvelope(cacheSeconds, true)
-                    .headers(Cacheability.SESSION_BEARING, null);
+                    .headers(Cacheability.SESSION_BEARING);
 
             assertAll("session data must never be stored",
                     () -> assertEquals("no-store", headers.get(CACHE_CONTROL)),
@@ -80,7 +80,7 @@ class PortalResponseEnvelopeTest {
         @DisplayName("An HTML error page is no-store")
         void errorPageIsNoStore() {
             Map<String, String> headers = new PortalResponseEnvelope(300, true)
-                    .headers(Cacheability.ERROR_PAGE, null);
+                    .headers(Cacheability.ERROR_PAGE);
 
             assertEquals("no-store", headers.get(CACHE_CONTROL));
         }
@@ -91,7 +91,7 @@ class PortalResponseEnvelopeTest {
             int cacheSeconds = Generators.integers(1, 86_400).next();
 
             Map<String, String> headers = new PortalResponseEnvelope(cacheSeconds, false)
-                    .headers(Cacheability.SESSION_FREE, null);
+                    .headers(Cacheability.SESSION_FREE);
 
             assertEquals("max-age=" + cacheSeconds, headers.get(CACHE_CONTROL));
         }
@@ -100,7 +100,7 @@ class PortalResponseEnvelopeTest {
         @DisplayName("A session-free page with cache_seconds 0 is max-age=0")
         void sessionFreeWithZeroIsMaxAgeZero() {
             Map<String, String> headers = new PortalResponseEnvelope(0, false)
-                    .headers(Cacheability.SESSION_FREE, null);
+                    .headers(Cacheability.SESSION_FREE);
 
             assertEquals("max-age=0", headers.get(CACHE_CONTROL));
         }
@@ -120,7 +120,7 @@ class PortalResponseEnvelopeTest {
         @DisplayName("A session-free page announces Vary: Cookie while the BFF runtime is active")
         void announcedWithActiveBff() {
             Map<String, String> headers = new PortalResponseEnvelope(60, true)
-                    .headers(Cacheability.SESSION_FREE, null);
+                    .headers(Cacheability.SESSION_FREE);
 
             assertEquals("Cookie", headers.get(VARY));
         }
@@ -129,34 +129,16 @@ class PortalResponseEnvelopeTest {
         @DisplayName("No Vary without an active BFF runtime")
         void absentWithoutBff() {
             Map<String, String> headers = new PortalResponseEnvelope(60, false)
-                    .headers(Cacheability.SESSION_FREE, "Origin");
+                    .headers(Cacheability.SESSION_FREE);
 
-            assertFalse(headers.containsKey(VARY), "the accumulated Vary is left to the caller untouched");
-        }
-
-        @Test
-        @DisplayName("Merges Cookie into an existing Vary: Origin")
-        void mergesWithExistingVary() {
-            Map<String, String> headers = new PortalResponseEnvelope(60, true)
-                    .headers(Cacheability.SESSION_FREE, "Origin");
-
-            assertEquals("Origin, Cookie", headers.get(VARY));
-        }
-
-        @Test
-        @DisplayName("Does not repeat a Cookie already announced")
-        void doesNotRepeatCookie() {
-            Map<String, String> headers = new PortalResponseEnvelope(60, true)
-                    .headers(Cacheability.SESSION_FREE, "cookie");
-
-            assertEquals("cookie", headers.get(VARY));
+            assertFalse(headers.containsKey(VARY));
         }
     }
 
     @Test
     @DisplayName("Emits the headers in a stable order")
     void emitsHeadersInStableOrder() {
-        Map<String, String> headers = new PortalResponseEnvelope(60, true).headers(Cacheability.SESSION_FREE, null);
+        Map<String, String> headers = new PortalResponseEnvelope(60, true).headers(Cacheability.SESSION_FREE);
 
         assertEquals(List.of(CONTENT_TYPE, NOSNIFF_HEADER, CACHE_CONTROL, VARY), List.copyOf(headers.keySet()));
     }

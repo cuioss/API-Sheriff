@@ -168,7 +168,7 @@ public final class PortalEndpoint {
         Active portal = requireActive();
         if (method != HttpMethod.GET && method != HttpMethod.HEAD) {
             Map<String, String> headers = new LinkedHashMap<>(
-                    portal.envelope().headers(PortalResponseEnvelope.Cacheability.ERROR_PAGE, null));
+                    portal.envelope().headers(PortalResponseEnvelope.Cacheability.ERROR_PAGE));
             headers.put(ALLOW_HEADER, ALLOWED_METHODS);
             return new PortalResponse(METHOD_NOT_ALLOWED, headers, "");
         }
@@ -178,7 +178,7 @@ public final class PortalEndpoint {
         PortalResponseEnvelope.Cacheability cacheability = identity.authenticated()
                 ? PortalResponseEnvelope.Cacheability.SESSION_BEARING
                 : PortalResponseEnvelope.Cacheability.SESSION_FREE;
-        Map<String, String> headers = portal.envelope().headers(cacheability, null);
+        Map<String, String> headers = portal.envelope().headers(cacheability);
         if (method == HttpMethod.HEAD) {
             return new PortalResponse(OK, headers, "");
         }
@@ -237,7 +237,7 @@ public final class PortalEndpoint {
                 .errorTitle(ErrorPageClassifier.titleFor(status))
                 .build();
         return new PortalResponse(status,
-                portal.envelope().headers(PortalResponseEnvelope.Cacheability.ERROR_PAGE, null),
+                portal.envelope().headers(PortalResponseEnvelope.Cacheability.ERROR_PAGE),
                 portal.renderer().render(model.toMap()));
     }
 
