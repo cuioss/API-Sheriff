@@ -1,0 +1,43 @@
+envelope_version=1
+sender_type=plan
+sender_id=plan-v02-16-image-metadata-fidelity
+epic=api-sheriff-0-2-0
+kind=candidate-lesson
+created=2026-08-09T17:51:23Z
+
+component=plan-marshall:phase-3-outline
+category=improvement
+title=Deep-lane plan reached the outline Q-Gate with an empty assessment store
+
+# Deep-lane plan reached the outline Q-Gate with an empty assessment store
+
+## Observation
+
+`status.metadata.planning_lane` was `deep` for PLAN-16, so an assessment pass was
+expected to have populated the component-assessment store. It had not:
+`manage-findings assessment list --certainty CERTAIN_INCLUDE` returned
+`total_count: 0`. Outline validator 2.2 (Assessment Coverage) compares each
+deliverable's `affected_files` against that set, so with an empty set the
+validator had **zero discriminating power** — applying its literal predicate would
+have flagged all 8 affected files as unassessed, which is the signature of a
+producer that never ran rather than 8 individual scope errors.
+
+Emitting those 8 findings was correctly declined as a false-positive class, and
+the affected-file set was independently corroborated by direct reads. But the
+consequence is that the gate reported green over coverage it never actually had,
+and validator step 5 (missing-coverage) was vacuously clean for the same reason.
+
+## Rule
+
+A validator whose comparison set is empty must report *which kind of zero* it is —
+"the producer never ran" is not "everything is covered". A gate that silently
+degrades to vacuous-pass on a missing producer is worse than one that reports the
+coverage gap, because it is indistinguishable from a real green.
+
+## Disposition in this run
+
+Recorded as an explicit accepted coverage gap (Q-Gate `a12e6b`, `accepted`), as the
+validator itself offered. The residual is the mechanism question the epic should
+carry: on a `deep` lane, either the assessment producer should be guaranteed to
+have run before validator 2.2 consults its store, or the validator should fail
+loudly on an empty store rather than offering an accept-the-gap path.

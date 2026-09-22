@@ -1,0 +1,24 @@
+{
+  "upstream_issues": [
+    {
+      "url": "https://github.com/cuioss/TokenSheriff/issues/617",
+      "repo": "cuioss/TokenSheriff",
+      "number": 617,
+      "filed": "2026-08-03",
+      "title": "token-sheriff-validation ships no native-image reflection metadata; core types are registered only by the Quarkus deployment processor",
+      "owner_plan": "PLAN-46",
+      "state_at_filing": "open",
+      "note": "Filed on operator instruction via the ci abstraction with --project-dir. PLAN-46 D5 tracks it; do NOT file a second issue. Duplicates were not searched at filing time — if closed as a duplicate, follow the surviving issue. Its outcome gates PLAN-46 D2's fourth option (map the config AND drop the extension entirely)."
+    }
+  ],
+  "repositories": [
+    {
+      "name": "TokenSheriff",
+      "checkout": "/home/oliver/git/TokenSheriff",
+      "remote": "https://github.com/cuioss/TokenSheriff.git",
+      "observed_head": "a303ef07",
+      "observed": "2026-08-03",
+      "note": "Upstream source for the token-sheriff-validation / -client / -quarkus artifacts. PLAN-46 D1 reads it directly. NOTE THE CAPITALISATION — a lowercase 'token-sheriff*' glob misses it, which already produced one wrong OBSERVED claim."
+    }
+  ]
+}
