@@ -77,21 +77,21 @@
           "auto_rebase_threshold": "no_overlap_only",
           "lane": "minimal"
         },
-        "default:pre-push-quality-gate": {
-          "lane": "minimal"
-        },
-        "default:pre-submission-self-review": {
-          "drop_review_on_scope_gate": false,
-          "lane": "standard"
-        },
         "default:finalize-step-simplify": {
           "lane": "standard"
         },
         "default:finalize-step-security-audit": {
           "lane": "full"
         },
+        "default:pre-submission-self-review": {
+          "drop_review_on_scope_gate": false,
+          "lane": "standard"
+        },
         "default:architecture-refresh": {
           "lane": "standard"
+        },
+        "default:pre-push-quality-gate": {
+          "lane": "minimal"
         },
         "default:push": {
           "lane": "minimal"
@@ -259,6 +259,7 @@
       "project_key": "cuioss_API-Sheriff"
     }
   },
+  "interaction_mode": "advanced",
   "project": {
     "default_base_branch": "main",
     "working_prefixes": [
@@ -381,7 +382,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.1671",
-    "config_seed_fingerprint": "d6385af3"
+    "provisioned_version": "0.1.1744",
+    "config_seed_fingerprint": "3f6947eb"
   }
 }
