@@ -105,7 +105,7 @@ public class PortalRules {
         }
         canonicalRefusal(portal.path()).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
                 PORTAL_PATH_POINTER, ("portal.path must be a canonical gateway path, otherwise it can never equal a "
-                        + "canonical request path: %s").formatted(reason))));
+                + "canonical request path: %s").formatted(reason))));
     }
 
     /**
