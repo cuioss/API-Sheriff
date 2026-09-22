@@ -463,5 +463,18 @@ public final class ConfigLogMessages {
                 .identifier(201)
                 .template("Refusing to start — configuration is invalid: %s")
                 .build();
+
+        /**
+         * Startup is aborted because the application portal's template was refused: the file is
+         * missing or unreadable, it cannot be parsed, or it uses a construct that would bypass the
+         * mandatory HTML escaping ({@code raw}, {@code safe}) or reach beyond the data model (a
+         * namespaced expression). The template names the template location, the offending line
+         * ({@code -} when the refusal concerns the whole file) and the reason.
+         */
+        public static final LogRecord PORTAL_TEMPLATE_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(202)
+                .template("Refusing to start — portal template '%s' refused at line %s: %s")
+                .build();
     }
 }

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{#if error}{error.status} {error.title} - {/if}{title}</title>
+</head>
+<body>
+<header>
+<h1>{title}</h1>
+{#if session.authenticated}
+<p>Signed in{#if session.username} as <strong>{session.username}</strong>{/if}.{#if links.logout} <a href="{links.logout}">Sign out</a>{/if}</p>
+{#else}
+<p>Not signed in.{#if links.login} <a href="{links.login}">Sign in</a>{/if}</p>
+{/if}
+</header>
+<main>
+{#if notice == 'logged-out'}
+<p role="status">You have been signed out.</p>
+{/if}
+{#if error}
+<section>
+<h2>{error.status} {error.title}</h2>
+<p>The gateway could not complete this request.</p>
+</section>
+{/if}
+<section>
+<h2>Applications</h2>
+{#if apps.isEmpty}
+<p>No applications are available.</p>
+{#else}
+<ul>
+{#for app in apps}
+<li><a href="{app.entry}">{app.title}</a>{#if app.description} &ndash; {app.description}{/if}</li>
+{/for}
+</ul>
+{/if}
+</section>
+</main>
+</body>
+</html>
