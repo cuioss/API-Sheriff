@@ -69,6 +69,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
+import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
@@ -109,6 +110,7 @@ import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.TransportException;
+import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
@@ -167,8 +169,19 @@ class BffRuntimeProducerTest {
     private static final String ON_FAILURE_ENUM_POINTER =
             "/properties/oidc/properties/session/properties/refresh/properties/on_failure/enum";
 
-    private final TokenValidator tokenValidator = TokenValidator.builder()
-            .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+    /** The in-memory issuer backing both the validator and the signature-only verifier below. */
+    private final IssuerConfig testIssuer = TestTokenGenerators.accessTokens().next().getIssuerConfig();
+
+    private final TokenValidator tokenValidator = TokenValidator.builder().issuerConfig(testIssuer).build();
+
+    /**
+     * The seam the back-channel logout receiver is bound to. Built over the SAME issuer as the
+     * validator, so the assembled runtime is wired exactly as production wires it — the two must not
+     * drift apart, since a verifier over a different issuer set would verify nothing the validator
+     * trusts.
+     */
+    private final SignatureOnlyTokenVerifier logoutTokenVerifier =
+            new SignatureOnlyTokenVerifier(List.of(testIssuer), tokenValidator.getSecurityEventCounter());
 
     @Nested
     @DisplayName("Active server-mode runtime")
@@ -1397,7 +1410,7 @@ class BffRuntimeProducerTest {
                     .build();
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
                     .egressTls(oidcHostname(false)).build();
-            return new RecordingProducer(gatewayConfig, tokenValidator);
+            return new RecordingProducer(gatewayConfig, tokenValidator, logoutTokenVerifier);
         }
 
         private static <T> T single(List<T> found, String what) {
@@ -1472,8 +1485,10 @@ class BffRuntimeProducerTest {
 
         private final List<List<String>> requested = new CopyOnWriteArrayList<>();
 
-        RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator) {
+        RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator,
+                SignatureOnlyTokenVerifier logoutTokenVerifier) {
             super(gatewayConfig, new RouteTable(List.of()), new SingletonInstance<>(tokenValidator),
+                    new SingletonInstance<>(logoutTokenVerifier),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR);
         }
 
@@ -1547,7 +1562,8 @@ class BffRuntimeProducerTest {
             TestTlsConfigurationRegistry registry, RouteTable routeTable) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
         return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(tokenValidator),
-                new JwksTrustProfileResolver(registry), REVOCATION_EXECUTOR);
+                new SingletonInstance<>(logoutTokenVerifier), new JwksTrustProfileResolver(registry),
+                REVOCATION_EXECUTOR);
     }
 
     /**

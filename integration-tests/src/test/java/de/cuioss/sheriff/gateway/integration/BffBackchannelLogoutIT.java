@@ -118,8 +118,12 @@ class BffBackchannelLogoutIT extends BaseIntegrationTest {
         // Assert — the gateway-held session is gone. The browser did nothing but retry.
         assertEquals(UNAUTHORIZED, awaitSessionChallenged(session),
                 () -> "the gateway-held session survived an IdP-initiated back-channel logout for "
-                        + DELIVERY_BUDGET_SECONDS + "s. Three causes produce this identically, and only"
-                        + " the container logs separate them. Either no logout token was delivered (check"
+                        + DELIVERY_BUDGET_SECONDS + "s. Three causes produce this identically, and the"
+                        + " gateway log now separates them WITHOUT a DEBUG re-run: grep"
+                        + " target/quarkus-logs/quarkus.log for ApiSheriff-13 and ApiSheriff-112. No line"
+                        + " from either means nothing reached the receiver; ApiSheriff-112 names the check"
+                        + " that refused; ApiSheriff-13 with '0 session(s) destroyed' means the token was"
+                        + " accepted and its sid matched nothing. Either no logout token was delivered (check"
                         + " that integration-client declares backchannel.logout.url, and that Keycloak"
                         + " trusts the gateway certificate via KC_TRUSTSTORE_PATHS — a TLS failure on that"
                         + " leg is silent from here); or one was delivered to a path the gateway did not"

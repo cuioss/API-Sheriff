@@ -34,6 +34,7 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint.BackchannelLogoutOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -60,8 +61,12 @@ import org.junit.jupiter.api.Test;
  * {@code 500} (the receiver's signature seam is bound to a hand-built token so the accepted path is
  * exercised without a live IdP). In <strong>cookie mode</strong> the focus is the capability gate:
  * a binding reporting {@link SessionBinding.IdpDestruction#UNSUPPORTED} answers {@code 404} for every
- * request without ever parsing the body or reaching the receiver — and does so without emitting a
- * {@code WARN}, since the path is reserved and unauthenticated.
+ * request without ever parsing the body or reaching the receiver.
+ * <p>
+ * The third concern is the <strong>log-flood latch</strong> both attacker-reachable rejections on this
+ * reserved, unauthenticated path run under: each is reported at {@code WARN} on its first occurrence
+ * and silent afterwards. Both halves are asserted together, because losing either one — the record or
+ * the bound — is a defect.
  */
 @EnableTestLogger
 class BackchannelLogoutEndpointTest {
@@ -204,14 +209,56 @@ class BackchannelLogoutEndpointTest {
             assertFalse(verifierInvoked.get());
         }
 
+        /**
+         * The latch, in both halves: the FIRST gated request is reported at the default log level so a
+         * genuine misconfiguration is visible without a DEBUG re-run, and the four repeats that follow
+         * add nothing — which is what bounds an attacker on this reserved, unauthenticated path to a
+         * single line for the life of the process.
+         * <p>
+         * {@code assertSingleLogMessagePresentContaining} is the assertion that carries both halves at
+         * once: it fails on zero occurrences (the record was lost) and equally on five (the flood guard
+         * was lost). Asserting only presence, or only absence, would pass in one of the two failure
+         * modes this rule exists to prevent.
+         */
         @Test
-        @DisplayName("Should not emit a WARN for the unauthenticated capability-gate rejection")
-        void shouldNotWarnOnCapabilityGate() {
+        @DisplayName("Should report the capability-gate rejection once, then latch it to DEBUG")
+        void shouldLatchCapabilityGateWarning() {
             BackchannelLogoutEndpoint endpoint = endpoint(new AtomicBoolean(false), cookieBinding());
 
             for (int request = 0; request < 5; request++) {
                 assertEquals(404, endpoint.receive("logout_token=abc.def.ghi", NOW).status());
             }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY.token());
+        }
+    }
+
+    /**
+     * The server-mode half of the same latch: {@code missing-logout-token} is equally
+     * attacker-triggerable, so it too is reported once and then falls silent.
+     */
+    @Nested
+    @DisplayName("Server mode — latched missing-token reporting")
+    class MissingTokenReporting {
+
+        @Test
+        @DisplayName("Should report a missing logout_token once, then latch it to DEBUG")
+        void shouldLatchMissingTokenWarning() {
+            BackchannelLogoutEndpoint endpoint = endpoint(new AtomicBoolean(false));
+
+            for (int request = 0; request < 5; request++) {
+                assertEquals(400, endpoint.receive("other=value", NOW).status());
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    LogoutRejection.MISSING_LOGOUT_TOKEN.token());
+        }
+
+        @Test
+        @DisplayName("Should not report a rejection at all when the token is accepted")
+        void shouldNotReportOnAcceptance() {
+            assertTrue(endpoint(new AtomicBoolean(false)).receive("logout_token=abc.def.ghi", NOW).isAccepted());
 
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, BackchannelLogoutEndpoint.class);
         }

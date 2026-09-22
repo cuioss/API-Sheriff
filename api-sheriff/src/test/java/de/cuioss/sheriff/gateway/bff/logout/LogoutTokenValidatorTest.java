@@ -16,9 +16,9 @@
 package de.cuioss.sheriff.gateway.bff.logout;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -27,10 +27,10 @@ import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.LogoutSubject;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.Verdict;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
@@ -40,11 +40,12 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link LogoutTokenValidator}: the pure OIDC back-channel-logout-token claim residual
- * applied after the engine has signature-verified the token. Every negative case in the check
- * matrix — {@code iss} wrong, {@code aud} wrong, {@code iat} outside the freshness window (both
+ * applied after the seam ahead of it has verified the token's signature. Every negative case in the
+ * check matrix — {@code iss} wrong, {@code aud} wrong, {@code iat} outside the freshness window (both
  * directions) or absent, {@code events} missing the back-channel event, {@code nonce} present, and
- * both {@code sub}/{@code sid} absent — must fail-closed to {@link Optional#empty()}, and the two
- * single-subject success shapes ({@code sub}-only, {@code sid}-only) must resolve.
+ * both {@code sub}/{@code sid} absent — must fail closed, and must name the <em>specific</em>
+ * {@link LogoutRejection} that refused: that reason is what reaches the operator as
+ * {@code ApiSheriff-112}, so a verdict that merely says "rejected" is not good enough.
  * <p>
  * The token is hand-built as an {@link IdTokenContent} claim carrier over a {@link ClaimValue} map,
  * so every case is exercised without a live IdP or a signed token.
@@ -60,6 +61,18 @@ class LogoutTokenValidatorTest {
     private static final String RAW = "raw-logout-token";
     private static final String OTHER_EVENT = "{\"http://schemas.openid.net/event/token-revoked\":{}}";
 
+    /**
+     * The {@code events} claim as the engine surfaces it when it arrived as a JSON <em>object</em> —
+     * a deserialized {@code Map} run through {@code Object#toString()}. This, not the JSON form, is
+     * what a real identity provider's logout token reaches the validator as.
+     */
+    private static final String EVENTS_ENGINE_FORM =
+            "{" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "={}}";
+
+    /** The same claim as it arrives when it was carried on the wire as a JSON string. */
+    private static final String EVENTS_JSON_FORM =
+            "{\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\":{}}";
+
     private final LogoutTokenValidator validator = new LogoutTokenValidator(ISSUER, AUDIENCE, FRESHNESS);
 
     private static Map<String, ClaimValue> validClaims() {
@@ -67,14 +80,24 @@ class LogoutTokenValidatorTest {
                 "iss", ClaimValue.forPlainString(ISSUER),
                 "aud", ClaimValue.forList("aud", List.of(AUDIENCE)),
                 "iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)),
-                "events", ClaimValue.forPlainString(
-                        "{\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\":{}}"),
+                "events", ClaimValue.forPlainString(EVENTS_JSON_FORM),
                 "sub", ClaimValue.forPlainString(SUB),
                 "sid", ClaimValue.forPlainString(SID)));
     }
 
     private static TokenContent token(Map<String, ClaimValue> claims) {
         return new IdTokenContent(claims, RAW);
+    }
+
+    private static LogoutSubject assertAccepted(Verdict verdict) {
+        return assertInstanceOf(Verdict.Accepted.class, verdict, "expected the token to be accepted").subject();
+    }
+
+    private static void assertRejectedFor(Verdict verdict, LogoutRejection expected) {
+        Verdict.Rejected rejected = assertInstanceOf(Verdict.Rejected.class, verdict,
+                "expected the token to be rejected");
+        assertEquals(expected, rejected.reason(),
+                "the verdict must name the check that actually refused — that reason is logged verbatim");
     }
 
     @Nested
@@ -84,11 +107,10 @@ class LogoutTokenValidatorTest {
         @Test
         @DisplayName("Should accept a fully valid logout token and resolve sub + sid")
         void shouldAcceptValidToken() {
-            Optional<LogoutSubject> result = validator.validate(token(validClaims()), NOW);
+            LogoutSubject subject = assertAccepted(validator.validate(token(validClaims()), NOW));
 
-            assertTrue(result.isPresent(), "a fully valid logout token is accepted");
-            assertEquals(SUB, result.get().sub());
-            assertEquals(SID, result.get().sid());
+            assertEquals(SUB, subject.sub());
+            assertEquals(SID, subject.sid());
         }
 
         @Test
@@ -97,11 +119,10 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.remove("sid");
 
-            Optional<LogoutSubject> result = validator.validate(token(claims), NOW);
+            LogoutSubject subject = assertAccepted(validator.validate(token(claims), NOW));
 
-            assertTrue(result.isPresent());
-            assertEquals(SUB, result.get().sub());
-            assertNull(result.get().sid(), "sid is absent");
+            assertEquals(SUB, subject.sub());
+            assertNull(subject.sid(), "sid is absent");
         }
 
         @Test
@@ -110,11 +131,10 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.remove("sub");
 
-            Optional<LogoutSubject> result = validator.validate(token(claims), NOW);
+            LogoutSubject subject = assertAccepted(validator.validate(token(claims), NOW));
 
-            assertTrue(result.isPresent());
-            assertNull(result.get().sub(), "sub is absent");
-            assertEquals(SID, result.get().sid());
+            assertNull(subject.sub(), "sub is absent");
+            assertEquals(SID, subject.sid());
         }
 
         @Test
@@ -123,7 +143,7 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.put("aud", ClaimValue.forPlainString(AUDIENCE));
 
-            assertTrue(validator.validate(token(claims), NOW).isPresent());
+            assertAccepted(validator.validate(token(claims), NOW));
         }
 
         @Test
@@ -132,7 +152,57 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.put("aud", ClaimValue.forList("aud", List.of("other-client", AUDIENCE)));
 
-            assertTrue(validator.validate(token(claims), NOW).isPresent());
+            assertAccepted(validator.validate(token(claims), NOW));
+        }
+    }
+
+    /**
+     * The {@code events} claim reaches this validator as a string in one of two shapes, depending on
+     * whether it travelled as a JSON object (the spec shape, stringified by the engine from the
+     * deserialized {@code Map}) or as a JSON string (round-tripped verbatim). Both must be accepted
+     * with the member-<em>key</em> discrimination intact — the engine form is the one a real identity
+     * provider actually produces, and matching only the JSON form rejected every such token.
+     */
+    @Nested
+    @DisplayName("events claim — both surfaced representations")
+    class EventsRepresentations {
+
+        @Test
+        @DisplayName("Should accept the engine's Map#toString form a real IdP token arrives as")
+        void shouldAcceptEngineMapForm() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString(EVENTS_ENGINE_FORM));
+
+            assertAccepted(validator.validate(token(claims), NOW));
+        }
+
+        @Test
+        @DisplayName("Should accept the engine form alongside other event members")
+        void shouldAcceptEngineMapFormAmongOthers() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString("{http://schemas.openid.net/event/token-revoked={}, "
+                    + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "={}}"));
+
+            assertAccepted(validator.validate(token(claims), NOW));
+        }
+
+        @Test
+        @DisplayName("Should reject the engine form carrying the event URI only as a member value")
+        void shouldRejectEngineMapFormValuePosition() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString(
+                    "{event=" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "}"));
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EVENTS_MISSING);
+        }
+
+        @Test
+        @DisplayName("Should reject the engine form of a different event")
+        void shouldRejectEngineMapFormOtherEvent() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString("{http://schemas.openid.net/event/token-revoked={}}"));
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EVENTS_MISSING);
         }
     }
 
@@ -146,7 +216,16 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.put("iss", ClaimValue.forPlainString("https://evil.example.com"));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.ISSUER_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("Should reject a token carrying no iss at all")
+        void shouldRejectMissingIssuer() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.remove("iss");
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.ISSUER_MISMATCH);
         }
 
         @Test
@@ -155,7 +234,7 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.put("aud", ClaimValue.forList("aud", List.of("some-other-client")));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.AUDIENCE_MISMATCH);
         }
 
         @Test
@@ -165,7 +244,7 @@ class LogoutTokenValidatorTest {
             Instant tooOld = NOW.minus(FRESHNESS).minusSeconds(1);
             claims.put("iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(tooOld, ZoneOffset.UTC)));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.IAT_OUTSIDE_WINDOW);
         }
 
         @Test
@@ -175,7 +254,7 @@ class LogoutTokenValidatorTest {
             Instant tooNew = NOW.plus(FRESHNESS).plusSeconds(1);
             claims.put("iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(tooNew, ZoneOffset.UTC)));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.IAT_OUTSIDE_WINDOW);
         }
 
         @Test
@@ -184,7 +263,7 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.remove("iat");
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.IAT_OUTSIDE_WINDOW);
         }
 
         @Test
@@ -193,7 +272,7 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.remove("events");
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EVENTS_MISSING);
         }
 
         @Test
@@ -202,17 +281,16 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.put("events", ClaimValue.forPlainString(OTHER_EVENT));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EVENTS_MISSING);
         }
 
         @Test
-        @DisplayName("Should reject a scalar events claim that merely equals the event URI (not a JSON object)")
+        @DisplayName("Should reject a scalar events claim that merely equals the event URI (not an object)")
         void shouldRejectScalarEventsEqualToUri() {
             Map<String, ClaimValue> claims = validClaims();
             claims.put("events", ClaimValue.forPlainString(LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty(),
-                    "a scalar events string that only contains the event URI must not destroy a session");
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EVENTS_MISSING);
         }
 
         @Test
@@ -222,7 +300,7 @@ class LogoutTokenValidatorTest {
             claims.put("events", ClaimValue.forPlainString(
                     "[\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\"]"));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty(), "events must be a JSON object, not an array");
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EVENTS_MISSING);
         }
 
         @Test
@@ -232,8 +310,7 @@ class LogoutTokenValidatorTest {
             claims.put("events", ClaimValue.forPlainString(
                     "{\"event\":\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\"}"));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty(),
-                    "the back-channel-logout URI must be a member key, not a member value");
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EVENTS_MISSING);
         }
 
         @Test
@@ -243,8 +320,7 @@ class LogoutTokenValidatorTest {
             claims.put("events", ClaimValue.forPlainString(
                     "{ \"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\" : {} }"));
 
-            assertTrue(validator.validate(token(claims), NOW).isPresent(),
-                    "compact and pretty-printed object serializations are both accepted");
+            assertAccepted(validator.validate(token(claims), NOW));
         }
 
         @Test
@@ -253,7 +329,7 @@ class LogoutTokenValidatorTest {
             Map<String, ClaimValue> claims = validClaims();
             claims.put("nonce", ClaimValue.forPlainString("n-0S6_WzA2Mj"));
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.NONCE_PRESENT);
         }
 
         @Test
@@ -263,7 +339,7 @@ class LogoutTokenValidatorTest {
             claims.remove("sub");
             claims.remove("sid");
 
-            assertTrue(validator.validate(token(claims), NOW).isEmpty());
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.NO_SUB_OR_SID);
         }
 
         @Test
@@ -271,8 +347,8 @@ class LogoutTokenValidatorTest {
         void shouldRejectWhenNowOutsideWindow() {
             Instant farLater = NOW.plus(Duration.ofHours(1));
 
-            assertTrue(validator.validate(token(validClaims()), farLater).isEmpty(),
-                    "a token minted at NOW is stale relative to a much later now");
+            assertRejectedFor(validator.validate(token(validClaims()), farLater),
+                    LogoutRejection.IAT_OUTSIDE_WINDOW);
         }
     }
 

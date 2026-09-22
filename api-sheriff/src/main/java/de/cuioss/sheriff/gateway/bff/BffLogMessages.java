@@ -79,6 +79,12 @@ public final class BffLogMessages {
         /**
          * A back-channel logout token was accepted and its affected sessions were destroyed. The
          * template carries only the bounded destroyed-session count — never the subject or {@code sid}.
+         * <p>
+         * <strong>{@code 0 session(s) destroyed} is a real and distinct outcome, not a non-event.</strong>
+         * It says delivery, signature verification and the whole claim residual all succeeded, and that
+         * the {@code sid} (or {@code sub}) the token named matched no session the gateway holds — which
+         * is the one signal that separates a session-binding defect from a delivery or validation one.
+         * Read it as such; do not treat it as interchangeable with a non-zero count.
          */
         public static final LogRecord BACKCHANNEL_LOGOUT = LogRecordModel.builder()
                 .prefix(PREFIX)
@@ -150,7 +156,22 @@ public final class BffLogMessages {
 
         /**
          * A back-channel logout token was rejected. Records the non-sensitive rejection disposition
-         * ({@code signature} / {@code claims}) only — never the raw logout token.
+         * only — never the raw logout token, the subject, or the IdP {@code sid}. The accepted set of
+         * dispositions is closed and enumerated by
+         * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejection}: {@code no-idp-destruction-capability},
+         * {@code missing-logout-token}, {@code signature-rejected}, {@code issuer-mismatch},
+         * {@code audience-mismatch}, {@code iat-outside-window}, {@code events-missing},
+         * {@code nonce-present}, {@code no-sub-or-sid}.
+         * <p>
+         * <strong>Latched for the attacker-reachable dispositions.</strong> The back-channel path is
+         * reserved and unauthenticated, so the three dispositions reachable <em>before</em> the token's
+         * signature has been verified ({@code no-idp-destruction-capability}, {@code missing-logout-token},
+         * {@code signature-rejected}) are emitted only on their FIRST occurrence in a process and every
+         * repeat drops to {@code DEBUG}. The six that only a genuinely signed token can reach are
+         * emitted on every occurrence. Absence of a repeated {@code WARN} for a latched disposition
+         * therefore says nothing about the rejection <em>rate</em>; read the DEBUG channel for that.
+         * The rule and its rationale live on
+         * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejectionLog}.
          */
         public static final LogRecord LOGOUT_TOKEN_REJECTED = LogRecordModel.builder()
                 .prefix(PREFIX)

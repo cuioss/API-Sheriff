@@ -23,6 +23,8 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutRejectionLog;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
@@ -49,11 +51,20 @@ import org.jspecify.annotations.Nullable;
  * {@code sid}/{@code sub} destruction, so the endpoint answers {@code 404} <em>before</em> the form
  * body is parsed: the {@code logout_token} is never read and the receiver is never reached. That is
  * strictly better than accepting a post the gateway could only answer with a destruction that never
- * happened. The gated rejection is recorded at {@code DEBUG} carrying only a bounded, non-sensitive
- * reason — no token material — because this is a reserved, unauthenticated path: any caller who can
- * reach the gateway could otherwise drive an unbounded WARN flood by posting to it, without a
- * {@code logout_token}, a session, or any credential. Every other malformed-input rejection on this
- * endpoint logs at {@code DEBUG} for the same reason. Server-mode behaviour is unchanged.
+ * happened.
+ * <p>
+ * <strong>The log-flood rule on this path was decided, not forgotten.</strong> Every rejection here is
+ * recorded through {@link LogoutRejectionLog} carrying a bounded, non-sensitive
+ * {@link LogoutRejection} reason — never token material. Because the path is reserved and
+ * <em>unauthenticated</em>, both rejections this class can raise ({@code no-idp-destruction-capability}
+ * and {@code missing-logout-token}) are attacker-triggerable, so both are <em>latched</em>: the first
+ * occurrence of each reason in a process is recorded at {@code WARN} and every repeat drops to
+ * {@code DEBUG}. That bounds an attacker to at most two {@code WARN} lines for the life of the process
+ * while still surfacing a genuine first occurrence at the default log level — the earlier
+ * unconditional-{@code DEBUG} rule bounded the flood too, but at the price of making a delivery that
+ * arrived and was refused indistinguishable from one that never arrived at all. See
+ * {@link LogoutRejectionLog} for the full rule, including why the signature-verified rejections the
+ * receiver raises are <em>not</em> latched. Server-mode behaviour is unchanged.
  * <p>
  * The endpoint is framework-agnostic (raw form body in, a {@link BackchannelLogoutOutcome} the edge
  * renders out — no JAX-RS/Vert.x coupling), so it is unit-testable without a container or a live IdP;
@@ -73,11 +84,9 @@ public final class BackchannelLogoutEndpoint {
     private static final int BAD_REQUEST = 400;
     private static final int NOT_FOUND = 404;
 
-    /** The bounded, non-sensitive reason recorded when the capability gate refuses a request. */
-    private static final String DISABLED_REASON = "no-idp-destruction-capability";
-
     private final BackchannelLogoutReceiver receiver;
     private final SessionBinding sessionBinding;
+    private final LogoutRejectionLog rejectionLog = new LogoutRejectionLog(LOGGER);
 
     /**
      * Assembles the endpoint with the back-channel logout receiver and the active session binding
@@ -109,16 +118,15 @@ public final class BackchannelLogoutEndpoint {
         if (sessionBinding.idpDestruction() == SessionBinding.IdpDestruction.UNSUPPORTED) {
             // Fail closed before the body is touched: the logout_token is never read and the receiver
             // is never reached, so the gateway cannot report a destruction it could not perform.
-            // DEBUG, not WARN: this path is reserved and unauthenticated, so a WARN here is an
-            // attacker-triggerable log-flood vector — see the capability-gate note on the type.
-            LOGGER.debug("Back-channel logout gated off for the active session binding (%s) — rejected 404",
-                    DISABLED_REASON);
+            // Latched, not unconditional: this path is reserved and unauthenticated — see the
+            // log-flood rule on the type.
+            rejectionLog.record(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
             return BackchannelLogoutOutcome.error(NOT_FOUND);
         }
 
         Optional<String> logoutToken = extractLogoutToken(rawFormBody);
         if (logoutToken.isEmpty()) {
-            LOGGER.debug("Back-channel logout request missing the logout_token form parameter — rejected");
+            rejectionLog.record(LogoutRejection.MISSING_LOGOUT_TOKEN);
             return BackchannelLogoutOutcome.error(BAD_REQUEST);
         }
 

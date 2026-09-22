@@ -29,6 +29,7 @@ import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
+import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -202,6 +203,13 @@ public class BffRuntimeProducer {
     private final GatewayConfig gatewayConfig;
     private final RouteTable routeTable;
     private final Instance<TokenValidator> tokenValidator;
+    /**
+     * The signature-only verification seam the back-channel logout receiver is bound to, resolved
+     * lazily for the same reason {@link #tokenValidator} is: a bearer-only gateway must never trigger
+     * it. See {@link SignatureOnlyTokenVerifier} for why the logout token cannot ride the ID-token
+     * validation path.
+     */
+    private final Instance<SignatureOnlyTokenVerifier> logoutTokenVerifier;
     private final JwksTrustProfileResolver trustProfileResolver;
     private final ExecutorService virtualThreadExecutor;
     /**
@@ -221,6 +229,8 @@ public class BffRuntimeProducer {
      * @param tokenValidator        a lazy handle to the gateway's shared offline validator, resolved
      *                              only on the active BFF path in either session mode (a bearer-only
      *                              gateway never triggers it)
+     * @param logoutTokenVerifier   a lazy handle to the signature-only verifier the back-channel logout
+     *                              receiver is bound to, resolved only on the active BFF path
      * @param trustProfileResolver  the single seam mapping a logical {@code egress_tls.oidc_tls_profile}
      *                              name to concrete trust anchors, consulted only on the active path and
      *                              only when a profile is named
@@ -229,11 +239,13 @@ public class BffRuntimeProducer {
      */
     public BffRuntimeProducer(GatewayConfig gatewayConfig, RouteTable routeTable,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
+            Instance<SignatureOnlyTokenVerifier> logoutTokenVerifier,
             JwksTrustProfileResolver trustProfileResolver,
             @VirtualThreads ExecutorService virtualThreadExecutor) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
+        this.logoutTokenVerifier = Objects.requireNonNull(logoutTokenVerifier, "logoutTokenVerifier");
         this.trustProfileResolver = Objects.requireNonNull(trustProfileResolver, "trustProfileResolver");
         this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
         EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
@@ -436,8 +448,13 @@ public class BffRuntimeProducer {
         // The endpoint stays wired in both modes: it is gated on the binding's IdP-destruction
         // capability, so a stateless binding answers a deliberate 404 on the reserved path rather than
         // letting that path fall through to the proxy route table.
+        // The verifier seam is SignatureOnlyTokenVerifier and deliberately NOT idBridge::validateRefreshedIdToken:
+        // a back-channel logout token is not an ID token (no exp, sub optional, no azp), so the
+        // ID-token pipeline rejected every spec-valid sid-only token before LogoutTokenValidator —
+        // which already implements the full back-channel claim set — was ever reached (BFF-11).
+        // LogoutTokenValidator stays the SOLE claim authority on this path.
         BackchannelLogoutReceiver backchannelReceiver = new BackchannelLogoutReceiver(
-                idBridge::validateRefreshedIdToken,
+                logoutTokenVerifier.get()::verify,
                 new LogoutTokenValidator(issuer, clientId, BACKCHANNEL_FRESHNESS_WINDOW),
                 sessionBinding);
         BackchannelLogoutEndpoint backchannelLogoutEndpoint =
