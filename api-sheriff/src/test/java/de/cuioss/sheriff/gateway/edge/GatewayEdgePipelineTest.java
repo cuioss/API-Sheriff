@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
@@ -199,7 +200,7 @@ class GatewayEdgePipelineTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted());
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

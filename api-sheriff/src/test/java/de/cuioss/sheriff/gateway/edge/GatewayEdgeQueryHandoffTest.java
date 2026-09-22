@@ -44,6 +44,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
@@ -123,7 +124,8 @@ class GatewayEdgeQueryHandoffTest {
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, GatewayConfig.builder().version(1).build(),
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
-                new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), EgressTrustProfiles.unconsulted());
+                new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), EgressTrustProfiles.unconsulted(),
+                PortalEndpoint.inert());
 
         Router router = Router.router(vertx);
         // Registered before the edge's catch-all: records what the transport's decoded parameter view

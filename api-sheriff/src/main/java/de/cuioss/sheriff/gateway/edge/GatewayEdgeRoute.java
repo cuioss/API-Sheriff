@@ -86,6 +86,7 @@ import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.pipeline.ThoroughChecksStage;
 import de.cuioss.sheriff.gateway.pipeline.VerbGateStage;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
@@ -144,6 +145,10 @@ import org.jspecify.annotations.Nullable;
  *       before route selection and authentication);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
  *       guard, and the framing gate;</li>
+ *   <li>the gateway's own reserved paths, ahead of the route table and after the passthrough host
+ *       guard: first the OIDC reserved paths (exact, on the OIDC host), then the application
+ *       portal's {@code portal.path} (exact, on any host) — so a prefix route never swallows
+ *       either;</li>
  *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
  *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
  *       then the per-route verb gate;</li>
@@ -240,6 +245,7 @@ public class GatewayEdgeRoute {
     private final SheriffMetrics sheriffMetrics;
     private final ReservedPathRegistry reservedPathRegistry;
     private final BffRuntime bffRuntime;
+    private final PortalEndpoint portalEndpoint;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
@@ -295,17 +301,22 @@ public class GatewayEdgeRoute {
      *                              logical name to the deployment's trust anchors. Consulted once at
      *                              boot, and only when the document names a profile; a gateway that
      *                              names none never reaches it and keeps the JVM default trust store
+     * @param portalEndpoint        the application portal's own reserved path, consulted after the
+     *                              OIDC reserved paths and before route selection; the
+     *                              {@linkplain PortalEndpoint#inert() inert} endpoint (no
+     *                              {@code portal} block) never matches and leaves the edge unchanged
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator, Vertx vertx,
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
-            EgressTrustProfileResolver egressTrustProfileResolver) {
+            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
         this.bffRuntime = bffRuntime;
+        this.portalEndpoint = Objects.requireNonNull(portalEndpoint, "portalEndpoint");
         this.admission = new Semaphore(hardening.admissionCap());
         this.webSocketRelayAdmission = new Semaphore(hardening.webSocketRelayCap());
 
@@ -783,6 +794,9 @@ public class GatewayEdgeRoute {
             if (handleReservedPath(ctx, request)) {
                 return;
             }
+            if (handlePortal(ctx, request)) {
+                return;
+            }
             routeSelectionStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
             // Stash the metrics label the moment the route is known, not after the stages below have
@@ -869,6 +883,75 @@ public class GatewayEdgeRoute {
             renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
         }
         return true;
+    }
+
+    /**
+     * Answers the application portal's own reserved path. It runs immediately after
+     * {@link #handleReservedPath} and before route selection: the stage-0/1 checks and the passthrough
+     * host guard have already run, an OIDC reserved path has already won, and a prefix route covering
+     * {@code portal.path} never sees the request. The match is exact and host-independent (see
+     * {@link PortalEndpoint#matches}); the {@linkplain PortalEndpoint#inert() inert} endpoint never
+     * matches.
+     * <p>
+     * The page is rendered here, on the virtual thread — session resolution may reach the session
+     * store — and the response is written on the event loop by {@link #writePortal}. The {@code notice}
+     * parameter is handed over in its raw, still-encoded wire form, so only an exact vocabulary value
+     * is ever recognised.
+     *
+     * @return {@code true} when the request addressed the portal path and has been answered (the
+     *         caller must stop processing); {@code false} when normal routing continues
+     */
+    private boolean handlePortal(RoutingContext ctx, PipelineRequest request) {
+        if (!portalEndpoint.matches(requireCanonicalPath(request))) {
+            return false;
+        }
+        PortalEndpoint.PortalResponse response = portalEndpoint.handle(request.method(),
+                firstRawQueryValue(request, PortalEndpoint.NOTICE_PARAM),
+                request.firstHeader(COOKIE_HEADER).orElse(null), Instant.now());
+        writePortal(ctx, request, response);
+        return true;
+    }
+
+    /**
+     * Writes a portal answer on the event loop: the portal's fixed security headers are composed
+     * onto the stage headers first ({@link SecurityHeadersStage#applyPortalHeaders} — the portal
+     * {@code Content-Security-Policy} and {@code nosniff} replace whatever the resolved block declared),
+     * then the envelope headers are written last so they win any name collision. {@code Vary} is the
+     * one merge: the envelope's {@code Cookie} joins, never displaces, a {@code Vary} the stage
+     * already announced (the CORS reflection's {@code Origin}). The stage's {@code Set-Cookie} lines
+     * ride along as on every gateway-authored response.
+     */
+    private static void writePortal(RoutingContext ctx, PipelineRequest request,
+            PortalEndpoint.PortalResponse portal) {
+        SecurityHeadersStage.applyPortalHeaders(request);
+        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            HttpServerResponse response = ctx.response();
+            if (response.ended()) {
+                return;
+            }
+            response.setStatusCode(portal.status());
+            stageHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, stageSetCookies);
+            portal.headers().forEach((name, value) -> response.putHeader(name, VARY_HEADER.equalsIgnoreCase(name)
+                    ? SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), List.of(value))
+                    : value));
+            response.end(portal.body());
+        });
+    }
+
+    /**
+     * The raw, still-encoded value of the first query pair named exactly {@code name}, or {@code null}
+     * when no such pair exists or it is bare (no {@code =}).
+     */
+    private static @Nullable String firstRawQueryValue(PipelineRequest request, String name) {
+        for (QueryParameter parameter : request.queryParameters()) {
+            if (name.equals(parameter.name())) {
+                return parameter.value();
+            }
+        }
+        return null;
     }
 
     /**

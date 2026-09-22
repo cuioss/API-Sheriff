@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.tools.logging.CuiLogger;
@@ -100,6 +101,9 @@ public final class UserInfoEndpoint {
     private static final String AUTH_TIME = "auth_time";
     private static final String ACR = "acr";
 
+    /** The ID-token claim a gateway-rendered page shows as the signed-in user's name. */
+    static final String PREFERRED_USERNAME = "preferred_username";
+
     private final SessionBinding sessionBinding;
     private final ClaimAllowlistFilter claimFilter;
     private final ClaimSource claimSource;
@@ -164,6 +168,33 @@ public final class UserInfoEndpoint {
         body.put(CLAIMS_MEMBER, disclosed);
         body.put(SESSION_MEMBER, sessionMetadata(session.get()));
         return UserInfoOutcome.identity(body);
+    }
+
+    /**
+     * Resolves the display identity of the request's browser session for a gateway-rendered page —
+     * the application portal. The live session is resolved through the same {@link SessionBinding} as
+     * {@link #handle}, and the {@code preferred_username} is read from the <em>validated</em> ID-token
+     * claims through the same {@link ClaimSource} — never from raw token material.
+     * <p>
+     * Unlike {@link #handle} this is not a disclosure to a browser client: the name is shown back to
+     * the session's own owner on a gateway-authored page, so it is not subject to the operator claim
+     * allowlist, and nothing but the one claim is read. A {@code preferred_username} that is absent,
+     * blank or not a JSON string yields an authenticated identity without a username.
+     *
+     * @param cookieHeader the raw request {@code Cookie} header value, may be absent
+     * @param now          the reference instant (the session-resolution TTL anchor)
+     * @return the authenticated identity of a live session, or {@link SessionIdentity#anonymous()}
+     *         when no live session exists
+     */
+    public SessionIdentity sessionIdentity(@Nullable String cookieHeader, Instant now) {
+        Objects.requireNonNull(now, "now");
+        Optional<SessionRecord> session = sessionBinding.resolve(cookieHeader, now);
+        if (session.isEmpty()) {
+            return SessionIdentity.anonymous();
+        }
+        Object preferredUsername = claimSource.claims(session.get()).get(PREFERRED_USERNAME);
+        String username = preferredUsername instanceof String name && !name.isBlank() ? name : null;
+        return new SessionIdentity(true, username);
     }
 
     /**

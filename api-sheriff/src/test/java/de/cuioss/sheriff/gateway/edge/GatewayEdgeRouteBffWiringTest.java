@@ -69,6 +69,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
@@ -237,7 +238,8 @@ class GatewayEdgeRouteBffWiringTest {
         private GatewayEdgeRoute newEdge(RouteTable table, BffRuntime runtime) {
             return new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
-                    new SheriffMetrics(new SimpleMeterRegistry()), runtime, EgressTrustProfiles.unconsulted());
+                    new SheriffMetrics(new SimpleMeterRegistry()), runtime, EgressTrustProfiles.unconsulted(),
+                    PortalEndpoint.inert());
         }
     }
 
@@ -269,7 +271,8 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(rejectEverythingRoute())),
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(new InMemorySessionStore(16))), EgressTrustProfiles.unconsulted());
+                    activeRuntime(serverBinding(new InMemorySessionStore(16))), EgressTrustProfiles.unconsulted(),
+                    PortalEndpoint.inert());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             front = Awaits.connect(
@@ -385,7 +388,7 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted());
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             front = Awaits.connect(

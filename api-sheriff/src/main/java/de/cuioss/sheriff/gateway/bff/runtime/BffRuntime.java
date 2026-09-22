@@ -45,7 +45,7 @@ import org.jspecify.annotations.Nullable;
  * {@code false} and dispatches nothing (the bearer-only proxy path is unchanged, and the
  * {@code ReservedPathRegistry} carries no reserved paths to dispatch anyway).
  * <p>
- * It carries two edge-facing capabilities:
+ * It carries three edge-facing capabilities:
  * <ol>
  *   <li>the {@link SessionAuthenticationStage} the edge injects into the session-aware
  *       {@code AuthenticationStage} constructor so a {@code require: session} route is served rather
@@ -58,6 +58,8 @@ import org.jspecify.annotations.Nullable;
  *       back-channel arm stays wired in both session modes — the endpoint's own capability gate
  *       answers {@code 404} where IdP-driven destruction is unsupported, so the reserved path never
  *       falls through to the proxy route table.</li>
+ *   <li>{@link #sessionIdentity(String, Instant)} — the display identity (signed in or not, and the
+ *       {@code preferred_username}) the application portal renders for the request's session.</li>
  * </ol>
  * The runtime is framework-agnostic (raw request pieces in, a {@link ReservedHttpResponse} out — no
  * JAX-RS / Vert.x coupling), so it is unit-testable without a container. The engine-dependent
@@ -184,6 +186,24 @@ public final class BffRuntime {
             throw new IllegalStateException("inert BFF runtime exposes no CSRF defence");
         }
         return csrfDefence;
+    }
+
+    /**
+     * Resolves the display identity of the request's browser session for a gateway-rendered page —
+     * the application portal — by delegating to the user-info fold, which reads
+     * {@code preferred_username} from the validated ID-token claims of the live session.
+     *
+     * @param cookieHeader the raw request {@code Cookie} header value, may be absent
+     * @param now          the reference instant (the session-resolution TTL anchor)
+     * @return the identity of the live session, or {@link SessionIdentity#anonymous()} when no live
+     *         session exists — always anonymous for the inert runtime, which holds no sessions
+     */
+    public SessionIdentity sessionIdentity(@Nullable String cookieHeader, Instant now) {
+        Objects.requireNonNull(now, "now");
+        if (!active) {
+            return SessionIdentity.anonymous();
+        }
+        return requireNonNull(userInfoEndpoint).sessionIdentity(cookieHeader, now);
     }
 
     /**

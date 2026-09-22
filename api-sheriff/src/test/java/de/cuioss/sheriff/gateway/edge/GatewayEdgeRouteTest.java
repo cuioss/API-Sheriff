@@ -49,6 +49,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
@@ -60,6 +61,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
@@ -68,6 +70,9 @@ import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.portal.PortalCatalog;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
+import de.cuioss.sheriff.gateway.portal.PortalRenderer;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
@@ -88,12 +93,14 @@ import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.RequestOptions;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketClientOptions;
 import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.net.PemTrustOptions;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.TrustOptions;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
@@ -320,7 +327,7 @@ class GatewayEdgeRouteTest {
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)),
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                    unconsultedTrustProfileResolver()).registerRoutes(router);
+                    unconsultedTrustProfileResolver(), PortalEndpoint.inert()).registerRoutes(router);
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
@@ -928,7 +935,7 @@ class GatewayEdgeRouteTest {
             new GatewayEdgeRoute(new RouteTable(List.of(proxyRoute(upstream.actualPort()))), loaded,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                    unconsultedTrustProfileResolver()).registerRoutes(router);
+                    unconsultedTrustProfileResolver(), PortalEndpoint.inert()).registerRoutes(router);
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
@@ -1125,8 +1132,197 @@ class GatewayEdgeRouteTest {
                     route("g", Protocol.GRPC, Require.NONE)));
             new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).egressTls(egressTls).build(),
                     new SingletonInstance<>(tokenValidator), capturing, virtualThreadExecutor, hardening,
-                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), resolver);
+                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), resolver,
+                    PortalEndpoint.inert());
             return capturing;
+        }
+    }
+
+    /**
+     * The application portal's own reserved path, driven through a live edge. The portal seam runs
+     * after the OIDC reserved paths and before route selection, so the two orderings pinned here are:
+     * a configured {@code portal.path} is answered before a prefix route that covers it (the route's
+     * upstream is never dialled), and an OIDC reserved path on the OIDC host still wins over a portal
+     * path that coincides with it. Each ordering is paired with a control that proves the other side
+     * of the seam is live, so neither assertion can pass because a handler was simply absent.
+     */
+    @Nested
+    @DisplayName("application portal answered ahead of the route table")
+    class PortalDispatch {
+
+        private static final String PORTAL_PATH = "/apps/portal";
+        private static final String OIDC_HOST = "gw.example.com";
+        private static final String ORIGIN = "https://gw.example.com";
+        private static final String USER_INFO_PATH = "/auth/userinfo";
+
+        /** What the client observed: status, the two headers the portal owns, and the body. */
+        private record Answer(int status, @Nullable String contentType, @Nullable String allow, String body) {
+        }
+
+        @Test
+        @DisplayName("a configured portal path is answered before a prefix route that covers it")
+        void portalWinsOverCoveringPrefixRoute() throws Exception {
+            // Arrange — a live upstream behind path_prefix /apps, which covers the portal path
+            AtomicBoolean upstreamReached = new AtomicBoolean();
+            HttpServer upstream = startUpstream(upstreamReached);
+            try {
+                GatewayEdgeRoute edge = newEdge(new RouteTable(List.of(appsRoute(upstream.actualPort()))),
+                        gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
+
+                // Act
+                Answer answer = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS, PORTAL_PATH);
+
+                // Assert
+                assertAll(
+                        () -> assertEquals(200, answer.status()),
+                        () -> assertEquals("text/html; charset=utf-8", answer.contentType()),
+                        () -> assertTrue(answer.body().startsWith("<!DOCTYPE html>"), answer.body()),
+                        () -> assertFalse(upstreamReached.get(),
+                                "the prefix route covering the portal path never sees the request"));
+            } finally {
+                Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("control: a sibling path and a trailing-slash variant under the same prefix are routed")
+        void siblingAndTrailingSlashPathsAreRouted() throws Exception {
+            // Arrange — the same edge; only the request path differs from the positive case
+            AtomicBoolean upstreamReached = new AtomicBoolean();
+            HttpServer upstream = startUpstream(upstreamReached);
+            try {
+                GatewayEdgeRoute edge = newEdge(new RouteTable(List.of(appsRoute(upstream.actualPort()))),
+                        gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
+
+                // Act
+                Answer sibling = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS, "/apps/other");
+                boolean siblingReached = upstreamReached.getAndSet(false);
+                Answer trailing = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS,
+                        PORTAL_PATH + "/");
+
+                // Assert — the stub upstream answers 204, which the portal never does
+                assertAll(
+                        () -> assertEquals(204, sibling.status()),
+                        () -> assertTrue(siblingReached, "a sibling path is proxied to the route's upstream"),
+                        () -> assertEquals(204, trailing.status()),
+                        () -> assertTrue(upstreamReached.get(),
+                                "a trailing-slash variant is not the portal path and is proxied"));
+            } finally {
+                Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("an unsupported method on the portal path is answered 405 by the portal, not the route")
+        void portalAnswersMethodNotAllowed() throws Exception {
+            // Arrange — the covering route allows GET only, so its own verb gate would also say 405;
+            // the portal's Allow header is what attributes the answer to the portal seam
+            AtomicBoolean upstreamReached = new AtomicBoolean();
+            HttpServer upstream = startUpstream(upstreamReached);
+            try {
+                GatewayEdgeRoute edge = newEdge(new RouteTable(List.of(appsRoute(upstream.actualPort()))),
+                        gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
+
+                // Act
+                Answer post = serve(edge, io.vertx.core.http.HttpMethod.POST, LoopbackHost.ADDRESS, PORTAL_PATH);
+                Answer head = serve(edge, io.vertx.core.http.HttpMethod.HEAD, LoopbackHost.ADDRESS, PORTAL_PATH);
+
+                // Assert
+                assertAll(
+                        () -> assertEquals(405, post.status()),
+                        () -> assertEquals("GET, HEAD", post.allow()),
+                        () -> assertEquals(200, head.status()),
+                        () -> assertEquals("", head.body()),
+                        () -> assertFalse(upstreamReached.get()));
+            } finally {
+                Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("an OIDC reserved path on the OIDC host still wins over a coinciding portal path")
+        void oidcReservedPathWinsOverPortal() throws Exception {
+            // Arrange — the portal path deliberately coincides with the user-info reserved path (boot
+            // validation refuses this; the edge ordering is what is pinned here)
+            GatewayConfig withOidc = GatewayConfig.builder().version(1).oidc(oidc()).build();
+            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), withOidc,
+                    GatewayEdgeRouteBffWiringTest.activeRuntime(
+                            GatewayEdgeRouteBffWiringTest.serverBinding(new InMemorySessionStore(16))),
+                    portal(USER_INFO_PATH));
+
+            // Act
+            Answer onOidcHost = serve(edge, io.vertx.core.http.HttpMethod.GET, OIDC_HOST, USER_INFO_PATH);
+            Answer onOtherHost = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS,
+                    USER_INFO_PATH);
+
+            // Assert — 401 is the user-info handler's own no-session answer; the control proves the
+            // portal is live for the same path on a host the OIDC registry does not claim
+            assertAll(
+                    () -> assertEquals(401, onOidcHost.status(), "the OIDC reserved path is dispatched first"),
+                    () -> assertFalse(onOidcHost.body().contains("<!DOCTYPE html>"), onOidcHost.body()),
+                    () -> assertEquals(200, onOtherHost.status(), "the portal answers its path on any host"),
+                    () -> assertTrue(onOtherHost.body().startsWith("<!DOCTYPE html>"), onOtherHost.body()));
+        }
+
+        private PortalEndpoint portal(String path) {
+            return PortalEndpoint.of(PortalConfig.builder().path(path).title("Portal").build(), PortalCatalog.empty(),
+                    PortalRenderer.builtIn(), (cookie, now) -> SessionIdentity.anonymous(), null, false, "/");
+        }
+
+        private OidcConfig oidc() {
+            return OidcConfig.builder()
+                    .redirectUri(ORIGIN + "/auth/callback")
+                    .logout(OidcConfig.Logout.builder()
+                            .path("/auth/logout")
+                            .postLogoutRedirectUri(ORIGIN + "/auth/logout/return")
+                            .backchannelPath("/auth/backchannel")
+                            .build())
+                    .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build())
+                    .build();
+        }
+
+        private HttpServer startUpstream(AtomicBoolean reached) throws Exception {
+            return Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                reached.set(true);
+                request.response().setStatusCode(204).end();
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+        }
+
+        private ResolvedRoute appsRoute(int upstreamPort) {
+            return ResolvedRoute.builder()
+                    .id("apps")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/apps").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                    .build();
+        }
+
+        private Answer serve(GatewayEdgeRoute edge, io.vertx.core.http.HttpMethod method, String host, String uri)
+                throws Exception {
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            HttpClient client = vertx.createHttpClient();
+            try {
+                RequestOptions options = new RequestOptions()
+                        .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                        .setHost(host).setPort(front.actualPort())
+                        .setMethod(method).setURI(uri);
+                return Awaits.connect(client.request(options)
+                                .compose(request -> request.putHeader("Accept", "text/html").send())
+                                .compose(response -> response.body().map(body -> new Answer(response.statusCode(),
+                                        response.getHeader("Content-Type"), response.getHeader("Allow"),
+                                        body == null ? "" : body.toString()))),
+                        "the edge response to " + method + " " + uri);
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
         }
     }
 
@@ -1178,9 +1374,14 @@ class GatewayEdgeRouteTest {
     }
 
     private GatewayEdgeRoute newEdge(RouteTable table) {
-        return new GatewayEdgeRoute(table, gatewayConfig, new SingletonInstance<>(tokenValidator), vertx,
-                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                unconsultedTrustProfileResolver());
+        return newEdge(table, gatewayConfig, BffRuntime.inert(), PortalEndpoint.inert());
+    }
+
+    private GatewayEdgeRoute newEdge(RouteTable table, GatewayConfig config, BffRuntime runtime,
+            PortalEndpoint portal) {
+        return new GatewayEdgeRoute(table, config, new SingletonInstance<>(tokenValidator), vertx,
+                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), runtime,
+                unconsultedTrustProfileResolver(), portal);
     }
 
     private static EgressTrustProfileResolver unconsultedTrustProfileResolver() {
