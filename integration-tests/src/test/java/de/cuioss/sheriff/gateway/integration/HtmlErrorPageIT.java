@@ -19,7 +19,6 @@ import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -186,7 +185,7 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                         "the gateway must never replace an origin's body with the portal page"),
                 () -> assertEquals(API_ANCHOR_CSP, relayed.header("Content-Security-Policy"),
                         "a relayed /proxy response carries the api anchor's policy, not the portal's"),
-                () -> assertNotEquals("no-store", relayed.header("Cache-Control"),
+                () -> assertFalse(hasCacheDirective(relayed.header("Cache-Control"), "no-store"),
                         "the error page's no-store must not be imposed on a relayed response"));
     }
 
@@ -246,6 +245,27 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                                 "this exit renders RFC 9457 problem+json; content type was " + response.contentType());
                     }
                 });
+    }
+
+    /**
+     * Whether a {@code Cache-Control} value carries the given directive in any position, so a
+     * multi-directive value such as {@code private, no-store} is recognised as well as a bare one.
+     *
+     * @param header    the {@code Cache-Control} value, {@code null} when the header is absent
+     * @param directive the directive name to look for, matched case-insensitively
+     * @return {@code false} for an absent header, otherwise whether any comma-separated directive
+     *         equals {@code directive}
+     */
+    private static boolean hasCacheDirective(String header, String directive) {
+        if (header == null) {
+            return false;
+        }
+        for (String candidate : header.split(",")) {
+            if (candidate.strip().equalsIgnoreCase(directive)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String contentType(ExtractableResponse<Response> response) {
