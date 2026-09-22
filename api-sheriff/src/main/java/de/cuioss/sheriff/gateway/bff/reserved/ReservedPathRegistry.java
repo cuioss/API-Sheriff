@@ -16,9 +16,12 @@
 package de.cuioss.sheriff.gateway.bff.reserved;
 
 import java.net.URI;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -95,14 +98,43 @@ public final class ReservedPathRegistry {
         if (config == null) {
             return new ReservedPathRegistry(null, Map.of());
         }
-        String redirectUri = config.redirectUri();
-        Optional<URI> redirect = redirectUri == null ? Optional.empty() : parseUri(redirectUri);
-        String host = redirect.map(URI::getHost).orElse(null);
+        String host = redirectUri(config).map(URI::getHost).orElse(null);
         if (host == null) {
             return new ReservedPathRegistry(null, Map.of());
         }
+        return new ReservedPathRegistry(host, pathsOf(config));
+    }
+
+    /**
+     * Derives the configured reserved OIDC path set <strong>host-independently</strong>: every path
+     * the {@code oidc} block reserves, through the same normalisation {@link #from(OidcConfig)}
+     * registers them with. The boot-time configuration validator uses it to refuse another
+     * gateway-owned exact path — the application portal's {@code portal.path} — that would collide
+     * with a reserved OIDC path; comparing without the host is deliberate, because such a path
+     * matches on any host and would therefore shadow, or be shadowed by, the OIDC carve-out.
+     * <p>
+     * Wherever {@link #from(OidcConfig)} yields a non-empty registry, every returned path
+     * {@linkplain #match(String, String) matches} it on the OIDC host.
+     *
+     * @param config the global OIDC configuration, {@code null} when the gateway serves no BFF variant
+     * @return the reserved paths in declaration order, empty without an {@code oidc} block
+     */
+    public static Set<String> reservedPaths(@Nullable OidcConfig config) {
+        if (config == null) {
+            return Set.of();
+        }
+        return Collections.unmodifiableSet(new LinkedHashSet<>(pathsOf(config).keySet()));
+    }
+
+    /**
+     * The single derivation of the reserved path map shared by {@link #from(OidcConfig)} and
+     * {@link #reservedPaths(OidcConfig)}: the callback path of {@code redirect_uri} first, then the
+     * logout, logout-return, back-channel, user-info and login paths, keeping the first
+     * registration for a path.
+     */
+    private static Map<String, ReservedEndpoint> pathsOf(OidcConfig config) {
         Map<String, ReservedEndpoint> paths = new LinkedHashMap<>();
-        redirect.map(URI::getPath).filter(ReservedPathRegistry::isAbsolutePath)
+        redirectUri(config).map(URI::getPath).filter(ReservedPathRegistry::isAbsolutePath)
                 .ifPresent(path -> paths.put(path, ReservedEndpoint.CALLBACK));
         OidcConfig.Logout logout = config.logout();
         if (logout != null) {
@@ -118,7 +150,12 @@ public final class ReservedPathRegistry {
         if (login != null) {
             reservePath(paths, login.path(), ReservedEndpoint.LOGIN);
         }
-        return new ReservedPathRegistry(host, paths);
+        return paths;
+    }
+
+    private static Optional<URI> redirectUri(OidcConfig config) {
+        String redirectUri = config.redirectUri();
+        return redirectUri == null ? Optional.empty() : parseUri(redirectUri);
     }
 
     /**

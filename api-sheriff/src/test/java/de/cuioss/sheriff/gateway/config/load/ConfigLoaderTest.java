@@ -39,12 +39,14 @@ import java.util.stream.Stream;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
+import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -2327,5 +2329,198 @@ class ConfigLoaderTest {
                         + "pattern never ran on the oversized input, got: " + exception.errors());
         assertTrue(contentTypeErrors.stream().anyMatch(error -> error.message().contains("255")),
                 () -> "expected the maxLength refusal to name the 255-character cap, got: " + contentTypeErrors);
+    }
+
+    private static final String CATALOG_ENDPOINT = """
+            endpoint:
+              id: orders
+              auth:
+                require: none
+              %s
+              routes:
+                - id: orders-home
+                  match:
+                    path: /orders
+                  redirect:
+                    location: /orders/
+                    status: 302
+            """;
+
+    private void writeCatalogEndpoint(String catalogBlock) throws IOException {
+        writeConfig("endpoints/orders.yaml", CATALOG_ENDPOINT.formatted(catalogBlock));
+    }
+
+    private List<ConfigError> loadErrors() {
+        ConfigLoader loader = loader(Map.of());
+        return assertThrows(ConfigLoadException.class, loader::load).errors();
+    }
+
+    private static void assertErrorAt(List<ConfigError> errors, String file, String pointerPrefix) {
+        assertTrue(errors.stream().anyMatch(error -> file.equals(error.file())
+                        && error.pointer().startsWith(pointerPrefix)),
+                () -> "expected a " + file + " error under " + pointerPrefix + ", got: " + errors);
+    }
+
+    @Test
+    void bindsAFullPortalBlock() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                portal:
+                  path: /
+                  title: Applications
+                  template_dir: /app/sheriff-config/portal
+                  cache_seconds: 60
+                  error_pages: true
+                """);
+
+        GatewayConfig gateway = loader(Map.of()).load().gateway();
+
+        assertEquals(new PortalConfig("/", "Applications", "/app/sheriff-config/portal", 60, true),
+                gateway.portal());
+    }
+
+    @Test
+    void bindsAMinimalPortalBlockWithAbsentOptionalKeys() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                portal:
+                  path: /portal
+                  title: Applications
+                """);
+
+        PortalConfig portal = loader(Map.of()).load().gateway().portal();
+
+        assertNotNull(portal);
+        assertAll("omitted optional portal keys bind as absent and resolve to their defaults",
+                () -> assertNull(portal.templateDir()),
+                () -> assertNull(portal.cacheSeconds()),
+                () -> assertNull(portal.errorPages()),
+                () -> assertEquals(0, portal.effectiveCacheSeconds()),
+                () -> assertFalse(portal.effectiveErrorPages()));
+    }
+
+    @Test
+    void omittedPortalBlockBindsAsAbsent() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+
+        assertNull(loader(Map.of()).load().gateway().portal());
+    }
+
+    @Test
+    void refusesAnUnknownKeyInsideThePortalBlock() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                portal:
+                  path: /
+                  title: Applications
+                  theme: dark
+                """);
+
+        assertErrorAt(loadErrors(), "gateway.yaml", "/portal");
+    }
+
+    @Test
+    void refusesANegativeCacheSeconds() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                portal:
+                  path: /
+                  title: Applications
+                  cache_seconds: -1
+                """);
+
+        assertErrorAt(loadErrors(), "gateway.yaml", "/portal/cache_seconds");
+    }
+
+    @Test
+    void refusesAPortalBlockWithoutPath() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                portal:
+                  title: Applications
+                """);
+
+        List<ConfigError> errors = loadErrors();
+
+        assertErrorAt(errors, "gateway.yaml", "/portal");
+        assertTrue(errors.stream().anyMatch(error -> error.message().contains("path")),
+                () -> "expected the missing required key to be named, got: " + errors);
+    }
+
+    @Test
+    void refusesAPortalPathWithoutLeadingSlash() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                portal:
+                  path: portal
+                  title: Applications
+                """);
+
+        assertErrorAt(loadErrors(), "gateway.yaml", "/portal/path");
+    }
+
+    @Test
+    void bindsAFullCatalogBlock() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeCatalogEndpoint("""
+                catalog:
+                    title: Orders
+                    description: Order management
+                    entry: /orders/
+                    order: 10
+                """.strip().replace("\n", "\n  "));
+
+        EndpointConfig endpoint = loader(Map.of()).load().endpoints().getFirst();
+
+        assertEquals(new CatalogConfig("Orders", "Order management", "/orders/", 10), endpoint.catalog());
+    }
+
+    @Test
+    void omittedCatalogBlockBindsAsAbsent() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeCatalogEndpoint("enabled: true");
+
+        assertNull(loader(Map.of()).load().endpoints().getFirst().catalog());
+    }
+
+    @Test
+    void refusesAnUnknownKeyInsideTheCatalogBlock() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeCatalogEndpoint("""
+                catalog:
+                    title: Orders
+                    entry: /orders/
+                    icon: cart.svg
+                """.strip().replace("\n", "\n  "));
+
+        assertErrorAt(loadErrors(), "endpoints/orders.yaml", "/endpoint/catalog");
+    }
+
+    @Test
+    void refusesACatalogBlockWithoutEntry() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeCatalogEndpoint("""
+                catalog:
+                    title: Orders
+                """.strip().replace("\n", "\n  "));
+
+        List<ConfigError> errors = loadErrors();
+
+        assertErrorAt(errors, "endpoints/orders.yaml", "/endpoint/catalog");
+        assertTrue(errors.stream().anyMatch(error -> error.message().contains("entry")),
+                () -> "expected the missing required key to be named, got: " + errors);
+    }
+
+    @ParameterizedTest(name = "refuses the catalog entry {0}")
+    @ValueSource(strings = {"https://evil.example/", "//evil.example", "orders", "'/\\\\evil.example'"})
+    void refusesACatalogEntryFailingTheSchemaPattern(String entry) throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeCatalogEndpoint("""
+                catalog:
+                    title: Orders
+                    entry: %s
+                """.formatted(entry).strip().replace("\n", "\n  "));
+
+        assertErrorAt(loadErrors(), "endpoints/orders.yaml", "/endpoint/catalog/entry");
     }
 }

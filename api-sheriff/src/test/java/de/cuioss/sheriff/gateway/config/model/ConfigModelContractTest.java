@@ -100,6 +100,26 @@ class ConfigModelContractTest {
                 .forwarded(new ForwardedConfig(List.of("10.0.0.0/8"), true, "both"))
                 .tokenValidation(tokenValidationConfig())
                 .oidc(oidcConfig())
+                .portal(portalConfig())
+                .build();
+    }
+
+    private static PortalConfig portalConfig() {
+        return PortalConfig.builder()
+                .path("/")
+                .title("Applications")
+                .templateDir("/app/portal")
+                .cacheSeconds(60)
+                .errorPages(true)
+                .build();
+    }
+
+    private static CatalogConfig catalogConfig() {
+        return CatalogConfig.builder()
+                .title("Orders")
+                .description("Order management")
+                .entry("/orders/")
+                .order(10)
                 .build();
     }
 
@@ -188,6 +208,7 @@ class ConfigModelContractTest {
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .upstreamDefaults(UpstreamDefaultsConfig.defaults())
                 .routes(List.of(routeConfig()))
+                .catalog(catalogConfig())
                 .build();
     }
 
@@ -304,6 +325,10 @@ class ConfigModelContractTest {
                             GatewayConfig.builder().version(99).build()),
                     voCase("Metadata", new Metadata("v1"), new Metadata("v1"),
                             new Metadata("v2")),
+                    voCase("PortalConfig", portalConfig(), portalConfig(),
+                            new PortalConfig("/portal", "Applications", null, null, null)),
+                    voCase("CatalogConfig", catalogConfig(), catalogConfig(),
+                            new CatalogConfig("Billing", null, "/billing/", null)),
                     voCase("TlsConfig", tlsConfig(), tlsConfig(), TlsConfig.builder().build()),
                     voCase("ManagementConfig", managementConfig(), managementConfig(),
                             ManagementConfig.builder().build()),
@@ -531,20 +556,34 @@ class ConfigModelContractTest {
         void gatewayConfigBuilderMatchesConstructor() {
             GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
                     List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null, null,
-                    null);
+                    null, portalConfig());
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
-                    .anchors(Map.of("api", anchorConfig())).build();
+                    .anchors(Map.of("api", anchorConfig())).portal(portalConfig()).build();
             assertEquals(viaCtor, viaBuilder);
+            assertEquals(portalConfig(), viaCtor.portal());
         }
 
         @Test
         void endpointConfigBuilderMatchesConstructor() {
             EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", "api",
-                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, List.of());
+                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, List.of(), catalogConfig());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
                     .anchor("api").auth(auth()).scopes(List.of("orders.read")).allowedMethods(List.of(HttpMethod.GET))
-                    .build();
+                    .catalog(catalogConfig()).build();
             assertEquals(viaCtor, viaBuilder);
+            assertEquals(catalogConfig(), viaCtor.catalog());
+        }
+
+        @Test
+        void portalConfigBuilderMatchesConstructor() {
+            PortalConfig viaCtor = new PortalConfig("/", "Applications", "/app/portal", 60, true);
+            assertEquals(viaCtor, portalConfig());
+        }
+
+        @Test
+        void catalogConfigBuilderMatchesConstructor() {
+            CatalogConfig viaCtor = new CatalogConfig("Orders", "Order management", "/orders/", 10);
+            assertEquals(viaCtor, catalogConfig());
         }
 
         @Test
@@ -585,7 +624,7 @@ class ConfigModelContractTest {
         @Test
         void gatewayConfigNormalizesAllAbsentComponents() {
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null);
+                    null, null, null, null);
             assertNull(cfg.metadata());
             assertNull(cfg.tls());
             assertNull(cfg.management());
@@ -600,6 +639,34 @@ class ConfigModelContractTest {
             assertNull(cfg.oidc());
             assertNull(cfg.edgeHardening());
             assertNull(cfg.egressTls());
+            assertNull(cfg.portal(), "an omitted portal block keeps the portal off");
+        }
+
+        @Test
+        void portalConfigResolvesAbsentOptionalMembersToTheirDefaults() {
+            PortalConfig cfg = new PortalConfig("/", "Applications", null, null, null);
+            assertAll("an omitted template_dir, cache_seconds and error_pages resolve to the documented defaults",
+                    () -> assertNull(cfg.templateDir()),
+                    () -> assertNull(cfg.cacheSeconds()),
+                    () -> assertNull(cfg.errorPages()),
+                    () -> assertEquals(PortalConfig.DEFAULT_CACHE_SECONDS, cfg.effectiveCacheSeconds()),
+                    () -> assertFalse(cfg.effectiveErrorPages()));
+        }
+
+        @Test
+        void portalConfigReturnsDeclaredOptionalMembers() {
+            PortalConfig cfg = portalConfig();
+            assertEquals(60, cfg.effectiveCacheSeconds());
+            assertTrue(cfg.effectiveErrorPages());
+            assertFalse(new PortalConfig("/", "Applications", null, 0, false).effectiveErrorPages(),
+                    "a declared error_pages: false stays false");
+        }
+
+        @Test
+        void catalogConfigKeepsAbsentOptionalMembersAbsent() {
+            CatalogConfig cfg = new CatalogConfig("Orders", null, "/orders/", null);
+            assertNull(cfg.description());
+            assertNull(cfg.order());
         }
 
         @Test
@@ -668,9 +735,10 @@ class ConfigModelContractTest {
 
         @Test
         void endpointConfigNormalizesAbsentCollectionsAndNullables() {
-            EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null, null);
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
+            assertNull(cfg.catalog(), "an endpoint without a catalog block is not listed on the portal");
             assertTrue(cfg.scopes().isEmpty(), "an absent endpoint scopes list normalizes to empty");
             assertTrue(cfg.allowedMethods().isEmpty());
             assertNull(cfg.upstreamDefaults());
@@ -876,14 +944,40 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private EndpointConfig endpointConfigWith(String id, String baseUrl) {
-            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, List.of());
+            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, List.of(), null);
         }
 
         @Test
         void endpointConfigAcceptsAnAbsentAuthBlock() {
             EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), List.of(), null,
-                    List.of());
+                    List.of(), null);
             assertNull(cfg.auth(), "an anchored endpoint may omit its auth block");
+        }
+
+        @Test
+        void portalConfigRequiresPathAndTitle() {
+            NullPointerException noPath = assertThrows(NullPointerException.class, () -> portalWith(null, "Apps"));
+            assertEquals("path", noPath.getMessage());
+            NullPointerException noTitle = assertThrows(NullPointerException.class, () -> portalWith("/", null));
+            assertEquals("title", noTitle.getMessage());
+        }
+
+        @Test
+        void catalogConfigRequiresTitleAndEntry() {
+            NullPointerException noTitle = assertThrows(NullPointerException.class,
+                    () -> catalogWith(null, "/orders/"));
+            assertEquals("title", noTitle.getMessage());
+            NullPointerException noEntry = assertThrows(NullPointerException.class,
+                    () -> catalogWith("Orders", null));
+            assertEquals("entry", noEntry.getMessage());
+        }
+
+        private PortalConfig portalWith(String path, String title) {
+            return new PortalConfig(path, title, null, null, null);
+        }
+
+        private CatalogConfig catalogWith(String title, String entry) {
+            return new CatalogConfig(title, null, entry, null);
         }
 
         @Test
