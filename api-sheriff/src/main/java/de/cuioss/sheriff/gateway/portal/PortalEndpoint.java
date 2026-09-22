@@ -46,7 +46,8 @@ import org.jspecify.annotations.Nullable;
  * {@link PortalRenderer} over the fixed {@link PortalPageModel}; {@code HEAD} answers the same status
  * and headers with an empty body; every other method answers {@code 405} with
  * {@code Allow: GET, HEAD}. The page's cache headers come from the {@link PortalResponseEnvelope}: a
- * page naming a signed-in user is {@code no-store}, a session-free page is cacheable for
+ * page rendered for an authenticated session ({@link SessionIdentity#authenticated()}) is
+ * {@code no-store} whether or not it carries a username, a session-free page is cacheable for
  * {@code cache_seconds} and, with an active BFF runtime, announces {@code Vary: Cookie}. The model's
  * links follow the portal's login/logout contract: with an active BFF runtime,
  * {@code links.login} is {@code oidc.login.path} carrying the URL-encoded portal path as

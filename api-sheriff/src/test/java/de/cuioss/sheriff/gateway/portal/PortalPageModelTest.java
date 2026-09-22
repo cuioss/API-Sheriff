@@ -69,7 +69,7 @@ class PortalPageModelTest {
     }
 
     private static List<?> apps(Map<String, Object> model) {
-        return assertInstanceOf(List.class, model.get(PortalPageModel.APPS));
+        return assertInstanceOf(List.class, model.get(PortalPageModel.KEY_APPS));
     }
 
     private static Map<?, ?> app(List<?> apps, int index) {
@@ -171,32 +171,42 @@ class PortalPageModelTest {
     @DisplayName("The model map and its nested blocks are unmodifiable")
     void modelIsUnmodifiable() {
         Map<String, Object> model = base().build().toMap();
+        Map<?, ?> session = block(model, "session");
+        List<?> apps = apps(model);
 
         assertAll(
                 () -> assertThrows(UnsupportedOperationException.class, () -> model.put("extra", "x")),
-                () -> assertThrows(UnsupportedOperationException.class, () -> block(model, "session").clear()),
-                () -> assertThrows(UnsupportedOperationException.class, () -> apps(model).clear()));
+                () -> assertThrows(UnsupportedOperationException.class, session::clear),
+                () -> assertThrows(UnsupportedOperationException.class, apps::clear));
     }
 
     @Test
     @DisplayName("Refuses a username on an anonymous model and a half-declared error block")
     void refusesInconsistentModels() {
+        PortalPageModel.PortalPageModelBuilder anonymousWithUsername = base().username("alice");
+        PortalPageModel.PortalPageModelBuilder statusWithoutTitle = base().errorStatus(404);
+        PortalPageModel.PortalPageModelBuilder titleWithoutStatus = base().errorTitle("Not Found");
+
         assertAll(
-                () -> assertThrows(IllegalArgumentException.class, () -> base().username("alice").build()),
-                () -> assertThrows(IllegalArgumentException.class, () -> base().errorStatus(404).build()),
-                () -> assertThrows(IllegalArgumentException.class, () -> base().errorTitle("Not Found").build()));
+                () -> assertThrows(IllegalArgumentException.class, anonymousWithUsername::build),
+                () -> assertThrows(IllegalArgumentException.class, statusWithoutTitle::build),
+                () -> assertThrows(IllegalArgumentException.class, titleWithoutStatus::build));
     }
 
     @Test
     @DisplayName("Requires the title, the catalog and the context path")
     void requiresMandatoryMembers() {
+        PortalPageModel.PortalPageModelBuilder withoutTitle = PortalPageModel.builder()
+                .catalog(catalog()).contextPath("/");
+        PortalPageModel.PortalPageModelBuilder withoutCatalog = PortalPageModel.builder()
+                .title("Portal").contextPath("/");
+        PortalPageModel.PortalPageModelBuilder withoutContextPath = PortalPageModel.builder()
+                .title("Portal").catalog(catalog());
+
         assertAll(
-                () -> assertThrows(NullPointerException.class,
-                        () -> PortalPageModel.builder().catalog(catalog()).contextPath("/").build()),
-                () -> assertThrows(NullPointerException.class,
-                        () -> PortalPageModel.builder().title("Portal").contextPath("/").build()),
-                () -> assertThrows(NullPointerException.class,
-                        () -> PortalPageModel.builder().title("Portal").catalog(catalog()).build()));
+                () -> assertThrows(NullPointerException.class, withoutTitle::build),
+                () -> assertThrows(NullPointerException.class, withoutCatalog::build),
+                () -> assertThrows(NullPointerException.class, withoutContextPath::build));
     }
 
     private static void collectNonContractValues(String path, Object value, List<String> strays) {

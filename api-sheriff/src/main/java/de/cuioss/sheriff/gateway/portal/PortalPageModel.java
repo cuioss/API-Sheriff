@@ -79,19 +79,19 @@ String contextPath,
 @Nullable String errorTitle) {
 
     /** Top-level key: the configured portal title. */
-    public static final String TITLE = "title";
+    public static final String KEY_TITLE = "title";
     /** Top-level key: the catalog entries. */
-    public static final String APPS = "apps";
+    public static final String KEY_APPS = "apps";
     /** Top-level key: the session block. */
-    public static final String SESSION = "session";
+    public static final String KEY_SESSION = "session";
     /** Top-level key: the login/logout links block. */
-    public static final String LINKS = "links";
+    public static final String KEY_LINKS = "links";
     /** Top-level key: the recognised notice. */
-    public static final String NOTICE = "notice";
+    public static final String KEY_NOTICE = "notice";
     /** Top-level key: the application context path. */
-    public static final String CONTEXT_PATH = "context_path";
+    public static final String KEY_CONTEXT_PATH = "context_path";
     /** Top-level key: the error block, {@code null} outside an HTML error page. */
-    public static final String ERROR = "error";
+    public static final String KEY_ERROR = "error";
 
     /** Key of an app entry: its title. */
     public static final String APP_TITLE = "title";
@@ -123,9 +123,9 @@ String contextPath,
      *                                  exactly one of {@code errorStatus} / {@code errorTitle} is set
      */
     public PortalPageModel {
-        Objects.requireNonNull(title, "title");
-        Objects.requireNonNull(catalog, "catalog");
-        Objects.requireNonNull(contextPath, "contextPath");
+        Objects.requireNonNull(title, "title must not be null");
+        Objects.requireNonNull(catalog, "catalog must not be null");
+        Objects.requireNonNull(contextPath, "contextPath must not be null");
         if (!authenticated && username != null) {
             throw new IllegalArgumentException("an anonymous page model carries no username");
         }
@@ -140,13 +140,13 @@ String contextPath,
      */
     public Map<String, Object> toMap() {
         Map<String, @Nullable Object> model = new LinkedHashMap<>();
-        model.put(TITLE, title);
-        model.put(APPS, catalog.entries().stream().map(PortalPageModel::app).toList());
-        model.put(SESSION, block(SESSION_AUTHENTICATED, authenticated, SESSION_USERNAME, username));
-        model.put(LINKS, block(LINK_LOGIN, loginLink, LINK_LOGOUT, logoutLink));
-        model.put(NOTICE, notice == null ? null : notice.wireValue());
-        model.put(CONTEXT_PATH, contextPath);
-        model.put(ERROR, errorStatus == null ? null : block(ERROR_STATUS, errorStatus, ERROR_TITLE, errorTitle));
+        model.put(KEY_TITLE, title);
+        model.put(KEY_APPS, catalog.entries().stream().map(PortalPageModel::app).toList());
+        model.put(KEY_SESSION, block(SESSION_AUTHENTICATED, authenticated, SESSION_USERNAME, username));
+        model.put(KEY_LINKS, block(LINK_LOGIN, loginLink, LINK_LOGOUT, logoutLink));
+        model.put(KEY_NOTICE, notice == null ? null : notice.wireValue());
+        model.put(KEY_CONTEXT_PATH, contextPath);
+        model.put(KEY_ERROR, errorStatus == null ? null : block(ERROR_STATUS, errorStatus, ERROR_TITLE, errorTitle));
         return unmodifiable(model);
     }
 

@@ -45,7 +45,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * the login/logout links derive from, and the application context path. A template the renderer
  * refuses (missing, unreadable, unparseable, or using an escape-bypass or namespaced expression)
  * aborts startup through the structured {@link ConfigLogMessages.ERROR#PORTAL_TEMPLATE_REFUSED}
- * record, so a gateway never serves with a portal it cannot render safely. On success the
+ * record, so a gateway never serves with a portal it cannot render safely. The boot checks do not
+ * validate expression keys against the page model: a template referencing a key the model does not
+ * carry still boots and fails at render time, under strict rendering. On success the
  * {@link ApiSheriffLogMessages.INFO#PORTAL_ENABLED} record names the path, the active entry count
  * and the template source.
  * <p>

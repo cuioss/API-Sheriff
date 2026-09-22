@@ -74,7 +74,10 @@ import org.jspecify.annotations.Nullable;
  * spelling — and any namespaced expression, refuses the template with a
  * {@link TemplateRefusedException} naming the template and the line — the second, independent layer
  * behind the missing raw resolver. A missing or unreadable file and an unparseable template are
- * refusals too, so a renderer that exists is one whose template is known to be usable.
+ * refusals too, so a renderer that exists is one whose template was found, parsed and cleared of
+ * escape bypasses and namespaced expressions. The boot checks do <em>not</em> validate expression
+ * keys against {@link PortalPageModel}: a reference to a key the model does not carry parses
+ * cleanly and fails only at render time, under strict rendering.
  * <p>
  * Immutable after construction; thread-safe — a parsed Qute template may be rendered concurrently.
  *

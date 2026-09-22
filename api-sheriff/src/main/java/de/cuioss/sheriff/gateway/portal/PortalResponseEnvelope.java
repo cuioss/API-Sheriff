@@ -30,8 +30,9 @@ import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
  * Every such response carries {@code Content-Type: text/html; charset=utf-8} and
  * {@code X-Content-Type-Options: nosniff}. The cache policy depends on what the body carries:
  * <ul>
- *   <li>a response carrying session data (the page names a signed-in user) and every HTML error page
- *       is {@code Cache-Control: no-store} — neither may ever be replayed from a cache;</li>
+ *   <li>a response carrying session data (the page is rendered for an authenticated session, whether
+ *       or not that session carries a username) and every HTML error page is
+ *       {@code Cache-Control: no-store} — neither may ever be replayed from a cache;</li>
  *   <li>a session-free overview page is {@code Cache-Control: max-age=<cache_seconds>}; when the BFF
  *       runtime is active it additionally announces {@code Vary: Cookie}, because the anonymous page
  *       must never be served from cache to a browser that has since signed in. The edge merges the

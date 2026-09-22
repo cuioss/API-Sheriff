@@ -482,10 +482,11 @@ class PortalEndpointTest {
         @DisplayName("renderError refuses on an endpoint whose error pages are off, and on the inert endpoint")
         void refusesWhenDisabled() {
             PortalEndpoint disabled = endpoint(ANONYMOUS, null, false);
+            PortalEndpoint inert = PortalEndpoint.inert();
 
             assertAll(
                     () -> assertThrows(IllegalStateException.class, () -> disabled.renderError(404)),
-                    () -> assertThrows(IllegalStateException.class, () -> PortalEndpoint.inert().renderError(404)));
+                    () -> assertThrows(IllegalStateException.class, () -> inert.renderError(404)));
         }
 
         @ParameterizedTest
