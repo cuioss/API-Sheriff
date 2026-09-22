@@ -1,0 +1,185 @@
+= ADR-0050: A JWT whose type the engine exposes no entry point for is verified signature-only and its claim set is the caller's authority
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A JWT of a type the token-validation engine exposes no entry point for is verified through a signature-only path — the engine's own ID-token pipeline minus its final claim-validation stage — and every claim rule of that token's own specification is enforced by the caller, which becomes the single authority over its type's claim set; the trust boundary is unmoved because signature, issuer-configuration and header-posture checks all still run, and only ID-token claim semantics are dropped.
+// tags: token-validation, jwt, bff, back-channel-logout, oidc, engine-seam, trust-boundary, claim-validation, layering
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+The token-validation engine exposes one public validation entry point per token *type* —
+access token, ID token, refresh token — and each entry point imposes that type's mandatory-claim
+set as a non-negotiable part of the call. That shape is correct for the types it names: a caller
+asking for an access token wants the access-token rules, and getting them without having to
+restate them is the whole value of the engine.
+
+It leaves a structural gap. A gateway that speaks more of the OAuth/OIDC surface than bearer
+authentication eventually has to verify a JWT that is *neither* of the exposed types. Such a token
+is minted by the same identity provider, signed by the same keys, and published in the same JWKS —
+it is, cryptographically, exactly as much within the trust boundary as a bearer token. What it does
+not share is the claim set. Its own specification prescribes a different set of mandatory claims,
+and prescribes the *absence* of some the exposed types require.
+
+The OIDC back-channel logout token is the instance that forces the question. Per the
+back-channel-logout specification it carries `iss`, `aud`, `iat`, `jti` and `events`, plus `sub`
+*and/or* `sid`. It has no `exp`. It need not carry `sub` at all. `azp` is not part of its claim set.
+Every one of those divergences collides with the ID-token rules.
+
+That leaves two shapes for any answer, and the choice between them is the architectural question:
+
+* *Borrow the nearest entry point.* Drive the foreign token through the ID-token pipeline and accept
+  its claim verdict. The failure mode is not a corner case — it is the specification's own normal
+  form: a spec-valid `sid`-only logout token is rejected on claims its specification never required,
+  before any gateway-owned check is ever reached. A gateway that conforms to the identity provider's
+  spelling of the protocol is then structurally unable to accept the protocol's ordinary traffic.
+* *Reimplement the verification.* Write a local decode-and-verify path for the foreign type. The
+  failure mode is a second, divergent implementation of the one thing that must never diverge: which
+  issuers are configured, which algorithms are acceptable, and how a signature is checked.
+
+Both are bad in the same way — they answer a *claim-semantics* question with a *cryptography*
+mechanism. The structural observation that resolves it is that the engine's pipeline already
+separates the two: signature verification and claim validation are distinct stages, and only the
+public entry points fuse them.
+
+== Decision
+
+*A JWT whose type the engine exposes no entry point for is verified signature-only, and its claim
+set is the caller's authority.*
+
+Verification runs precisely the engine's own ID-token pipeline *minus its final claim-validation
+stage*, over the same per-issuer collaborators the bearer path uses:
+
+. decode the token — size, structure and base64 bounds enforced by the engine's parser;
+. resolve the configured issuer by the token's `iss`, refusing an unknown *or disabled* issuer;
+. the engine's header validator — algorithm posture and issuer agreement in the JWT header;
+. the engine's signature validator — the cryptographic check against that issuer's JWKS;
+. the engine's token builder — mapping the verified body into claims, performing no validation.
+
+The path allocates nothing per request: the per-issuer collaborators are resolved once at
+construction, and it increments the *same* shared security-event counter the bearer path does, so a
+refusal here is counted exactly as a refusal there.
+
+*Everything the omitted stage would have enforced is the caller's responsibility, deliberately.*
+Issuer equality, audience, freshness and the token's own required claims are not dropped — they are
+*relocated* to the component that knows the token's specification. That component becomes the single
+authority over its type's claim set, which is the property the decision buys: one place to read the
+back-channel-logout claim rules, and one place a spec revision lands.
+
+*This is not a weakening of the trust boundary, and the boundary's position is unchanged.* A token
+that fails signature verification, names an issuer the gateway does not configure, names a
+configured-but-disabled issuer, or carries an algorithm the issuer's key does not support is refused
+on this path exactly as on the bearer path. The only checks dropped are the ones that encode
+*ID-token* claim semantics — rules about a different token type that this token was never subject
+to.
+
+*The verifier is signature-only by construction, not by convention.* Its returned value carries the
+mapped claims and no claim verdict, so a caller cannot mistake it for a validated token: there is no
+verdict to misread. The name states the same thing the type does.
+
+*The attacker-controlled identifier that reaches a diagnostic is sanitized at the point of
+interpolation.* The issuer identifier is echoed in the unknown-issuer refusal because without it an
+operator cannot distinguish a typo in the gateway's own configuration from a token genuinely minted
+elsewhere. It is also, at that moment, unverified and caller-supplied, and the message reaches a
+log on an unauthenticated path — so control characters are stripped and the value is bounded before
+it is interpolated, closing the log-injection vector (CWE-117) rather than trading the diagnostic
+away for it.
+
+== Consequences
+
+=== Positive
+
+* The gateway can speak the protocol as the identity provider spells it. A spec-valid `sid`-only
+  logout token is accepted, because nothing rejects it on rules from a different token type.
+* There is exactly one implementation of "is this signed by a configured issuer". The cryptography,
+  the issuer resolution and the algorithm posture are the engine's, not a local copy, so an upstream
+  hardening of any of the three reaches this path with no local change.
+* Claim authority is singular and legible. For each foreign token type there is one component that
+  owns its claim rules, and a reader looking for them has one place to look.
+* Refusals on this path are observable on the same terms as the bearer path, through the same
+  security-event counter — so a spike is visible without a second metrics vocabulary.
+* The seam generalises. A second foreign token type needs a claim-validating caller, not a second
+  verification path.
+
+=== Negative
+
+* The verifier's contract is *unsafe by default in the hands of a careless caller*: it returns claims
+  nothing has validated. Its safety is a property of its callers, and the type system cannot enforce
+  that a caller actually validates.
+* The split is a maintenance obligation in two places. A change to the engine's pipeline stages has
+  to be reflected here, and this path's "the ID-token pipeline minus its last stage" equivalence is
+  asserted by construction rather than derived from the engine.
+* The gateway now carries the back-channel-logout claim rules itself. A revision of that
+  specification is a gateway change rather than a dependency upgrade.
+
+=== Risks
+
+* *The verifier is reused as if it validated.* The name and the return type both say otherwise, but
+  a future caller reaching for "the thing that verifies a token" could take this one. The mitigation
+  is naming and documentation, not a compiler guarantee.
+* *Claim-rule drift between callers.* With more than one foreign token type, two callers each own
+  their claim set, and a rule that ought to be common — an issuer-equality check, a replay window —
+  can be implemented twice and diverge. The mitigation is that each caller's rules are enumerable and
+  reviewable, not that they are shared.
+* *The dropped stage being read as "no claim validation happens".* It happens; it happens elsewhere.
+  A reviewer reading only this path sees an unvalidated token and must follow the call to see the
+  residual. That is the cost of relocating authority rather than removing it.
+
+== Alternatives Considered
+
+*Drive the foreign token through the ID-token entry point.* This is the smallest possible change —
+no new component, no new seam, and the engine's full verdict applies. Rejected because the verdict
+is the *wrong* verdict: it enforces a claim set the token's specification never prescribed, and
+rejects the specification's own normal form. A conformance failure that presents as a security
+check is the worst shape this could take, because it reads as strictness while being incorrectness.
+
+*Relax the ID-token entry point so its mandatory claims become optional.* This keeps one entry point
+and needs no new path. Rejected because it degrades the check for *every* caller to accommodate one:
+the rules dropped for the logout token are rules a real ID token must satisfy, and a validator whose
+strictness is set by its loosest consumer defends none of them.
+
+*Reimplement decode-and-verify locally for the foreign type.* This gives complete control over the
+claim set with no dependence on the engine's internal stage boundaries. Rejected because it
+duplicates the one thing duplication is least acceptable in. Issuer resolution, algorithm posture
+and signature verification would exist twice, drift silently, and the drift would be invisible until
+a token the two implementations disagreed about arrived. It also answers a claim-semantics question
+by rewriting cryptography.
+
+*Ask upstream for a per-type entry point.* This is the cleanest long-run shape — the engine would own
+the logout-token claim set as it owns the others. Rejected as an answer to *this* question because it
+relocates the decision rather than making it: the gateway still has to decide what it does with a
+foreign token type before, and independently of, any upstream release. The seam this record
+establishes remains correct whether or not such an entry point later exists.
+
+*Validate the claims inside the verifier, parameterised by token type.* This would keep verification
+and validation fused and give the caller a single call. Rejected because it makes the verifier a
+registry of every token type the gateway will ever handle, growing a conditional per type, while the
+knowledge it would encode belongs to the component that consumes each type. Fusing is exactly what
+made the engine's entry points unusable here; re-fusing them locally reproduces the problem one
+layer down.
+
+The rejected alternatives divide cleanly. One group answers a claim-semantics question with a
+cryptography mechanism — reimplementing verification, or relaxing a shared validator — and pays in
+duplication or in defence lost for every caller. The other refuses to separate the two concerns at
+all, whether by borrowing the wrong entry point or by re-fusing them in a new component. The chosen
+position keeps cryptography singular and upstream-owned, and makes claim authority explicit and
+local to the component that knows the specification.
+
+== References
+
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode is one SessionBinding seam] -- establishes the reserved-path model the back-channel logout endpoint is mounted under. Not superseded.
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027 -- The token-validation extension's unqualified beans are excluded] -- the gateway's ownership of its issuer configuration and the per-issuer JWKS loaders this path's collaborators are built from. Not superseded.
+* link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041 -- The JWKS hostname-verification knob is the library's own passthrough] -- the same principle applied to a transport knob: use the library's own seam rather than fabricating a local equivalent. Not superseded.
+* link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046 -- Refresh failures are disposed by the engine's failure kind] -- the sibling decision on the other BFF token path, deciding where a verdict is owned rather than how it is computed. Not superseded.
+* link:../architecture.adoc[Architecture] -- the request pipeline and the reserved BFF surface this verification path serves.

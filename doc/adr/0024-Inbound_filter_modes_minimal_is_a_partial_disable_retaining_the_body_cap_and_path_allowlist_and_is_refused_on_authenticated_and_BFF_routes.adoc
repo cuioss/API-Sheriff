@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The inbound-filter mode set is strict/lenient/minimal with an omitted profile resolving to strict; minimal is a bounded PARTIAL disable turning off only the url-parameter name/value validation and the per-route pipeline re-run, retaining the pre-route floor, the body cap and the path allowlist, and refused fail-closed at boot on effectively-authenticated and BFF routes
+// summary: The inbound-filter mode set is strict/paranoid/lenient/minimal with an omitted profile resolving to strict — paranoid is strict plus cui-http's application-layer content block-lists and does NOT move the default, because the tightest available mode and the default mode are different questions; minimal is a bounded PARTIAL disable turning off only the url-parameter name/value validation and the per-route pipeline re-run, retaining the pre-route floor, the body cap and the path allowlist, and refused fail-closed at boot on effectively-authenticated and BFF routes
 // tags: security, input-validation, security-profile, inbound-filter, fail-closed, blast-radius, boot-validation, partial-disable
 // affects: api-sheriff
 // supersedes:
@@ -23,9 +23,9 @@ The gateway's `profile` knob selects an inbound-validation posture, on the gatew
 `security_defaults` block and on every per-route and per-anchor `security_filter` block. Two things
 about it were underspecified, and both were being resolved by accident rather than by decision.
 
-*The mode set had a member that promised nothing.* Alongside `strict` and `lenient` — each backed by
-a concrete cui-http preset — the set carried a `default` value whose meaning was "whatever the
-library's builder defaults happen to be". A posture name that resolves to an incidental value cannot
+*The mode set had a member that promised nothing.* Alongside the modes backed by a concrete cui-http
+preset — `strict`, `paranoid` and `lenient` — the set carried a `default` value whose meaning was
+"whatever the library's builder defaults happen to be". A posture name that resolves to an incidental value cannot
 be reasoned about: it names a deferral, not a policy. Worse, an *omitted* `security_defaults` block
 resolved to that same incidental baseline, so the most common configuration shape — one declaring no
 global posture at all — received the loosest-by-accident policy rather than the
@@ -59,17 +59,25 @@ isolation.
 
 == Decision
 
-*The mode set is `strict` / `lenient` / `minimal`. `minimal` is a bounded partial disable with a
-normative closed list of what it turns off, and it is refused at boot on effectively-authenticated and
-BFF routes.*
+*The mode set is `strict` / `paranoid` / `lenient` / `minimal`. `minimal` is a bounded partial disable
+with a normative closed list of what it turns off, and it is refused at boot on
+effectively-authenticated and BFF routes.*
 
 Four coupled decisions follow.
 
-=== (1) The canonical mode set is strict / lenient / minimal, and an omitted profile resolves to strict
+=== (1) The canonical mode set is strict / paranoid / lenient / minimal, and an omitted profile resolves to strict
 
 `default` is *removed* from the value space. Every remaining mode names a policy the reader can look
-up: `strict` and `lenient` are backed by their cui-http presets, and `minimal` is defined by decision
-(3) below.
+up: `strict`, `paranoid` and `lenient` are backed by their cui-http presets, and `minimal` is defined
+by decision (3) below.
+
+`paranoid` is `strict` plus the application-layer *content* detection no lower mode performs — the
+sensitive-path and suspicious-parameter-name block-lists — and it is tighter than `strict` on every
+axis and looser on none. *It does not move the default.* The tightest *available* mode and the
+*default* mode are deliberately different questions: `paranoid` block-lists ordinary REST vocabulary
+such as a `file`, `path` or `url` parameter, so it has a real false-positive profile and suits a
+surface whose paths and parameters genuinely reach a filesystem. Making the mode with that profile
+the value an omitted block resolves to would trade one accidental baseline for another.
 
 An omitted `security_defaults` block — or a block that omits `profile` — resolves to `strict`. The
 common configuration shape now receives the fail-closed posture by construction, and a deployment
