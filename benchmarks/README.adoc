@@ -463,9 +463,13 @@ run reproduces:
   against the stack's own trust anchors. Without it the key set never loads, every bearer request
   is rejected 401, and the aspect would measure the *rejection* path while reporting it as bearer
   throughput.
-* `jwks.allowed_egress_hosts` — the SSRF egress guard otherwise refuses a JWKS URL resolving to a
-  private address, which is exactly what a compose service name resolves to. The allowlist is
-  host-exact and names only the benchmark-local IdP.
+* `jwks.allowed_egress_hosts` — the SSRF egress guard refuses a JWKS URL resolving to a private
+  address, which is exactly what a compose service name resolves to, unless the host is allowed. An
+  issuer that declares no list is allowed the host of its own `jwks.url`, so the key set loads either
+  way; the benchmark issuer declares `["keycloak"]` deliberately, as the explicit, host-exact form. A
+  declared list is authoritative and never merged with the `jwks.url` host, so it must keep naming
+  that host: a list that does not would keep the key set refused and turn the aspect into a
+  rejection-path measurement.
 
 Both are why `bearer_proxied.js` carries an explicit HTTP-200 check: a misconfiguration that
 breaks token validation fails the run instead of reporting the fast rejection path as an excellent

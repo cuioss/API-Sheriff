@@ -81,11 +81,11 @@ token_validation:
       jwks:
         source: http
         url: https://keycloak:8443/realms/sample/protocol/openid-connect/certs
-        # The SSRF egress guard refuses a JWKS URL resolving to a private address unless the host is
-        # named here. `keycloak` is a Compose service name resolving to the bridge network's
-        # site-local address, so without this entry the key set never loads. The allowlist is
-        # host-exact — no wildcard — and names ONLY this one trusted IdP. Widen it for no other
-        # reason than adding a genuinely trusted issuer.
+        # The SSRF egress guard refuses a JWKS URL resolving to a private address, as `keycloak` does
+        # here (a site-local bridge address), unless the host is allowed. Omitted, the host of url
+        # above would be derived and allowed anyway; this list PINS it instead. A declared list is
+        # authoritative, host-exact and never merged with the url host, so a later url edit to
+        # another host fails closed rather than silently moving the exemption with it.
         allowed_egress_hosts: ["keycloak"]
         # WHICH trust anchors the JWKS fetch verifies Keycloak's certificate against. This sample's
         # Keycloak serves a SELF-SIGNED certificate (docker/certificates/generate-certificates.sh),

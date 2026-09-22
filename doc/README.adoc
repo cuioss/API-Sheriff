@@ -216,7 +216,9 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   egress and TLS trust as framework-neutral names (`allowed_egress_hosts`, `tls_profile`) that carry
   no trust material; exactly one mapping component binds a logical trust-profile name to concrete
   runtime trust anchors, and config stays neutral while startup diagnostics name the concrete
-  runtime key. *(Status: accepted.)*
+  runtime key. Amendment A1: an absent or empty `allowed_egress_hosts` derives the `jwks.url` host
+  as the egress allowance, while a declared list stays authoritative and is never merged with it.
+  *(Status: accepted.)*
 
 | link:adr/0012-Comparative_cross-gateway_benchmarking_runs_on-demand_and_stays_segregated_from_the_CI_baseline.adoc[ADR-0012]
 | Cross-gateway comparison benchmarking is a target-neutral, on-demand-only lane whose results stay

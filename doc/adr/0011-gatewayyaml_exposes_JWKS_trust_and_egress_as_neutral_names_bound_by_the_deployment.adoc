@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: gateway.yaml is API Sheriff's own configuration language, so the JWKS issuer surface exposes egress and TLS trust as framework-neutral names (allowed_egress_hosts, tls_profile) that carry no trust material; exactly one mapping component binds a logical trust-profile name to concrete runtime trust anchors, and config stays neutral while startup diagnostics name the concrete runtime key.
+// summary: gateway.yaml is API Sheriff's own configuration language, so the JWKS issuer surface exposes egress and TLS trust as framework-neutral names (allowed_egress_hosts, tls_profile) that carry no trust material; exactly one mapping component binds a logical trust-profile name to concrete runtime trust anchors, and config stays neutral while startup diagnostics name the concrete runtime key. AMENDED (A1): an absent or empty allowed_egress_hosts no longer preserves the no-exemption default — the gateway derives the single host of jwks.url as the egress allowance, a non-empty list stays authoritative and host-exact and is never merged with that host, blank and host:port entries and a hostless jwks.url are refused at boot, and the accepted trade-off is that the jwks.url host is exempt from the private-address check in every deployment while certificate trust is unchanged; tls_profile and the mapping seam are unchanged.
 // tags: configuration-surface, jwks, token-validation, tls-trust, layering, secrets-handling, boot-sequence, portability
 // affects: api-sheriff
 // supersedes:
@@ -77,6 +77,11 @@ Three mechanisms realise this.
 * `tls_profile` -- the name of a logical trust profile used to verify the IdP's certificate.
   Absent means the JVM default trust store, preserving prior behaviour exactly.
 
+NOTE: The default of `allowed_egress_hosts` stated above -- absent or empty preserving
+`EgressPolicy.secureDefault()` -- is superseded by <<amendment-a1,Amendment A1>>: absent or empty now
+derives the host of `jwks.url` as the single exempted host. The host-exact rule for a declared list
+stands. The text above is kept as the original decision.
+
 Neither key, nor the JSON schema that validates them, mentions any runtime, TLS registry,
 truststore path, or password. `tls_profile` is a name in API Sheriff's vocabulary and carries no
 trust material.
@@ -125,6 +130,10 @@ request.
 * Both widenings are opt-in and default-preserving: an issuer that omits them behaves exactly as
   it did before either existed, so the secure default is never widened by accident.
 
+NOTE: For `allowed_egress_hosts` the last consequence above is superseded by
+<<amendment-a1,Amendment A1>>: an `http` issuer that omits the key now has the `jwks.url` host
+exempted. It still holds for `tls_profile`.
+
 === Negative
 
 * Configuring a private-network IdP behind an internal CA requires editing *two* places -- the
@@ -144,6 +153,10 @@ request.
 * *Egress widening is a real attack-surface increase.* Each `allowed_egress_hosts` entry exempts a
   host from an SSRF guard. Mitigated by host-exactness (no wildcard or suffix form), so the
   widening cannot be broadened by a typo, and by defaulting to no exemption at all.
+
+NOTE: The mitigation "defaulting to no exemption at all" is superseded by
+<<amendment-a1,Amendment A1>>, which defaults to exempting the `jwks.url` host and records the
+resulting trade-off as an accepted risk. Host-exactness stands.
 
 == Alternatives Considered
 
@@ -229,12 +242,72 @@ an oversight:
 Exposing any of these is a separate decision and should follow the same discipline: a neutral key
 named for what API Sheriff means, with a default that preserves current behaviour.
 
+[[amendment-a1]]
+== Amendment A1: an absent allowed_egress_hosts derives the jwks.url host
+
+*The no-exemption default for `allowed_egress_hosts` is superseded.* The original decision made the
+key opt-in: an `http` issuer that omitted it kept `EgressPolicy.secureDefault()` in full, so an
+identity provider on a private network loaded no key set until the operator restated its host in a
+second place. In the deployment shapes this ADR names as ordinary -- cluster-internal, Docker-network,
+on-prem -- that second declaration is always the host `jwks.url` already names, and forgetting it
+presents as a token failure. The key keeps its name and its neutral vocabulary; its default changes.
+
+This amendment supersedes three statements above, for `allowed_egress_hosts` only: the Decision
+bullet "Absent or empty preserves `EgressPolicy.secureDefault()`", the Risks clause "defaulting to no
+exemption at all", and the Positive consequence "Both widenings are opt-in and default-preserving".
+Everything this ADR decides about `tls_profile`, the mapping seam, config neutrality and the
+refuse-to-start posture is unchanged.
+
+* *Absent or empty derives the allowance.* The gateway passes exactly one host to the JWKS loader's
+  egress allowance: the host of the issuer's own `jwks.url`, spelled as the URL spells it, with any
+  port dropped. The issuer's key endpoint is then reachable wherever it resolves.
+* *A declared list is authoritative.* A non-empty list is passed as declared, entry by entry,
+  host-exact with no wildcard or suffix form, and the `jwks.url` host is never merged into it. A list
+  naming a different host keeps the `jwks.url` host refused whenever it resolves to a private address.
+  Declaring the list is how an operator pins the allowance, so that a later `jwks.url` edit to another
+  host fails closed instead of silently moving the exemption.
+* *Unusable declarations are boot refusals.* A blank or whitespace-only entry and a `host:port` entry
+  of an `http` issuer are refused at boot, naming the entry; a bare IPv6 literal is admitted. An
+  `http` issuer that declares no list and whose `jwks.url` names no host has nothing to derive from
+  and fails startup with a configuration error that names the issuer and never echoes the URL. This
+  is the posture of section 4 applied to the new default: a derived allowance never silently
+  collapses into an empty one.
+
+*The accepted trade-off.* The derived entry exempts the `jwks.url` host from the private-address
+check in *every* deployment, not only one whose identity provider lives on a private network. In a
+public-IdP deployment, a public IdP hostname that resolves to an internal address -- through a DNS
+change, a split-horizon resolver or a poisoned cache -- was refused before this amendment and is now
+dialled. The exemption is bounded to the one host the operator already named as the key endpoint,
+and it widens nothing else: certificate trust is untouched, so chain validation and hostname
+verification still refuse an endpoint that cannot prove it is that host. The trade-off is accepted
+in exchange for a private-network identity provider working from the one declaration the
+configuration already carries.
+
+*The residual.* No dedicated key restores the no-exemption posture for an `http` issuer. An operator
+who wants a narrower allowance declares an explicit list, which is authoritative. A key whose only
+purpose is to switch the derivation off was not added: the explicit list already expresses every
+narrower posture that still loads a key set.
+
+*This is not a local reversal of an upstream tightening.* token-sheriff's
+`EgressPolicy.secureDefault()` is unchanged, and the gateway does not replace or relax it. It passes
+one host through the library's own `allowedEgressHost` seam -- the same seam a declared list has
+always used -- so the posture of
+link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+is not engaged: no upstream default changed and none is being worked around.
+
+The operator-facing contract is in
+link:../configuration.adoc#_token_validation[the configuration reference], and the threat analysis
+of the trade-off is recorded under GW-05 and BFF-07 of
+link:../security-threat-model.adoc#gw-05[the security threat model].
+
 == References
 
 * link:../configuration.adoc[Configuration reference] -- the `token_validation` surface, the
   `allowed_egress_hosts` and `tls_profile` field contracts, and the trust-profile mapping,
   worked example, and failure mode
-* link:../security-threat-model.adoc[Security threat model] -- GW-05 and BFF-07, which prescribe
-  keeping the secure egress defaults and widening only for a trusted IdP
+* link:../security-threat-model.adoc[Security threat model] -- GW-05 and BFF-07, which record the
+  egress guard, the derived allowance of Amendment A1 and its accepted trade-off
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+  -- the posture on upstream security defaults, which Amendment A1 does not engage
 * link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
   runtime-specific assembly at the boundary rather than in the framework-agnostic core

@@ -466,7 +466,9 @@ The sample is deliberately loud about being a sample. Every item below is a plac
 
 The gateway's own configuration under `docker/sheriff-config/` needs less adaptation than the rest
 of the stack: it declares the `strict` inbound filter profile explicitly, a TLS floor of 1.2, one
-public proxy namespace, and a token issuer with a host-exact egress allowlist. The one endpoint is
+public proxy namespace, and a token issuer whose egress allowance is pinned by an explicit,
+host-exact `allowed_egress_hosts` list rather than left to the allowance derived from its JWKS URL
+(see the comment on that key). The one endpoint is
 `auth: require: none`, which is the first thing to change when adapting the sample -- switch it to
 `require: bearer` and the route is gated on a token from the declared issuer.
 
@@ -572,6 +574,9 @@ exactly what it always was.
 . Replace the identity provider with your own, updating the issuer URL, the JWKS URL and the
   `allowed_egress_hosts` entry in `docker/sheriff-config/gateway.yaml` together -- the issuer value
   must match the `iss` your tokens actually carry, or every request fails with a 401 that looks like
-  a signature problem and is not. Rebind the `jwks.tls_profile` it names to your provider's CA at the
+  a signature problem and is not. The `allowed_egress_hosts` list is authoritative: the exemption
+  does not follow the JWKS URL to a new host, so a provider on a private address whose host the list
+  still does not name is refused and its key set never loads. Update the entry, or delete the list to
+  take the allowance derived from the JWKS URL's host. Rebind the `jwks.tls_profile` it names to your provider's CA at the
   same time: the gateway refuses to boot on a profile it cannot load, and it will not report ready
   until it has fetched the provider's keys over a verified connection.

@@ -445,7 +445,11 @@ see <<_scenario_relax_hostname_verification>>.
 * A logical profile name for it, used in `gateway.yaml` and bound by the deployment. How the name maps
   to an environment spelling is in
   link:environment-variable-overrides.adoc#_env_encoding_rule[Deriving the variable name].
-* When the provider sits on a private address, its host named in `allowed_egress_hosts`.
+* Nothing extra when the provider sits on a private address: with `allowed_egress_hosts` omitted, the
+  host of `jwks.url` is the derived egress allowance. Declare the list only to pin that allowance --
+  a declared list is authoritative and never merged with the `jwks.url` host (see
+  link:../configuration.adoc#_token_validation[`allowed_egress_hosts`]). The shipped block below
+  declares it on purpose, as the explicit form.
 * For the BFF back-channel, either a trust profile of its own -- `egress_tls.oidc_tls_profile`, see
   <<_scenario_bff_oidc_back_channel>> -- or a store the JVM default trust manager can use. The default
   store *replaces* the platform bundle, so build it to keep the public roots you still need -- see
@@ -511,6 +515,10 @@ command:
   for the same reason (see link:../configuration.adoc#_jwks_trust_profiles[Trust profiles]).
 * *`tls_profile` on an `http` issuer while `egress_tls.jwks_verify_hostname` is `false`.*
   `TokenValidatorProducer` refuses the boot, naming both keys and the issuer.
+* *A declared `allowed_egress_hosts` that does not name the `jwks.url` host of a private-address
+  provider.* The list is authoritative, so the egress guard keeps refusing that host: readiness stays
+  `DOWN`, `WARN ApiSheriff-129` reports each scheduled retry, and every bearer request is rejected
+  `401`. Name the host in the list, or omit the list to take the derived allowance.
 * *No profile, and a JVM default trust store that does not hold the provider's CA.* The JWKS loader
   `TokenValidatorProducer` configured verifies against the default store, the fetch fails PKIX path
   building, the key set never loads, and every bearer request is rejected `401` -- a trust problem that
