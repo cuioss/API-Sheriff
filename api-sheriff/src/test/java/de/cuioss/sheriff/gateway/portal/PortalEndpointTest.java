@@ -445,4 +445,103 @@ class PortalEndpointTest {
             assertTrue(body.contains("|C:/gateway|"), body);
         }
     }
+
+    @Nested
+    @DisplayName("HTML error pages")
+    class ErrorPages {
+
+        /** Prints the error block next to the members an error page must — or must not — carry. */
+        private static final String ERROR_PROBE = "E:{#if error}{error.status}/{error.title}{#else}-{/if}"
+                + "|S:{session.authenticated}"
+                + "|U:{#if session.username}{session.username}{#else}-{/if}"
+                + "|L:{#if links.login}{links.login}{#else}-{/if}"
+                + "|N:{#if notice}{notice}{#else}-{/if}"
+                + "|A:{#for app in apps}[{app.title}]{/for}";
+
+        private static PortalEndpoint errorPageEndpoint(PortalEndpoint.SessionResolver resolver) {
+            PortalConfig withErrorPages = PortalConfig.builder().path(PORTAL_PATH).title(TITLE)
+                    .cacheSeconds(CACHE_SECONDS).errorPages(true).build();
+            return PortalEndpoint.of(withErrorPages, catalog(), PortalRenderer.fromContent(ERROR_PROBE, "error-probe"),
+                    resolver, oidc(LOGIN_PATH, LOGOUT_PATH), true, "/");
+        }
+
+        @Test
+        @DisplayName("Error pages are enabled only by an explicit error_pages: true on an active endpoint")
+        void enabledOnlyWhenDeclared() {
+            PortalConfig declaredOff = PortalConfig.builder().path(PORTAL_PATH).title(TITLE).errorPages(false).build();
+
+            assertAll(
+                    () -> assertTrue(errorPageEndpoint(ANONYMOUS).errorPagesEnabled()),
+                    () -> assertFalse(endpoint(ANONYMOUS, null, false).errorPagesEnabled(), "omitted means off"),
+                    () -> assertFalse(PortalEndpoint.of(declaredOff, catalog(), PROBE, ANONYMOUS, null, false, "/")
+                            .errorPagesEnabled()),
+                    () -> assertFalse(PortalEndpoint.inert().errorPagesEnabled()));
+        }
+
+        @Test
+        @DisplayName("renderError refuses on an endpoint whose error pages are off, and on the inert endpoint")
+        void refusesWhenDisabled() {
+            PortalEndpoint disabled = endpoint(ANONYMOUS, null, false);
+
+            assertAll(
+                    () -> assertThrows(IllegalStateException.class, () -> disabled.renderError(404)),
+                    () -> assertThrows(IllegalStateException.class, () -> PortalEndpoint.inert().renderError(404)));
+        }
+
+        @ParameterizedTest
+        @ValueSource(ints = {400, 403, 404, 413, 502, 503, 504})
+        @DisplayName("renderError keeps the status and renders exactly the fixed title, anonymously, no-store")
+        void rendersFixedTitleAnonymouslyNoStore(int status) {
+            AtomicInteger resolutions = new AtomicInteger();
+            PortalEndpoint endpoint = errorPageEndpoint((cookie, now) -> {
+                resolutions.incrementAndGet();
+                return new SessionIdentity(true, "alice");
+            });
+
+            PortalEndpoint.PortalResponse response = endpoint.renderError(status);
+
+            assertAll(
+                    () -> assertEquals(status, response.status()),
+                    () -> assertEquals("E:" + status + "/" + ErrorPageClassifier.titleFor(status)
+                                    + "|S:false|U:-|L:" + LOGIN_PATH + "?returnUrl=" + ENCODED_PORTAL_PATH
+                                    + "|N:-|A:[Orders]", response.body(),
+                            "the page carries the status, the fixed title, the links and the catalog — nothing else"),
+                    () -> assertEquals(0, resolutions.get(), "no session is resolved on a failure path"),
+                    () -> assertEquals(PortalResponseEnvelope.NO_STORE,
+                            response.headers().get(PortalResponseEnvelope.CACHE_CONTROL_HEADER)),
+                    () -> assertFalse(response.headers().containsKey(PortalResponseEnvelope.VARY_HEADER),
+                            "a never-stored page announces no cache variance"),
+                    () -> assertEquals(PortalResponseEnvelope.HTML_CONTENT_TYPE,
+                            response.headers().get(PortalResponseEnvelope.CONTENT_TYPE_HEADER)),
+                    () -> assertEquals(PortalResponseEnvelope.NOSNIFF,
+                            response.headers().get(PortalResponseEnvelope.CONTENT_TYPE_OPTIONS_HEADER)));
+        }
+
+        @Test
+        @DisplayName("A status outside the fixed table renders the generic fallback title")
+        void rendersFallbackTitle() {
+            PortalEndpoint.PortalResponse response = errorPageEndpoint(ANONYMOUS).renderError(500);
+
+            assertAll(
+                    () -> assertEquals(500, response.status()),
+                    () -> assertTrue(response.body().startsWith("E:500/" + ErrorPageClassifier.FALLBACK_TITLE + "|"),
+                            response.body()));
+        }
+
+        @Test
+        @DisplayName("The built-in template renders the error title into a complete HTML document")
+        void rendersThroughBuiltInTemplate() {
+            PortalConfig withErrorPages = PortalConfig.builder().path(PORTAL_PATH).title(TITLE).errorPages(true)
+                    .build();
+            PortalEndpoint builtIn = PortalEndpoint.of(withErrorPages, catalog(), PortalRenderer.builtIn(), ANONYMOUS,
+                    null, false, "/");
+
+            String body = builtIn.renderError(404).body();
+
+            assertAll(
+                    () -> assertTrue(body.startsWith("<!DOCTYPE html>"), body),
+                    () -> assertTrue(body.contains(ErrorPageClassifier.titleFor(404)), body),
+                    () -> assertFalse(body.contains("problem"), "no problem-detail vocabulary reaches the page"));
+        }
+    }
 }

@@ -53,6 +53,12 @@ import org.jspecify.annotations.Nullable;
  * {@code returnUrl} and {@code links.logout} is {@code oidc.logout.path}, each only when declared;
  * without an active BFF runtime both are absent and every request renders anonymously.
  * <p>
+ * <strong>HTML error pages.</strong> With {@code portal.error_pages} declared {@code true},
+ * {@link #renderError(int)} renders the same template as an error page for a gateway-originated
+ * error: the status is preserved, the title comes from the fixed per-status table, the session is
+ * always anonymous and the page is {@code no-store}. Whether a given exit answers with it is decided
+ * by the edge through the {@link ErrorPageClassifier}.
+ * <p>
  * The {@linkplain #inert() inert} endpoint stands in when {@code gateway.yaml} declares no
  * {@code portal} block: it never matches, so the edge behaves exactly as before.
  * <p>
@@ -112,7 +118,8 @@ public final class PortalEndpoint {
                 bffActive ? loginLink(oidc, portal.path()) : null,
                 bffActive ? logoutLink(oidc) : null,
                 contextPath,
-                new PortalResponseEnvelope(portal.effectiveCacheSeconds(), bffActive));
+                new PortalResponseEnvelope(portal.effectiveCacheSeconds(), bffActive),
+                portal.effectiveErrorPages());
         return new PortalEndpoint(portal.path(), active);
     }
 
@@ -186,6 +193,52 @@ public final class PortalEndpoint {
                 .contextPath(portal.contextPath())
                 .build();
         return new PortalResponse(OK, headers, portal.renderer().render(model.toMap()));
+    }
+
+    /**
+     * Whether gateway-originated errors may answer with an HTML error page — {@code portal.error_pages}
+     * is declared {@code true} on an active endpoint. The edge additionally requires the exit to be
+     * {@linkplain ErrorPageClassifier#classify(de.cuioss.sheriff.gateway.events.EventType) HTML-eligible}
+     * and the request to {@linkplain ErrorPageClassifier#offersHtml(String) explicitly accept}
+     * {@code text/html}.
+     *
+     * @return {@code true} when the endpoint is active and its error pages are enabled; always
+     *         {@code false} for the {@linkplain #inert() inert} endpoint
+     */
+    public boolean errorPagesEnabled() {
+        return active != null && active.errorPages();
+    }
+
+    /**
+     * Renders the HTML error page of a gateway-originated error. The page carries the unchanged
+     * {@code status}, the fixed, generic {@linkplain ErrorPageClassifier#titleFor(int) per-status title},
+     * the catalog and the login/logout links, and always renders anonymously: no session is resolved on
+     * a failure path. It never carries a problem detail, an exception message or an upstream address —
+     * the status is the only request-derived input. The envelope headers are
+     * {@link PortalResponseEnvelope.Cacheability#ERROR_PAGE no-store}.
+     *
+     * @param status the HTTP status the error answers with, preserved verbatim
+     * @return the rendered error page
+     * @throws IllegalStateException when error pages are not {@linkplain #errorPagesEnabled() enabled}
+     */
+    public PortalResponse renderError(int status) {
+        Active portal = requireActive();
+        if (!portal.errorPages()) {
+            throw new IllegalStateException("portal error pages are not enabled");
+        }
+        PortalPageModel model = PortalPageModel.builder()
+                .title(portal.title())
+                .catalog(portal.catalog())
+                .authenticated(false)
+                .loginLink(portal.loginLink())
+                .logoutLink(portal.logoutLink())
+                .contextPath(portal.contextPath())
+                .errorStatus(status)
+                .errorTitle(ErrorPageClassifier.titleFor(status))
+                .build();
+        return new PortalResponse(status,
+                portal.envelope().headers(PortalResponseEnvelope.Cacheability.ERROR_PAGE, null),
+                portal.renderer().render(model.toMap()));
     }
 
     private Active requireActive() {
@@ -267,7 +320,7 @@ public final class PortalEndpoint {
 
     /**
      * The boot-resolved state of an active endpoint, held as one value so the inert endpoint is a
-     * single {@code null} rather than nine.
+     * single {@code null} rather than ten.
      */
     // cui-rewrite:disable AnnotationNewlineFormat
     @SuppressWarnings("java:S107") // one immutable holder of the boot-resolved portal wiring
@@ -280,6 +333,7 @@ public final class PortalEndpoint {
     @Nullable String loginLink,
     @Nullable String logoutLink,
     String contextPath,
-    PortalResponseEnvelope envelope) {
+    PortalResponseEnvelope envelope,
+    boolean errorPages) {
     }
 }
