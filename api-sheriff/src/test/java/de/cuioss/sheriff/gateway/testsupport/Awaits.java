@@ -46,11 +46,15 @@ import org.awaitility.core.ConditionTimeoutException;
  *
  * <h2>Tiers, not values</h2>
  * A call site picks a ceiling by naming <em>what it is waiting for</em>, never by naming a number.
- * Two tiers exist:
+ * Three tiers exist:
  * <ul>
  *   <li>{@link #CONNECT_CEILING_SECONDS} — everything that waits on progress from a real server:
  *       listen, connect, request, response, relay. Generous, because a loaded CI machine is slow,
  *       not broken.</li>
+ *   <li>{@link #ADMISSION_RELEASE_CEILING_SECONDS} — an admission permit being released after the
+ *       relay goes idle. It sits between the other two because it is neither: the release trails the
+ *       relay's own idle detection rather than a live peer's progress, so it needs more room than a
+ *       teardown and far less than a connect.</li>
  *   <li>{@link #TEARDOWN_CEILING_SECONDS} — everything that waits on a {@code close()} or
  *       {@code shutdown()} completing. Tight, because teardown that has not finished quickly is a
  *       leak rather than a slow machine.</li>
@@ -130,6 +134,18 @@ public final class Awaits {
     public static final long CONNECT_CEILING_SECONDS = 30;
 
     /**
+     * Ceiling for any await on an admission permit being released once the relay has gone idle.
+     *
+     * <p>It earns a tier of its own because the release is not a teardown: it trails the relay's own
+     * idle detection, and that detection has been observed overshooting the teardown tier — a
+     * release measured at 5023 ms against a 5-second ceiling, which is a slow idle path reported as
+     * a leaked permit. The value here clears that overshoot roughly threefold while staying at half
+     * the connect tier, so a permit that genuinely never comes back still fails well short of the
+     * generous server-progress ceiling.
+     */
+    public static final long ADMISSION_RELEASE_CEILING_SECONDS = 15;
+
+    /**
      * Ceiling for any await on a {@code close()} / {@code shutdown()} completion. Deliberately
      * tight: teardown that has not completed by now indicates a leak, not a slow machine.
      */
@@ -138,6 +154,8 @@ public final class Awaits {
     private static final CuiLogger LOGGER = new CuiLogger(Awaits.class);
 
     private static final Duration CONNECT_CEILING = Duration.ofSeconds(CONNECT_CEILING_SECONDS);
+    private static final Duration ADMISSION_RELEASE_CEILING =
+            Duration.ofSeconds(ADMISSION_RELEASE_CEILING_SECONDS);
     private static final Duration TEARDOWN_CEILING = Duration.ofSeconds(TEARDOWN_CEILING_SECONDS);
 
     /**
@@ -236,7 +254,8 @@ public final class Awaits {
      *
      * @param condition     evaluated repeatedly until it returns {@code true}
      * @param what          what is being awaited, surfaced verbatim in the timeout diagnostics
-     * @param ceilingSeconds one of {@link #CONNECT_CEILING_SECONDS} or
+     * @param ceilingSeconds one of {@link #CONNECT_CEILING_SECONDS},
+     *                      {@link #ADMISSION_RELEASE_CEILING_SECONDS} or
      *                      {@link #TEARDOWN_CEILING_SECONDS}
      * @throws TimeoutException if the condition did not hold within the ceiling, enriched with the
      *                          label, ceiling, elapsed time and a thread dump

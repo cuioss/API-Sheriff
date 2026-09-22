@@ -48,9 +48,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * The matched control for {@link Awaits}. Every other test in this module consumes the two tiers
- * and would stay green if the timeout diagnostics silently stopped working — a ceiling that is
- * never reached exercises none of the reporting. This class is the one place that reaches a
+ * The matched control for {@link Awaits}. Every other test in this module merely consumes the
+ * tiers and would stay green if the timeout diagnostics silently stopped working — a ceiling that
+ * is never reached exercises none of the reporting. This class is the one place that reaches a
  * ceiling on purpose and asserts what the resulting failure says.
  *
  * <p>It drives the package-private {@link Duration}-taking seam rather than the public tier
@@ -432,14 +432,24 @@ class AwaitsTest {
                 });
     }
 
+    /**
+     * Enumerates the tier set, so a tier added without a pinned ceiling is a gap this method reports
+     * rather than one that ships silently. Extend it with every tier {@link Awaits} gains.
+     */
     @Test
-    @DisplayName("the two tiers carry the declared ceilings")
-    void pinsTheTwoTierCeilings() {
+    @DisplayName("the three tiers carry the declared ceilings")
+    void pinsTheTierCeilings() {
         assertAll("tier ceilings",
                 () -> assertEquals(30L, Awaits.CONNECT_CEILING_SECONDS,
                         "the connect tier is generous enough for a loaded CI machine"),
+                () -> assertEquals(15L, Awaits.ADMISSION_RELEASE_CEILING_SECONDS,
+                        "the admission-release tier clears the observed idle-path overshoot"),
                 () -> assertEquals(5L, Awaits.TEARDOWN_CEILING_SECONDS,
-                        "the teardown tier is tight enough to surface a leak"));
+                        "the teardown tier is tight enough to surface a leak"),
+                () -> assertTrue(
+                        Awaits.TEARDOWN_CEILING_SECONDS < Awaits.ADMISSION_RELEASE_CEILING_SECONDS
+                                && Awaits.ADMISSION_RELEASE_CEILING_SECONDS < Awaits.CONNECT_CEILING_SECONDS,
+                        "the admission-release tier sits strictly between the other two"));
     }
 
     /**
