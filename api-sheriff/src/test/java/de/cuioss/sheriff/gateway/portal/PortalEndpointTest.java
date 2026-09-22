@@ -354,6 +354,24 @@ class PortalEndpointTest {
                             response.headers().get(PortalResponseEnvelope.CACHE_CONTROL_HEADER)),
                     () -> assertFalse(response.headers().containsKey(PortalResponseEnvelope.VARY_HEADER)));
         }
+
+        @Test
+        @DisplayName("An authenticated session without a username is still no-store — the cache class keys on the session, not the name")
+        void namelessAuthenticatedPageIsNoStore() {
+            PortalEndpoint endpoint = endpoint((cookie, now) -> new SessionIdentity(true, null),
+                    oidc(LOGIN_PATH, LOGOUT_PATH), true);
+
+            PortalEndpoint.PortalResponse get = endpoint.handle(HttpMethod.GET, null, "SESSION=x", NOW);
+            PortalEndpoint.PortalResponse head = endpoint.handle(HttpMethod.HEAD, null, "SESSION=x", NOW);
+
+            assertAll(
+                    () -> assertTrue(get.body().contains("|S:true|U:-|"), get.body()),
+                    () -> assertEquals(PortalResponseEnvelope.NO_STORE,
+                            get.headers().get(PortalResponseEnvelope.CACHE_CONTROL_HEADER)),
+                    () -> assertFalse(get.headers().containsKey(PortalResponseEnvelope.VARY_HEADER)),
+                    () -> assertEquals(PortalResponseEnvelope.NO_STORE,
+                            head.headers().get(PortalResponseEnvelope.CACHE_CONTROL_HEADER)));
+        }
     }
 
     @Nested
