@@ -84,6 +84,26 @@ check it before creating a new one.
 V02-06, V02-07, V02-11, V02-12, V02-13, and not with V02-09 (whose ADR-0027 re-opening it must not
 pre-empt).
 
+## Re-Grounded (3) 2026-09-22 at `af63895`
+
+**THE CORPUS GREW AGAIN — 49 records / 10,543 lines, not 37 / 6,905.** Twelve more ADRs landed since
+the 2026-08-09 measurement (`0038`–`0049`), entirely through feature PRs (#248 through #337) outside
+this epic's tracked plan list — none of the four shipped plans (V02-02/-03/-16/-17) touched `doc/adr/`.
+Numbering is still contiguous `0001`–`0049`. The named 21-record `Proposed` list from the original spec
+is still accurate as a SUBSET (all 21 remain unfixed), but the current true picture is **29 of 49**
+records reading `Proposed` (8 more: `0038`, `0040`, `0041`, `0044`, `0045`, `0046`, `0048`, `0049`).
+Re-count both figures at outline; do not trust any number in this spec's body literally.
+
+**Expected Surface's embedded count is stale** (inherited from the Objective's own stale "33 records
+and 5,620 lines"); the `doc/adr/**` glob itself remains structurally sufficient and needs no edit —
+only the parenthetical count needs correcting at outline.
+
+**WRITE-BOUNDARY AND HAND-OFF COMMAND CORRECTED FOR THE EPIC MIGRATION.** This epic's ledger tree
+relocated from the retired `.plan/local/orchestrator/api-sheriff-0-2-0/` address to the git-tracked
+`.plan/orchestrator/api-sheriff-0-2-0/` address (commit `71014d7`, per ADR-024 in plan-marshall's own
+model). Both the `## Hand-Off Command` and `## Write-Boundary` sections below are updated to the new
+path.
+
 ## Objective
 
 `doc/adr/` has grown to 33 records and 5,620 lines without anyone ever reading it as a whole. This
@@ -186,7 +206,7 @@ Read first-party at `0e7c8d3`:
 ## Hand-Off Command
 
 ```text
-/plan-marshall task="implement .plan/local/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-04-adr-corpus-cleanup.md" plan_id=plan-v02-04-adr-corpus-cleanup
+/plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-04-adr-corpus-cleanup.md" plan_id=plan-v02-04-adr-corpus-cleanup
 ```
 
 **The explicit `plan_id` is load-bearing — do not drop it.**
@@ -194,5 +214,5 @@ Read first-party at `0e7c8d3`:
 ## Write-Boundary
 
 The executing plan MUST NOT create or edit any file under
-`.plan/local/orchestrator/api-sheriff-0-2-0/`. Its two channels back to the epic are its PR and its
+`.plan/orchestrator/api-sheriff-0-2-0/`. Its two channels back to the epic are its PR and its
 `inbox/` OUTBOX.

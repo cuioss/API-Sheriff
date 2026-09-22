@@ -135,6 +135,43 @@ taken.**
 neighbourhood, but the defect is **lane-conditional** rather than trust-wiring — see `PLAN-V02-11`,
 which is the better home. Do not adopt it here without saying why.
 
+## Re-Grounded (3) 2026-09-22 at `af63895`
+
+**D2'S COUNT GREW AGAIN, AND THE OVERRIDE IS NO LONGER SCOPED TO 7 SERVICES.**
+`integration-tests/docker-compose.yml` now carries **36** `-Djavax.net.ssl.trustStore*` arguments
+(12 services × 3 args, not 22 across 7): `api-sheriff`, `-mtls`, `-cookie`, `-cookie-2`,
+`-ws-admission`, `-plain-mgmt`, `-passthrough-empty`, `-no-certificate`, `-egress-verify-on`,
+`-egress-verify-off`, `-refresh`, `-cookie-refresh`. Re-grep at outline, per the spec's own
+"delete by service, not by line number" instruction — that instruction is exactly right and now
+matters more, since the surface has grown by 63%.
+
+**A THIRTEENTH OVERRIDE SITE, OUTSIDE `docker-compose.yml` ENTIRELY.**
+`integration-tests/src/test/java/.../NoCertificatePlainHttpOptInIT.java`:745-747 independently
+constructs the identical `-Djavax.net.ssl.trustStore*` triplet. D2's "delete by service in
+docker-compose.yml" framing does not cover this file — re-grep this test at outline too, or D2 ships
+with one override site still live.
+
+**D6 (the deliverable that moved to `PLAN-V02-09`) IS NOW MOOT — CONFIRMED FROM BOTH SIDES.**
+`BffRuntimeProducer.java`:501-522 already calls
+`ClientConfiguration.builder()....sslContext(trustProfileResolver.resolveEgressProfile(...))` —
+the BFF OIDC back-channel leg's client-engine `SSLContext` is already wired through
+`JwksTrustProfileResolver`, per shipped (but still `Status: Proposed`) ADR-0045. `PLAN-V02-09`'s own
+independent re-grounding found the identical fact. **The asymmetry D1/D6 was written to close no
+longer exists for this leg** — flag to `PLAN-V02-09` at its own outline; nothing for this plan to act
+on beyond noting D1 stays out (already correctly excluded here since 2026-08-09).
+
+**Expected Surface no longer needs `TokenValidatorProducer.java` / `JwksTrustProfileResolver.java`**
+— those were the D1 construction-site files, and D1 left this plan on 2026-08-09. This plan is D2-only;
+correct Expected Surface at outline to the compose tree, the newly-found test file above, and
+`doc/user/tls-scenarios.adoc` (which carries worked `-Djavax.net.ssl.trustStore*` examples D2 will
+make stale, ~lines 500-502 and 676-678) — `doc/user/` is a more specific and correct doc target than
+the spec's current under-specific "the private-CA authorization-server documentation."
+
+**Upstream lead not re-verifiable this pass.** `pom.xml`:63 now pins `version.token-sheriff=0.9.6`
+(was 0.9.4 when the 2026-08-08 discharge note checked `ClientConfiguration`'s `SSLContext` builder);
+no 0.9.6 jar is cached locally, so the prior discharge is stale to the version bump and needs
+re-verification at outline against the artifact actually resolved then — not load-bearing for D2.
+
 ## Objective
 
 The gateway's JWKS trust is already neutral and fail-closed: `gateway.yaml` names a logical

@@ -140,16 +140,20 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
   INPUT_VALIDATION / AUTHENTICATION / AUTHORIZATION / UPSTREAM / CONFIGURATION), surfaced via
   `events/GatewayEventCounter.java` → `quarkus/SheriffMetrics.java` (Micrometer) and WARN logging at
   `edge/GatewayEdgeRoute.java`:408-411 (`SECURITY_FILTER_VIOLATION`, payload-safe).
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory/EventType/GatewayEventCounter/SheriffMetrics all present. WARN site content-confirmed but line drifted for a THIRD time: :408-411 -> :791-794 (2026-08-08) -> now GatewayEdgeRoute.java:888. Re-anchor by content (SECURITY_FILTER_VIOLATION), not line, as spec already instructs.
 - OBSERVED absence: no cross-request scoring / campaign notion exists — the counter is global-per-event,
   not per-client-windowed. (CRS itself scores per-request only; the cross-request accumulation is the
   net-new value here.)
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Repo-wide search for window/sliding/campaign/anomaly/perclient: zero hits. GatewayEventCounter.java:35-45 is a flat ConcurrentHashMap<EventType,AtomicLong>, no client key, no time dimension.
 - HYPOTHESIS: PLAN-18's per-client substrate is reusable as the accumulation window for the score rather
   than a second parallel per-client store. Confirm/refute at the substrate PLAN-18 actually ships §
   its per-client state API (verify-at-outline) — **central risk**: if PLAN-18's substrate is
   bucket-only (recon codes) and not general-purpose, this plan must generalize it, not duplicate it.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06 has not landed (landings/ has only V02-02/-03/-16/-17); its per-client substrate does not exist on main yet, so the hypothesis correctly remains open. Spec's own verify-at-outline framing still accurate.
 - Verify-first clause: scope the ECS/OCSF field set against the actual schema (Elastic Common Schema /
   OCSF event classes), not against this spec's field list, before emitting — the shape must validate
   against a real consumer.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Procedural instruction, not a codebase fact; repo-wide search for ecs/ocsf returns zero hits -- nothing exists yet to corroborate/contradict. Remains a valid forward instruction.
 
 ## Expected Surface
 

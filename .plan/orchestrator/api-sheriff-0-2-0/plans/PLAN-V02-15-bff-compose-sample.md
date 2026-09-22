@@ -38,6 +38,33 @@ settle the addressing model inside a sample.** V02-12 also has not started, so t
 now gate-requiring (`build.map`, roadmap PLAN-51 / #196). D1's compose edit and D4's CI wiring each
 pay a full quality gate — and the `.env` surface note below is now a gate-requiring file too.
 
+## Re-Grounded (3) 2026-09-22 at `af63895`
+
+**COUNT CORRECTED AGAIN, AND D4'S BRING-UP PATH CHANGED.** `deployment/compose-sample/` now holds
+**14** files, not the 12 the prior correction recorded: `docker-compose.plain-http.yml` (a
+TLS-terminator variant, per `doc/user/compose-sample.adoc`'s "optional override file adds a fourth
+service"), `docker/nginx/tls-terminator.conf` and `docker/certificates/sample-idp-trust.properties`
+are new. **`scripts/wait-for-ready.sh` no longer exists** — #230 deleted it and folded its readiness
+logic into `scripts/start-sample.sh` (now ~430 lines). D4's "existing bring-up path to reuse" is still
+true, but it is `start-sample.sh` alone now, not the three-script set the prior correction named.
+Sub-facts unaffected: no `oidc`/`session` key (grep clean across all 14 files), `gateway.yaml`:11
+still names BFF sessions among the omissions verbatim, `demo-api.yaml`:21 is still `require: none`;
+the `gateway.yaml`:44 anchor-omission comment has moved to :62 (a new tls_profile/SSRF-egress comment
+block was inserted above it) — re-anchor by content, not line.
+
+**D1 MAY ALREADY BE PARTIALLY SATISFIED.** `docker/keycloak/sample-realm.json`:26-49 already ships a
+fully-formed confidential client `sample-client` (`publicClient:false`,
+`clientAuthenticatorType:client-secret`, `standardFlowEnabled:true`, matching `redirectUris`/
+`webOrigins`/`defaultClientScopes`), present since the file's creation (#150) and untouched since.
+Verify at outline whether only `gateway.yaml`'s `oidc` block plus a session route remain for D1/D2.
+
+**D5's DEPENDENCY STILL HOLDS.** `PLAN-V02-12` is still `staged` in `status.json`; `OidcConfig.java`
+still declares a single `@Nullable String issuer` with no backchannel/discovery split. Nothing to
+re-scope there.
+
+**EXPECTED SURFACE IS NOW UNDERSTATED FOR D1/D2/D3** — see the Expected Surface section below for the
+corrected entries; the two new compose-tree files above and the doc-page-count drift both bear on it.
+
 **ADJACENCY, sharpened.** `PLAN-V02-03` (documentation-restructure) is about to restructure
 `doc/user/` — including `compose-sample.adoc`, which D3 edits. That page did **not** exist when
 V02-03's spec was written and is one of three `doc/user/` pages V02-03's re-grounding newly
@@ -155,9 +182,11 @@ sample exists to save.**
   A search for an `oidc` block or a `session` key returns nothing; `gateway.yaml`:11 names BFF
   sessions among the deliberate omissions and :44 documents the public anchor's absent auth block;
   `endpoints/demo-api.yaml`:21 is `require: none`.
+  - verdict: contradicted | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: File count now 14, not 10/12: docker-compose.plain-http.yml, docker/certificates/sample-idp-trust.properties, docker/nginx/tls-terminator.conf are new; scripts/wait-for-ready.sh was deleted (#230), folded into start-sample.sh. Absorbed into spec as new Re-Grounded (3) section.
 - OBSERVED (2026-08-07): a Keycloak realm import already ships at
   `deployment/compose-sample/docker/keycloak/sample-realm.json`, so D1's confidential client is an
   edit rather than new infrastructure.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json:26-49 still ships a fully-formed confidential client (sample-client, publicClient:false, client-secret auth). D1's confidential client premise holds and may already be partially satisfied -- noted in Re-Grounded (3).
 
 ## Expected Surface
 

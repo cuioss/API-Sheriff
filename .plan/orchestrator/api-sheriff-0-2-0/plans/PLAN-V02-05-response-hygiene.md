@@ -152,24 +152,35 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED (confirmed leak): `edge/ResponseStage.java`:64 `isForwardableResponseHeader` filters ONLY
   hop-by-hop and conditional headers — it does **not** strip `Server`/`X-Powered-By`, so an upstream
   emitting them leaks them through (`relay` at :89-93 copies every forwardable upstream header).
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage.java:74-82 filter, :109-115 relay copy (moved from :64/:89-93) -- still no Server/X-Powered-By strip anywhere in file; ConnectionHeaders.RESPONSE_STRIP also lacks them. Leak confirmed still ships.
 - OBSERVED: security headers are opt-in today — `pipeline/SecurityHeadersStage.java`:68-81 emits HSTS /
   nosniff / frame-deny only when the `security_headers` block enables each.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersConfig/SecurityHeadersStage: each header returns null unless explicitly enabled; no default security_headers block ships. Opt-in premise holds, though mechanism grew substantially (CORS, per-route anchor wholesale-replace ADR-0007, per-header header_modes) -- Expected Surface undersells this.
 - OBSERVED: error bodies are already clean — `edge/GatewayEdgeRoute.java` `renderProblem` emits a
   minimal `{"type","title","status"}` with generic `EventCategory` titles, no stack/framework signature.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.java:1248-1276 renderProblem still emits minimal literal type/title/status RFC7807 body, no stack/framework signature. Method moved from unspecified line to :1248.
 - HYPOTHESIS: the gateway itself emits no `Server`/`X-Powered-By` by default (Vert.x/Quarkus default;
   no `quarkus.http.server-header` property exists — override idiom is `quarkus.http.header."Server".value`).
   Confirm/refute at outline with a live `curl -I` against the running native gateway (verify-at-outline)
   — do not build self-header suppression for a header we do not emit; the real work is the *upstream*
   passthrough strip.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: No quarkus.http.header override found in src/main/resources -- consistent but not proof. Spec itself labels this verify-at-outline via live curl -I, not statically settleable.
 - Verify-first clause: enumerate the actual set of identity-leaking headers an upstream can send (the IT
   stack: Keycloak, go-httpbin) and confirm which pass through today before fixing the allowlist.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Procedural/live-IT-stack enumeration instruction, not a static code claim -- cannot be settled by git show/log against main. Still a valid pending action item at outline.
 
 ## Expected Surface
 
-- OBSERVED: `edge/ResponseStage.java`:64 — the response-header forward filter (add the identity-strip)
+- OBSERVED: `edge/ResponseStage.java`:74 (drifted from :64) — the response-header forward filter
+  (add the identity-strip); both `relay()` and `relayWithTrailers()` share this one filter
+- OBSERVED: `http/ConnectionHeaders.java`:78-81 (`RESPONSE_STRIP`) — added 2026-09-22: the shared
+  response-direction policy both relay paths read; found understated by re-grounding, and the more
+  natural home for the Server/X-Powered-By strip than `ResponseStage.java` alone
 - OBSERVED: `pipeline/SecurityHeadersStage.java` + `config/model/SecurityHeadersConfig.java` — default-on posture
 - HYPOTHESIS: `api-sheriff/src/main/resources/application.properties` — a `quarkus.http.header` override only if the live check shows a self-emitted header (verify-at-outline)
-- OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/` — the doc layers incl. the TLS/CDN deployment note
+- OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`, `doc/architecture.adoc`
+  (added 2026-09-22 — Objective deliverable 6 requires it and it was missing) — the doc layers incl.
+  the TLS/CDN deployment note
 - OBSERVED: `api-sheriff/src/test/**` — the header tests
 
 ## Dependencies and Sequencing

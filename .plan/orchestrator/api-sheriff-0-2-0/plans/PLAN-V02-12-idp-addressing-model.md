@@ -243,55 +243,71 @@ reserved-path namespace is a broken contract rather than a partial one.
 - OBSERVED: `OidcConfig` carries a single `issuer` and no backchannel or discovery override —
   read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java`:47-57
   § the record header.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: OidcConfig.java:48 still one @Nullable String issuer field, no override.
 - OBSERVED: `token_validation.issuers[]` already carries `issuer` and `jwks.url` as independent
   keys — read at `integration-tests/src/main/docker/sheriff-config/gateway.yaml`:240-245.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: gateway.yaml issuer/jwks.url still sibling independent keys (benchmark-keycloak entry).
 - OBSERVED: all three realm imports pin the internal authority as canonical — read at
   `integration-tests/src/main/docker/keycloak/integration-realm.json`:12,
   `.../benchmark-realm.json`:12 and
   `deployment/compose-sample/docker/keycloak/sample-realm.json`:7, each
   `"frontendUrl": "https://keycloak:8443"`.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmark-realm.json:12, sample-realm.json:7 unchanged; integration-realm.json line drifted 12->14, content identical -- all three still pin internal frontendUrl.
 - OBSERVED: the browser reaches the IdP only via a Chromium host-resolver rule — read at
   `demo-client/playwright.config.js`:51-60 § `hostResolverRule()`, emitting
   `MAP keycloak:8443 127.0.0.1:1443`, and documented at
   `demo-client/doc/playwright-suite.adoc`:290.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: playwright.config.js:51/60 hostResolverRule hack still in tree, exact line match.
 - OBSERVED: Keycloak is published directly on the host in both topologies, and no route in any
   shipped configuration proxies it — read at `integration-tests/docker-compose.yml` § `keycloak.ports`
   (`1443:8443`, `1090:9000`) and `deployment/compose-sample/docker-compose.yml`:46-50. The
   gateway's only contact is egress (JWKS + back channel), host-exact allowlisted.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration-tests docker-compose.yml:36-37 unchanged; compose-sample port publish drifted to :66, content confirmed -- Keycloak still published directly, no route proxies it.
 - OBSERVED: reserved paths are configuration-derived with no product default — read at
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/ReservedPathRegistry.java`:95-123.
   There is no `/auth` literal in `src/main/java` outside Javadoc examples. **`/auth` is a sample
   convention, not a product constant.**
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ReservedPathRegistry.from() ~:94-122 still config-derived only; no /auth literal in executable code anywhere in api-sheriff/src/main/java.
 - OBSERVED: `/bff` and `/bff-session` anchors already exist — read at
   `integration-tests/src/main/docker/sheriff-config/gateway.yaml`:110-123.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: gateway.yaml:141-159 (drifted from :110-123) -- /bff and /bff-session anchors both present.
 - OBSERVED: the six reserved paths currently live under `/auth` — read at the same file,
   :266, :268, :269, :286, :297, :301.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Six /auth paths confirmed at gateway.yaml:298,300,301,318,329,333 (heavily drifted from :266-301).
 - OBSERVED: `doc/configuration.adoc`:293-308 mixes `/auth/*` and `/logout*` conventions inside one
   exhibit.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/configuration.adoc:387-404 (drifted a second time from :293-308 est. :305-311) -- /auth/* and /logout* conventions still coexist in one exhibit.
 - OBSERVED: no ADR covers IdP addressing or exposure — established by enumerating all 33 records
   in `doc/adr/`. **An asserted absence: re-verify by enumeration at outline, not by grep alone.**
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/ now 49 records not 37/33. Title/summary grep across all 49 found no direct hit but spec's own rule requires full enumeration, not grep -- still owed at outline. Next free number is 0050, not 0038.
 - OBSERVED: ADR-0018 anticipates the relocation — read at
   `doc/adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc`:75-76,300.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/0018:75,300 -- both quotes verbatim, exact line match, ADR-0018 still anticipates the relocation.
 - OBSERVED: the topology SVG omits `api-sheriff-plain-mgmt` in both drawing and `<desc>`, disclosed
   at `doc/development/integration-test-topology.adoc`:242-249.
+  - verdict: contradicted | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: integration-test-topology.adoc:551-557 states the gap is now closed; SVG shows variant instances (11), api-sheriff-plain-mgmt present in both drawing and desc. Reconfirms 2026-08-08's REFUTED verdict, count grown further (6)->(11) since.
 - HYPOTHESIS: `hostname-backchannel-dynamic=true` (with `hostname` set to a full URL and
   `proxy-headers=xforwarded`) is the supported Keycloak-side mechanism for the split, and
   `--hostname https://host/auth` with a context path is supported. Sourced from vendor
   documentation at the 26.x line, against the pinned `26.5.7` image. Confirm/refute **against the
   pinned image's own behaviour**, not against the doc page. (verify-at-outline)
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Cannot settle from source alone; pinned image confirmed still keycloak:26.5.7, consistent with hypothesis target -- genuinely verify-at-outline.
 - HYPOTHESIS: the exposure allowlist (`/realms/`, `/resources/`, `/.well-known/`, `/lb-check` in;
   `/admin/`, `/realms/master/`, `/metrics`, `/health`, port 9000 out) is complete for a BFF-only
   integration. Confirm/refute by driving the full login, refresh and RP-initiated-logout round
   trip through the fronted variant with everything else blocked. (verify-at-outline)
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Requires live login/refresh/logout round trip through the fronted variant; no such variant exists yet in the tree to test against.
 - HYPOTHESIS: the gateway's canonical-path handling defeats the non-normalized-path route to
   `/admin/`. Confirm/refute with a test, at
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/CanonicalPathGuard.java`.
   **Do not ship this as a documented advantage on the strength of reading the code.**
   (verify-at-outline)
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CanonicalPathGuard.java confirmed to exist; behavior claim requires a live test per spec's own caveat -- verify-at-outline.
 - Verify-first clause: the whole spec is grounded at `b39b271` with two plans in flight
   (PLAN-08A touches the security surface broadly; PLAN-46 touches `benchmarks/**`). **Re-ground
   every line reference at outline.** If PLAN-V02-08 lands first it will have moved the `oidc`
   block — read the landed shape, never this spec's line numbers.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Superseded procedural instruction, already re-grounded twice (2026-08-08, 2026-08-09) and now a third time by this pass -- the instruction itself remains sound advice.
 
 ## Expected Surface
 

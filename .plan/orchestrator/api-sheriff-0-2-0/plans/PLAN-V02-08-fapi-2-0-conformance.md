@@ -129,6 +129,43 @@ a release may have landed in between.
 **Inbound DPoP remains out of scope** — `SignatureAlgorithmPreferences` at 0.9.4 already admits the
 full FAPI 2.0 §5.4.1 set. That finding is stable.
 
+## Re-Grounded (3) 2026-09-22 at `af63895`
+
+**⚠ THE ROUTE CALCULUS IS INVERTED. RE-DERIVE D1/D3/D4/SPLIT-GUARD FROM THIS BEFORE OUTLINE — DO NOT
+INHERIT ANY PRIOR RE-GROUNDING'S ROUTE FRAMING.** `api-sheriff/pom.xml`:63 now pins
+`version.token-sheriff=0.9.6` (two releases past the 0.9.4 every prior pass checked against). Two
+upstream changes shipped in that gap, and together they reverse the plan's central premise:
+
+1. **mTLS is now the FORECLOSED route, not the available one.** TokenSheriff PR #731
+   (`b6b1a94d`, in 0.9.6) reclassified `tls_client_auth` as alpha: `MtlsClientAuth`'s constructor now
+   **unconditionally throws `UnsupportedOperationException`**, and `ClientAuthenticationSelector`
+   never selects `TLS_CLIENT_AUTH`. It is not constructible at the pinned version. The spec's framing
+   — *"the mTLS route is unblocked today... the only one available without an upstream release
+   dependency"* — is now exactly backwards.
+2. **DPoP is now the fully open route.** PR #640 (fixing upstream #618, the RSA-only blocker this
+   spec's D1 named) is an ancestor of both the 0.9.5 and 0.9.6 tags. `DpopProofGenerator` at 0.9.6
+   admits `RS256/RS384/RS512/PS256/ES256/EdDSA` and RSA/EC-P256/OKP-Ed25519 keys — the exact blocker
+   is resolved in the artifact this project now resolves. Upstream's own PR #731 states DPoP is now
+   "the recommended client-authentication direction," with `private_key_jwt` as "the supported
+   key-based authentication method."
+
+**Consequence.** D1's route decision, D3's `client_secret_basic` → `tls_client_auth`/`private_key_jwt`
+replacement, D4's "proof key or client certificate" framing, and the Split-Guard's route-cost
+evaluation all assumed the OLD calculus and must be re-derived, not re-verified, at outline.
+
+**Secondary corrections, lower stakes than the above:**
+
+- `BffRuntimeProducer.java`:516-522 already wires an egress `SSLContext` into `backChannelConfiguration`
+  when `oidc.egress_tls.oidc_tls_profile` is set (ADR-0040/0041/0045, landed since last grounding) —
+  D5's "no SSL context / JVM default trust store" premise needs NARROWING, not re-verifying: the
+  trust-anchor configurability already landed, the still-open half is presenting client *key* material
+  (a certificate), not trust-anchor configurability.
+- `RefreshFlow` construction moved out of `BffRuntimeProducer.java` entirely, into
+  `ScopedEngineFlows.java`:142, and now takes a 4-arg constructor (TokenSheriff added a
+  `validationBridge` param) — no 3-arg ctor exists any more.
+- ADR numbering: corpus is now contiguous `0001`–`0049`; next free is `0050`, not `0038`.
+- Expected Surface's 8 entries all still resolve correctly at their stated paths — no path staleness.
+
 ## Objective
 
 Make API Sheriff's BFF a conformant **FAPI 2.0 Security Profile** relying party. Three of the

@@ -148,10 +148,12 @@ reading a boot log.** That is the cost being removed.
   `--validate` returns **zero** hits outside `.plan/`. The feature does not exist in any form.
   (The search was re-run without a pathspec after an earlier `**`-globbed pathspec returned a false
   zero on every query — see the note in Dependencies.)
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: git grep for validateConfig/validate-config/--validate outside .plan/ still returns zero hits on main; control query 'ConfigValidator' returns 63 files confirming the search reaches the source tree. No offline-validation entry point exists.
 - ASSERTED BY THE ISSUE, NOT RE-VERIFIED: the five cross-document rule names attributed to
   `ConfigValidator`. Read the class and enumerate its actual rules; the list is a lead and may be
   incomplete — `ConfigValidator` gained at least one rule in 0.1.1 (the forward `*_allow`/`*_deny`
   mutual exclusion, `checkForwardDimension`) that postdates the issue.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ConfigValidator.java (2363 lines) still carries all five named rules plus checkForwardDimension and >=15 further validate*/check* rules the issue never named -- confirms the five-name list is a lead, not the full rule set, exactly as claimed.
 
 ## Expected Surface
 

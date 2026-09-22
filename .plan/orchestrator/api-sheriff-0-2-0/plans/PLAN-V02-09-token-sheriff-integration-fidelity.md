@@ -146,6 +146,46 @@ D2 here selects the mapping direction. V02-10 D2 (delete the process-global trus
 args across 7 services) is **independent of that decision and moot under neither branch**. Say which
 branch you took in the landing message so V02-10 can be re-scoped rather than re-derived.
 
+## Re-Grounded (3) 2026-09-22 at `af63895`
+
+**⚠ THE PLAN'S CENTRAL PREMISE IS STALE. RE-SCOPE D1–D6 AT OUTLINE, NOT A LINE-NUMBER REFRESH.**
+`api-sheriff/pom.xml`:63 now pins `version.token-sheriff=0.9.6` (two releases past 0.9.4). Both
+upstream issues this plan frames as open are **closed with released fixes already in the pinned
+artifact**, and D6 (the deliverable moved in from `PLAN-V02-10`) is **already done**:
+
+- **`TokenSheriff#641`** (extension health/metrics beans resolve issuers from the property namespace,
+  not the produced `TokenValidator`) — closed 2026-08-10; fix (PR #645) is an ancestor of 0.9.5/0.9.6.
+  `GatewayReadinessCheck.java`:62-92 already reads `IssuerKeySetStatus` (a non-fetching, per-issuer
+  live view) via `RetryingJwksLoader` — landed by PR #334 (2026-09-21). **D3's readiness half is
+  already done.**
+- **`TokenSheriff#617`** — closed 2026-08-09; fix (PR #642) ships `META-INF/native-image/` from the
+  plain validation-core library, an ancestor of 0.9.5/0.9.6.
+- **D6 is already landed.** `BffRuntimeProducer.java`:522 already calls
+  `builder.sslContext(trustProfileResolver.resolveEgressProfile(OIDC_TLS_PROFILE_KEY, tlsProfile))` —
+  landed by an unrelated PR (#306, 2026-09-16), before D6 was even moved into this plan. Confirmed
+  independently by `PLAN-V02-10`'s own re-grounding pass. **Report D6 as already satisfied, not as
+  work to do.**
+- **Open Defect (13) (`applyJwks` switch-conversion candidate) is gone with the method it named** —
+  `TokenValidatorProducer.java` was substantially rewritten by PR #334; no `applyJwks` method exists
+  any more. Do not carry this item forward.
+- **Issue #174** (`GatewayReadinessCheck` reporting a false `issuer_reachability: reachable`) — the
+  underlying false-claim bug is fixed (the same PR #334 removed the `ISSUER_REACHABLE`/
+  `ISSUER_UNREACHABLE` constants entirely; the datum is now always `unverified`), but **the GitHub
+  issue itself is still OPEN** — no active discovery-attempt probe was added, only the false claim was
+  stopped. Distinguish "the lie is gone" from "the feature exists" when reporting.
+
+**Consequence for D1–D5.** With the exclusion's stated rationale (JWKS readiness as boot-time-only) no
+longer accurate and both named upstream blockers resolved, D2's "adopt upstream fix, delete the
+exclusion" option is now the live default rather than a contingency — re-derive D1–D5 against that,
+not against the plan's original framing.
+
+**Secondary corrections:** Expected Surface is missing `BffRuntimeProducer.java` and
+`SheriffMetrics.java` (both are direct write sites for the above); `application.properties §§ 150-203`
+citation should read ~§§ 260-337 (block grew/shifted); the "0.9.3 artifact" read-only note should read
+0.9.6. `ADR-0027` (the beans-exclusion decision) still carries no reference to `#641`/`#617` — the
+spec's own instruction to update it there has not yet been paid, consistent with this plan being
+unexecuted.
+
 ## Objective
 
 API Sheriff runs **two parallel token-validation mechanisms**. The request path builds a
@@ -394,13 +434,16 @@ Read first-party at `36508b2` (API Sheriff `main`) and from the resolved
 
 ## Expected Surface
 
-- `api-sheriff/src/main/resources/application.properties` §§ 150-203
+- `api-sheriff/src/main/resources/application.properties` §§ 260-337 (drifted from §§ 150-203)
 - `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/GatewayReadinessCheck.java`
 - `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java`,
   `JwksTrustProfileResolver.java`, `GatewayValidator.java`
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java`,
+  `SheriffMetrics.java` — added 2026-09-22: the D6 (already-landed) and D3-metrics write sites,
+  found understated by re-grounding
 - Possibly new: a `ConfigSource` under `gateway/config/`, if deliverable 2 selects the mapping
 - `doc/` — the three-layer documentation, and an ADR if the verdict changes the architecture
-- Read-only: the `token-sheriff-validation-quarkus` 0.9.3 artifact
+- Read-only: the `token-sheriff-validation-quarkus` 0.9.6 artifact (was 0.9.3/0.9.4)
 
 ## Dependencies and Sequencing
 

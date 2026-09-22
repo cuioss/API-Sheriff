@@ -210,13 +210,16 @@ from it.** That is a real diagnosis cost, not a style objection.
 
 - OBSERVED (2026-08-07, `b8dde22`): `EventType.java`:62/:69/:71 carry the three members against
   `EventCategory.INPUT_VALIDATION`.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType.java:62,69,71 on main still carry NO_ROUTE_MATCHED/PASSTHROUGH_HOST_SMUGGLED/METHOD_NOT_ALLOWED against EventCategory.INPUT_VALIDATION -- lines and category match exactly.
 - OBSERVED (2026-08-07, `b8dde22`): `renderProblem` call sites at `GatewayEdgeRoute.java`:566, :694,
   :750, :775, :1093, defined at :1096; `acceptsHtml` exists only at
   `SessionAuthenticationStage.java`:181 and is used only at :168.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Substance unchanged -- same 5 renderProblem call sites, same event mapping/order, method still defined once. Only line numbers drifted (file grew): call sites now :640/:768/:844/:869/:1245, def :1248 (was :566/:694/:750/:775/:1093, def :1096); acceptsHtml now defined :220, used :205 (was :181/:168). Re-anchor by content at outline.
 - ASSERTED BY THE ISSUE, NOT RE-VERIFIED: the three-row behaviour table in #189 (auth failure → 302
   on `text/html`; `/auth/userinfo` → 401 both ways; no route → 404 `problem+json` both ways) was
   measured against a running gateway by the reporter. **Re-measure before building on it** — a
   measured table from outside is a lead, and row 1 is what the whole design reuses.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Runtime Accept-negotiation behavior cannot be settled by a static read -- requires a running gateway. Spec already flags this as not-re-verified; nothing in current main statically confirms or contradicts it.
 
 ## Expected Surface
 

@@ -153,17 +153,21 @@ found by inspection rather than by a gate.
 - **OBSERVED** — Epic Open Defect (4): the IT suite cannot detect resource-lifecycle or layer-boundary
   defect classes. Two shipped instances (`218b5c` WebSocket permit leak, fixed by PLAN-32 `#126`; the
   body-cap derivation defect, fixed by PLAN-33 `#131 #134`).
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Commits 23949a9 (WS permit leak fix, #126) and 29f1dac (body-cap 413 fix, #131) both on main with matching shape; regression tests landed (WebSocketProxyIT.java, LargeBodyIT.java, BodyLimitActivationWiringTest.java).
 - **OBSERVED** — the benchmark lane runs **12** k6 goals, and as of `818d964` both formerly quarantined
   goals are re-enabled (`skip.benchmark.upload.large` and `skip.benchmark.websocket.echo` both default
   `false` in `benchmarks/pom.xml`). **The "the lane is not green today" objection that stood when this
   question was first raised no longer holds** — re-verify at outline rather than inheriting it.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmarks/pom.xml:39,49 both flags still false on main; benchmark.yml carries explicit comment confirming all 12 k6 goals execute. Lane-not-green objection no longer holds.
 - **HYPOTHESIS — the benchmark lane is not currently *gating*.** It runs post-merge on the PR and does
   not block the merge itself. Confirm against `.github/workflows/benchmark.yml` (verify-at-outline).
   **If it is not gating, deliverable 1's "benchmark lane" branch carries making it gate as a stated
   cost, not as an afterthought.**
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmark.yml on main: pull_request types:[closed] + job guard merged==true -- runs only post-merge, cannot gate. Making it gate is a structural workflow change, confirmed.
 - **Verify-first clause**: re-read both fixed defects' regression tests before deciding. If PLAN-32 and
   PLAN-33 already added detection that generalises, this plan narrows to documenting that and the
   design question is largely settled.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Re-check performed: both PLAN-32/33 tests are narrowly purpose-built (dedicated low-cap WS overlay; single-oversized-request LargeBodyIT), NOT a general soak/sustained-traffic mechanism. Premise resolves to 'does not generalise' -- design question stays fully live, does not narrow to docs-only.
 
 ## Expected Surface
 

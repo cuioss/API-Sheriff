@@ -192,18 +192,23 @@ unblocks everything else and they must land together.
   `JsonWriter` is 126 lines and package-private; `InMemorySessionStore` is a `final class` with three
   `HashMap`s and no CDI annotation; corpus-wide CDI annotation count is 33 across 9
   `@ApplicationScoped` files; `ClientHelloSniParser` hand-parses ClientHello.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0005 Accepted, arch-test noClasses guard intact (168 lines); EnvSecretResolver javadoc unchanged; JsonWriter 127 lines pkg-private final; InMemorySessionStore final w/ 3 HashMaps, now all methods synchronized (PLAN-49 landed); ClientHelloSniParser hand-parses RFC6066 ClientHello, 423 lines. CDI count STALE (claim says 33/9; main now 49/15) -- already flagged stale in spec, re-count at outline as instructed.
 - **HYPOTHESIS (verify-at-outline)**: that a Quarkus-supplied JSON serializer covers `JsonWriter`'s
   payload shapes. **Confirm/refute artifact**: `JsonWriter`'s call sites and the actual payloads.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: BffRuntime.java:259 still JsonWriter.toJson(outcome.body()) sole call site, unchanged. Whether Quarkus serializer covers the payload shape is a design determination outside repo content -- this is the outline-time task the spec names.
 - **HYPOTHESIS (verify-at-outline)**: that SmallRye expression expansion matches `EnvSecretResolver`'s
   semantics. **Confirm/refute artifact**: the resolver's tests plus the YAML-load call path.
   **Explicitly refutable — and a refutation is a valid, expected outcome.**
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: config/load/ package unchanged (ConfigError, ConfigLoadException, ConfigLoader, EnvSecretResolver, package-info.java). SmallRye-vs-YAML-load semantics match is a design question the repo alone doesn't settle; spec itself labels this explicitly refutable.
 - **HYPOTHESIS (verify-at-outline)**: that a Quarkus session mechanism satisfies O(1) destroy-by-`sub`
   and destroy-by-`sid`. **Confirm/refute artifact**: `SessionStore`'s interface and the back-channel
   logout call path. **Likely to be refuted; that is fine and must be reported, not worked around.**
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SessionStore.java interface javadoc unchanged, still states O(1) destroy-by-sub/sid via secondary index as the binding requirement. Whether a Quarkus/Vert.x mechanism meets it is a design comparison outside repo content; matches spec's own likely-to-be-refuted framing.
 - **OBSERVED (absence)**: the orchestrator did **not** verify which serializer the Quarkus BOM
   supplies here, did **not** read `ServerSessionBinding` or `SessionCookieCodec` beyond their
   existence, did **not** read the `tls/` package beyond `ClientHelloSniParser`'s role, and did
   **not** establish whether retiring the arch-gate breaks any other test.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Claim is about the PRIOR reviewer's own investigation scope, not repo content -- cannot be settled by reading main. FrameworkAgnosticArchTest.java still present/unretired on main, so whether retiring it breaks another test remains genuinely untested.
 
 ## Expected Surface
 

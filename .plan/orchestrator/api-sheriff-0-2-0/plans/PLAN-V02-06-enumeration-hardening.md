@@ -179,20 +179,25 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED (the oracle): the differentiated codes are real — `events/EventType.java`: `NO_ROUTE_MATCHED`
   (404), `TOKEN_MISSING` (401), `PATH_NOT_ALLOWED` (400); rendered by `edge/GatewayEdgeRoute.java`
   `renderProblem` per the event's HTTP mapping.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType.java:58 PATH_NOT_ALLOWED(400), :62 NO_ROUTE_MATCHED(404), :101 TOKEN_MISSING(401) all hold. renderProblem (GatewayEdgeRoute.java:1248-1261) still maps status per event's HTTP mapping, unchanged mechanism.
 - OBSERVED: deny-by-default routing (no listing) — `pipeline/RouteSelectionStage.java`:34-35
   (`NO_ROUTE_MATCHED`, "the gateway never forwards an unmatched request").
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: RouteSelectionStage.java:37-38 (drifted from :34-35) still: 'gateway never forwards an unmatched request'; process():64-73 throws GatewayException(NO_ROUTE_MATCHED) on exhausted loop, no listing endpoint.
 - OBSERVED: no per-client recon detection exists — `events/GatewayEventCounter.java` counts events
   globally (Micrometer), not per-source; a grep for a per-client/leaky-bucket construct returns nothing.
   Confirm/refute at `events/` § its counter set (verify-at-outline).
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter.java: plain ConcurrentHashMap<EventType,AtomicLong>, no per-source keying, no bucket/window construct (the '(Micrometer)' detail is stale -- class javadoc explicitly avoids Micrometer per ADR-0005). Repo search for bucket/throttle/recon/sliding/ban: only RateLimitConfig.java, a reserved-and-ignored block -- D3 genuinely net-new.
 - HYPOTHESIS: the "trusted / authenticated caller" signal needed for the trust-boundary branch is
   available at the render point (the request carries its auth outcome). Confirm/refute at
   `edge/GatewayEdgeRoute.java` § where `renderProblem` is called and what auth state is in scope
   (verify-at-outline) — if the reject path cannot see auth state, the branch needs the pipeline to
   thread it, which widens the deliverable.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: process():754-846 -- PATH_NOT_ALLOWED/NO_ROUTE_MATCHED fire before authenticationStage.process(); TOKEN_MISSING fires inside it. The eventType param renderProblem already receives is itself sufficient signal to branch pre/post-trust-boundary -- no new PipelineRequest field needed (grep found none).
 - Verify-first clause: confirm that collapsing to 404 does not break the shipped BFF/XHR contracts
   (PLAN-06's info endpoint deliberately returns 401-not-redirect for XHR) — the uniform-404 must NOT
   apply to those authenticated-session flows; scope the "untrusted" predicate against the landed auth
   model, not this spec's prose.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: UserInfoEndpoint.java javadoc still: no-session yields 401 problem+json, never a redirect -- a genuine currently-untrusted-by-naive-predicate 401 the uniform-404 predicate must still carve out. Risk unresolved, unchanged.
 
 ## Expected Surface
 
