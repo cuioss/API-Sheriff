@@ -154,8 +154,6 @@ public final class Awaits {
     private static final CuiLogger LOGGER = new CuiLogger(Awaits.class);
 
     private static final Duration CONNECT_CEILING = Duration.ofSeconds(CONNECT_CEILING_SECONDS);
-    private static final Duration ADMISSION_RELEASE_CEILING =
-            Duration.ofSeconds(ADMISSION_RELEASE_CEILING_SECONDS);
     private static final Duration TEARDOWN_CEILING = Duration.ofSeconds(TEARDOWN_CEILING_SECONDS);
 
     /**
