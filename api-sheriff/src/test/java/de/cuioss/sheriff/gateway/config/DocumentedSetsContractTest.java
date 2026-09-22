@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -40,6 +41,7 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -58,6 +60,9 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
@@ -202,6 +207,12 @@ class DocumentedSetsContractTest {
      */
     private static final String SECURITY_DEFAULTS_PROFILE_ENUM_POINTER =
             "/properties/security_defaults/properties/profile/enum";
+
+    /** The property name every inbound-filter mode site declares; the derivation keys off it. */
+    private static final String PROFILE_KEY = "profile";
+
+    /** The JSON Schema keyword carrying a closed value set. */
+    private static final String SCHEMA_ENUM = "enum";
 
     /**
      * Anchor for {@code doc/configuration.adoc}'s bare extension enumeration. The stated count
@@ -534,22 +545,64 @@ class DocumentedSetsContractTest {
         assertRequirePostures(ENDPOINT_SCHEMA_RESOURCE);
     }
 
-    @Test
-    @DisplayName("the gateway schema's securityFilter profile enum equals the SecurityProfile mode set")
-    void gatewaySecurityFilterEnumeratesTheProfileModes() throws Exception {
-        assertProfileModes(GATEWAY_SCHEMA_RESOURCE, SECURITY_FILTER_PROFILE_ENUM_POINTER);
+    @ParameterizedTest(name = "{1} in {0}")
+    @MethodSource("profileEnumSites")
+    @DisplayName("every profile enum the bundled schemas declare equals the SecurityProfile mode set")
+    void everyDeclaredProfileEnumEqualsTheProfileModes(String resource, String pointer) throws Exception {
+        assertProfileModes(resource, pointer);
     }
 
+    /**
+     * Guards the derivation that feeds {@link #everyDeclaredProfileEnumEqualsTheProfileModes}: the walk
+     * must still reach each site known to exist.
+     * <p>
+     * The three pointers below are a <em>floor</em>, not the asserted population — that population is
+     * derived, which is what makes a fourth site covered on the day it is declared. Without this floor
+     * a walk that silently stopped reaching a site would leave the parameterized guard above passing
+     * over fewer sites than the schemas declare, which is the same blindness in a new place.
+     *
+     * @throws Exception when a bundled schema cannot be read
+     */
     @Test
-    @DisplayName("the gateway schema's security_defaults profile enum equals the SecurityProfile mode set")
-    void gatewaySecurityDefaultsEnumeratesTheProfileModes() throws Exception {
-        assertProfileModes(GATEWAY_SCHEMA_RESOURCE, SECURITY_DEFAULTS_PROFILE_ENUM_POINTER);
+    @DisplayName("the profile-enum derivation still reaches all three known schema sites")
+    void profileEnumDerivationReachesTheKnownSites() throws Exception {
+        Set<String> gateway = profileEnumPointers(schemaTree(GATEWAY_SCHEMA_RESOURCE));
+        Set<String> endpoint = profileEnumPointers(schemaTree(ENDPOINT_SCHEMA_RESOURCE));
+
+        assertAll("derived profile-enum sites",
+                () -> assertTrue(gateway.contains(SECURITY_FILTER_PROFILE_ENUM_POINTER),
+                        GATEWAY_SCHEMA_RESOURCE + ": the walk no longer reaches "
+                                + SECURITY_FILTER_PROFILE_ENUM_POINTER + ". Derived: " + gateway),
+                () -> assertTrue(gateway.contains(SECURITY_DEFAULTS_PROFILE_ENUM_POINTER),
+                        GATEWAY_SCHEMA_RESOURCE + ": the walk no longer reaches "
+                                + SECURITY_DEFAULTS_PROFILE_ENUM_POINTER + ". Derived: " + gateway),
+                () -> assertTrue(endpoint.contains(SECURITY_FILTER_PROFILE_ENUM_POINTER),
+                        ENDPOINT_SCHEMA_RESOURCE + ": the walk no longer reaches "
+                                + SECURITY_FILTER_PROFILE_ENUM_POINTER + ". Derived: " + endpoint));
     }
 
-    @Test
-    @DisplayName("the endpoint schema's securityFilter profile enum equals the SecurityProfile mode set")
-    void endpointSecurityFilterEnumeratesTheProfileModes() throws Exception {
-        assertProfileModes(ENDPOINT_SCHEMA_RESOURCE, SECURITY_FILTER_PROFILE_ENUM_POINTER);
+    /**
+     * Every {@code profile} enum site the two bundled schemas declare, <em>derived</em> by walking each
+     * schema rather than listed.
+     * <p>
+     * Listing the sites is what the earlier form did, and it covered exactly the sites that existed
+     * when it was written: a {@code properties/profile/enum} added anywhere else went unasserted and
+     * could drift from {@link SecurityProfile} while the suite stayed green. Deriving the population
+     * means a new site is covered on the day it is declared. One argument set per site keeps the
+     * per-site failure naming the earlier form had — a pooled assertion would report the very drift
+     * this guard exists to localise as one anonymous mismatch.
+     *
+     * @return one {@code (resource, pointer)} pair per declared site
+     * @throws IOException when a bundled schema cannot be read
+     */
+    static Stream<Arguments> profileEnumSites() throws IOException {
+        List<Arguments> sites = new ArrayList<>();
+        for (String resource : List.of(GATEWAY_SCHEMA_RESOURCE, ENDPOINT_SCHEMA_RESOURCE)) {
+            for (String pointer : profileEnumPointers(schemaTree(resource))) {
+                sites.add(Arguments.of(resource, pointer));
+            }
+        }
+        return sites.stream();
     }
 
     @Test
@@ -1222,6 +1275,46 @@ class DocumentedSetsContractTest {
                         + " declares. The count is taken over the raw array entries rather than over the"
                         + " de-duplicated set, so a mode listed twice fails here even though the set equality"
                         + " above still holds");
+    }
+
+    /**
+     * Every JSON pointer at which a schema declares a {@code profile} enum, found by walking the tree.
+     * <p>
+     * A site is a node carrying {@code properties/profile} whose value declares an {@code enum} array —
+     * the shape all three known sites are written in. Requiring the {@code properties} parent is what
+     * keeps the walk from claiming an unrelated field that merely happens to be named {@code profile}.
+     * The walk descends through every object field and array element, so a site is found wherever it is
+     * declared: under {@code $defs}, under {@code properties}, or anywhere a future schema puts one.
+     *
+     * @param schema the parsed schema tree
+     * @return the declared {@code profile} enum pointers, in pointer order
+     */
+    private static Set<String> profileEnumPointers(JsonNode schema) {
+        Set<String> pointers = new TreeSet<>();
+        collectProfileEnumPointers(schema, "", pointers);
+        return pointers;
+    }
+
+    /**
+     * Recursive half of {@link #profileEnumPointers(JsonNode)}.
+     *
+     * @param node     the node being visited
+     * @param pointer  the JSON pointer of {@code node}
+     * @param pointers the accumulating result
+     */
+    private static void collectProfileEnumPointers(JsonNode node, String pointer, Set<String> pointers) {
+        if (node.isObject()) {
+            if (node.path(SCHEMA_PROPERTIES).path(PROFILE_KEY).path(SCHEMA_ENUM).isArray()) {
+                pointers.add(pointer + "/" + SCHEMA_PROPERTIES + "/" + PROFILE_KEY + "/" + SCHEMA_ENUM);
+            }
+            for (Map.Entry<String, JsonNode> field : node.properties()) {
+                collectProfileEnumPointers(field.getValue(), pointer + "/" + field.getKey(), pointers);
+            }
+        } else if (node.isArray()) {
+            for (int index = 0; index < node.size(); index++) {
+                collectProfileEnumPointers(node.get(index), pointer + "/" + index, pointers);
+            }
+        }
     }
 
     /**
