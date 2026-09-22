@@ -63,11 +63,12 @@ import org.junit.jupiter.api.Test;
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Nine shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Ten shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
- * {@link AssetResponseEnvelope#builtInExtensions()}, four list the inbound-filter mode set carried by
- * {@link SecurityProfile} — {@code doc/configuration.adoc} plus the three symmetric {@code profile}
- * enum sites the two bundled JSON Schemas declare — and those two schemas each additionally list the
+ * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
+ * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
+ * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — and those two
+ * schemas each additionally list the
  * authentication posture set carried by {@link Require}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
  * still reads as authoritative while describing a gateway that no longer exists. The project's own review policy
@@ -225,6 +226,19 @@ class DocumentedSetsContractTest {
      * whose own line also carries a {@code #} comment containing the {@code |}-separated mode list.
      */
     private static final String CONFIG_PROFILE_ANCHOR = "profile: strict";
+
+    /**
+     * Anchor for {@code doc/user/README.adoc}'s bare mode enumeration ("The mode set is exactly
+     * `strict`, …"). The backticked list runs from the anchor to the sentence's own full stop, which
+     * no mode name can contain.
+     * <p>
+     * The operator guide restates the mode set twice — this sentence and the mode table its
+     * {@code | `mode`} rows build — and neither restatement was bound to {@link SecurityProfile}
+     * until this anchor and {@link #hasModeDefinitionRow(String, String)} were pointed at it. That
+     * left the document an operator is most likely to read as the one that could silently describe a
+     * mode set the gateway no longer has.
+     */
+    private static final String README_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly";
 
     /**
      * Anchor for the cookie-mode exhibit in {@code doc/user/bff-cookie.adoc} — the sentence that
@@ -577,6 +591,60 @@ class DocumentedSetsContractTest {
                             + "' declared by SecurityProfile. The mode-set table must carry one cell"
                             + " holding exactly \"" + modeDefinitionRow(mode) + "\" per mode, so a newly"
                             + " added mode gets its entry and a removed one has its entry deleted");
+        }
+    }
+
+    @Test
+    @DisplayName("doc/user/README.adoc's mode enumeration equals the SecurityProfile value set")
+    void userReadmeEnumeratesTheSecurityProfileModes() throws Exception {
+        // Arrange
+        String document = read(USER_README_ADOC);
+        int anchor = anchorIndex(document, README_PROFILE_MODE_SET_ANCHOR, USER_README_ADOC.toString());
+
+        // Act — the sentence names the set inline and ends at its own full stop; the raw token count
+        // comes back alongside the set because the set alone cannot observe a mode named twice
+        int listStart = anchor + README_PROFILE_MODE_SET_ANCHOR.length();
+        int listEnd = document.indexOf('.', listStart);
+        if (listEnd < 0) {
+            fail(USER_README_ADOC + ": the mode list after the anchor \"" + README_PROFILE_MODE_SET_ANCHOR
+                    + "\" is not terminated by a full stop; the anchor no longer describes the document"
+                    + " and this guard would otherwise assert over the rest of the file");
+        }
+        TokenList documented = backtickedTokens(document.substring(listStart, listEnd));
+
+        // Assert
+        assertFalse(documented.tokens().isEmpty(), USER_README_ADOC + ": anchor \""
+                + README_PROFILE_MODE_SET_ANCHOR + "\" matched but yielded no modes — the guard would"
+                + " pass vacuously");
+        assertEquals(modeNames(), sorted(documented.tokens()),
+                USER_README_ADOC + " enumerates the security_defaults.profile mode set, which is"
+                        + " authoritatively defined by SecurityProfile, and has drifted from it. This is the"
+                        + " document an operator reads to decide which mode to set, so a mode it omits is one"
+                        + " nobody is told exists, and one it names that the enum does not is a value the"
+                        + " gateway refuses to boot on");
+        assertEquals(SecurityProfile.values().length, documented.rawCount(),
+                USER_README_ADOC + " lists a different number of modes than SecurityProfile declares."
+                        + " The count is taken over the raw backticked tokens rather than over the"
+                        + " de-duplicated set, so a mode listed twice fails here even though the set"
+                        + " equality above still holds");
+    }
+
+    @Test
+    @DisplayName("doc/user/README.adoc gives every SecurityProfile mode a definition row of its own")
+    void userReadmeDocumentsEverySecurityProfileMode() throws Exception {
+        // Arrange — the per-mode guidance is free-form prose, so the table row that introduces it is
+        // the structural thing worth asserting, exactly as it is for doc/configuration.adoc
+        String document = read(USER_README_ADOC);
+
+        // Act + Assert
+        for (SecurityProfile profile : SecurityProfile.values()) {
+            String mode = profile.name().toLowerCase(Locale.ROOT);
+            assertTrue(hasModeDefinitionRow(document, mode),
+                    USER_README_ADOC + " has no definition row of its own for the mode '" + mode
+                            + "' declared by SecurityProfile. The operator guide's mode table must carry"
+                            + " one cell holding exactly \"" + modeDefinitionRow(mode) + "\" per mode, so a"
+                            + " newly added mode gets the guidance that tells an operator when to choose it"
+                            + " and a removed one has its entry deleted");
         }
     }
 

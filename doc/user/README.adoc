@@ -161,7 +161,7 @@ resolution chain live in
 link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
 section is the operator's decision guide.
 
-=== The four modes
+=== The modes
 
 [cols="1,2,3"]
 |===
