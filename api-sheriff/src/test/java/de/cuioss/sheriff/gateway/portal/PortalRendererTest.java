@@ -21,7 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -238,7 +237,7 @@ class PortalRendererTest {
 
         @Test
         @DisplayName("Refuses an operator template file carrying an escape bypass")
-        void refusesOperatorFileWithBypass(@TempDir Path templateDir) throws IOException {
+        void refusesOperatorFileWithBypass(@TempDir Path templateDir) throws Exception {
             Files.writeString(templateDir.resolve("portal.html"), "<h1>{title}</h1>\n\n<p>{title.raw}</p>",
                     StandardCharsets.UTF_8);
 
@@ -256,7 +255,7 @@ class PortalRendererTest {
 
         @Test
         @DisplayName("Renders an operator template loaded from the template directory")
-        void rendersOperatorTemplate(@TempDir Path templateDir) throws IOException {
+        void rendersOperatorTemplate(@TempDir Path templateDir) throws Exception {
             Files.writeString(templateDir.resolve("portal.html"), "<h1>{title}</h1>", StandardCharsets.UTF_8);
 
             PortalRenderer renderer = PortalRenderer.fromDirectory(templateDir);
