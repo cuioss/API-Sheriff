@@ -1868,6 +1868,198 @@ scope is `403 insufficient_scope` with no upstream contact while one covering it
 (`BearerScopeIT`, `AuthenticationStageTest`); a refresh after a scoped login keeps the endpoint scope
 in the refreshed token (`BffTokenRefreshIT`, `TokenRefreshCoordinatorTest`).
 
+[[_html_surface_failure_catalogue]]
+== HTML surface failure catalogue
+
+The optional application portal (link:user/portal.adoc[operator guide],
+link:adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050])
+gives the gateway an HTML surface of its own. Two responses are gateway-authored HTML: the overview
+page on the reserved `portal.path`, and, with `portal.error_pages`, the negotiated HTML error page of
+a gateway-originated error. Without a `portal` block neither exists and every entry below is
+ELIMINATED for that deployment.
+
+HTML adds a class of failure the JSON surfaces never had: a value the gateway writes into a page is
+interpreted by a browser *in the gateway's origin*. The inputs that reach the page are catalog values
+(operator configuration), the `notice` query parameter (attacker-controlled), the signed-in user's
+`preferred_username` (identity-provider-controlled, and user-controlled wherever the IdP lets users
+edit it), the HTTP status of an error, and the template itself (operator-authored). Three boundaries carry
+them: the client edge (B1) for `notice` and the `Accept` header, the browser session (B5) for the
+username, and the operator configuration (B6) for the catalog and the template.
+
+The shared control is the rendering path. One standalone Qute engine renders every portal page. It
+HTML-escapes every value it writes, has no resolver for the escape-bypass constructs, has no namespace
+resolver, and sees a fixed map of plain values rather than domain objects. A template is parsed and
+walked at boot, and the boot is refused rather than serving a template that could bypass that path.
+Every portal response carries the fixed policy
+`Content-Security-Policy: default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`
+and `X-Content-Type-Options: nosniff`, which `security_headers` cannot weaken.
+
+[#html-01]
+=== HTML-01 -- Stored and reflected XSS via catalog values, the `notice` parameter and the username
+
+A value written into the page without HTML escaping runs as script in the gateway's origin. Stored
+XSS arrives through a catalog `title` or `description`, reflected XSS through the `notice` query
+parameter, and identity-driven XSS through a `preferred_username` the attacker chose at the identity
+provider.
+
+*Evidence.* Reflected and stored XSS through an echoed query parameter or an unescaped
+administrator-supplied label is the most common web-application weakness class (CWE-79, OWASP A03).
+No gateway-product CVE is cited: the surface is new in API Sheriff, and the entry is recorded from the
+mechanism before it ships.
+
+*Control.* Escaping is structural, not per-template. The engine's result mapper HTML-escapes every
+value for the `text/html` variant every template is parsed with, and the raw-value resolver is
+absent, so no expression resolves to unescaped output. `notice` is never echoed: it is mapped by exact,
+case-sensitive comparison onto a closed vocabulary (`logged-out`), and every other value is dropped
+before rendering. Only the vocabulary word reaches the page. The username is read from the
+*validated* ID-token claims only, and escaped like every other value. The portal CSP carries no
+`'unsafe-inline'`, so an injected inline script would not run even if escaping were bypassed.
+
+*Status:* COVERED. `PortalRendererTest` pins the escaping of every model value and the absence of
+`raw`/`safe`; `PortalNoticeTest` pins the closed vocabulary; `PortalEndpointTest` pins that an unknown
+or HTML-bearing `notice` is dropped; `PortalIT` asserts against the native image that a catalog title
+carrying `<`, `&`, `"` and `'` is escaped on the page and that `notice=<script>` renders nothing of it.
+
+*Assertion.* No catalog value, username or `notice` value appears unescaped in a rendered page; a
+`notice` outside the vocabulary never reaches the page; every portal response carries the fixed
+portal CSP.
+
+[#html-02]
+=== HTML-02 -- Template injection by an operator template (SSTI)
+
+A template engine that can reach application objects, configuration or the class loader turns a
+template into code execution or a secret-disclosure channel. The template author is the operator,
+but the template file is also a place where an attacker with write access to the configuration
+volume, or an inattentive copy-and-paste, can escalate. A template construct that parses a *value*
+as template code (`eval`) would make the username or a catalog value an injection vector as well.
+
+*Evidence.* Server-side template injection is an established class (CWE-1336), with CVE-2022-22954
+(FreeMarker template injection leading to remote code execution in VMware Workspace ONE Access) as a
+canonical instance. The Quarkus-managed Qute engine carries `cdi:`, `config:` and `inject:`
+namespace resolvers that would expose beans and configuration to a template.
+
+*Control.* The portal never renders through the Quarkus-managed engine. It builds a standalone engine
+with no namespace resolver, no template locator and no reflection resolver, over a data model limited
+to `String`, `Boolean`, `Integer`, `List` and `Map`. Only the `if`, `for`/`each`, `let`/`set` and
+`when`/`switch` sections exist: `eval` is absent, and `include`/`insert` have nothing to resolve
+against. A second, independent layer walks every expression at boot, including section parameters and
+virtual-method arguments, and refuses any `raw`, `safe` or namespaced expression with
+`ApiSheriff-202`, naming the file and line. A template that is missing, unreadable or unparseable is
+refused the same way. The template is read once at boot and never reloaded.
+
+*Status:* COVERED. `PortalRendererTest` pins every refusal (each `raw`/`safe` spelling, namespaces,
+unsupported sections, parse errors, a missing file) and the line reported; `PortalIT` asserts that a
+runtime-parsed operator template renders in the native image.
+
+*Residual risk (accepted).* An operator template is trusted markup. It can link to any origin, and it
+can lay out the page misleadingly. It cannot execute code, reach configuration or unescape a value,
+and the portal CSP confines what the page loads and where its forms submit. Write access to the
+configuration directory is already equivalent to control of the gateway (see <<gw-10>>).
+
+*Assertion.* A template using `raw`, `safe`, a namespace, `eval`, `include` or `insert` fails the
+boot with `ApiSheriff-202`; a model value containing template syntax renders as escaped text.
+
+[#html-03]
+=== HTML-03 -- Cache leakage of session data
+
+A page naming a signed-in user that a shared or browser cache stores can be served to a different
+user, or to the same browser after sign-out. The reverse also leaks: an anonymous page cached across
+a sign-in hides the session state.
+
+*Evidence.* The failure class is web cache deception and misconfigured caching of personalised
+responses (CWE-524, CWE-525). It is configuration-shaped rather than tied to one CVE.
+
+*Control.* The cache policy follows what the body carries, not configuration alone. A page naming a
+signed-in user is `Cache-Control: no-store` whatever `cache_seconds` says. Every HTML error page and
+the `405` are `no-store`. Only a session-free page is cacheable (`max-age=<cache_seconds>`, default
+`0`), and with an active BFF runtime it carries `Vary: Cookie`, merged into any existing `Vary`, so a
+cache keys it on the session cookie. A portal response never sets a cookie. Error pages are always
+rendered anonymously, so they carry no session data at all.
+
+*Status:* COVERED. `PortalResponseEnvelopeTest` pins the per-class headers and the `Vary` merge;
+`PortalEndpointTest` pins the session-bearing `no-store`; `PortalIT` asserts `max-age` and `Vary: Cookie` on the
+anonymous page against the native image; `HtmlErrorPageIT` asserts `no-store` on every error page.
+
+*Assertion.* A response carrying a username is `no-store`; a session-free page carries
+`Vary: Cookie` whenever the BFF runtime is active; no portal response carries `Set-Cookie` of its
+own.
+
+[#html-04]
+=== HTML-04 -- Open redirect via a catalog `entry`
+
+A catalog link names where a trusted gateway page sends the browser. If `entry` can name another
+origin, directly or through a spelling the reader did not recognise as foreign, the portal becomes a
+phishing relay (CWE-601), exactly as a gateway-answered redirect would (<<gw-13>>).
+
+*Evidence.* The same URL-parser disagreement <<gw-13>> records: a leading `//` is scheme-relative, a
+backslash is parsed as `/` by browsers, and percent-encoded separators are decoded by intermediaries.
+
+*Control.* `entry` is fixed configuration, never request-derived, and is reviewed once at boot. The
+schema requires a single leading `/` and refuses `//`, backslashes and control characters. The
+validator additionally refuses a percent-encoded `/` or `\` and a path part the cui-http URL path
+review refuses, for every enabled endpoint. The refusal names the endpoint and never echoes the value.
+The rendered `href` is HTML-escaped (<<html-01>>). The portal's own login link carries the portal path
+as a fixed `returnUrl`, which the login endpoint's same-origin rule governs (<<bff-02>>).
+
+*Status:* COVERED. `ConfigValidatorPortalTest` pins every refused spelling and the admitted forms.
+
+*Assertion.* A catalog `entry` that is not an origin-relative path on the gateway's own origin fails
+the boot.
+
+[#html-05]
+=== HTML-05 -- Information disclosure in HTML error pages
+
+A rendered error page has room for detail a problem body never had: an exception message, a problem
+detail, an upstream address or a stack trace. An error page that resolves the session would also put
+the user's identity on a failure path.
+
+*Evidence.* The same class as <<gw-12>>, which cites APISIX CVE-2022-29266 for a secret surfaced in an
+error body.
+
+*Control.* An error page's only request-derived input is the status code. The title comes from a fixed
+per-status table, and the page never receives a problem detail, an exception message or an upstream
+address, because the data model has no key for them. No session is resolved on a failure path, so the
+page is always anonymous. A render failure falls back to the exit's current, detail-free shape and is
+logged at debug level only.
+
+*Status:* COVERED. `ErrorPageClassifierTest` pins the fixed title table; `PortalEndpointTest` pins
+the anonymous error model; `HtmlErrorPageIT` asserts status, content type, the portal CSP and
+`no-store` per reachable error class against the native image.
+
+*Assertion.* An HTML error page carries the unchanged status and the fixed title only; it never names
+a user, an upstream or an internal detail.
+
+[#html-06]
+=== HTML-06 -- Origin-response interception and content-negotiation confusion
+
+If the gateway replaced an *origin's* error response with its own HTML page, it would hide the
+upstream's contract from the client and could change what an API client parses. If negotiation keyed
+on wildcards, a `fetch()` or REST client sending `+*/*+` would receive HTML instead of the
+`application/problem+json` it expects, and a script could be handed markup it then inserts into a
+page.
+
+*Evidence.* Error-page interception at a proxy is a documented source of broken API contracts and of
+masked upstream diagnostics. It is configuration-shaped rather than tied to one CVE.
+
+*Control.* Only gateway-originated errors are eligible, and eligibility is an exhaustive,
+compile-checked classification. A new event type or exit fails compilation until it is classified. The
+eligible set is a missing scope or failed CSRF check (`403`), an unrouted address or a
+`source: directory` asset miss (`404`), a body over the route cap (`413`), an upstream failure, an
+open circuit or an upstream timeout (`502`/`503`/`504`), and a failed OIDC callback. Every relayed
+origin response, the `source: upstream` asset relay, the gRPC and WebSocket relays, a relay that failed
+after the response head, the admission `503`, gRPC trailers-only rejections and unexpected internal
+failures keep their shape. HTML is offered only when `Accept` lists `text/html` explicitly with a
+quality above zero; wildcards never qualify. The status is identical either way.
+
+*Status:* COVERED. `ErrorPageClassifierTest` pins the classification and the `Accept` parsing;
+`GatewayEdgeErrorPageTest` pins the negotiation at every error writer; `HtmlErrorPageIT` asserts
+against the native image that `Accept: application/json` keeps the problem body with the same status
+and that a relayed origin error with `Accept: text/html` passes through unchanged.
+
+*Assertion.* A relayed origin response is never replaced; a request without an explicit
+`text/html` range never receives an HTML error page; the status is the same for HTML and JSON
+answers.
+
 == Validation matrix
 
 Every catalogue entry, its owning component, and its status. This is the release-gate
@@ -1907,6 +2099,12 @@ outstanding hardening work (next section).
 | <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- gateway usage rule | COVERED
 | <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) | PARTIAL
 | <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048 | PARTIAL (session-wide scope growth accepted)
+| <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0050 | COVERED
+| <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0050 | COVERED (operator markup trusted, accepted)
+| <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED
+| <<html-04>> | Catalog `entry` origin-relative, reviewed at boot, never echoed in the refusal | Schema + `PortalRules` (configuration validator) | COVERED
+| <<html-05>> | Error page status-only input, fixed per-status title, always anonymous, detail-free fallback | `PortalEndpoint.renderError` + `ErrorPageClassifier.titleFor` | COVERED
+| <<html-06>> | Gateway-originated errors only, exhaustive compile-checked classification; explicit `text/html` required; relayed origin responses never replaced; status unchanged | `ErrorPageClassifier` + `GatewayEdgeRoute` error writers -- ADR-0050 | COVERED
 |===
 
 == Gaps to close

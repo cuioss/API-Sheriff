@@ -1,0 +1,388 @@
+= API Sheriff -- Application Portal and HTML Error Pages
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+The application portal is an optional HTML page that the gateway renders itself. It gives a browser
+user one landing address listing the applications behind the gateway. Each endpoint opts in with a
+`catalog` block, and the list always matches what is enabled. The same template can also render the
+*HTML error pages* that a browser navigation gets when the gateway itself rejects a request.
+
+This guide is task-oriented. The field-by-field contract for `portal.*` and `endpoint.catalog.*` is
+in the link:../configuration.adoc#_portal[Configuration Reference]. The design decision behind the
+template engine is link:../adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050],
+and the threats the surface answers are catalogued under
+link:../security-threat-model.adoc#_html_surface_failure_catalogue[HTML surface] in the threat model.
+
+[[_enable]]
+== Turn the portal on
+
+The portal is off unless `gateway.yaml` declares a `portal` block. Without the block no path is
+reserved and the gateway behaves exactly as it does without the feature.
+
+[source,yaml]
+----
+# gateway.yaml
+portal:
+  path: /                          # exact, host-independent reserved path (mandatory)
+  title: Example Corp Applications # page title, always HTML-escaped (mandatory)
+  # template_dir: /etc/sheriff/portal   # optional: operator portal.html; omit => built-in template
+  cache_seconds: 60                # optional, default 0: max-age of a session-free page
+  error_pages: true                # optional, default false: negotiated HTML error pages
+----
+
+At boot the gateway logs `ApiSheriff-19` naming the path, the number of active catalog entries and
+the template source (`built-in` or the operator template file). A template it cannot render safely
+aborts the boot with `ApiSheriff-202` (see <<_template_refusals>>). Both records are listed in
+link:../LogMessages.adoc[Log Messages].
+
+[[_catalog]]
+== List an application: `endpoint.catalog`
+
+An endpoint appears on the portal when its file declares a `catalog` block:
+
+[source,yaml]
+----
+# endpoints/orders-ui.yaml
+endpoint:
+  id: orders-ui
+  enabled: ${ENDPOINT_ORDERS_UI_ENABLED:-true}
+  catalog:
+    title: Orders            # mandatory; HTML-escaped when rendered
+    description: Order entry and tracking   # optional one-line description
+    entry: /orders/          # mandatory; origin-relative path on the gateway's own origin
+    order: 10                # optional sort key
+  routes:
+    # ...
+----
+
+* *The list is exactly the active entries.* The catalog is resolved once at boot from the same
+  enabled-endpoint list the route table is built from. An endpoint switched off, by a literal
+  `enabled: false` or by `ENDPOINT_<ID>_ENABLED=false` against a `${ENDPOINT_<ID>_ENABLED:-true}`
+  placeholder, disappears from the page together with its routes. Setting the environment variable
+  is how you hide an application in one environment without editing the file (see
+  link:environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology and endpoint
+  enablement]).
+* *Ordering.* Entries sort by `order` ascending, and an entry without `order` sorts after every entry
+  that declares one. Entries that tie sort by `title`.
+* *`entry` stays on your origin.* It must be an absolute path with a single leading `/`. A scheme,
+  an authority, a scheme-relative `//host`, a backslash, a percent-encoded `/` or `\`, and a path
+  that fails the URL path review are all refused at boot with `ApiSheriff-200`, which names the
+  endpoint but never echoes the value. Those forms would make the portal an open redirect. A query
+  or fragment after the path is allowed.
+* *The portal does not route.* `entry` is only a link. The request the browser sends when it follows
+  the link is routed, authenticated and filtered like any other request.
+
+[[_path]]
+== Choose the path, including the context root
+
+`portal.path` is matched by *exact string equality* against the canonical request path, on *any*
+`Host`. A trailing-slash or prefix variant never matches: `/portal/` is not `/portal`. The portal is
+answered after the pre-route security checks and the passthrough host guard, after the reserved OIDC
+paths, and *before* the route table. A prefix route that covers the path therefore never sees a
+request for it.
+
+That ordering is what lets the portal claim the context root. `path: /` answers only `/`, and a
+prefix route at `path_prefix: /` still serves every other address. The configuration validator
+refuses, each with `ApiSheriff-200`:
+
+* a path that is not canonical: no leading `/`, a `//`, a dot segment, a `?` or `#`, a
+  percent-encoded separator, or anything the URL path review refuses. Such a path could never equal a
+  canonical request path and would silently never answer;
+* a path equal to one of the reserved OIDC paths (callback, logout, logout return, back-channel
+  logout, user-info, login). The portal matches on every host, so it would collide with the reserved
+  endpoint;
+* a path equal to the exact `match.path` of an *enabled* endpoint's route, which would make that
+  route unreachable. A disabled endpoint's route does not count, and a prefix route never collides.
+
+`GET` renders the page. `HEAD` answers the same status and headers with an empty body. Every other
+method answers `405` with `Allow: GET, HEAD` and `Cache-Control: no-store`.
+
+[[_sessions]]
+== Signed-in state, login and logout
+
+What the page shows about the user depends on whether the BFF runtime is active, that is, whether
+`gateway.yaml` declares an `oidc` block that gives browsers a session.
+
+* *Without an `oidc` block* the portal works unchanged, but every request renders *anonymously*. No
+  session is looked up and the page carries no login or logout link.
+* *With an active BFF runtime* the page resolves the request's session. A signed-in user is shown by
+  the `preferred_username` claim of the validated ID token. The name is shown whatever
+  `oidc.user_info.allowed_claims` says: the allowlist governs what the user-info endpoint discloses
+  to browser clients, while the portal shows the name back to the session's own owner on a
+  gateway-authored page. No other claim is read. A session whose ID token carries no usable
+  `preferred_username` renders as signed in without a name.
+* *Links.* `links.login` is `oidc.login.path` with the URL-encoded portal path as `returnUrl`, so a
+  sign-in started on the portal lands back on it. `links.logout` is `oidc.logout.path`. Each link is
+  present only when the BFF runtime is active *and* the corresponding path is declared.
+
+[[_logout_landing]]
+=== Land on the portal after logout
+
+Point the verified logout round-trip at the portal and ask it to show the signed-out notice:
+
+[source,yaml]
+----
+oidc:
+  logout:
+    final_redirect: /?notice=logged-out    # <portal.path>?notice=logged-out
+----
+
+`notice` is a closed vocabulary. The portal recognises `logged-out` by exact, case-sensitive
+comparison and drops every other value, whether an unknown word, a different casing, a
+percent-encoded spelling or HTML-bearing text. The parameter's own value is never written into the
+page, only the recognised vocabulary word.
+
+[[_caching]]
+== Caching: `cache_seconds`
+
+The cache headers follow what the page carries, not what you configure alone:
+
+[cols="2,3"]
+|===
+| Response | Headers
+
+| Session-free page (anonymous)
+| `Cache-Control: max-age=<cache_seconds>` (default `0`). With an active BFF runtime it also carries
+  `Vary: Cookie`, merged into any `Vary` already on the response, so a cache never serves the
+  anonymous page to a browser that has since signed in.
+
+| Page naming a signed-in user
+| `Cache-Control: no-store`, whatever `cache_seconds` says.
+
+| HTML error page, and the `405`
+| `Cache-Control: no-store`.
+|===
+
+Every portal response carries `Content-Type: text/html; charset=utf-8` and
+`X-Content-Type-Options: nosniff`, and never sets a cookie of its own.
+
+[[_security_headers]]
+== Security headers and the portal CSP
+
+A portal response is authored by the gateway, so its `Content-Security-Policy` and
+`X-Content-Type-Options` are fixed and cannot be weakened by `security_headers`:
+
+----
+Content-Security-Policy: default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+X-Content-Type-Options: nosniff
+----
+
+The policy replaces any `content_security_policy` the global block declares, in either
+`header_modes` mode, and the response carries exactly one value for each name. The other
+gateway-owned headers (`Strict-Transport-Security`, `X-Frame-Options`) keep the global block, because
+the portal answers before route selection and no anchor block applies to it (see
+link:../configuration.adoc#_security_headers[`security_headers`]).
+
+The policy has consequences for a template:
+
+* no inline `<script>`, no inline `<style>` element and no `style=` attribute take effect, because
+  `default-src 'self'` carries no `'unsafe-inline'`;
+* stylesheets, images, fonts and scripts load only from the gateway's own origin;
+* a `<base>` element is ignored, forms can submit only to the gateway's origin, and the page cannot be
+  framed by any origin.
+
+[[_template]]
+== Write your own template
+
+Without `template_dir` the gateway renders its built-in template. It is plain HTML with no
+stylesheet and no script, and it satisfies the CSP above as shipped. To brand the page, place a file
+named `portal.html` in a directory and name that directory:
+
+[source,yaml]
+----
+portal:
+  path: /
+  title: Example Corp Applications
+  template_dir: /etc/sheriff/portal     # the gateway reads /etc/sheriff/portal/portal.html
+----
+
+The file is parsed once at boot and never re-read, so a template change needs a restart.
+
+[[_data_model]]
+=== The data model is the template contract
+
+A template sees a fixed map of plain values and nothing else: no beans, no configuration, no request
+object. Every key below is always present, and an absent value is `null`, so `{#if}` over an optional
+member is always safe.
+
+[cols="2,1,4"]
+|===
+| Key | Type | Content
+
+| `title` | String | `portal.title`
+| `apps` | List | the catalog, in catalog order
+| `apps[].title` | String | the entry's title
+| `apps[].description` | String | the entry's description, or `null`
+| `apps[].entry` | String | the origin-relative link target
+| `session.authenticated` | Boolean | whether a live session was resolved
+| `session.username` | String | `preferred_username`, or `null` when anonymous or absent
+| `links.login` | String | the login link, or `null` when none is offered
+| `links.logout` | String | the logout link, or `null` when none is offered
+| `notice` | String | `logged-out`, or `null`
+| `context_path` | String | the application context path (`/` by default)
+| `error` | Map | `null` on the overview page; set on an HTML error page
+| `error.status` | Integer | the HTTP status of the error, unchanged
+| `error.title` | String | the fixed title for that status (for example `Not Found`)
+|===
+
+The built-in template is the reference implementation of this contract. The following is a
+minimal operator template:
+
+[source,html]
+----
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{#if error}{error.status} {error.title} - {/if}{title}</title>
+<link rel="stylesheet" href="/portal-assets/portal.css">
+</head>
+<body>
+<h1>{title}</h1>
+{#if session.authenticated}
+<p>Signed in{#if session.username} as {session.username}{/if}.{#if links.logout} <a href="{links.logout}">Sign out</a>{/if}</p>
+{#else}
+<p>{#if links.login}<a href="{links.login}">Sign in</a>{/if}</p>
+{/if}
+{#if notice == 'logged-out'}<p role="status">You have been signed out.</p>{/if}
+{#if error}<h2>{error.status} {error.title}</h2>{/if}
+<ul>
+{#for app in apps}
+<li><a href="{app.entry}">{app.title}</a>{#if app.description} - {app.description}{/if}</li>
+{/for}
+</ul>
+</body>
+</html>
+----
+
+[[_qute_subset]]
+=== The supported Qute subset
+
+Templates use Qute syntax on a standalone engine that the gateway builds for the portal. It is not
+the Quarkus-managed engine, so it has no namespaces and nothing to call beyond the data model. The
+engine knows exactly these sections:
+
+* `{#if}` / `{#else if}` / `{#else}`
+* `{#for}` and its alias `{#each}`
+* `{#let}` and its alias `{#set}`
+* `{#when}` and its alias `{#switch}`
+
+Every other section fails to parse and the boot is refused. That includes `{#eval}`, which would
+evaluate a model value such as the user's name as template code, and `{#include}` / `{#insert}`,
+which have no template locator to resolve against.
+
+*Escaping is always on.* Every value an expression writes is HTML-escaped, and a template cannot
+switch that off. These constructs are refused at boot, with the template file and line named in the
+refusal:
+
+* `raw` and `safe` in any spelling: `{title.raw}`, `{title.safe}`, `{title|raw}`, or as a method
+  argument;
+* any namespaced expression, such as `{cdi:...}`, `{config:...}` or `{inject:...}`.
+
+Rendering is strict. A reference to a key that does not exist in the data model fails the render
+instead of printing nothing. On an error page, a render failure falls back to the plain error
+response, so the error still reaches the client.
+
+[[_template_refusals]]
+=== When the boot refuses a template
+
+The boot is aborted, with `ApiSheriff-202` naming the template location, the line (`-` when the whole
+file is concerned) and the reason, when:
+
+* `template_dir` holds no `portal.html`, or the file cannot be read;
+* the template cannot be parsed, including when it uses a section outside the subset above;
+* the template uses `raw`, `safe` or a namespaced expression.
+
+A gateway therefore never serves with a template it cannot render safely.
+
+[[_template_assets]]
+=== Serve the template's stylesheet and images
+
+The portal serves one page and nothing else, so a template's static files need a route of their own.
+Declare an ordinary `asset` route (see
+link:endpoint-routes.adoc#_asset_terminal_action[Asset terminal action]) under a `type: asset`,
+`access: public` anchor and reference its paths from the template:
+
+[source,yaml]
+----
+# gateway.yaml
+anchors:
+  portal-assets:
+    path_prefix: /portal-assets
+    type: asset
+    access: public
+----
+
+[source,yaml]
+----
+# endpoints/portal-assets.yaml
+endpoint:
+  id: portal-assets
+  anchor: portal-assets
+  auth:
+    require: none
+  routes:
+    - id: portal-assets
+      match:
+        path_prefix: /portal-assets
+      asset:
+        source: directory
+        directory: /etc/sheriff/portal/static
+----
+
+Same-origin assets satisfy the portal CSP. A stylesheet on another origin does not load.
+
+[[_error_pages]]
+== HTML error pages: `error_pages`
+
+With `error_pages: true` a *gateway-originated* error is rendered through the portal template when
+the request asks for HTML explicitly. Three conditions must all hold:
+
+. `portal.error_pages` is `true`;
+. the exit is one of the HTML-eligible gateway errors below;
+. the request's `Accept` header lists `text/html` explicitly with a quality above zero. Wildcards
+  (`+*/*+`, `+text/*+`) do not count.
+
+Otherwise the response keeps its current shape, the RFC 9457 `application/problem+json` body or
+whatever that exit writes. A browser navigation sends `Accept: text/html,...` and gets the page.
+`fetch()`, XHR and REST clients send `+*/*+` by default and keep the JSON body. *The status code is
+the same either way.*
+
+[cols="1,3"]
+|===
+| Status | HTML-eligible gateway errors
+
+| `403` | a bearer token lacking a needed scope; a failed CSRF origin check
+| `404` | no route matched; a `source: directory` asset that has no file for the request
+| `413` | a request body over the route's `max_body_bytes` cap
+| `502` / `503` / `504` | upstream connection failure or invalid upstream response; circuit breaker open; upstream timeout
+| error status | a failed OIDC callback (an error answer without a redirect); its own `Set-Cookie` lines still apply
+|===
+
+Every other exit always keeps its shape. That covers the `400` of the security filter, the `401` of
+a missing or invalid token, the `405` verb gate, the reserved-path body ceiling, gRPC trailers-only
+rejections, the admission `503`, and an unexpected internal failure.
+
+*A response relayed from an origin is never replaced.* An upstream's own `404` or `500`, a
+`source: upstream` asset response, the gRPC and WebSocket relays and a relay that fails after the
+response head was sent all pass through unchanged, whatever the request accepts.
+
+An error page:
+
+* carries the unchanged status and a fixed, generic title for it. It never includes a problem detail,
+  an exception message or an upstream address;
+* renders the catalog and the login/logout links, but is always *anonymous*: no session is resolved on
+  a failure path;
+* is `Cache-Control: no-store` and carries the portal CSP and `nosniff`.
+
+[[_see_also]]
+== See also
+
+* link:../configuration.adoc#_portal[Configuration Reference -- `portal`] and
+  link:../configuration.adoc#_endpoint_catalog[`endpoint.catalog`]
+* link:bff-session.adoc[Server-Session BFF] and link:bff-cookie.adoc[Cookie-Based BFF] for the
+  `oidc` block the signed-in state and the links depend on
+* link:../architecture.adoc#_request_pipeline_stages[Architecture -- Request Pipeline Stages] and
+  link:../architecture.adoc#_error_contract[Error Contract]
