@@ -64,18 +64,25 @@ Corroborated against HEAD 3f60d49, 2026-07-25 + the format research.
   nested services) but lacks per-route method + path-pattern + route-id; RFC 9727 (Standards Track, Jun
   2025) is a discovery pointer (`application/linkset+json`), not an inventory schema. (Sourced in the
   requirements-intake decision log.)
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: External-standards research claim, no repo artifact to check -- not falsifiable against main, nothing in-repo contradicts it either.
 - HYPOTHESIS: PLAN-21's read model exposes enough structure to map onto SaaSBOM `service` without
   re-deriving from `RouteTable`. Confirm/refute at what PLAN-21 ships § its inventory read-model type
   (verify-at-outline) — reuse it; do not re-read `RouteTable` in a second path.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: ResolvedRoute.java:102-121 (drifted from :79-84) still carries all named fields, substrate plausible -- but explicitly gated on what PLAN-V03-02 ships, which is unstarted (unset Status Trail, zero inventory-endpoint code in main). Deferral stays open.
 - Verify-first clause: validate the CycloneDX output against the actual published SaaSBOM/service schema
   and the well-known document against RFC 9727's `linkset+json` media type — against the specs, not this
   spec's prose.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Procedural directive, not a factual claim -- no CycloneDX serializer or /.well-known/api-catalog code exists anywhere in main to validate against yet.
 
 ## Expected Surface
 
 - OBSERVED: PLAN-21's inventory read model + endpoint scaffolding — reused
 - OBSERVED absence → NEW: a CycloneDX SaaSBOM serializer + the `/.well-known/api-catalog` resource
 - OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`; `api-sheriff/src/test/**`
+- ADDED 2026-09-22 (understated — Deliverable 4 names both explicitly but Expected Surface omitted
+  them): `doc/architecture.adoc` (no management-plane/introspection/inventory section exists yet —
+  confirmed empty by grep) and `doc/adr/00NN-*.adoc` (the ADR this deliverable's decision record
+  requires; corpus is contiguous 0001-0049 on main, so the next free number is 0050)
 
 ## Dependencies and Sequencing
 

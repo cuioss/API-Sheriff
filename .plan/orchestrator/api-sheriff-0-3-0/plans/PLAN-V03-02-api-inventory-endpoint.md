@@ -80,22 +80,28 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
   health/metrics live there (`quarkus/GatewayReadinessCheck.java`, `quarkus/SheriffMetrics.java`).
   **Consequence: D1 SHRINKS to the offline-JWT-scope auth alone; the TLS half is already done.**
   Re-scope D1 before launching — do not re-implement management TLS.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: application.properties:143-171 -- mgmt is still HTTPS-only, default+only listener; ManagementConfig.java:20-46 has no auth field, only tls. Still true; D1 stays shrunk to JWT-scope auth alone.
 - OBSERVED: the inventory is ready to serialize — `config/model/RouteTable.java` (`List<ResolvedRoute>`)
   and `config/model/ResolvedRoute.java`:79-84 (id, protocol, anchor, match, effectiveAuth,
   effectiveAllowedMethods, effectiveSecurityFilter, upstream, asset).
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: RouteTable.java:41 + ResolvedRoute.java:103-120 (drifted from :79-84) -- every named field present verbatim plus several added since. Cite by content not line.
 - OBSERVED: per-route counts already exist, cardinality-safe — `quarkus/SheriffMetrics.java`:38-47,58-70
   (`sheriff_requests_total{route,method,status_family}`, route id is a config-fixed bounded label,
   unmatched share `<no-route>`).
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: SheriffMetrics.java:38(javadoc),62-63(REQUESTS_TOTAL),75(NO_ROUTE),102-104(recordRequest) -- content matches, lines drifted from 38-47/58-70.
 - OBSERVED: bearer-token offline validation infra exists — `auth/` (`AuthenticationStage`,
   `TokenValidatorProducer`, `JwksTrustProfileResolver`); scope enforcement already models a 403 via
   `events/EventType.java` `SCOPE_MISSING`.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: auth/AuthenticationStage.java, TokenValidatorProducer.java, JwksTrustProfileResolver.java all present; EventType.java:108 SCOPE_MISSING(AUTHORIZATION,403) exact match.
 - HYPOTHESIS (central risk): the shipped bearer validation can be attached to a *management-interface*
   route. Confirm/refute at outline — the Quarkus management interface has its own routing; if the
   `auth/` stage cannot be applied there, the plan wires management-interface-local auth instead
   (verify-at-outline). Do not assume the data-plane pipeline runs on the management port.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: AuthenticationStage wired only into the data-plane pipeline, no management-interface call site found, no JAX-RS resource exists anywhere under quarkus/ today. Risk still genuinely open, correctly deferred to outline.
 - Verify-first clause: confirm the management port is genuinely reachable only where intended and decide
   the TLS story (terminate TLS on 9000, or require it be network-isolated) against the actual deployment
   posture, not this spec's assumption.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: compose-sample docker-compose.yml:184 already binds management to 127.0.0.1:9000:9000 loopback-only with a comment naming this exact concern -- deployment-posture evidence exists but the clause is future design work, not a checkable current-state claim.
 
 ## Expected Surface
 
@@ -104,6 +110,10 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED: `config/model/RouteTable.java` / `ResolvedRoute.java` — read-only source of the inventory
 - OBSERVED: `quarkus/SheriffMetrics.java` — read-only source of the usage snapshot
 - OBSERVED: `auth/` — reused for the offline-JWT-scope gate (verify-at-outline for mgmt-interface wiring)
+- ADDED 2026-09-22 (understated): `config/model/ManagementConfig.java` (currently `record
+  ManagementConfig(@Nullable ManagementTls tls)` — the only neutral config block the management
+  interface has today, and the natural home for a new management-auth/scope policy knob) and the
+  matching `schema/gateway.schema.json` entry for that block
 - OBSERVED: `doc/architecture.adoc` (NEW management-plane introspection section) + a NEW `doc/adr/00NN-*`
   ADR; `doc/configuration.adoc`, `doc/user/`, `doc/development/`; `api-sheriff/src/test/**`
 

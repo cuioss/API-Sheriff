@@ -74,25 +74,40 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED: no deception layer exists — a grep for honeypot/decoy/tarpit across
   `api-sheriff/src/main/java` returns nothing; probes of `/admin` etc. currently get a plain
   `NO_ROUTE_MATCHED` 404.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: grep across all 182 files under api-sheriff/src/main/java for honeypot|decoy|tarpit still returns zero matches; NO_ROUTE_MATCHED confirmed live in GatewayEdgeRoute.java, EventType.java:62, RouteSelectionStage.java:74.
 - OBSERVED: the non-blocking primitive is available — the edge already uses Vert.x
   timers/`runOnContext` (`edge/GatewayEdgeRoute.java` renders on `ctx.vertx().runOnContext`), so a
   timer-based tarpit fits the existing async model.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.java: setTimer at :577 (cancelTimer :601/609/617), runOnContext at 10 further sites. Timer-based tarpit still fits the existing async model exactly as claimed.
 - HYPOTHESIS: PLAN-18's per-client substrate (D3 there) exposes a strike/ban API this plan can escalate
   through. Confirm/refute at the substrate PLAN-18 ships § its ban API (verify-at-outline) — if it only
   counts and does not ban, this plan adds the ban action on top rather than duplicating the counter.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: PLAN-18=PLAN-V02-06 still staged in api-sheriff-0-2-0, not shipped. Its own re-grounding confirms the strike/ban substrate (D3) is confirmed absent and genuinely net-new -- nothing to confirm/refute yet, correctly remains open.
 - HYPOTHESIS: PLAN-19's ECS/OCSF formatter is reusable for the decoy/ban emit. Confirm/refute at what
   PLAN-19 ships § its emit formatter (verify-at-outline) — reuse it, do not fork a second shape.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: PLAN-19=PLAN-V02-07 still staged, not shipped. Its own verify-first clause on the ECS/OCSF field set is itself unverifiable (repo-wide search returns zero hits) -- consistent, stays open.
 - Verify-first clause: confirm the decoy responses cannot be distinguished (status, timing, headers)
   from a genuine route-miss, else the honeypot becomes its own fingerprint — verify against the landed
   uniform-404 behaviour (PLAN-18), not this spec's assertion.
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: The premise that uniform-404 is 'landed' is itself false on main -- zero hits for 'uniform-404' anywhere in api-sheriff/src/main/java or doc/; it is entirely PLAN-V02-06 D1, still staged. Nothing exists yet to verify decoy-vs-uniform-404 indistinguishability against.
 
 ## Expected Surface
 
-- OBSERVED absence → NEW: a decoy/deception pipeline stage + its config model (bad-path list, tarpit
-  delay, ban thresholds, crawler allowlist)
+- CORRECTED 2026-09-22 (was prose-only — the parser the disjointness gate reads found no resolvable
+  path in this section; split into one path per bullet, matching the convention every other spec in
+  this epic uses):
+- OBSERVED absence → NEW: `pipeline/**` — a decoy/deception pipeline stage (config model: bad-path
+  list, tarpit delay, ban thresholds, crawler allowlist)
 - OBSERVED: `edge/GatewayEdgeRoute.java` — the async/timer integration point for the tarpit
-- OBSERVED: PLAN-18 substrate (strike-ban) + PLAN-19 emit formatter — reused, not duplicated
-- OBSERVED: `events/EventType.java` — new decoy-hit / ban events; `config/model/**`; `doc/**`; `api-sheriff/src/test/**`
+  (`setTimer`/`runOnContext`, confirmed present)
+- OBSERVED: `events/EventType.java` — new decoy-hit / ban events
+- OBSERVED: `config/model/**` — the decoy config model
+- OBSERVED: `doc/architecture.adoc`, `doc/configuration.adoc`, `doc/user/`, `doc/development/` — the
+  four doc targets Deliverable 6 names explicitly (was collapsed to bare `doc/**`)
+- OBSERVED: `api-sheriff/src/test/**`
+- OBSERVED (reused, not duplicated, not this plan's own surface): `PLAN-V02-06`'s per-client
+  strike-ban substrate and `PLAN-V02-07`'s emit formatter — both still staged/unlanded as of this
+  re-grounding; do not start this plan until they ship, per the epic's Cross-Epic Dependency
 
 ## Dependencies and Sequencing
 

@@ -64,11 +64,13 @@ already split once.
 
 1. **The Helm chart** — `Chart.yaml`, `values.yaml`, templates, added as a `helm/` subtree under the
    **existing** `deployment/` module PLAN-27 shipped.
-   **The gateway's neutral-name config model is the chart's central design problem.** ADR-0011:
-   `gateway.yaml` carries neutral logical names and the deployment binds concrete material. Therefore
-   **trust material, keystores and passwords MUST be bound by the deployment as Secrets, never
-   templated into `gateway.yaml` values.** That is the ADR-0011 invariant and this chart must not
-   erode it.
+   **The gateway's neutral-name config model is the chart's central design problem.** ADR-0025
+   (corrected 2026-09-22 — the spec previously miscited ADR-0011, which covers JWKS/egress naming
+   only; ADR-0025 is "the whole-server-TLS surface is neutral in gateway.yaml and bound by exactly
+   two seams", the invariant this deliverable actually depends on): `gateway.yaml` carries neutral
+   logical names and the deployment binds concrete material. Therefore **trust material, keystores
+   and passwords MUST be bound by the deployment as Secrets, never templated into `gateway.yaml`
+   values.** That is the ADR-0025 invariant and this chart must not erode it.
    **Management is HTTPS-only on 9000** (PLAN-23 — single port, no plain-HTTP fallback), so the
    chart's readiness/liveness probes **must speak TLS**. A chart whose probes assume plain HTTP will
    deploy and then never become ready.
@@ -100,29 +102,36 @@ Claims inherited from PLAN-27 were read at `5298237`; claims added by the split 
 
 - **OBSERVED (`818d964`) — no Helm chart or any helm-shaped file exists anywhere.** A repo find for
   `*chart*` / `Chart.yaml` / `*helm*` returns nothing. Genuinely new infrastructure.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: git ls-tree -r main for chart/helm returns nothing; deployment/ still contains only compose-sample/ + pom.xml.
 - **OBSERVED (`818d964`) — the classifier blocker above**, verified by executing the predicate.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: plan-marshall's _manifest_core.py _INFRA_CONFIG_DIR_TREES/_INFRA_CONFIG_BASENAME_GLOBS still have no helm/chart entry at current HEAD -- classifier blocker confirmed still accurate, no fix landed.
 - **OBSERVED (`5298237`) — management is HTTPS-only on port 9000** since PLAN-23. Every consumer of
   9000 must speak TLS; chart probes inherit this.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: application.properties:143-171 -- management is still HTTPS-only on port 9000, no simultaneous plain-HTTP listener.
 - **OBSERVED (`818d964`) — the neutral TLS/management key surface has LANDED.** PLAN-31B (`#138`,
   merge `ffa8cef`) single-sourced the TLS surface in `gateway.yaml` bound by `tls/TlsServerCustomizer`,
   **deleted** the raw `quarkus.*` TLS duplicates rather than leaving them as dormant overrides, and
   added a first-class `management:` block with `management.tls.enabled`. **The chart must template the
   NEW neutral keys — the `quarkus.*` env vars it would otherwise have templated no longer exist.**
-- **HYPOTHESIS — the gateway's config model maps cleanly onto Helm values + Secrets.** ADR-0011 makes
-  `gateway.yaml` carry neutral logical names with the deployment binding concrete material, which is
-  *structurally* what a chart wants. Confirm/refute at
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Merge ffa8cef confirmed: 'single-source and activate neutral TLS + management surface (#138)'. NeutralTlsConfigSource.java:91,130,196,220 defines management.tls.enabled; raw quarkus.tls.* keys retired in favor of gateway.yaml.
+- **HYPOTHESIS — the gateway's config model maps cleanly onto Helm values + Secrets.** ADR-0025
+  (corrected 2026-09-22, was miscited as ADR-0011) makes `gateway.yaml` carry neutral logical names
+  with the deployment binding concrete material, which is *structurally* what a chart wants. Confirm/refute at
   `api-sheriff/src/main/resources/application.properties` and the `TlsConfig` / `gateway.yaml` binding
   surface (verify-at-outline). **If the binding needs env vars the chart cannot express cleanly,
   report it as a finding about the config model — do not invent a chart-only config path that diverges
   from the documented one.**
+  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Structurally still plausible but the spec MISCITES the ADR: ADR-0011 covers JWKS/egress only, not TLS/keystores. The correct citation is ADR-0025 (whole-server-TLS neutral naming). Cannot settle the design-fit hypothesis without the outline-time trace the spec itself defers to.
 - **HYPOTHESIS — `deployment/` exists with a `compose-sample/` subtree and is registered in the root
   reactor.** PLAN-27 owns that; this plan adds `helm/` beside it. Confirm at
   `deployment/pom.xml` § the packaging declaration and root `pom.xml` § `<modules>`
   (verify-at-outline). **If PLAN-27 did not ship, this plan creates the module itself and its
   deliverable count grows — re-scope rather than assuming.**
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Root pom.xml <modules> lists deployment; deployment/pom.xml packaging=pom, carries compose-sample only.
 - **Verify-first clause**: re-verify the management-port scheme and the neutral TLS key names against
   the merged tree before templating anything. PLAN-23, PLAN-31B, PLAN-31C and PLAN-36 all move this
   surface, and PLAN-36 reshapes the config record family outright.
+  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: PLAN-36 (nullable-type-model) landed at 675b3ff5 (#143), retiring Optional from every stored position in the production type model -- confirms the record family did move.
 
 ## Expected Surface
 
