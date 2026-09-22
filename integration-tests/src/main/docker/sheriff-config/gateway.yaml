@@ -335,9 +335,11 @@ oidc:
 # Appended at the END of the document on purpose: declared-limit-assertion-coverage.adoc cites keys
 # of this file by line number, and a block inserted above them would silently shift every citation.
 #
-# Declared on this base document only, so the portal is live on the main instance (10443) and on
-# api-sheriff-plain-mgmt, the one instance that mounts this document as shipped. The overlay
-# documents declare no portal block, so every other instance behaves exactly as before.
+# Declared on this base document, so the portal is live on the main instance (10443) and on
+# api-sheriff-plain-mgmt, the one instance that mounts this document as shipped. The one overlay
+# that mirrors it is sheriff-config-passthrough-empty, whose single-variable guard requires it to be
+# this document minus tls.passthrough_sni; every other overlay declares no portal block, so every
+# other instance behaves exactly as before.
 #
 #   * path: /portal is an otherwise-unrouted address -- no anchor prefix covers it and it is none of
 #     the reserved /auth paths -- so the portal is observably answered AHEAD of the route table

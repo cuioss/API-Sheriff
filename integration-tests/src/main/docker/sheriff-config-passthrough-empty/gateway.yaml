@@ -336,3 +336,14 @@ oidc:
     default_view: ["sub", "preferred_username"]
   login:
     path: /auth/login
+# --- Application portal -- mirrored from the base document, which carries the explanation ----------
+# Mirrored verbatim so this overlay stays the base document minus tls.passthrough_sni and nothing
+# else (TlsEdgeActivationWiringTest's single-variable equality guard). template_dir resolves here too:
+# this instance mounts the shared sheriff-config directory at /app/sheriff-config and overlays only
+# gateway.yaml, so /app/sheriff-config/portal is the same operator template the base instance serves.
+portal:
+  path: /portal
+  title: API Sheriff Integration Portal
+  template_dir: /app/sheriff-config/portal
+  cache_seconds: 60
+  error_pages: true
