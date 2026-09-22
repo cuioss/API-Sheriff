@@ -119,8 +119,8 @@ class SecurityProfileTest {
 
         // Assert
         assertTrue(upstream.allowLineBreaksInParameterValues(),
-                "the premise of this guard is that the cui-http preset backing %s admits line breaks;"
-                        + " upstream has changed and the deviation may no longer be needed".formatted(profile));
+                ("the premise of this guard is that the cui-http preset backing %s admits line breaks;"
+                        + " upstream has changed and the deviation may no longer be needed").formatted(profile));
         assertFalse(tightened.allowLineBreaksInParameterValues(),
                 "%s refuses a url-parameter value that decodes to CR or LF".formatted(profile));
         assertNotEquals(upstream, tightened,
@@ -264,8 +264,8 @@ class SecurityProfileTest {
 
         // Assert
         assertEquals(profile != SecurityProfile.MINIMAL, enabled,
-                "MINIMAL is the one mode that skips the url-parameter validation and the pipeline"
-                        + " re-run; %s reported %s".formatted(profile, enabled));
+                ("MINIMAL is the one mode that skips the url-parameter validation and the pipeline"
+                        + " re-run; %s reported %s").formatted(profile, enabled));
     }
 
     @Test

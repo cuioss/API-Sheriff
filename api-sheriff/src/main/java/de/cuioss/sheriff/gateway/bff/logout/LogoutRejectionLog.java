@@ -84,7 +84,7 @@ public final class LogoutRejectionLog {
      *
      * @param reason the bounded, non-sensitive rejection reason
      */
-    public void record(LogoutRejection reason) {
+    public void recordRejection(LogoutRejection reason) {
         Objects.requireNonNull(reason, "reason");
         if (reason.isSignatureVerified() || latched.add(reason)) {
             logger.warn(BffLogMessages.WARN.LOGOUT_TOKEN_REJECTED, reason.token());

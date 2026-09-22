@@ -65,7 +65,7 @@ class LogoutRejectionLogTest {
         @DisplayName("Should report an attacker-reachable reason once, however many times it recurs")
         void shouldLatchAttackerReachableReason() {
             for (int occurrence = 0; occurrence < REPEATS; occurrence++) {
-                rejectionLog.record(LogoutRejection.SIGNATURE_REJECTED);
+                rejectionLog.recordRejection(LogoutRejection.SIGNATURE_REJECTED);
             }
 
             assertEquals(1, warningsFor(LogoutRejection.SIGNATURE_REJECTED),
@@ -76,7 +76,7 @@ class LogoutRejectionLogTest {
         @DisplayName("Should report a signature-verified reason on every occurrence")
         void shouldNotLatchSignatureVerifiedReason() {
             for (int occurrence = 0; occurrence < REPEATS; occurrence++) {
-                rejectionLog.record(LogoutRejection.EVENTS_MISSING);
+                rejectionLog.recordRejection(LogoutRejection.EVENTS_MISSING);
             }
 
             assertEquals(REPEATS, warningsFor(LogoutRejection.EVENTS_MISSING),
@@ -87,9 +87,9 @@ class LogoutRejectionLogTest {
         @Test
         @DisplayName("Should latch per reason, never across reasons")
         void shouldLatchPerReason() {
-            rejectionLog.record(LogoutRejection.MISSING_LOGOUT_TOKEN);
-            rejectionLog.record(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
-            rejectionLog.record(LogoutRejection.MISSING_LOGOUT_TOKEN);
+            rejectionLog.recordRejection(LogoutRejection.MISSING_LOGOUT_TOKEN);
+            rejectionLog.recordRejection(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
+            rejectionLog.recordRejection(LogoutRejection.MISSING_LOGOUT_TOKEN);
 
             assertEquals(1, warningsFor(LogoutRejection.MISSING_LOGOUT_TOKEN));
             assertEquals(1, warningsFor(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY),
@@ -99,8 +99,8 @@ class LogoutRejectionLogTest {
         @Test
         @DisplayName("Should latch per instance, so a second runtime reports independently")
         void shouldLatchPerInstance() {
-            rejectionLog.record(LogoutRejection.SIGNATURE_REJECTED);
-            new LogoutRejectionLog(LOGGER).record(LogoutRejection.SIGNATURE_REJECTED);
+            rejectionLog.recordRejection(LogoutRejection.SIGNATURE_REJECTED);
+            new LogoutRejectionLog(LOGGER).recordRejection(LogoutRejection.SIGNATURE_REJECTED);
 
             assertEquals(2, warningsFor(LogoutRejection.SIGNATURE_REJECTED),
                     "the latch belongs to the assembled component, not to the JVM");
@@ -109,7 +109,7 @@ class LogoutRejectionLogTest {
         @Test
         @DisplayName("Should reject a null reason rather than recording an unnamed refusal")
         void shouldRejectNullReason() {
-            assertThrows(NullPointerException.class, () -> rejectionLog.record(null));
+            assertThrows(NullPointerException.class, () -> rejectionLog.recordRejection(null));
         }
     }
 

@@ -91,7 +91,7 @@ public final class BackchannelLogoutReceiver {
         Objects.requireNonNull(now, "now");
 
         if (sessionBinding.idpDestruction() == SessionBinding.IdpDestruction.UNSUPPORTED) {
-            rejectionLog.record(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
+            rejectionLog.recordRejection(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
             return BackchannelResult.rejected();
         }
 
@@ -102,16 +102,16 @@ public final class BackchannelLogoutReceiver {
             // The exception's own detail stays at DEBUG: it is engine-authored text about an
             // attacker-supplied input, so it is exactly what must not reach a default-level record.
             LOGGER.debug(signatureFailure, "Back-channel logout token signature/validation failed");
-            rejectionLog.record(LogoutRejection.SIGNATURE_REJECTED);
+            rejectionLog.recordRejection(LogoutRejection.SIGNATURE_REJECTED);
             return BackchannelResult.rejected();
         }
 
         return switch (validator.validate(token, now)) {
-            case LogoutTokenValidator.Verdict.Rejected rejected -> {
-                rejectionLog.record(rejected.reason());
+            case LogoutTokenValidator.Verdict.Rejected(var reason) -> {
+                rejectionLog.recordRejection(reason);
                 yield BackchannelResult.rejected();
             }
-            case LogoutTokenValidator.Verdict.Accepted accepted -> destroy(accepted.subject());
+            case LogoutTokenValidator.Verdict.Accepted(var subject) -> destroy(subject);
         };
     }
 

@@ -120,13 +120,13 @@ public final class BackchannelLogoutEndpoint {
             // is never reached, so the gateway cannot report a destruction it could not perform.
             // Latched, not unconditional: this path is reserved and unauthenticated — see the
             // log-flood rule on the type.
-            rejectionLog.record(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
+            rejectionLog.recordRejection(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
             return BackchannelLogoutOutcome.error(NOT_FOUND);
         }
 
         Optional<String> logoutToken = extractLogoutToken(rawFormBody);
         if (logoutToken.isEmpty()) {
-            rejectionLog.record(LogoutRejection.MISSING_LOGOUT_TOKEN);
+            rejectionLog.recordRejection(LogoutRejection.MISSING_LOGOUT_TOKEN);
             return BackchannelLogoutOutcome.error(BAD_REQUEST);
         }
 
