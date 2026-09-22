@@ -3061,7 +3061,7 @@ this key: every framing rejection is preserved.
 
 [IMPORTANT]
 ====
-The mode set is *closed*: `strict`, `lenient`, `minimal`, and nothing else. Any other value -- at
+The mode set is *closed*: `strict`, `paranoid`, `lenient`, `minimal`, and nothing else. Any other value -- at
 any of the three declaration sites (`security_defaults`, an anchor's `security_filter`, a route's
 `security_filter`) -- makes the gateway *fail to boot*. There is no fallback and no
 warning-and-continue.
@@ -3523,6 +3523,19 @@ message the list rule's empty-resolution refusal emits: that refusal stays scope
 destinations, because the argument behind it -- that a validator cannot tell an explicitly-empty list
 from one a variable emptied -- is a property of lists alone, and an object destination already fails
 loudly without it.
++
+*One class of destination refuses the whole-map form outright.* Where the object-typed key
+*contains* a secret-classified field anywhere beneath it -- `oidc.session`, which holds the session
+encryption key, is the case an operator actually meets -- a `${VAR}` written at the map itself is
+refused at boot. The error names the pointer and the rule, and never echoes what the variable
+resolved to. The remedy is the one the secrets bullet below states in its own right: write the bare
+`${VAR}` at the secret field itself.
++
+The refusal has to happen at the substitution site rather than alongside the other secrets checks,
+because the whole-map form can *synthesise* a secret field after those checks have already run: the
+bare-reference rule reads the document as written, so a defaulted placeholder expanding to
+`encryption_key=...` would materialise the very shape the rule exists to refuse, with the rule
+reporting nothing. Refusing this one form costs an operator nothing a secret was ever allowed to do.
 * *Reachable is not recommended.* Per
   link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025],
   `forwarded.trusted_proxies` is *deployment-bound* -- genuinely different per environment -- and is
