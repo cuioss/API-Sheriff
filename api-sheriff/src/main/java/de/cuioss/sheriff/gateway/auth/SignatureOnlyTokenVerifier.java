@@ -129,9 +129,11 @@ public final class SignatureOnlyTokenVerifier {
         if (issuer == null || !issuer.config().isEnabled()) {
             // The identifier is echoed because it is attacker-controlled but bounded to what the
             // caller already sent, and without it the operator cannot tell a typo'd issuer in the
-            // gateway configuration from a token genuinely minted elsewhere.
+            // gateway configuration from a token genuinely minted elsewhere. Sanitized before
+            // interpolation: this message reaches an unauthenticated-path DEBUG log verbatim, so an
+            // un-sanitized iss would let a caller forge log lines (CWE-117).
             throw reject(SecurityEventCounter.EventType.NO_ISSUER_CONFIG,
-                    "No enabled issuer configuration for '" + issuerIdentifier + "'");
+                    "No enabled issuer configuration for '" + sanitizeForLog(issuerIdentifier) + "'");
         }
         issuer.headerValidator().validate(decoded, IdTokenRequest.of(rawToken));
         issuer.signatureValidator().validateSignature(decoded);
@@ -139,13 +141,28 @@ public final class SignatureOnlyTokenVerifier {
                 SecurityEventCounter.EventType.MISSING_CLAIM,
                 "Signature-verified token carries an empty body"));
         LOGGER.debug("Token signature verified against issuer %s — claim validation is the caller's",
-                issuerIdentifier);
+                sanitizeForLog(issuerIdentifier));
         return verified;
     }
 
     private TokenValidationException reject(SecurityEventCounter.EventType eventType, String detail) {
         securityEventCounter.increment(eventType);
         return new TokenValidationException(eventType, detail);
+    }
+
+    /**
+     * Bounds and strips control characters from an attacker-controlled value before it reaches a log
+     * line, so a forged {@code iss} claim cannot inject CR/LF-delimited fake log entries (CWE-117).
+     *
+     * @param value the raw, signature-unverified value to sanitize
+     * @return {@code value} with every control character removed, truncated to 128 characters
+     */
+    private static String sanitizeForLog(String value) {
+        String stripped = value.chars()
+                .filter(c -> !Character.isISOControl(c))
+                .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+                .toString();
+        return stripped.length() > 128 ? stripped.substring(0, 128) : stripped;
     }
 
     /**
