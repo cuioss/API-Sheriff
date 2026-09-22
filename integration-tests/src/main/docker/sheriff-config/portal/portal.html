@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="sheriff-portal-template" content="it-operator-template-5c1e9a">
+<title>{#if error}{error.status} {error.title} - {/if}{title}</title>
+</head>
+<body data-portal-template="it-operator-template-5c1e9a">
+<!--
+  Integration-test operator template, mounted at /app/sheriff-config/portal/portal.html and named by
+  portal.template_dir in sheriff-config/gateway.yaml. The unique marker above appears in no built-in
+  template, so PortalIT finding it proves the operator template was parsed at runtime by the standalone
+  engine inside the native image. Every value is rendered through the engine's HTML escaping; the
+  template deliberately uses no raw/safe construct, which the gateway would refuse at boot.
+-->
+<header>
+<h1 id="portal-title">{title}</h1>
+{#if session.authenticated}
+<p id="portal-session">Signed in{#if session.username} as <strong>{session.username}</strong>{/if}.{#if links.logout} <a id="portal-logout" href="{links.logout}">Sign out</a>{/if}</p>
+{#else}
+<p id="portal-session">Not signed in.{#if links.login} <a id="portal-login" href="{links.login}">Sign in</a>{/if}</p>
+{/if}
+</header>
+<main>
+{#if notice == 'logged-out'}
+<p id="portal-notice" role="status">You have been signed out.</p>
+{/if}
+{#if error}
+<section id="portal-error" data-status="{error.status}">
+<h2>{error.status} {error.title}</h2>
+<p>The gateway could not complete this request.</p>
+</section>
+{/if}
+<section id="portal-apps">
+<h2>Applications</h2>
+{#if apps.isEmpty}
+<p>No applications are available.</p>
+{#else}
+<ul>
+{#for app in apps}
+<li class="portal-app"><a href="{app.entry}">{app.title}</a>{#if app.description} &ndash; <span class="portal-app-description">{app.description}</span>{/if}</li>
+{/for}
+</ul>
+{/if}
+</section>
+</main>
+</body>
+</html>

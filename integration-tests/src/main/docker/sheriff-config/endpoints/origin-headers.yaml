@@ -1,5 +1,6 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
-# Response-path acceptance endpoint exercised by RoutingAndResponseHeadersIT. Its two proxy routes
+# Response-path acceptance endpoint exercised by RoutingAndResponseHeadersIT (and, for the
+# origin-status route, HtmlErrorPageIT). Its three proxy routes
 # reach go-httpbin through the HTTPBIN_ROOT alias, which — unlike UPSTREAM — carries NO base path, so
 # each route's upstream.path is the whole effective upstream base (ADR-0004 Amendment A2: alias base
 # path + upstream.path + remainder-after-match-key, with an empty alias base).
@@ -9,7 +10,7 @@
 # require: none posture itself because the 'api' anchor is access: public and carries no auth block
 # (ADR-0013).
 #
-# FORWARD POSTURE — neither route declares a forward block, so both resolve forward-all on both
+# FORWARD POSTURE — no route declares a forward block, so all resolve forward-all on both
 # dimensions: the query parameters that drive go-httpbin must cross unfiltered.
 endpoint:
   id: origin-headers
@@ -48,3 +49,16 @@ endpoint:
         rewrite_location: true
       security_filter:
         profile: minimal
+
+    # Relayed-origin-error control (HtmlErrorPageIT). go-httpbin's /status/{code} answers with the
+    # status it is asked for, so /proxy/origin-status/503 reaches /status/503 and the origin itself
+    # says 503. The IT asserts that such an ORIGIN error is relayed unchanged even to a browser
+    # navigation: the status and body pass through, the 'api' anchor's policy (not the portal's) is
+    # applied, and the error page's no-store is never imposed. The route must live here rather than on
+    # httpbin.yaml's /proxy prefix route, whose UPSTREAM alias carries the /anything echo base and would
+    # turn the same address into a 200 echo of /anything/status/503.
+    - id: origin-status
+      match:
+        path_prefix: /proxy/origin-status
+      upstream:
+        path: /status

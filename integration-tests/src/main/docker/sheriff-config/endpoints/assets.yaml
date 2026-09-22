@@ -32,12 +32,24 @@
 # proxy route, and every route here is an asset route that never proxies to one (AS-4).
 # The endpoint declares require: none because the 'assets-public' anchor is
 # access: public and carries no auth block (ADR-0013).
+#
+# The catalog block lists this endpoint on the application portal (sheriff-config/gateway.yaml
+# `portal`, PortalIT). Its title deliberately carries all four HTML-significant characters < & " '
+# so PortalIT can prove against the native image that every catalog value is HTML-escaped on the
+# rendered page rather than written verbatim. The entry targets the demo SPA served by the
+# assets-demo route below. order sorts it ahead of the hidden entry in endpoints/portal-hidden.yaml,
+# which is disabled on the main instance and must therefore NOT appear at all.
 endpoint:
   id: assets
   enabled: true
   anchor: assets-public
   auth:
     require: none
+  catalog:
+    title: 'Demo <SPA> & "Sheriff''s" Assets'
+    description: The demo single-page application served from the assets-public anchor
+    entry: /assets/demo/index.html
+    order: 10
   routes:
     - id: assets-directory
       anchor: assets-public

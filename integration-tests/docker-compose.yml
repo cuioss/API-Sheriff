@@ -344,6 +344,12 @@ services:
       # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in
       # gateway.yaml (oidc.client_secret) resolves to via EnvSecretResolver.
       - OIDC_CLIENT_SECRET=integration-secret
+      # Portal catalog toggle acceptance (PortalIT). endpoints/portal-hidden.yaml declares
+      # `enabled: ${ENDPOINT_PORTAL_HIDDEN_ENABLED:-true}` and a catalog block; disabling it on THIS
+      # instance only is what lets PortalIT prove the portal lists exactly the active entries — the
+      # assets entry present, the hidden entry absent. Every other instance keeps the `true` default,
+      # which is why the key is set here and nowhere else.
+      - ENDPOINT_PORTAL_HIDDEN_ENABLED=false
 
     # Map form so grpc-echo can gate on service_healthy — the gateway must not start
     # until the gRPC echo upstream is accepting connections, otherwise the first
