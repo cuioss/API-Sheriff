@@ -2178,6 +2178,12 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   endpoint is *disabled* (`404`) -- there is no server-side state a logout token could
   destroy. See the statelessness limitation in link:variants/03-bff-cookie.adoc[Variant 3].
 
+  Unlike every other reserved path, this one is served on *every* host the gateway answers on,
+  not only the host of `redirect_uri`: the IdP reaches it server-to-server at whatever address
+  you registered as the client's back-channel logout URL, which in a container deployment is an
+  internal service name. Register that address with the IdP with this path, and reserve the path
+  somewhere no proxied namespace needs it on any host (ADR-0018, back-channel-host amendment).
+
 | `session.csrf.trusted_origins`
 | The browser origins allowed to make *unsafe-method* (non-GET/HEAD/OPTIONS) calls to
   `require: session` routes -- i.e. the origins the SPA is served from. Defaults to the origin

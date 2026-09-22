@@ -474,7 +474,11 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
 
 * *Reserved-path registry + live-edge dispatch.* The `ReservedPathRegistry` classifies each of the
   up-to-six gateway-owned OIDC paths (callback, logout, logout-return, back-channel logout,
-  user-info, login-initiation) by *exact* host+path match. The gateway edge consults it *before*
+  user-info, login-initiation) by *exact* path match. The five browser-facing paths additionally
+  require the request host to be the OIDC host; back-channel logout is matched on every host,
+  because the identity provider dials it server-to-server by whatever address the relying party
+  registered — routinely an internal service name rather than the browser-facing one (ADR-0018,
+  back-channel-host amendment). The gateway edge consults the registry *before*
   the proxy route table, so a matched reserved path is dispatched to its handler and a proxy route
   such as `path_prefix: /auth` can never swallow `/auth/callback` (ADR-0018). The
   link:configuration.adoc#_oidc[`oidc`] block is the single source of the registered paths. Because

@@ -31,13 +31,20 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for {@link ReservedPathRegistry}: the exact-match, OIDC-host-only carve-out (D2) that
- * guarantees a proxy route such as {@code path_prefix: /auth} never swallows the exact
- * {@code /auth/callback}, plus the empty registry when no OIDC callback is configured.
+ * Tests for {@link ReservedPathRegistry}: the exact-match carve-out (D2) that guarantees a proxy
+ * route such as {@code path_prefix: /auth} never swallows the exact {@code /auth/callback}, the
+ * OIDC-host gate that the five browser-facing endpoints carry and the back-channel receiver
+ * deliberately does not, plus the empty registry when no OIDC callback is configured.
  */
 class ReservedPathRegistryTest {
 
     private static final String OIDC_HOST = "gw.example.com";
+    /**
+     * A host that is not the OIDC host — the internal name an identity provider dials the gateway by
+     * on a shared container network, and the browser-invisible virtual host a proxied namespace would
+     * otherwise own.
+     */
+    private static final String FOREIGN_HOST = "api-sheriff.internal";
     private static final String CALLBACK_PATH = "/auth/callback";
     private static final String LOGOUT_PATH = "/auth/logout";
     private static final String LOGOUT_RETURN_PATH = "/auth/logout/return";
@@ -87,16 +94,42 @@ class ReservedPathRegistryTest {
     }
 
     @Nested
-    @DisplayName("OIDC-host-only matching")
+    @DisplayName("Host scoping — OIDC-host-only for the browser endpoints, every host for the back channel")
     class HostScoping {
 
         private final ReservedPathRegistry registry = fullyConfigured();
 
+        @ParameterizedTest(name = "browser-facing path \"{0}\" is not reserved on a foreign host")
+        @ValueSource(strings = {CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH})
+        @DisplayName("Should not match a browser-facing reserved path on a foreign host")
+        void shouldNotMatchForeignHost(String path) {
+            assertTrue(registry.match(FOREIGN_HOST, path).isEmpty(), path);
+            assertFalse(registry.isReserved(FOREIGN_HOST, path), path);
+        }
+
+        /**
+         * The matched positive control for the exemption, and the reason the negative control above is
+         * parameterized over the browser-facing paths only: the identity provider dials the
+         * back-channel receiver server-to-server at the address the relying party registered, which in
+         * a container deployment is an internal service name and never the browser-facing OIDC host.
+         * Gating this path on the OIDC host made the delivered logout token reach the proxy route
+         * table, answer {@code 404}, and leave the session it was meant to destroy alive — the defect
+         * {@code BffBackchannelLogoutIT} caught. A regression to the old rule re-breaks that suite,
+         * which needs a container; this assertion is the same contract stated where it runs in seconds.
+         */
         @Test
-        @DisplayName("Should not match the reserved path on a foreign host")
-        void shouldNotMatchForeignHost() {
-            assertTrue(registry.match("app.example.com", CALLBACK_PATH).isEmpty());
-            assertFalse(registry.isReserved("other.host", CALLBACK_PATH));
+        @DisplayName("Should match the back-channel receiver on a foreign host — the IdP dials it by an internal name")
+        void shouldMatchBackchannelOnForeignHost() {
+            assertEquals(Optional.of(ReservedEndpoint.BACKCHANNEL_LOGOUT),
+                    registry.match(FOREIGN_HOST, BACKCHANNEL_PATH));
+            assertTrue(registry.isReserved(FOREIGN_HOST, BACKCHANNEL_PATH));
+        }
+
+        @Test
+        @DisplayName("Should still match the back-channel receiver on the OIDC host itself")
+        void shouldMatchBackchannelOnOidcHost() {
+            assertEquals(Optional.of(ReservedEndpoint.BACKCHANNEL_LOGOUT),
+                    registry.match(OIDC_HOST, BACKCHANNEL_PATH));
         }
 
         @Test
@@ -106,10 +139,25 @@ class ReservedPathRegistryTest {
         }
 
         @Test
-        @DisplayName("Should not match when the request host or path is absent")
+        @DisplayName("Should not match a browser-facing path when the request host or the path is absent")
         void shouldNotMatchNullHostOrPath() {
             assertTrue(registry.match(null, CALLBACK_PATH).isEmpty());
             assertTrue(registry.match(OIDC_HOST, null).isEmpty());
+            assertTrue(registry.match(null, null).isEmpty());
+        }
+
+        /**
+         * An absent {@code Host} carries no host to compare, and the back-channel endpoint compares
+         * none — so the exemption holds here too rather than falling back to the gate. Pinned because
+         * the two absences are answered by different branches: a {@code null} path has no entry to
+         * resolve at all and stays empty (asserted above), while a {@code null} host reaches the
+         * endpoint and is admitted.
+         */
+        @Test
+        @DisplayName("Should match the back-channel receiver when the request carries no Host at all")
+        void shouldMatchBackchannelWithoutHost() {
+            assertEquals(Optional.of(ReservedEndpoint.BACKCHANNEL_LOGOUT),
+                    registry.match(null, BACKCHANNEL_PATH));
         }
     }
 

@@ -54,6 +54,18 @@ import org.junit.jupiter.api.Test;
  * four is load-bearing, and removing any one of them is the negative control for this suite: the
  * suite must go red, and a green run after such a removal means it has stopped testing anything.
  * <p>
+ * <strong>A fifth piece is not configuration at all</strong>, and it is why this suite spent its
+ * first CI run red with all four of the above correctly in place. The gateway has to actually SERVE
+ * {@code /auth/backchannel} on the host Keycloak dials it by. Keycloak reaches it as
+ * {@code api-sheriff} — its compose service name on the shared network — while the OIDC host is
+ * {@code localhost}, the browser-facing host of {@code redirect_uri}. {@code ReservedPathRegistry}
+ * gated <em>every</em> reserved path on the OIDC host, so the delivered logout token was answered
+ * {@code 404} by the proxy route table and validated by nobody: the session survived and this
+ * assertion read {@code 200}. The registry now exempts the back-channel receiver from that gate
+ * (ADR-0018, back-channel-host amendment), and {@code ReservedPathRegistryTest} pins the exemption
+ * with both arms — the receiver matches on a foreign host, the five browser-facing paths still do
+ * not — so a regression fails in seconds instead of waiting for a container.
+ * <p>
  * <strong>Why the {@code 401} cannot come from somewhere else.</strong> The gateway also destroys a
  * session when a near-expiry token refresh fails, and an admin-API logout does revoke the refresh
  * token — so that path would produce the same {@code 401} and prove nothing about the back channel.
@@ -106,11 +118,16 @@ class BffBackchannelLogoutIT extends BaseIntegrationTest {
         // Assert — the gateway-held session is gone. The browser did nothing but retry.
         assertEquals(UNAUTHORIZED, awaitSessionChallenged(session),
                 () -> "the gateway-held session survived an IdP-initiated back-channel logout for "
-                        + DELIVERY_BUDGET_SECONDS + "s. Either no logout token was delivered (check that"
-                        + " integration-client declares backchannel.logout.url, and that Keycloak trusts"
-                        + " the gateway certificate via KC_TRUSTSTORE_PATHS — a TLS failure on that leg is"
-                        + " silent from here), or one was delivered and matched nothing (the token's sid"
-                        + " is keyed against the sid the gateway recorded from the ID token at login)");
+                        + DELIVERY_BUDGET_SECONDS + "s. Three causes produce this identically, and only"
+                        + " the container logs separate them. Either no logout token was delivered (check"
+                        + " that integration-client declares backchannel.logout.url, and that Keycloak"
+                        + " trusts the gateway certificate via KC_TRUSTSTORE_PATHS — a TLS failure on that"
+                        + " leg is silent from here); or one was delivered to a path the gateway did not"
+                        + " serve on the dialled host and was answered 404 by the proxy route table (the"
+                        + " back-channel receiver must stay exempt from the reserved-path OIDC-host gate —"
+                        + " see the class comment); or one was delivered, accepted, and matched nothing"
+                        + " (the token's sid is keyed against the sid the gateway recorded from the ID"
+                        + " token at login)");
     }
 
     /**

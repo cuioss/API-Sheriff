@@ -32,8 +32,9 @@ import org.jspecify.annotations.Nullable;
  * {@code post_logout_redirect_uri} return leg, the {@code oidc.logout.backchannel_path}
  * receiver, the {@code oidc.user_info.path} session/user-info fold (D11), and the
  * {@code oidc.login.path} login-initiation fold (D12). Each is matched <strong>exactly</strong>
- * (never by prefix) and <strong>only on the
- * OIDC host</strong> (the host of {@code oidc.redirect_uri}). The gateway edge consults this
+ * (never by prefix). Five of the six are matched <strong>only on the OIDC host</strong> (the host of
+ * {@code oidc.redirect_uri}); the back-channel logout receiver is matched on <strong>every</strong>
+ * host, for the reason {@link #match(String, String)} documents. The gateway edge consults this
  * registry <em>before</em> the route table, so a proxy route such as {@code path_prefix: /auth}
  * can never swallow the exact {@code /auth/callback}: the reserved path is resolved here first
  * and the prefix route never sees it.
@@ -135,23 +136,58 @@ public final class ReservedPathRegistry {
     }
 
     /**
-     * Resolves the reserved endpoint for a request, matching the path <strong>exactly</strong> and
-     * <strong>only</strong> when the request host is the OIDC host. A prefix that merely contains a
-     * reserved path (e.g. {@code /auth} against the reserved {@code /auth/callback}) never matches —
-     * that is precisely the carve-out this registry guarantees.
+     * Resolves the reserved endpoint for a request, matching the path <strong>exactly</strong>. A
+     * prefix that merely contains a reserved path (e.g. {@code /auth} against the reserved
+     * {@code /auth/callback}) never matches — that is precisely the carve-out this registry
+     * guarantees.
+     * <p>
+     * <strong>Five of the six endpoints additionally require the request host to be the OIDC
+     * host</strong> (the host of {@code oidc.redirect_uri}). That is right for all five, because each
+     * of them is reached by a <em>browser</em> at the origin the gateway published to it: the callback,
+     * the login initiation, the RP-initiated logout and its return leg, and the user-info fold are all
+     * navigations or fetches from the session's own origin, so a request for one of those paths
+     * arriving on a different virtual host is not the browser and must fall through to the proxy route
+     * table.
+     * <p>
+     * <strong>{@link ReservedEndpoint#BACKCHANNEL_LOGOUT} is matched on every host, and that
+     * asymmetry is the contract rather than a relaxation of it.</strong> The back-channel receiver is
+     * the one reserved endpoint no browser ever reaches: the identity provider dials it
+     * server-to-server at whatever address the relying party registered as its
+     * {@code backchannel_logout_uri}, and that address is routinely an internal one — a container or
+     * service name on the network the two share — while the OIDC host is the public name the browser
+     * uses. Requiring the two to coincide makes back-channel logout silently unreachable in exactly
+     * those deployments: the {@code POST} is delivered, answered {@code 404} by the proxy route table
+     * because no route claims the reserved path, and the session it was meant to destroy survives with
+     * no diagnostic on either side. Host-gating the browser endpoints and not this one is therefore the
+     * faithful rule, not an exception to it.
+     * <p>
+     * Widening the host for this one path costs no authorization: the receiver rejects anything that is
+     * not a JWKS-signature-verified logout token carrying the expected {@code iss}/{@code aud}, so
+     * reaching it on a second host confers nothing a caller could not already attempt on the first. What
+     * it does cost is the ability to proxy the configured back-channel path on another virtual host —
+     * the same price ADR-0018 already records for the reserved paths on the OIDC host, now paid on all
+     * of them for this single path.
      *
      * @param host the request host authority (without port), may be {@code null}
      * @param path the single canonical request path, may be {@code null} before canonicalization
-     * @return the reserved endpoint when the host and path match exactly; empty otherwise
+     * @return the reserved endpoint when the path matches exactly and the host requirement for that
+     *         endpoint is met; empty otherwise
      */
     public Optional<ReservedEndpoint> match(@Nullable String host, @Nullable String path) {
-        if (oidcHost == null || host == null || path == null) {
+        if (path == null) {
             return Optional.empty();
         }
-        if (!oidcHost.equalsIgnoreCase(host)) {
+        ReservedEndpoint endpoint = endpointsByPath.get(path);
+        if (endpoint == null) {
             return Optional.empty();
         }
-        return Optional.ofNullable(endpointsByPath.get(path));
+        if (endpoint == ReservedEndpoint.BACKCHANNEL_LOGOUT) {
+            return Optional.of(endpoint);
+        }
+        if (host == null || oidcHost == null || !oidcHost.equalsIgnoreCase(host)) {
+            return Optional.empty();
+        }
+        return Optional.of(endpoint);
     }
 
     /**
