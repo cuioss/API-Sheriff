@@ -24,4 +24,11 @@ benchmarking/doc/templates/data/
 .plan/*
 !.plan/marshal.json
 !.plan/project-architecture/
+
+# Orchestrator epic store (git-tracked tier, ADR-024) — logs/ stays local-only per the
+# orchestration layout contract
+!.plan/orchestrator/
+.plan/orchestrator/*/logs/
+!.plan/archived-orchestrators/
+.plan/archived-orchestrators/*/logs/
 node_modules/

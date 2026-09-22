@@ -1,0 +1,45 @@
+envelope_version=1
+sender_type=plan
+sender_id=plan-v02-03-documentation-restructure
+epic=api-sheriff-0-2-0
+kind=candidate-lesson
+created=2026-08-09T02:00:21Z
+
+component=pm-documents:ref-asciidoc
+category=bug
+title=asciidoc verify-links does not parse link: macros, so its green result is not link coverage
+
+# `asciidoc verify-links` does not parse `link:` macros, so its green result is not link coverage
+
+`asciidoc verify-links` reported **0 broken links** across the documentation tree while **13
+relocated-section pointers were dangling**. The dangling pointers were found by hand, not by the
+verifier.
+
+## Why
+
+The verifier parses `xref:` and `<<...>>` cross-reference forms only. AsciiDoc's `link:` macro —
+the form this project uses for most inter-document pointers — is not parsed at all, so every
+`link:` target is silently outside the checked set.
+
+## Why it is a defect and not a limitation
+
+The verb reports `0 broken links` with no statement of what it did not look at. A caller reading
+that output concludes the tree's links are verified. It is the same false-negative shape as
+`architecture search` over YAML: a clean-looking zero that is wrong, and whose wrongness is
+invisible at the call site.
+
+## What the mechanism should do instead
+
+Either parse `link:` macros, or report the unchecked macro class explicitly so a green result
+carries its own scope. A verifier that cannot see a link form must say so rather than count it as
+verified.
+
+## Consequence for callers today
+
+A green `verify-links` run is **not** evidence for documentation that uses `link:` macros. Where
+link integrity matters, the `link:` targets must be checked separately until the verb covers them.
+
+## Evidence
+
+Plan `plan-v02-03-documentation-restructure` (epic `api-sheriff-0-2-0`), PR #197. 13 dangling
+`link:` pointers introduced by the D2 section relocation; `verify-links` green throughout.

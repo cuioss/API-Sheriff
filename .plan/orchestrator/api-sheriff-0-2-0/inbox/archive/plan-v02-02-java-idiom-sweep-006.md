@@ -1,0 +1,62 @@
+envelope_version=1
+sender_type=plan
+sender_id=plan-v02-02-java-idiom-sweep
+epic=api-sheriff-0-2-0
+kind=candidate-lesson
+created=2026-08-09T04:19:21Z
+
+component=plan-marshall:tools-script-executor
+category=anti-pattern
+proposed_title=Eight argparse rejections across six notations in one run — the codified rule did not bind
+
+# Eight argparse rejections across six notations in one run — the codified rule did not bind
+
+`persona-plan-marshall-agent` already carries a hard rule ("Never invent script
+subcommands") that enumerates the exact recurrence signatures below. The rule was
+loaded in this run. It still produced **eight `exit_code: 2` argparse rejections across
+six distinct notations**, which is the datum worth recording: the failure is not that
+the rule is missing, it is that a loaded prose rule does not bind at call-construction
+time.
+
+## The observed rejections (first-party, from this plan's work log)
+
+Verb-paraphrase (invented a plausible verb):
+
+- `manage-references` — `invalid choice: 'get-list'` (real verbs include `get`, `set-list`, `add-list`)
+- `manage-solution-outline` — `invalid choice: 'extract-deliverables'` (real verb: `list-deliverables`)
+
+Verb-scoped flag that does not exist on that parser:
+
+- `architecture` — `unrecognized arguments: --plan-id ...`
+- `manage-status` — `unrecognized arguments: --reason-...`
+- `ci` — `unrecognized arguments: --issue 178` at the TOP level (the flag is real, but only under `ci issue ...`)
+
+Required flag dropped from an otherwise well-formed call:
+
+- `manage-execution-manifest step-params set` — `required: --param`
+- `github_pr fetch_findings` — `required: --pr-number`
+- `ci issue comment` — `required: --issue`
+
+The third group is the interesting one and is **not** the same defect as the first two.
+There the verb and the flag vocabulary were both correct; a required, value-bearing flag
+simply was not present in the emitted argv. Note the adjacency in the log: `ci --issue 178`
+(flag at the wrong level) is followed shortly by `ci issue comment` (right level) with
+`--issue` now **absent**. The correction moved the flag and lost it. This run does not
+establish the mechanism behind that loss, so it is reported as an observation, not
+diagnosed.
+
+## Rule
+
+- Before emitting a `manage-*` / tool call whose verb or flag set is not already on
+  screen in this session, read the skill's `## Canonical invocations` block or invoke
+  `--help`. Reconstructing the surface from surrounding workflow prose is what produces
+  the verb-paraphrase and wrong-level-flag classes above.
+- After *correcting* a rejected call, re-read the whole corrected argv against the usage
+  line rather than only the segment that was wrong. Three of the eight rejections here
+  are second attempts that fixed one defect and introduced another.
+
+## Provenance
+
+`plan-v02-02-java-idiom-sweep`, work log 2026-08-08T21:04Z through 2026-08-09T04:13Z.
+Every rejection above is quoted from a `[ERROR] ... script_failure ... failure_kind=argparse_rejection`
+line in that log. None of them blocked the plan; all were retried successfully.

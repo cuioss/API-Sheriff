@@ -1,0 +1,193 @@
+{
+  "kind": "orchestrator",
+  "title": "API Sheriff 0.2.0 \u2014 Cleanup, Consolidation and Hardening",
+  "phase": "orchestrating",
+  "workstreams": [
+    {
+      "id": "WS-01",
+      "slug": "architecture-code-quality",
+      "title": "Architecture and Code Quality"
+    },
+    {
+      "id": "WS-02",
+      "slug": "documentation-records",
+      "title": "Documentation and Records"
+    },
+    {
+      "id": "WS-03",
+      "slug": "threat-hardening",
+      "title": "Threat Hardening"
+    },
+    {
+      "id": "WS-04",
+      "slug": "oidc-client-conformance",
+      "title": "OIDC Client Conformance"
+    },
+    {
+      "id": "WS-05",
+      "slug": "integration-test-fidelity",
+      "title": "Integration and Test Fidelity"
+    }
+  ],
+  "plans": [
+    {
+      "id": "PLAN-V02-01",
+      "slug": "adr-0005-reversal-quarkus-adoption",
+      "workstream": "WS-01",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-02",
+      "slug": "java-idiom-sweep",
+      "workstream": "WS-01",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-v02-02-java-idiom-sweep",
+      "pr": "198",
+      "landing": "landings/PLAN-V02-02.md"
+    },
+    {
+      "id": "PLAN-V02-03",
+      "slug": "documentation-restructure",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-v02-03-documentation-restructure",
+      "pr": "197",
+      "landing": "landings/PLAN-V02-03.md"
+    },
+    {
+      "id": "PLAN-V02-04",
+      "slug": "adr-corpus-cleanup",
+      "workstream": "WS-02",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-05",
+      "slug": "response-hygiene",
+      "workstream": "WS-03",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-06",
+      "slug": "enumeration-hardening",
+      "workstream": "WS-03",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-07",
+      "slug": "threat-classification",
+      "workstream": "WS-03",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-08",
+      "slug": "fapi-2-0-conformance",
+      "workstream": "WS-04",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-09",
+      "slug": "token-sheriff-integration-fidelity",
+      "workstream": "WS-05",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-10",
+      "slug": "per-client-tls-trust",
+      "workstream": "WS-05",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-11",
+      "slug": "resource-exhaustion-test-home",
+      "workstream": "WS-05",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-12",
+      "slug": "idp-addressing-model",
+      "workstream": "WS-04",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-13",
+      "slug": "terminal-rejection-contract",
+      "workstream": "WS-03",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-14",
+      "slug": "offline-config-validation",
+      "workstream": "WS-01",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-15",
+      "slug": "bff-compose-sample",
+      "workstream": "WS-02",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-V02-16",
+      "slug": "image-metadata-fidelity",
+      "workstream": "WS-01",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-v02-16-image-metadata-fidelity",
+      "pr": "199",
+      "landing": "landings/PLAN-V02-16.md"
+    },
+    {
+      "id": "PLAN-V02-17",
+      "slug": "lessons-into-source",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-v02-17-lessons-into-source",
+      "pr": "200",
+      "landing": "landings/PLAN-V02-17.md"
+    }
+  ],
+  "resume_anchor": "=== RESTART-READY. Epic reviewed end to end 2026-08-09 at 95dd566. NEXT ACTION: emit. ===\n\nSTATE: 4 shipped (V02-02 #198, V02-03 #197, V02-16 #199, V02-17 #200) / 0 running / 0 launched / 13 staged. PLAN-V02-01 WAS RETURNED launched -> staged 2026-08-09: its command was emitted and auto-recorded launched, the operator never started it, and a phantom 'launched' row would have read to a fresh session as work in flight. ALL THREE PARALLEL SLOTS ARE FREE - the widest the board has been this epic. Inbox empty, 25 messages archived, 22 lessons in the corpus, 4 landing reports. Tree clean.\n\n=== READ THIS BEFORE SCOPING ANY PLAN: THE BUILD NOW FAILS ON ANY COMPILER WARNING. === PLAN-V02-02 turned on showDeprecation AND failOnWarning reactor-wide (pom.xml:163/:178) - javac runs with -Werror across all six modules, so a deprecated API or unchecked cast is a BUILD FAILURE, not a log line. ALL 13 REMAINING SPECS WERE AUTHORED BEFORE THAT GATE EXISTED and each now carries the constraint in its '## Re-Grounded (2)' section. Answer such a failure by MIGRATING OFF the construct; a @SuppressWarnings hollows the gate out while leaving it reporting success. V02-01 is the most exposed.\n\n=== WHAT THE FULL REVIEW CHANGED === Every Java anchor across the epic STILL HOLDS at 95dd566. THREE DOC ANCHORS MOVED and are fixed in-spec: V02-13's doc/plan/04-request-pipeline.adoc:181 NO LONGER EXISTS (discharged), configuration.adoc:1397 -> ~:974 and :251 -> ~:10-11/:33, V02-12's OIDC exhibit :293-308 -> ~:305-311. doc/user/ is now TEN pages (anchors.adoc, endpoint-routes.adoc new), moving the doc target of V02-05 D6, V02-12 D5, V02-14 D5 and V02-15 D3. The ADR corpus is UNCHANGED (37 / 6905 / 21 Proposed).\n\n=== DISTRIBUTION IMPROVED: ONE DEPENDENCY EDGE REMOVED === V02-10's D1 MOVED INTO V02-09 as its D6, because a deliverable conditional on another plan's decision belongs in the plan that takes the decision. V02-09 is now six deliverables (at the guard, unsplit, line recorded); V02-10 is reduced to the unconditional compose cleanup - 22 truststore args across 7 services - and is therefore UNBLOCKED AND IMMEDIATELY EMITTABLE where it previously sat behind a four-deep chain.\n\n=== AMBIGUITY RESOLVED: V02-13 vs V02-06 ON THE SAME FIVE renderProblem SITES === V02-13 owns what a rejection is CALLED (D1) and how it is RENDERED (D2); V02-06 owns WHETHER an untrusted caller sees the honest code (D1) and TIMING uniformity (D2). V02-06's uniform-404 works THROUGH V02-13's negotiation, not around it. Written into both specs. V02-13 GOES FIRST and unblocks two plans behind it.\n\n=== ORPHAN DEFECTS HOMED === (13) applyJwks -> folded into V02-09. (14) issue #201 fail-open handshake -> ADOPTED by V02-11 as its first LANE-CONDITIONAL instance. (12) dead WEBSOCKET allocation -> V02-01, conditionally. EIGHT defects still have no owning plan - (2),(3),(4),(6),(7),(8),(9),(11) - and are the close-out's largest batch; (8) needs an OPERATOR live-gate check, not plan work.\n\n=== EMIT GUIDANCE FOR THE RESTART, scope=3 R=0 so THREE SLOTS ARE FREE === HIGHEST DOWNSTREAM VALUE: V02-13 (head of the WS-03 chain, unblocks V02-06 then V02-07). FREEST: V02-10 (now single-deliverable and unblocked), V02-14, V02-05, V02-04. V02-01 still RUNS ALONE and is back in the queue as staged - emitting it CONSUMES THE WHOLE BOARD (all three slots), and it is now four days deferred across three emit rounds. That is the standing trade: the epic's load-bearing plan against three parallel slots. NOT EMITTABLE: V02-06/V02-07 (behind V02-13), V02-09 (behind V02-08 -> V02-12), V02-15 (D5 hard-blocked on V02-12), V02-11 only if you accept it now owns #201.\n\n=== deploy-snapshot IS NOW VERIFIED - ALL FOUR MERGE COMMITS GREEN (2026-08-09, operator-instructed). === 89a3cfe / e343404 / aeb80c5 / 95dd566 all carry build/deploy-snapshot = success. THE JOB IS NOT DEFINED IN THIS REPO - it lives in the org's reusable-maven-build workflow and surfaces as 'build / deploy-snapshot' inside the Maven Build run, which is why grepping here found nothing. METHOD for the next landing is recorded in epic.md \u00a7 Post-Merge Verification; note gh run list --commit needs the FULL 40-char sha (an abbreviated one returns [] and reads as proof of absence - it is not). WATCH (16)+(20) CORRECTED: the mechanism gap is real (the abstraction has no commit-to-run path at all) but 'no sanctioned path' had been read as 'unverifiable', which left the axis unchecked across four landings when one read-only call answered it. OWED now means owed UNTIL CHECKED. === STILL OWED, NOT PLAN WORK === A /marshall-steward run is owed by TWO routes. Bundle round 9 is UNSENT (14 items). cuioss/TokenSheriff#641 is open upstream and would shrink V02-09 - check it against the RESOLVED JAR, never the issue thread.\n\n*** THIS ANCHOR WAS DELIBERATELY SHORTENED, AND NOTHING WAS DISCARDED. *** The ~40KB it used to carry has been MOVED INTO epic.md's own sections: '## Sequencing Constraints', '## Open Defects' (1)-(9), '## Watches', '## Release Pre-Flight Knowledge for the 0.2.0 Cut', '## Standing Rules Inherited from the api-sheriff-roadmap Close-Out', '## Deferred Item - the release dry run is NOT a queue item'. THE PER-PLAN CARRIES ARE NOW IN THE SPECS THEMSELVES, per the decompose contract - a spec is self-sufficient because the emitted command is a one-line pointer carrying no brief. READ epic.md, THEN THE SPEC. Do not re-inflate this field.\n\n=== WHAT next MUST HONOUR === Disjointness alone is NOT sufficient here; epic.md's Sequencing Constraints table is binding. Seven chains, the load-bearing ones being oidc/BffRuntimeProducer (V02-08 -> V02-12 -> V02-09), rejection taxonomy (V02-13 -> V02-06 -> V02-07), and V02-01 RUNS ALONE. FREEST CANDIDATES, no predecessor and no ADR: V02-16 (surface-disjoint from all sixteen others - the cleanest emit in the epic), V02-17, V02-14, V02-05. With scope 3, prefer a doc-only or build-light plan for the second and third slots: concurrent Docker IT suites contend for local CPU in a repo with documented contention-driven IT startup flakes, and main is merge-queue-gated so landings serialise anyway.\n\n=== SETTLED EPIC-WIDE, DO NOT RE-DERIVE === ADR corpus is contiguous 0001-0037; roadmap PLAN-50 landed 0035; 0038 IS the next free number and IS genuinely free. Six plans author an ADR (V02-01, V02-06, V02-07, V02-11, V02-12, V02-13) - still claim at write time against main AND every open branch, because two plans once both took 0025. The api-sheriff-roadmap gate has OPENED (phase closed, tree relocated to .plan/local/archived-orchestrators/).\n\n=== THE FOUR FINDINGS MOST LIKELY TO BE LOST IF SOMEONE SKIPS THE RE-GROUNDING SECTIONS === (a) V02-17's lessons source path was BROKEN - the roadmap epic was archived, so the files are under .plan/local/archived-orchestrators/, and a plan following the old header would have found an empty directory and no source material. FIXED IN THE SPEC. (b) V02-05: ResponseStage has TWO relay paths, relay:84 and relayWithTrailers:118 - a Server/X-Powered-By strip applied to one still leaks on every trailers-carrying response. (c) V02-02: the deprecated-property carrier list was incomplete (six files / 19 occurrences; doc/development/README.adoc missing entirely) AND the deprecated host() fallback has a second site at GatewayEdgeRoute:1146 beside the moved seed at :460. (d) V02-10: the truststore override is 22 args across 7 services, not 12 across 4. ALL FOUR ARE THE SAME SHAPE - the standing enumerate-every-carrier rule (lesson 2026-08-06-08-002) - and this epic's re-grounding hit it four times in one pass. V02-03 D3's landings path was a FIFTH instance of the archived-tree breakage and is also fixed.\n\n=== UPSTREAM TOKEN-SHERIFF QUESTIONS SETTLED 2026-08-08 AGAINST THE RESOLVED JARS, NOT THE PR PAGES. THREE ANSWERS, AND TWO OF THEM CHANGE A PLAN. === Operator supplied TokenSheriff PR #640 (merged), which CLOSES #618 - PLAN-V02-08 D1's upstream DPoP blocker. (1) #618 IS FIXED UPSTREAM AND NOT AVAILABLE TO US: version.token-sheriff is 0.9.4, the latest PUBLISHED release is also 0.9.4 with nothing since #640 merged, and DpopProofGenerator in the resolved token-sheriff-client-0.9.4.jar is dated 2026-07-21 and carries RS256/RS384/RS512 and RSAPublicKey ONLY. D1's instruction 'if #618 has landed, both routes are open' WOULD HAVE MISLED - it has landed and they are not. mTLS remains the available route; a DPoP route needs a release plus a version bump, which is a gated build-input change and an operator-approval question. RE-CHECK THE PUBLISHED VERSION AT OUTLINE, a release may land in between. (2) V02-08's INBOUND-DPoP HYPOTHESIS IS CONFIRMED AND REMOVES WORK: SignatureAlgorithmPreferences at 0.9.4 already admits RS256/384/512, PS256/384, ES256/384 and EdDSA - the full FAPI 2.0 s5.4.1 set - so inbound was never the constraint and inbound DPoP support is OUT OF SCOPE for that plan. (3) V02-10's GATING LEAD IS CONFIRMED, NOT REFUTED: ClientConfiguration at 0.9.4 declares a private final SSLContext with getSslContext(), its Builder exposes sslContext(SSLContext), and MtlsClientAuth plus BackChannelHttp reference it. D1 has its route and needs NO re-scope; the two riders on #607 stay unverified leads. *** THE METHOD IS THE DURABLE PART: the same upstream at the same pinned version gave OPPOSITE answers for #618 and #607 - one fixed-but-unreleased, one released-and-present - and ONLY THE RESOLVED JAR IN ~/.m2 DISTINGUISHES THEM. Neither the repository nor the PR page can. Settle every upstream claim at the artifact.\n\n=== UPSTREAM ISSUE FILED 2026-08-08: cuioss/TokenSheriff#641 - 'Extension health/metrics beans resolve issuers from the property namespace, not from the produced TokenValidator'. https://github.com/cuioss/TokenSheriff/issues/641 === Operator-instructed. IT DISCHARGES A RECORDED INTENT, not a new one: ADR-0027 already called this report sound and worth raising, rejected it ONLY as the sole remedy and ON TIMING RATHER THAN MERIT, and said raising it upstream and excluding here are COMPLEMENTARY. The exclusion shipped; the escalation had never been made. The ask, in one line: OBSERVE THE OBJECT, NOT THE KEYS - resolve TokenValidator as a CDI dependency instead of reconstructing it from IssuerConfigResolver - with the smaller fallback that a bean finding no property-based issuers degrades honestly instead of reporting DOWN and throwing every 10s. *** CONSEQUENCE FOR PLAN-V02-09 D2: #641 is a THIRD direction that DISSOLVES the map-versus-keep question rather than answering it - if upstream resolves the object, the extension's beans observe our real issuers with no ConfigSource projection, quarkus.arc.exclude-types has nothing left to exclude, and BOTH of D3's gaps close as a side effect. NOT a reason to wait (ADR-0027 already rejected putting our readiness on another project's release cycle) - a fourth option to weigh with its upstream-release dependency priced in. Check its state at outline AND VERIFY AGAINST THE RESOLVED JAR, never the issue thread: a closed issue is not a released capability, which #618 demonstrated on this same day. *** OPERATOR RULED: LEDGER ONLY - no comment on API-Sheriff #173 (closed) or #174 (open, different root). *** ONE HALF OF THE INSTRUCTION IS OWED AND CANNOT BE PAID HERE: ADR-0027 is doc/adr/** = REPOSITORY SOURCE, outside the orchestrator's write boundary, so the '#641 goes in ADR-0027' obligation is recorded AS AN INSTRUCTION in PLAN-V02-09 rather than enacted. Until that plan runs, ADR-0027 states an escalation is owed that has already been made - stale-by-omission, exactly the class PLAN-V02-04's ADR audit exists to find.\n\n=== REFUTATIONS THAT REMOVE WORK - DO NOT RE-ATTEMPT === V02-12's topology-SVG obligation is DISCHARGED (the SVG now reads 'variant instances (6)' after roadmap PLAN-46 #156). V02-08's PR #152 precondition is DISCHARGED - all three FAPI docs are on main. V02-03's PLAN-08B planning-reference purge LANDED with zero residue. V02-11's not-gating HYPOTHESIS is CONFIRMED - benchmark.yml is pull_request types:[closed] gated on merged==true, so making it gate is a structural change to the release lane, not a flag flip. V02-01's 'unsynchronised HashMaps' premise is REFUTED - PLAN-49 made every method synchronized.\n\n=== STILL OPEN, AND NOT PLAN WORK === Open Defect (8) needs an OPERATOR live-gate check, not a plan. Watch (31) and the other four inherited plan-marshall config constraints need a marshall-steward run - .plan/ config is outside the orchestrator's write boundary, which is also why marshal.json still reads parallelization_scope 2 against this epic's 3 (dormant; the epic metadata is what next reads). A landing report here records the post-merge deploy-snapshot check as OWED, never complete, until that tooling changes.",
+  "metadata": {
+    "parallelization_scope": "3"
+  },
+  "created": "2026-08-04T09:49:01Z",
+  "updated": "2026-08-09T20:01:22Z"
+}
