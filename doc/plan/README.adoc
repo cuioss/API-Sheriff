@@ -85,10 +85,12 @@ deviation (e.g. an expected multi-PR split); it does not restate this sequence.
   does not create missing coverage.
 * *Dependency approvals*: every new Maven dependency a plan needs is flagged inside the plan
   with an IMPORTANT block and requires explicit user approval before it is added
-  (CLAUDE.md rule). TokenSheriff artifacts use the released line (currently `0.9.2`, managed
-  by `token-sheriff-bom`), never snapshots. The whole stack (validation + client modules) is
-  already in the build, so a plan that consumes it wires an existing dependency rather than
-  adding one -- and the approval gate applies only to what a plan genuinely introduces.
+  (CLAUDE.md rule). TokenSheriff artifacts use the released line, never snapshots -- managed by
+  `token-sheriff-bom`, whose version is the `version.token-sheriff` property in the root
+  `pom.xml` (currently `0.9.6`; read the property, not this line). The whole stack
+  (validation + client modules) is already in the build, so a plan that consumes it wires an
+  existing dependency rather than adding one -- and the approval gate applies only to what a
+  plan genuinely introduces.
 * Pre-1.0 rules apply throughout: delete instead of deprecate, break freely, keep APIs clean.
 * *Three-layer documentation*: project documentation is organized in three audience layers --
   the *design and reference* layer under `doc/` (these design docs, the ADRs, and

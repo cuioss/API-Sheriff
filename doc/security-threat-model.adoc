@@ -46,9 +46,10 @@ deliberately leave to the application. Attribution below reflects a 2026-07-17 s
 of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
 `cui-http` 3.1 -- managed by `cui-java-bom` through `cui-quarkus-parent`, with no override in this
 repository; 3.1 is the release carrying the parameter-value line-break switch the `strict` profile
-sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.6, whose JWKS-loader and client-configuration builders
-both carry the hostname-verification passthrough the gateway binds its two identity-provider
-back-channels through (see <<gw-06>>).
+sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.6, read from the `version.token-sheriff` property in
+the root `pom.xml`, which is the authoritative source this number mirrors. Its JWKS-loader and
+client-configuration builders both carry the hostname-verification passthrough the gateway binds its
+two identity-provider back-channels through (see <<gw-06>>).
 
 *`cui-http` (inbound filtering + forwarded resolution) provides:* per-component path
 canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes
