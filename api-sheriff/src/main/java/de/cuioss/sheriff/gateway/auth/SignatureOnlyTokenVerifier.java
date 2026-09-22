@@ -157,6 +157,6 @@ public final class SignatureOnlyTokenVerifier {
      * @param tokenBuilder       the claim mapper for that issuer (maps only, validates nothing)
      */
     private record IssuerVerification(IssuerConfig config, TokenHeaderValidator headerValidator,
-            TokenSignatureValidator signatureValidator, TokenBuilder tokenBuilder) {
+    TokenSignatureValidator signatureValidator, TokenBuilder tokenBuilder) {
     }
 }

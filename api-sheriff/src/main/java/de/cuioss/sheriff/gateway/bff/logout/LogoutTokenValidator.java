@@ -209,7 +209,7 @@ public final class LogoutTokenValidator {
      */
     private static boolean hasMapMemberKey(String events) {
         for (int at = events.indexOf(BACKCHANNEL_LOGOUT_EVENT); at >= 0;
-                at = events.indexOf(BACKCHANNEL_LOGOUT_EVENT, at + 1)) {
+             at = events.indexOf(BACKCHANNEL_LOGOUT_EVENT, at + 1)) {
             int after = at + BACKCHANNEL_LOGOUT_EVENT.length();
             if (after >= events.length() || events.charAt(after) != '=') {
                 continue;
