@@ -1820,6 +1820,102 @@ class ConfigLoaderTest {
                         + exception.errors());
     }
 
+    // --- Map-valued substitution must not defeat the secrets rule ---------------------------------
+    // validateSecretReferences enforces the bare-${VAR} rule on the PRE-substitution tree, so it can
+    // only see a secret field the operator actually wrote. The object arm can synthesise one AFTER
+    // that pass has run, which would let a defaulted placeholder — the exact form the rule refuses —
+    // put a literal secret in the mounted file and still boot. The refusal therefore lives at the
+    // substitution site: a whole-object substitution is refused at any pointer a SECRET_POINTERS
+    // entry lies beneath.
+
+    @Test
+    void refusesAWholeObjectSubstitutionThatWouldSynthesiseTheSessionKey() throws Exception {
+        // Arrange — /oidc/session is object-typed and /oidc/session/encryption_key is secret-classified.
+        // The placeholder carries a DEFAULT, which is precisely what isBareReference refuses when the
+        // operator writes the secret field itself; supplying the enclosing object must not launder it.
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                  session: "${SHERIFF_SESSION:-encryption_key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        // The message is asserted, not just the pointer: a well-formed key=value map at an object-typed
+        // pointer BINDS (see suppliesAWholeDeclaredMapFromOneSubstitutedValue), so without the
+        // substitution-site refusal this document loads and no error is raised here at all. Pinning the
+        // rule's own wording is what keeps the guard from passing on an unrelated schema type mismatch.
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/oidc/session".equals(error.pointer())
+                                && error.message().contains("secret-classified field")),
+                () -> "supplying the whole oidc.session object from one variable must be refused at that "
+                        + "pointer BY THE SECRETS RULE: it materialises encryption_key after the "
+                        + "pre-substitution secrets pass has already run, got: " + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("AAAAAAAAAAAA")),
+                () -> "the refusal must name the pointer and the rule, never the resolved key material, "
+                        + "got: " + exception.errors());
+    }
+
+    @Test
+    void refusesAWholeObjectSubstitutionThatWouldSynthesiseTheClientSecret() throws Exception {
+        // Arrange — the same hole one level up: /oidc is object-typed and /oidc/client_secret is the
+        // other secret-classified pointer, so the enclosing block is refused on the same terms.
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc: "${SHERIFF_OIDC:-client_secret=s3cr3t}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/oidc".equals(error.pointer())
+                                && error.message().contains("secret-classified field")),
+                () -> "supplying the whole oidc object from one variable must be refused at that "
+                        + "pointer by the secrets rule, got: " + exception.errors());
+        assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("s3cr3t")),
+                () -> "the refusal must never echo the resolved secret, got: " + exception.errors());
+    }
+
+    @Test
+    void stillAcceptsABareReferenceWrittenAtTheSecretFieldItself() throws Exception {
+        // Arrange — the matched positive control for the two refusals above. The refusal is scoped to
+        // the ENCLOSING object; the supported form — a bare ${VAR} at the secret field, where the
+        // pre-substitution pass can see and check it — must keep working unchanged.
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                  session:
+                    mode: cookie
+                    encryption_key: "${SHERIFF_SESSION_KEY}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of(
+                "OIDC_CLIENT_SECRET", "s3cr3t",
+                "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")).load();
+
+        // Assert
+        assertEquals("s3cr3t", loaded.gateway().oidc().clientSecret(),
+                "a bare ${VAR} at the secret field itself must keep resolving");
+    }
+
     // --- Destination-type walk: $ref, patternProperties, and the numeric arms ---------------------
     // The walk's indirection resolvers had no coverage at all: no test resolved a local $ref, none
     // drove a key described only by patternProperties, and neither numeric arm past the int range was

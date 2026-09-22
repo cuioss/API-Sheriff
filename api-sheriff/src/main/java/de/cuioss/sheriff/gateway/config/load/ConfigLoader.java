@@ -482,6 +482,11 @@ public final class ConfigLoader {
      * indistinguishability argument above is a property of list destinations only, so widening the
      * refusal would change behaviour across the whole configuration surface for no stated reason.
      * <p>
+     * Where the destination is an {@code object}, this method owns the secrets-rule refusal: a
+     * whole-object substitution is refused at any pointer that <em>contains</em> a secret-classified
+     * field — see {@link #coversSecretPointer} for why the refusal has to live here rather than in
+     * {@link #validateSecretReferences}.
+     * <p>
      * The recorded {@link ConfigError} names the pointer and the rule and never echoes the resolved
      * value, which at an allow-list pointer is topology intelligence.
      */
@@ -494,6 +499,13 @@ public final class ConfigLoader {
         try {
             String resolved = secretResolver.resolve(child.asText());
             String declared = declaredType(schemaTree, pointer);
+            if (OBJECT_TYPE.equals(declared) && coversSecretPointer(pointer)) {
+                errors.add(new ConfigError(file, pointer,
+                        "placeholder at an object-typed field that contains a secret-classified field; "
+                                + "write the bare ${VAR} reference at the secret field itself, so the "
+                                + "secrets rule can be enforced on it"));
+                return;
+            }
             String itemType = null;
             if (ARRAY_TYPE.equals(declared)) {
                 if (hasBlankElement(resolved)) {
@@ -519,6 +531,30 @@ public final class ConfigLoader {
      */
     private static boolean hasBlankElement(String value) {
         return Stream.of(value.split(",", -1)).anyMatch(String::isBlank);
+    }
+
+    /**
+     * Reports whether {@code pointer} names an object that <em>contains</em> a secret-classified
+     * field — whether any {@link #SECRET_POINTERS} entry lies strictly beneath it.
+     * <p>
+     * <strong>Why the refusal lives at the substitution site.</strong>
+     * {@link #validateSecretReferences} enforces the bare-{@code ${VAR}} secrets rule on the
+     * <em>pre-substitution</em> tree, so it can only see a secret field the operator actually wrote.
+     * The {@code object} arm of {@link #coerce} can synthesise one <em>after</em> that pass has already
+     * run: {@code session: "${VAR:-encryption_key=…}"} materialises
+     * {@code /oidc/session/encryption_key} out of a defaulted placeholder — precisely the form the rule
+     * exists to refuse — and the boot would then accept a literal secret written into the mounted
+     * configuration file, with the rule reporting nothing. Re-running the rule after substitution
+     * cannot close that gap either: post-substitution the value IS the resolved secret, so every
+     * legitimately-resolved secret would fail the bare-reference test.
+     * <p>
+     * Refusing the whole-object substitution at these pointers is what keeps the rule enforceable. It
+     * costs the operator nothing a secret is allowed to do: a secret is written at its own field, as a
+     * bare {@code ${VAR}}, where the pre-substitution pass can see it.
+     */
+    private static boolean coversSecretPointer(String pointer) {
+        String prefix = pointer + "/";
+        return SECRET_POINTERS.stream().anyMatch(secret -> secret.startsWith(prefix));
     }
 
     /**
