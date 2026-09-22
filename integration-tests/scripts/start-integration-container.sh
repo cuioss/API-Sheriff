@@ -123,6 +123,11 @@ fi
 # gateway's own configuration. Deriving it means moving the gateway's management context path needs
 # no edit in this script. Both labels are REQUIRED, never defaulted — see the discovery block.
 #
+# The root-path label's value is carried out of the discovery program RAW. The trailing-slash trim
+# that renders a root path of "/" as the empty string lives ONCE, in lib-docker-compose.sh's
+# normalize_root_path, and every read loop below applies it to the column it just read — so the rule
+# cannot drift between the Python discovery and the shell that consumes it.
+#
 # Keycloak carries the same labels for the same reason, so its wait derives its scheme and port here
 # too rather than restating either. Its management ROOT PATH is the one thing not derived: Keycloak
 # serves health at /health/ready under no prefix at all, so its root-path column is deliberately
@@ -182,7 +187,17 @@ for name in sorted(selected):
                         "found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
         usable = False
     if usable:
-        rows.append("%s %s %s %s" % (name, scheme, published[0], root_path.rstrip("/")))
+        # The root path is emitted RAW, and LAST. The column order is unchanged and stays
+        # LOAD-BEARING: the shell `read` calls downstream name this field last, so appending a
+        # fifth column after it would shift every later column and silently hand the wrong value
+        # to GATEWAY_MGMT_ROOT.
+        #
+        # Raw, because the trailing-slash trim has exactly ONE home -- normalize_root_path() in
+        # lib-docker-compose.sh -- which the shell applies to this field after reading each row. An
+        # rstrip("/") here would be a second copy of that rule, free to drift from the shell one.
+        # Raw also means this field is never empty (the check above rejects a root path that is not
+        # absolute), so the trim can no longer collapse it to a whitespace-only column.
+        rows.append("%s %s %s %s" % (name, scheme, published[0], root_path))
 
 if problems:
     sys.exit("probe-target discovery failed:\n  " + "\n  ".join(problems))
@@ -369,6 +384,7 @@ if ! (cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d --wait --wait-timeout 180 $GATEW
     echo "❌ Not every gateway instance reported healthy within 180s"
     while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
         [[ -z "$GATEWAY_SERVICE" ]] && continue
+        GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
         capture_gateway_diagnostics "${GATEWAY_SERVICE}" \
             "${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}" "${GATEWAY_MGMT_ROOT}"
     done <<< "$READINESS_TARGETS"
@@ -379,6 +395,7 @@ echo "✅ Every gateway instance reported healthy — asserting readiness semant
 GATEWAY_COUNT=0
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
+    GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
     GATEWAY_COUNT=$((GATEWAY_COUNT + 1))
     GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
     GATEWAY_READY_URL="${GATEWAY_MGMT_URL}${GATEWAY_MGMT_ROOT}/health/ready"
@@ -428,6 +445,7 @@ echo "📱 Application URLs:"
 # the plain-management instance makes false.
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
+    GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
     echo "  🔍 ${GATEWAY_SERVICE} management: ${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}${GATEWAY_MGMT_ROOT}/health (metrics at ${GATEWAY_MGMT_ROOT}/metrics)"
 done <<< "$READINESS_TARGETS"
 echo "  🔑 Keycloak:       https://localhost:1443/auth"
