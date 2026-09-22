@@ -190,6 +190,8 @@ tls:                               # TLS POLICY for the terminated listener. Neu
   alpn: [h2, http/1.1]             # HTTP/2 (also carries gRPC) + HTTP/1.1
   passthrough_sni: {}              # SNI hostname -> topology alias, relayed at L4 without
                                    #   decryption, e.g. { legacy.example.com: LEGACY }
+                                   #   ONE variable carries the WHOLE map: "${VAR}" with
+                                   #   VAR=host1=ALIAS1,host2=ALIAS2 (split on the first '=')
   mtls:
     enabled: false
     client_ca: /etc/sheriff/ca.pem
@@ -3486,9 +3488,35 @@ Of the reachable keys, 3 are arrays of *objects* rather than strings (`token_val
 `routes`, `routes[].match.headers`): the first in `gateway.yaml`, the other two in an endpoint
 document. At each the mechanism *reaches* the key rather than silently skipping it, produces scalars
 where the schema requires objects, and the schema-validation pass then *refuses the document* -- a
-loud failure, not a wrong value. `tls.passthrough_sni` is *not* a member at all: it is an object map of
-SNI hostname to topology alias, not an array, so the rule never matches it and it cannot be
-supplied this way.
+loud failure, not a wrong value. That refusal is deliberate and is *preserved* by the map rule
+below: the `object` arm is reachable only from a key's own declared type and never from an array's
+item type, so an array-of-objects key keeps failing loudly instead of binding an array of
+single-entry objects.
+* *A `${VAR}` written at a map-valued key supplies the whole map.* Where the destination declares
+  `object`, the placeholder is typed from that declaration and split on `,` exactly as a list is,
+  and each element is then split on its *first* `=` into a key and a string value. The worked
+  example is `tls.passthrough_sni` -- an object map of SNI hostname to topology alias, which no
+  environment variable could supply before this rule existed:
++
+--
+[source,yaml]
+----
+tls:
+  passthrough_sni: "${SHERIFF_PASSTHROUGH_SNI}"
+----
+
+with `SHERIFF_PASSTHROUGH_SNI=legacy.example.com=legacy-tier,vault.example.com=vault-tier` binding
+the two-entry map. Splitting on the *first* `=` only is what lets an alias value contain one.
+--
++
+A *malformed* input -- an element carrying no `=`, or an empty key -- leaves the resolved value a
+string, which the schema-validation pass then refuses as `expected object, got string`, reported at
+the key's own pointer and naming the *types* rather than the value. An *empty resolution* is refused
+by that same path. The diagnostic is therefore the generic type mismatch rather than the bespoke
+message the list rule's empty-resolution refusal emits: that refusal stays scoped to `array`
+destinations, because the argument behind it -- that a validator cannot tell an explicitly-empty list
+from one a variable emptied -- is a property of lists alone, and an object destination already fails
+loudly without it.
 * *Reachable is not recommended.* Per
   link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025],
   `forwarded.trusted_proxies` is *deployment-bound* -- genuinely different per environment -- and is

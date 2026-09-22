@@ -1622,6 +1622,204 @@ class ConfigLoaderTest {
                         + "intelligence, got: " + exception.errors());
     }
 
+    // --- Map-valued substitution: one variable supplies a whole schema-declared object -------------
+    // /tls/passthrough_sni is declared `type: object` with `additionalProperties: {type: string}` —
+    // a map of SNI hostname to topology alias, and the motivating case: no environment variable could
+    // supply it at all before the object arm existed, because the list arm keys on `array` and never
+    // matched it. The wire format mirrors the list arm's comma split, with each element then split on
+    // its FIRST `=`.
+
+    @Test
+    void suppliesAWholeDeclaredMapFromOneSubstitutedValue() throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                tls:
+                  passthrough_sni: "${SHERIFF_PASSTHROUGH_SNI}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_PASSTHROUGH_SNI",
+                "legacy.example.com=LEGACY,vault.example.com=VAULT")).load();
+
+        // Assert — the bound map, not a private return: the point is that the whole map arrived.
+        assertEquals(Map.of("legacy.example.com", "LEGACY", "vault.example.com", "VAULT"),
+                loaded.gateway().tls().passthroughSni(),
+                "one resolved ${VAR} must supply every entry of a schema-declared map");
+    }
+
+    @Test
+    void stripsEachPairOfASubstitutedMap() throws Exception {
+        // Arrange — an operator writing a readable, space-separated map must not thereby ship SNI
+        // hostnames with leading blanks, which the case-insensitive host comparison would never match.
+        writeConfig("gateway.yaml", """
+                version: 1
+                tls:
+                  passthrough_sni: "${SHERIFF_PASSTHROUGH_SNI}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_PASSTHROUGH_SNI",
+                " legacy.example.com = LEGACY , vault.example.com = VAULT ")).load();
+
+        // Assert
+        assertEquals(Map.of("legacy.example.com", "LEGACY", "vault.example.com", "VAULT"),
+                loaded.gateway().tls().passthroughSni(),
+                "both halves of each substituted pair must be stripped");
+    }
+
+    @Test
+    void splitsEachPairOnItsFirstSeparatorOnly() throws Exception {
+        // Arrange — splitting on EVERY '=' would silently truncate a value that legitimately carries
+        // one. The key cannot contain '=' (it is a hostname), so the first occurrence is unambiguous
+        // and everything after it belongs to the value.
+        writeConfig("gateway.yaml", """
+                version: 1
+                tls:
+                  passthrough_sni: "${SHERIFF_PASSTHROUGH_SNI}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded =
+                loader(Map.of("SHERIFF_PASSTHROUGH_SNI", "legacy.example.com=ALIAS=WITH=EQUALS")).load();
+
+        // Assert
+        assertEquals(Map.of("legacy.example.com", "ALIAS=WITH=EQUALS"),
+                loaded.gateway().tls().passthroughSni(),
+                "only the FIRST '=' separates the pair — a later one belongs to the value and must "
+                        + "survive the round trip rather than being silently dropped");
+    }
+
+    @Test
+    void refusesAPairCarryingNoSeparatorWithoutEchoingTheResolvedValue() throws Exception {
+        // Arrange — the malformed input stays a TextNode and is refused by the schema-validation pass,
+        // which is the file's established discipline: the diagnostic names the expected and actual
+        // TYPES and never the value, so a resolved secret cannot reach a ConfigError. The no-echo leg
+        // is pinned here rather than on the empty-resolution test below, where the resolved value is
+        // the empty string and a "no message contains it" assertion would be vacuous.
+        writeConfig("gateway.yaml", """
+                version: 1
+                tls:
+                  passthrough_sni: "${SHERIFF_PASSTHROUGH_SNI}"
+                """);
+        String malformed = "legacy.example.com=LEGACY,vault.example.com";
+
+        // Act
+        ConfigLoader loader = loader(Map.of("SHERIFF_PASSTHROUGH_SNI", malformed));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/tls/passthrough_sni".equals(error.pointer())),
+                () -> "a pair carrying no '=' must leave the value a string and be refused at the key's "
+                        + "own pointer rather than binding a partial map, got: " + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("LEGACY")
+                                || error.message().contains("legacy.example.com")),
+                () -> "no error may echo the resolved map — an SNI-to-alias map is topology "
+                        + "intelligence, got: " + exception.errors());
+    }
+
+    @Test
+    void refusesAnEmptyResolutionAtAMapDestination() throws Exception {
+        // Arrange — the substitution-site refusal is deliberately NOT widened to object destinations:
+        // its argument (a validator cannot tell an explicitly-empty list from one a variable emptied)
+        // is a property of lists alone. An empty resolution here therefore fails through the ordinary
+        // type-mismatch path instead, which is a weaker diagnostic but still a loud one.
+        writeConfig("gateway.yaml", """
+                version: 1
+                tls:
+                  passthrough_sni: "${SHERIFF_PASSTHROUGH_SNI}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of("SHERIFF_PASSTHROUGH_SNI", ""));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/tls/passthrough_sni".equals(error.pointer())),
+                () -> "an empty resolution at a map destination must fail the boot at the key's own "
+                        + "pointer rather than binding an empty map, got: " + exception.errors());
+    }
+
+    @Test
+    void suppliesAMapAtAPointerThisPlanNeverNames() throws Exception {
+        // Arrange — the un-gated claim for the object arm, mirroring
+        // suppliesAListAtAPointerThisPlanNeverNames: the arm is selected by the declared `object` type
+        // alone, so it reaches routes[].forward.set_headers in an ENDPOINT document exactly as it
+        // reaches tls.passthrough_sni in gateway.yaml. A pointer-gated implementation restricted to
+        // the motivating key would fail here and nowhere else.
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/api.yaml", """
+                endpoint:
+                  id: api
+                  base_url: alias-api
+                  auth:
+                    require: bearer
+                  routes:
+                    - id: r1
+                      match:
+                        path_prefix: /api
+                      forward:
+                        set_headers: "${SHERIFF_SET_HEADERS}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded =
+                loader(Map.of("SHERIFF_SET_HEADERS", "x-tenant=acme,x-region=eu")).load();
+
+        // Assert
+        assertEquals(Map.of("x-tenant", "acme", "x-region", "eu"),
+                loaded.endpoints().getFirst().routes().getFirst().forward().setHeaders(),
+                "the map-valued rule keys on the declared object type alone, so it must reach every "
+                        + "object-typed pointer in BOTH schemas and not just the one this plan names");
+    }
+
+    @Test
+    void keepsAnArrayOfObjectsPointerFailingLoudlyAfterTheObjectArmExists() throws Exception {
+        // Arrange — the regression guard for the interaction the object arm must not cause.
+        // coerceList types each element by delegating back into coerce(), so an object arm reachable
+        // from the ITEM type would fire for every array-of-objects pointer too, converting each
+        // element into a single-entry object. The coerce() Javadoc documents the behaviour at those
+        // pointers as a DELIBERATE loud refusal, so that refusal must survive the new arm unchanged.
+        //
+        // The pointer is chosen so the guard can actually SEE the leak. routes[].match.headers
+        // declares object items that are `required: [name]` with everything else optional, so
+        // {"name": "..."} is a VALID item: under a leak the document binds and this test goes red.
+        // An array-of-objects pointer whose items require several keys would keep failing either way
+        // — failing for the wrong reason — and the guard would pass while proving nothing.
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/api.yaml", """
+                endpoint:
+                  id: api
+                  base_url: alias-api
+                  auth:
+                    require: bearer
+                  routes:
+                    - id: r1
+                      match:
+                        path_prefix: /api
+                        headers: "${SHERIFF_MATCH_HEADERS}"
+                """);
+
+        // Act — shaped as a key=value pair precisely so that an arm leaking onto the item path would
+        // produce a schema-valid item; nothing else about this value would be distinguishable.
+        ConfigLoader loader = loader(Map.of("SHERIFF_MATCH_HEADERS", "name=x-tenant"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/api.yaml".equals(error.file())
+                                && error.pointer().startsWith("/endpoint/routes/0/match/headers")),
+                () -> "an array-of-objects pointer supplied from one variable must keep FAILING at its "
+                        + "own pointer; binding here would mean the object arm leaked onto the item "
+                        + "path and turned a documented loud refusal into a silent acceptance, got: "
+                        + exception.errors());
+    }
+
     // --- Destination-type walk: $ref, patternProperties, and the numeric arms ---------------------
     // The walk's indirection resolvers had no coverage at all: no test resolved a local $ref, none
     // drove a key described only by patternProperties, and neither numeric arm past the int range was
