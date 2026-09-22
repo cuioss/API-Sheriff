@@ -116,7 +116,7 @@ token_validation:
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
-        allowed_egress_hosts: ["keycloak"]
+        # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host
         tls_profile: benchmark-idp
 # --- Server-mode BFF confidential-client block ---------------------------------------------------
 # Kept in lockstep with the primary gateway.yaml (the shared endpoints/ directory declares a

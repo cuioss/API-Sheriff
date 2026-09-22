@@ -38,34 +38,47 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Fast, no-Docker <em>surefire</em> guard that every committed deployment descriptor keeps the SSRF
- * egress allowlist on the JWKS fetches that need one — and, just as importantly, does <em>not</em>
- * widen it on the fetches that do not.
+ * Fast, no-Docker <em>surefire</em> guard that every committed deployment descriptor declares the
+ * SSRF egress allowance of its JWKS fetches in one of the two accepted forms — and, just as
+ * importantly, does <em>not</em> widen it on the fetches that need none.
  * <p>
  * token-sheriff's egress guard (GW-05 / BFF-07) refuses a JWKS URL resolving to a private address
- * unless its host is named in {@code jwks.allowed_egress_hosts}. Every {@code source: http} issuer
- * in this stack points at the compose-internal {@code keycloak} service, which resolves to a
- * site-local bridge address — so dropping that allowlist entry does not fail loudly at boot. The key
- * set simply never loads, every bearer request is rejected 401, and a suite measuring bearer
- * throughput would report the <em>rejection</em> path as a success. That silent-degradation shape is
- * why this needs a descriptor assertion rather than a runtime one.
+ * unless its host is allowed. The gateway allows exactly one host per {@code source: http} issuer: an
+ * issuer that declares no {@code jwks.allowed_egress_hosts} key is allowed the host of its own
+ * {@code jwks.url} (the <em>derived</em> form), and an issuer that declares a non-empty list is allowed
+ * precisely that list, never merged with the derived host (the <em>explicit</em> form).
  * <p>
- * <strong>The negative half is the load-bearing one.</strong> Asserting only "every http issuer
- * declares an allowlist" would pass equally well against a descriptor that had widened the allowlist
- * onto <em>every</em> issuer, including the offline {@code source: file} one that needs no egress at
- * all. An unjustified widening on a security gateway is exactly the drift worth catching, so the
- * file-sourced issuers are asserted to declare no allowlist — and the issuer counters below keep
- * either half from passing vacuously against a descriptor set that happened to contain none of that
- * kind.
+ * <strong>The positive half accepts exactly those two forms, and nothing looser.</strong> An http
+ * issuer either declares no {@code allowed_egress_hosts} key at all, or declares precisely
+ * {@code [host-of-its-own-jwks.url]}: each entry must be a {@link String} instance (not merely something
+ * {@code String.valueOf} can render) and the set as a whole must name no host beyond the one that issuer
+ * actually fetches from. A shape-only predicate would wave through {@code ["keycloak",
+ * "untrusted.example"]}, which widens the SSRF egress exception onto a host no issuer in this stack ever
+ * contacts. A declared <em>empty</em> list, or a key declared with no value, is refused rather than read
+ * as the derived form: omitting the key is the one spelling of "derive", so an empty list is either a
+ * leftover or a mistake and must not pass silently.
  * <p>
- * <strong>The positive half is exact, not shape-only.</strong> An http issuer's allowlist is
- * asserted to be precisely {@code [host-of-its-own-jwks.url]}: each entry must be a
- * {@link String} instance (not merely something {@code String.valueOf} can render) and the set as a
- * whole must name no host beyond the one that issuer actually fetches from. A shape-only predicate —
- * non-null, a list, non-empty, no blank entry — would wave through
- * {@code ["keycloak", "untrusted.example"]}, which widens the SSRF egress exception onto a host no
- * issuer in this stack ever contacts. Adding a second host is therefore a deliberate act that must
- * update this guard, never a silent descriptor edit.
+ * <strong>Both forms must stay in the descriptor set.</strong> The derived form is what the native
+ * stack's compose bring-up exercises — {@code integration-keycloak} loads its key set only through the
+ * derived allowance — and the explicit form is the authoritative pin {@code benchmark-keycloak} keeps.
+ * The two counters asserted at the end of the positive half keep either form from vanishing from the
+ * committed descriptors unnoticed, which would silently drop the native proof of that form.
+ * <p>
+ * <strong>One fixture is carved out by name and held to the inverse.</strong>
+ * {@value #MISMATCH_DIRECTORY}{@code /gateway.yaml} backs {@code JwksEgressMismatchIT}, which proves at
+ * runtime that an explicit list naming <em>another</em> host keeps the key set refused. Its list is
+ * therefore deliberately not the host of its own {@code jwks.url}, so it is excluded from the positive
+ * half, and a dedicated test asserts the inverse: the file exists, it declares exactly one http issuer,
+ * and that issuer's list is non-empty, all {@code String}, non-blank and does <em>not</em> contain the
+ * host of its own {@code jwks.url}. Without that inverse assertion the fixture could degrade into a
+ * matching or derived list and turn the refusal it exists for into a pass.
+ * <p>
+ * <strong>The negative half is the load-bearing one for widening.</strong> Asserting only the http
+ * forms would pass equally well against a descriptor that had widened the allowlist onto <em>every</em>
+ * issuer, including the offline {@code source: file} one that needs no egress at all. An unjustified
+ * widening on a security gateway is exactly the drift worth catching, so the file-sourced issuers are
+ * asserted to declare no allowlist — and the issuer counters keep either half from passing vacuously
+ * against a descriptor set that happened to contain none of that kind.
  * <p>
  * <strong>Every issuer is classified, none is skipped.</strong> Both halves partition on
  * {@code jwks.source}, so an issuer whose source is absent or misspelled would match neither branch
@@ -73,9 +86,8 @@ import org.junit.jupiter.api.Test;
  * asserted to be one of the two recognised values <em>before</em> the partition, and an unrecognised
  * one fails both tests loudly instead of falling through them.
  * <p>
- * It parses the committed descriptors only and asserts the activation is present — it starts no
- * container and reaches no network. The sibling guard covering the body-size floor the same way is
- * {@code BodyLimitActivationWiringTest}.
+ * It parses the committed descriptors only — it starts no container and reaches no network. The
+ * sibling guard covering the body-size floor the same way is {@code BodyLimitActivationWiringTest}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -90,7 +102,10 @@ class EgressAllowlistActivationWiringTest {
      * The descriptor count committed today. The glob must match at least this many, so an empty or
      * mis-rooted glob fails loudly instead of satisfying the per-descriptor loop vacuously.
      */
-    private static final int COMMITTED_DESCRIPTOR_COUNT = 5;
+    private static final int COMMITTED_DESCRIPTOR_COUNT = 11;
+
+    /** The directory of the refused-egress fixture, carved out of the positive half by name. */
+    private static final String MISMATCH_DIRECTORY = "sheriff-config-jwks-egress-mismatch";
 
     private static final String HTTP_SOURCE = "http";
     private static final String FILE_SOURCE = "file";
@@ -99,65 +114,84 @@ class EgressAllowlistActivationWiringTest {
     private static final Set<String> RECOGNISED_SOURCES = Set.of(HTTP_SOURCE, FILE_SOURCE);
 
     @Test
-    @DisplayName("every http-sourced JWKS issuer allows egress to exactly the host its jwks.url names")
-    void httpSourcedIssuersDeclareAnEgressAllowlist() throws Exception {
-        // Arrange
+    @DisplayName("every http-sourced JWKS issuer declares no egress list or exactly the host its jwks.url names")
+    void httpSourcedIssuersDeclareTheDerivedOrTheExactExplicitAllowance() throws Exception {
         List<Path> descriptors = committedGatewayDescriptors();
-        int httpIssuersSeen = 0;
+        int derivedIssuersSeen = 0;
+        int explicitIssuersSeen = 0;
 
-        // Act + Assert
         for (Path descriptor : descriptors) {
+            if (isMismatchFixture(descriptor)) {
+                continue;
+            }
             for (Map<String, Object> issuer : issuers(descriptor)) {
                 Map<String, Object> jwks = jwks(issuer);
                 if (!HTTP_SOURCE.equals(jwksSource(descriptor, issuer, jwks))) {
                     continue;
                 }
-                httpIssuersSeen++;
-                Object allowlist = jwks.get(ALLOWLIST_KEY);
-                assertNotNull(allowlist, descriptor + " issuer '" + issuer.get("name")
-                        + "' fetches its JWKS over http but declares no " + ALLOWLIST_KEY
-                        + ". The egress guard then refuses the compose-internal address, the key set never"
-                        + " loads, and every bearer request is rejected 401.");
-                List<?> hosts = assertInstanceOf(List.class, allowlist, descriptor + " issuer '"
-                        + issuer.get("name") + "' declares " + ALLOWLIST_KEY + " as "
-                        + allowlist.getClass().getSimpleName() + ", expected a list");
-                assertFalse(hosts.isEmpty(), descriptor + " issuer '" + issuer.get("name")
-                        + "' declares an EMPTY " + ALLOWLIST_KEY + ", which guards nothing");
-                List<String> declaredHosts = new ArrayList<>();
-                for (Object host : hosts) {
-                    String entry = assertInstanceOf(String.class, host, descriptor + " issuer '"
-                            + issuer.get("name") + "' declares a non-String entry in " + ALLOWLIST_KEY + ": "
-                            + host + ". The egress guard matches host names, so a non-String scalar names no"
-                            + " host at all.");
-                    assertFalse(entry.isBlank(), descriptor + " issuer '" + issuer.get("name")
-                            + "' declares a blank host in " + ALLOWLIST_KEY);
-                    declaredHosts.add(entry);
+                if (!jwks.containsKey(ALLOWLIST_KEY)) {
+                    derivedIssuersSeen++;
+                    continue;
                 }
+                List<String> declaredHosts = declaredHosts(descriptor, issuer, jwks);
                 String expectedHost = egressHostOf(descriptor, issuer, jwks);
                 assertEquals(List.of(expectedHost), declaredHosts, descriptor + " issuer '"
                         + issuer.get("name") + "' declares " + ALLOWLIST_KEY + " " + declaredHosts
                         + ", expected exactly [" + expectedHost + "] — the host its own jwks.url fetches"
-                        + " from. Any other entry widens the SSRF egress exception onto a host this issuer"
-                        + " never contacts; a genuinely needed one must be justified by updating this guard.");
+                        + " from — or no " + ALLOWLIST_KEY + " key at all, which derives that host. Any other"
+                        + " entry widens the SSRF egress exception onto a host this issuer never contacts; a"
+                        + " genuinely needed one must be justified by updating this guard.");
+                explicitIssuersSeen++;
             }
         }
 
-        // The anti-vacuity control: a descriptor set with no http issuer at all would satisfy the loop
-        // above without asserting anything.
-        assertTrue(httpIssuersSeen > 0,
-                "no http-sourced JWKS issuer was found in any committed descriptor — this guard would pass"
-                        + " vacuously; check the glob and the token_validation block");
+        assertTrue(derivedIssuersSeen > 0, "no http-sourced JWKS issuer in any committed descriptor omits "
+                + ALLOWLIST_KEY + " — the derived allowance is no longer exercised by the native stack; check"
+                + " the glob and the token_validation blocks");
+        assertTrue(explicitIssuersSeen > 0, "no http-sourced JWKS issuer in any committed descriptor declares an explicit "
+                + ALLOWLIST_KEY + " — the authoritative explicit form is no longer exercised by the native stack;"
+                + " check the glob and the token_validation blocks");
+    }
+
+    @Test
+    @DisplayName("the refused-egress fixture's single http issuer allows a host other than its own jwks.url host")
+    void mismatchFixtureDeclaresAnExplicitListNamingAnotherHost() throws Exception {
+        Path fixture = committedGatewayDescriptors().stream()
+                .filter(EgressAllowlistActivationWiringTest::isMismatchFixture)
+                .findFirst()
+                .orElse(null);
+        assertNotNull(fixture, "the refused-egress fixture " + MISMATCH_DIRECTORY + "/gateway.yaml is not"
+                + " committed under " + DOCKER + ", so JwksEgressMismatchIT has nothing to refuse");
+
+        List<Map<String, Object>> httpIssuers = new ArrayList<>();
+        for (Map<String, Object> issuer : issuers(fixture)) {
+            if (HTTP_SOURCE.equals(jwksSource(fixture, issuer, jwks(issuer)))) {
+                httpIssuers.add(issuer);
+            }
+        }
+
+        assertEquals(1, httpIssuers.size(), fixture + " must declare exactly one http-sourced issuer, found "
+                + httpIssuers.size());
+        Map<String, Object> issuer = httpIssuers.getFirst();
+        Map<String, Object> jwks = jwks(issuer);
+        assertTrue(jwks.containsKey(ALLOWLIST_KEY), fixture + " issuer '" + issuer.get("name")
+                + "' declares no " + ALLOWLIST_KEY + ", so it derives the jwks.url host and the refusal"
+                + " JwksEgressMismatchIT asserts cannot happen");
+        List<String> declaredHosts = declaredHosts(fixture, issuer, jwks);
+        String ownHost = egressHostOf(fixture, issuer, jwks);
+        assertFalse(declaredHosts.contains(ownHost), fixture + " issuer '" + issuer.get("name") + "' declares "
+                + ALLOWLIST_KEY + " " + declaredHosts + ", which names its own jwks.url host '" + ownHost
+                + "'. The fixture exists to prove that a list naming ANOTHER host keeps the key set refused.");
     }
 
     @Test
     @DisplayName("a file-sourced JWKS issuer declares no egress allowlist")
     void fileSourcedIssuersDeclareNoEgressAllowlist() throws Exception {
-        // Arrange
         List<Path> descriptors = committedGatewayDescriptors();
         int fileIssuersSeen = 0;
 
-        // Act + Assert — an offline issuer loads from a mounted file and performs no outbound fetch, so
-        // an allowlist entry here would be an unjustified widening of the egress guard.
+        // An offline issuer loads from a mounted file and performs no outbound fetch, so an allowlist
+        // entry here would be an unjustified widening of the egress guard.
         for (Path descriptor : descriptors) {
             for (Map<String, Object> issuer : issuers(descriptor)) {
                 Map<String, Object> jwks = jwks(issuer);
@@ -204,6 +238,17 @@ class EgressAllowlistActivationWiringTest {
     }
 
     /**
+     * Whether a descriptor is the refused-egress fixture, matched by its exact directory name so the
+     * carve-out can never swallow a second descriptor.
+     *
+     * @param descriptor a committed {@code gateway.yaml}
+     * @return {@code true} for {@value #MISMATCH_DIRECTORY}{@code /gateway.yaml} only
+     */
+    private static boolean isMismatchFixture(Path descriptor) {
+        return MISMATCH_DIRECTORY.equals(descriptor.getParent().getFileName().toString());
+    }
+
+    /**
      * The {@code token_validation.issuers} list of a descriptor.
      *
      * @param descriptor the gateway descriptor to parse
@@ -240,7 +285,7 @@ class EgressAllowlistActivationWiringTest {
 
     /**
      * The {@code jwks.source} of one issuer, asserted to be one of the two recognised values. Both
-     * tests partition on this value, so an issuer whose source is absent, non-textual or misspelled
+     * halves partition on this value, so an issuer whose source is absent, non-textual or misspelled
      * would match neither branch and never be checked for an egress allowlist at all. Failing here —
      * before the partition — turns that silent skip into a loud failure.
      *
@@ -264,9 +309,43 @@ class EgressAllowlistActivationWiringTest {
     }
 
     /**
+     * The hosts an http issuer that DOES declare the {@code allowed_egress_hosts} key names, asserted
+     * to be a non-empty list of non-blank {@link String}s. A key declared with no value or with an
+     * empty list is refused here: omitting the key is the one spelling of the derived allowance.
+     *
+     * @param descriptor the descriptor being parsed, for the failure message
+     * @param issuer the parsed issuer node
+     * @param jwks the issuer's jwks block, known to contain the key
+     * @return the declared hosts, in declaration order
+     */
+    private static List<String> declaredHosts(Path descriptor, Map<String, Object> issuer,
+            Map<String, Object> jwks) {
+        Object allowlist = jwks.get(ALLOWLIST_KEY);
+        assertNotNull(allowlist, descriptor + " issuer '" + issuer.get("name") + "' declares the "
+                + ALLOWLIST_KEY + " key with no value. Omit the key to derive the jwks.url host.");
+        List<?> hosts = assertInstanceOf(List.class, allowlist, descriptor + " issuer '"
+                + issuer.get("name") + "' declares " + ALLOWLIST_KEY + " as "
+                + allowlist.getClass().getSimpleName() + ", expected a list");
+        assertFalse(hosts.isEmpty(), descriptor + " issuer '" + issuer.get("name") + "' declares an EMPTY "
+                + ALLOWLIST_KEY + ". Omit the key to derive the jwks.url host; an empty list is not a"
+                + " spelling of that.");
+        List<String> declaredHosts = new ArrayList<>();
+        for (Object host : hosts) {
+            String entry = assertInstanceOf(String.class, host, descriptor + " issuer '"
+                    + issuer.get("name") + "' declares a non-String entry in " + ALLOWLIST_KEY + ": "
+                    + host + ". The egress guard matches host names, so a non-String scalar names no"
+                    + " host at all.");
+            assertFalse(entry.isBlank(), descriptor + " issuer '" + issuer.get("name")
+                    + "' declares a blank host in " + ALLOWLIST_KEY);
+            declaredHosts.add(entry);
+        }
+        return declaredHosts;
+    }
+
+    /**
      * The host an http-sourced issuer actually fetches its key set from, derived from its own
-     * {@code jwks.url}. That derived host — not a hard-coded name — is the single entry its
-     * {@code allowed_egress_hosts} is allowed to contain.
+     * {@code jwks.url}. That derived host — not a hard-coded name — is the host the derived form
+     * allows and the single entry an explicit list is allowed to contain.
      *
      * @param descriptor the descriptor being parsed, for the failure message
      * @param issuer the parsed issuer node

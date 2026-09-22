@@ -65,9 +65,9 @@ token_validation:
         source: http
         url: https://api-sheriff:8443/realms/integration/protocol/openid-connect/certs
         # The proxy's address is a site-local bridge address on the dedicated network, which
-        # token-sheriff's SSRF egress guard refuses unless the host is named here. Host-exact: it names
-        # the one host this issuer's own jwks.url fetches from, as EgressAllowlistActivationWiringTest
-        # requires of every http-sourced issuer.
+        # token-sheriff's SSRF egress guard refuses unless the host is allowed. Omitting the list would
+        # derive the same host from jwks.url; it is declared as the explicit, host-exact form, which
+        # EgressAllowlistActivationWiringTest requires to name exactly this issuer's jwks.url host.
         allowed_egress_hosts: ["api-sheriff"]
         # The proxy serves the IT's self-signed localhost certificate; the benchmark-idp profile binds
         # the stack's trust store, bound by the mounted benchmark-idp-trust.properties.
