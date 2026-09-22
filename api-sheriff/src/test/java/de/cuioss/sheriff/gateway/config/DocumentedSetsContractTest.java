@@ -1328,7 +1328,7 @@ class DocumentedSetsContractTest {
      * @throws IOException when the bundled schema cannot be read
      */
     private static TokenList schemaEnumAt(String resource, String pointer) throws IOException {
-        JsonNode array = new ObjectMapper().readTree(readSchema(resource)).at(pointer);
+        JsonNode array = schemaTree(resource).at(pointer);
         if (!array.isArray()) {
             return fail(resource + ": nothing resolves at " + pointer + ", so this contract guard no"
                     + " longer reaches the enumeration it protects. Restore the declaration, or update the"
