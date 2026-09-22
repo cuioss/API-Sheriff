@@ -864,8 +864,10 @@ may name, while a *cross-origin redirect hop* off that URI is what the HTTP hand
 above rather than asserted. One qualification applies to the first half of that bound: the
 `jwks.url` host itself is exempt from the guard's private-address refusal -- through the allowance
 derived from `jwks.url`, or through an explicit list naming it (<<gw-05>>) -- so a DNS answer that
-points *that* host at an internal address is not refused by the guard. Every other host still is, and
-the chain-trust check is what stands between such an answer and an attacker's key set. The mitigation for an operator whose IdP is behind an internal CA is
+points *that* host at an internal address is not refused by the guard. Every host the allowance
+does not exempt -- one neither derived from `jwks.url` nor named in an explicit list -- still is,
+and the chain-trust check is what stands between such an answer and an attacker's key set. The
+mitigation for an operator whose IdP is behind an internal CA is
 `jwks.tls_profile`, which is a different key answering the chain-trust question -- and, on an
 `http`-sourced issuer, the two are *mutually exclusive* and the combination is refused at boot, so an
 operator cannot reach for both at once and end up with neither. A `file`-sourced issuer opens no TLS

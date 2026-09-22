@@ -2039,8 +2039,8 @@ issuer configured in link:#_oidc[`oidc`].
 ==== Key-set loading and readiness
 
 The validator is *assembled* at boot, and a misconfigured JWKS source -- a missing `url`, a `url`
-without a host while `allowed_egress_hosts` is absent, an unresolvable `tls_profile` -- still aborts
-startup. The key sets themselves are *fetched*
+without a host while `allowed_egress_hosts` is absent or empty, an unresolvable `tls_profile` --
+still aborts startup. The key sets themselves are *fetched*
 asynchronously, so a gateway can finish booting before an identity provider answers. Two behaviours
 cover that window:
 
