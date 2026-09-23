@@ -70,7 +70,7 @@ import org.junit.jupiter.params.ParameterizedTest;
  * The class also pins the companion refusal of a single matcher declaring {@code present: false}
  * together with {@code value} — a matcher that can never hold — including that every such matcher
  * is reported in one pass, and the intra-route refusal of two matchers naming the same header
- * (compared case-insensitively) that can never hold together: differing values, or one requiring the
+ * (compared as the runtime normalises them) that can never hold together: differing values, or one requiring the
  * header while the other forbids it. Redundant but compatible pairs stay valid.
  */
 @EnableGeneratorController
@@ -643,8 +643,6 @@ class ConfigValidatorRouteDisjointnessTest {
         /** The ASCII name {@code equalsIgnoreCase} equates with {@link #DOTTED_CAPITAL_I_NAME}. */
         private static final String PLAIN_I_NAME = "X-Id";
 
-        private static final String PAIR_MESSAGE = "can never hold together";
-
         @Test
         @DisplayName("Should use a name pair that case folding equates but runtime lower-casing keeps apart")
         void shouldUseNamePairThatOnlyCaseFoldingEquates() {
@@ -689,7 +687,8 @@ class ConfigValidatorRouteDisjointnessTest {
                             headerWithPresence(PLAIN_I_NAME, true)))
                     .build()));
 
-            assertTrue(errors.stream().noneMatch(error -> error.message().contains(PAIR_MESSAGE)),
+            assertTrue(errors.stream().noneMatch(
+                    error -> error.message().contains(IntraRouteSameNameContradiction.PAIR_MESSAGE)),
                     () -> "The two matchers read different runtime headers and must not be refused, got: "
                             + errors);
         }
