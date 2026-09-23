@@ -175,7 +175,7 @@ class RouteRuntimeTest {
             var matcher = headerMatcher(HeaderMatcher.builder().name("X-Env").value(configured).build());
 
             assertFalse(matcher.matches("/api", HttpMethod.GET, null,
-                    Map.of("x-env", configured.toUpperCase(Locale.ROOT))),
+                            Map.of("x-env", configured.toUpperCase(Locale.ROOT))),
                     "A value differing only in letter case does not match");
         }
 
