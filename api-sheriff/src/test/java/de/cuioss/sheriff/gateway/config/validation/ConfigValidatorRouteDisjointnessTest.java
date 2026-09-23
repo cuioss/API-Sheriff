@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
@@ -55,7 +57,14 @@ import org.junit.jupiter.params.ParameterizedTest;
  * The sibling {@code ConfigValidatorTest} covers the rule's baseline (a plain same-prefix collision
  * and prefix normalization); this class covers the discriminator matrix, which is where the
  * fail-open risk lives — a matcher wrongly treated as distinguishing would let two colliding routes
- * boot, and the request would then be dispatched to whichever route won an undefined ordering.
+ * boot, and the request would then be dispatched to whichever route won an undefined ordering. The
+ * header discriminator mirrors the runtime matcher: names compare case-insensitively, values
+ * case-sensitively, and a matcher requiring the header (a {@code value} or {@code present: true})
+ * is disjoint from one forbidding it ({@code present: false}).
+ * <p>
+ * The class also pins the companion refusal of a single matcher declaring {@code present: false}
+ * together with {@code value} — a matcher that can never hold — including that every such matcher
+ * is reported in one pass.
  */
 @EnableGeneratorController
 class ConfigValidatorRouteDisjointnessTest {
@@ -337,6 +346,143 @@ class ConfigValidatorRouteDisjointnessTest {
                     sharedPrefix(HttpMethod.GET).build());
 
             assertCollides(errors);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept a value matcher against a present: false matcher on the same header")
+        void shouldAcceptValueMatcherAgainstAbsenceMatcher(String value) {
+            List<ConfigError> errors = validateRoutes(
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithValue("X-Tenant", value))).build(),
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithPresence("X-Tenant", false))).build());
+
+            assertDisjoint(errors);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept a present: false matcher against a value matcher on the same header")
+        void shouldAcceptAbsenceMatcherAgainstValueMatcher(String value) {
+            List<ConfigError> errors = validateRoutes(
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithPresence("X-Tenant", false))).build(),
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithValue("X-Tenant", value))).build());
+
+            assertDisjoint(errors);
+        }
+
+        @Test
+        @DisplayName("Should reject routes both forbidding the same header")
+        void shouldRejectRoutesBothForbiddingTheSameHeader() {
+            List<ConfigError> errors = validateRoutes(
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithPresence("X-Internal", false))).build(),
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithPresence("X-Internal", false))).build());
+
+            assertCollides(errors);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should reject the same value under header names differing only in case")
+        void shouldRejectSameValueUnderNamesDifferingOnlyInCase(String value) {
+            List<ConfigError> errors = validateRoutes(
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithValue("X-Tenant", value))).build(),
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithValue("x-tenant", value))).build());
+
+            assertCollides(errors);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept different values under header names differing only in case")
+        void shouldAcceptDifferentValuesUnderNamesDifferingOnlyInCase(String value) {
+            List<ConfigError> errors = validateRoutes(
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithValue("X-Tenant", value + "-a"))).build(),
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithValue("x-tenant", value + "-b"))).build());
+
+            assertDisjoint(errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("The present: false + value contradiction refusal")
+    class HeaderMatcherContradiction {
+
+        private static final String CONTRADICTION_MESSAGE = "both present: false and value";
+
+        private List<ConfigError> validateEndpoint(RouteConfig... routes) {
+            EndpointConfig endpoint = EndpointConfig.builder()
+                    .id("orders")
+                    .enabled(true)
+                    .baseUrl("ORDERS")
+                    .auth(new AuthConfig(Require.NONE, null))
+                    .routes(List.of(routes))
+                    .build();
+            return validator.validate(GatewayConfig.builder().version(1).build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+        }
+
+        private static HeaderMatcher contradictory(String name, String value) {
+            return HeaderMatcher.builder().name(name).present(false).value(value).build();
+        }
+
+        private static List<ConfigError> contradictions(List<ConfigError> errors) {
+            return errors.stream().filter(error -> error.message().contains(CONTRADICTION_MESSAGE)).toList();
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should refuse a matcher declaring present: false together with value, naming route and header")
+        void shouldRefusePresentFalseWithValue(String value) {
+            List<ConfigError> errors = validateEndpoint(route("dead-route",
+                    sharedPrefix(HttpMethod.GET).headers(List.of(contradictory("X-Tenant", value))).build()));
+
+            List<ConfigError> refusals = contradictions(errors);
+            assertEquals(1, refusals.size(), () -> "Exactly one contradiction refusal expected, got: " + errors);
+            String message = refusals.getFirst().message();
+            assertAll("The refusal names the route and the header",
+                    () -> assertTrue(message.contains("'dead-route'"), () -> "route id missing: " + message),
+                    () -> assertTrue(message.contains("'X-Tenant'"), () -> "header name missing: " + message));
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept a matcher declaring present: true together with value")
+        void shouldAcceptPresentTrueWithValue(String value) {
+            HeaderMatcher coherent = HeaderMatcher.builder().name("X-Tenant").present(true).value(value).build();
+
+            List<ConfigError> errors = validateEndpoint(route("live-route",
+                    sharedPrefix(HttpMethod.GET).headers(List.of(coherent)).build()));
+
+            assertTrue(contradictions(errors).isEmpty(),
+                    () -> "present: true with value is coherent and must not be refused, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should report every contradictory matcher, one refusal per route")
+        void shouldReportEveryContradictoryMatcher() {
+            List<ConfigError> errors = validateEndpoint(
+                    route("dead-one", sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(contradictory("X-Tenant", "alpha"))).build()),
+                    route("dead-two", sharedPrefix(HttpMethod.POST)
+                            .headers(List.of(contradictory("X-Region", "eu"))).build()));
+
+            List<ConfigError> refusals = contradictions(errors);
+            assertAll("All violations are collected in one pass",
+                    () -> assertEquals(2, refusals.size(), () -> "Two refusals expected, got: " + errors),
+                    () -> assertTrue(refusals.stream().anyMatch(error -> error.message().contains("'dead-one'")),
+                            () -> "dead-one missing: " + refusals),
+                    () -> assertTrue(refusals.stream().anyMatch(error -> error.message().contains("'dead-two'")),
+                            () -> "dead-two missing: " + refusals));
         }
     }
 }

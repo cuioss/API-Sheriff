@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.routing;
 
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -37,6 +38,14 @@ import org.jspecify.annotations.Nullable;
  * significant ({@code /a} does not match {@code /a/}). A prefix matches a path at or below it
  * on a segment boundary ({@code /proxy} matches {@code /proxy} and {@code /proxy/x} but not
  * {@code /proxy-helper}).
+ * <p>
+ * Header matchers follow RFC 9110 field-name semantics: a configured header name matches
+ * case-insensitively. {@link #from} lower-cases every configured name exactly once, at boot, so
+ * the per-request test is a plain lookup in the lower-case-keyed header map
+ * {@code PipelineRequest#singleValueHeaders} supplies and performs no case conversion. Within one
+ * header matcher, {@code present} and {@code value} compose with AND: {@code present: true}
+ * requires the header, {@code present: false} requires its absence, and {@code value} requires
+ * that exact, case-sensitive value (and therefore presence).
  * <p>
  * This is the match test only; the effective {@code allowed_methods} verb gate (405) is
  * carried separately on {@link RouteRuntime}.
@@ -65,6 +74,12 @@ public final class RouteMatcher {
 
     /**
      * Compiles a matcher from the resolved {@code match} block.
+     * <p>
+     * This is the single place a configured header-matcher name is normalised: every
+     * {@link HeaderMatcher} is copied with its {@code name} lower-cased under {@link Locale#ROOT},
+     * its {@code present} and {@code value} kept unchanged. It runs once per compiled route at boot,
+     * so nothing is lower-cased per request. The config model itself keeps the operator's spelling,
+     * so boot-time validation messages quote what was written.
      *
      * @param match the resolved match configuration
      * @return the compiled matcher
@@ -74,8 +89,11 @@ public final class RouteMatcher {
         Set<HttpMethod> methods = match.methods().isEmpty()
                 ? EnumSet.noneOf(HttpMethod.class)
                 : EnumSet.copyOf(match.methods());
-        return new RouteMatcher(match.matchKey(), match.isExact(), methods, match.host(),
-                List.copyOf(match.headers()));
+        List<HeaderMatcher> headers = match.headers().stream()
+                .map(header -> new HeaderMatcher(header.name().toLowerCase(Locale.ROOT), header.present(),
+                        header.value()))
+                .toList();
+        return new RouteMatcher(match.matchKey(), match.isExact(), methods, match.host(), headers);
     }
 
     /**
@@ -99,8 +117,10 @@ public final class RouteMatcher {
     }
 
     /**
-     * Returns the request-header names this route's {@code match.headers} matchers read, in
-     * declaration order with duplicates collapsed. Empty when the route declares no header matcher.
+     * Returns the request-header names this route's {@code match.headers} matchers read, normalised
+     * to lower case, in declaration order with duplicates collapsed — two matchers whose configured
+     * names differ only in letter case read the same header and yield one name. Empty when the route
+     * declares no header matcher.
      * <p>
      * A header matcher makes <em>route selection</em> depend on a request header, so a cacheable
      * response served by such a route genuinely varies by that header. A shared cache keys a stored
@@ -110,7 +130,7 @@ public final class RouteMatcher {
      * only place they survive route compilation — {@link #matches} consumes the matchers themselves
      * and reports a boolean. Computed once at boot; the request path only reads it.
      *
-     * @return the declared matcher header names, never {@code null}
+     * @return the declared matcher header names in lower case, never {@code null}
      */
     public List<String> matchHeaderNames() {
         return matchHeaderNames;
@@ -137,11 +157,16 @@ public final class RouteMatcher {
 
     /**
      * Applies the full matcher set (path AND method AND host AND headers).
+     * <p>
+     * Each header matcher holds only when every field it declares holds: {@code present: false}
+     * fails when the header is present, {@code value} fails unless the header carries exactly that
+     * (case-sensitive) value, and {@code present: true} fails when the header is absent.
      *
      * @param path           the request path
      * @param method         the request method
      * @param requestHost    the request host, {@code null} when absent
-     * @param requestHeaders the request headers, keyed by name
+     * @param requestHeaders the request headers, keyed by lower-case name — the shape
+     *                       {@code PipelineRequest#singleValueHeaders} supplies
      * @return {@code true} when every declared matcher holds
      */
     public boolean matches(String path, HttpMethod method, @Nullable String requestHost,
@@ -164,12 +189,14 @@ public final class RouteMatcher {
     private boolean headersMatch(Map<String, String> requestHeaders) {
         for (HeaderMatcher header : headers) {
             String actual = requestHeaders.get(header.name());
+            if (Boolean.FALSE.equals(header.present()) && actual != null) {
+                return false;
+            }
             String expectedValue = header.value();
-            if (expectedValue != null) {
-                if (!expectedValue.equals(actual)) {
-                    return false;
-                }
-            } else if (Boolean.TRUE.equals(header.present()) && actual == null) {
+            if (expectedValue != null && !expectedValue.equals(actual)) {
+                return false;
+            }
+            if (Boolean.TRUE.equals(header.present()) && actual == null) {
                 return false;
             }
         }

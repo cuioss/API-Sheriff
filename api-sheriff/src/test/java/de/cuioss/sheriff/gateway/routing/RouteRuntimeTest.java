@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -33,10 +34,15 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.generator.junit.parameterized.GeneratorType;
+import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
 
+@EnableGeneratorController
 @DisplayName("Routing — matcher and protocol selection")
 class RouteRuntimeTest {
 
@@ -101,7 +107,7 @@ class RouteRuntimeTest {
                     .host("gw.example")
                     .headers(List.of(HeaderMatcher.builder().name("X-Tenant").present(true).build()))
                     .build());
-            Map<String, String> headers = Map.of("X-Tenant", "acme");
+            Map<String, String> headers = Map.of("x-tenant", "acme");
 
             assertTrue(matcher.matches("/api/x", HttpMethod.GET, "gw.example", headers), "All matchers hold");
             assertFalse(matcher.matches("/api/x", HttpMethod.POST, "gw.example", headers), "Wrong method fails");
@@ -117,8 +123,76 @@ class RouteRuntimeTest {
                     .headers(List.of(HeaderMatcher.builder().name("X-Env").value("prod").build()))
                     .build());
 
-            assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of("X-Env", "prod")), "Exact value matches");
-            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of("X-Env", "dev")), "Wrong value fails");
+            assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", "prod")), "Exact value matches");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", "dev")), "Wrong value fails");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should match a mixed-case configured header name against the lower-case-keyed request headers")
+        void shouldMatchMixedCaseHeaderNameCaseInsensitively(String value) {
+            var presenceMatcher = headerMatcher(HeaderMatcher.builder().name("X-Tenant").present(true).build());
+            var valueMatcher = headerMatcher(HeaderMatcher.builder().name("X-Tenant").value(value).build());
+            Map<String, String> headers = Map.of("x-tenant", value);
+
+            assertTrue(presenceMatcher.matches("/api", HttpMethod.GET, null, headers),
+                    "A present: true matcher declared as X-Tenant finds the header keyed x-tenant");
+            assertTrue(valueMatcher.matches("/api", HttpMethod.GET, null, headers),
+                    "A value matcher declared as X-Tenant finds the header keyed x-tenant");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should require the header's absence for present: false")
+        void shouldRequireAbsenceForPresentFalse(String value) {
+            var matcher = headerMatcher(HeaderMatcher.builder().name("X-Internal").present(false).build());
+
+            assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of()),
+                    "present: false holds when the header is absent");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-internal", value)),
+                    "present: false fails when the header is present");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should require both presence and value for present: true together with value")
+        void shouldRequireBothPresenceAndValue(String value) {
+            var matcher = headerMatcher(HeaderMatcher.builder().name("X-Env").present(true).value(value).build());
+
+            assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", value)),
+                    "The present header carrying the exact value matches");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", value + "-other")),
+                    "A present header carrying a different value fails");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of()),
+                    "An absent header fails");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should compare header values case-sensitively")
+        void shouldCompareHeaderValuesCaseSensitively(String label) {
+            String configured = "v" + label.toLowerCase(Locale.ROOT);
+            var matcher = headerMatcher(HeaderMatcher.builder().name("X-Env").value(configured).build());
+
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null,
+                    Map.of("x-env", configured.toUpperCase(Locale.ROOT))),
+                    "A value differing only in letter case does not match");
+        }
+
+        @Test
+        @DisplayName("Should expose lower-case matcher header names, collapsing names that differ only in case")
+        void shouldExposeLowerCaseMatcherHeaderNames() {
+            var matcher = headerMatcher(
+                    HeaderMatcher.builder().name("X-Tenant").present(true).build(),
+                    HeaderMatcher.builder().name("x-TENANT").value("acme").build(),
+                    HeaderMatcher.builder().name("X-Env").present(false).build());
+
+            assertEquals(List.of("x-tenant", "x-env"), matcher.matchHeaderNames(),
+                    "The names are lower-cased in declaration order, case-only duplicates collapsed");
+        }
+
+        private RouteMatcher headerMatcher(HeaderMatcher... headers) {
+            return RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").headers(List.of(headers)).build());
         }
     }
 

@@ -25,13 +25,20 @@ import java.util.Map;
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteMatcher;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.test.generator.Generators;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+@EnableGeneratorController
 @DisplayName("RouteSelectionStage — stage 2 deny-by-default exact-first, longest-prefix selection")
 class RouteSelectionStageTest {
 
@@ -129,6 +136,84 @@ class RouteSelectionStageTest {
 
         // Act + Assert
         assertThrows(IllegalStateException.class, () -> stage.process(request));
+    }
+
+    @Nested
+    @DisplayName("header-discriminated same-prefix route pair (present: true vs present: false)")
+    class HeaderDiscriminatedPair {
+
+        private static final String WITH_HEADER = "with-header";
+        private static final String WITHOUT_HEADER = "without-header";
+        private static final String CONFIGURED_NAME = "X-Variant";
+
+        @ParameterizedTest(name = "present: true route declared first = {0}")
+        @ValueSource(booleans = {true, false})
+        @DisplayName("selects the present: true route for a request carrying the header, in either declaration order")
+        void selectsWithHeaderRouteWhenHeaderPresent(boolean presentFirst) {
+            PipelineRequest request = requestWithHeaders("/variants/x",
+                    Map.of("x-VARIANT", List.of(Generators.letterStrings(3, 12).next())));
+
+            pairStage(presentFirst).process(request);
+
+            assertEquals(WITH_HEADER, request.selectedRoute().getId(),
+                    "The header-carrying request must reach the present: true route whatever the declaration order");
+        }
+
+        @ParameterizedTest(name = "present: true route declared first = {0}")
+        @ValueSource(booleans = {true, false})
+        @DisplayName("selects the present: false route for a request without the header, in either declaration order")
+        void selectsWithoutHeaderRouteWhenHeaderAbsent(boolean presentFirst) {
+            PipelineRequest request = requestWithHeaders("/variants/x", Map.of());
+
+            pairStage(presentFirst).process(request);
+
+            assertEquals(WITHOUT_HEADER, request.selectedRoute().getId(),
+                    "The header-less request must reach the present: false route whatever the declaration order");
+        }
+
+        @Test
+        @DisplayName("selects a mixed-case-named matcher when the request spells the header differently")
+        void selectsMixedCaseMatcherForDifferentlySpelledHeader() {
+            RouteSelectionStage single = new RouteSelectionStage(List.of(
+                    headerRoute(WITH_HEADER, CONFIGURED_NAME, true)));
+            PipelineRequest request = requestWithHeaders("/variants",
+                    Map.of("X-VARIANT", List.of(Generators.letterStrings(3, 12).next())));
+
+            single.process(request);
+
+            assertEquals(WITH_HEADER, request.selectedRoute().getId(),
+                    "A matcher declared as X-Variant must match a request spelling it X-VARIANT");
+        }
+
+        private RouteSelectionStage pairStage(boolean presentFirst) {
+            RouteRuntime withHeader = headerRoute(WITH_HEADER, CONFIGURED_NAME, true);
+            RouteRuntime withoutHeader = headerRoute(WITHOUT_HEADER, CONFIGURED_NAME, false);
+            return new RouteSelectionStage(presentFirst
+                    ? List.of(withHeader, withoutHeader)
+                    : List.of(withoutHeader, withHeader));
+        }
+    }
+
+    private static RouteRuntime headerRoute(String id, String headerName, boolean present) {
+        MatchConfig match = MatchConfig.builder()
+                .pathPrefix("/variants")
+                .headers(List.of(HeaderMatcher.builder().name(headerName).present(present).build()))
+                .build();
+        return RouteRuntime.builder()
+                .id(id)
+                .matcher(RouteMatcher.from(match))
+                .build();
+    }
+
+    private static PipelineRequest requestWithHeaders(String canonicalPath, Map<String, List<String>> headers) {
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath(canonicalPath)
+                .queryParameters(List.of())
+                .headers(headers)
+                .build();
+        request.canonicalPath(canonicalPath);
+        return request;
     }
 
     private static RouteRuntime route(String id, String pathPrefix) {
