@@ -77,7 +77,7 @@ job (field-absent admits).
      annotation zone below, outside the markers. -->
 
 <!-- BEGIN GENERATED: resume-summary -->
-**Resume anchor**: 2026-09-23: PR #338 queued for merge via the platform merge queue (awaiting completion). Staged and emitted PLAN-29 (WS-09 final-gap-closure, 3 deliverables) covering the last genuinely-open gaps from the close-readiness sweep: TokenRefreshCoordinator.scopeDelta observability, BuildGateCoverageContractTest line citation, port-collision-flakiness doc. Two other candidates (GatewayEdgePipelineTest flake, TlsEdgeProducerTest loopback) were dropped after verification found them already fixed by unrelated sibling-epic PRs. Command: /plan-marshall task="implement .plan/orchestrator/deployment-configurability/plans/PLAN-29-final-gap-closure.md" -- auto-recorded launched (auto_emit=true), operator still needs to run it. NEXT: confirm PR #338 merged, run PLAN-29, then analyze its landing and run /plan-marshall:plan-orchestrator close slug=deployment-configurability.
+**Resume anchor**: 2026-09-23: PRE-CLOSE HANDOFF COMPLETE. Reviewed all 18 local lessons -- none were genuinely plan-marshall-specific (0/18 split; plan-marshall tooling gaps were always routed straight to lessons-routing, never promoted locally in the first place). All 18 handed to api-sheriff-0-2-0s inbox as candidate-lesson messages (deployment-configurability-002..019), plus Sonar java:S3398 as a finding (-020) -- that epic now owns Promote/Fold/Discard and the S3398 disposition, not decided here. Local lessons corpus confirmed EMPTY (manage-lessons list: total 0), tombstones preserved. Epic has ZERO standing blockers now: queue settled (21 shipped, 1 landed, 7 superseded, 0 live), S3398 routed (was the last open item), lessons corpus empty. READY TO CLOSE. NEXT: run /plan-marshall:plan-orchestrator close slug=deployment-configurability whenever the operator confirms.
 **Phase**: orchestrating
 **Inbox (derived)**: 0 queued, 63 archived
 **Queue** (staged, in order):
@@ -110,7 +110,7 @@ job (field-absent admits).
 - PLAN-26 (WS-04) — plan=refresh-failure-dispositions — PR 314 — landing=landings/PLAN-26.md — status: shipped
 - PLAN-27 (WS-04) — status: superseded
 - PLAN-28 (WS-09) — plan=closeout-residual-hardening — PR 341 — landing=landings/PLAN-28.md — status: shipped
-- PLAN-29 (WS-09) — status: launched
+- PLAN-29 (WS-09) — plan=final-gap-closure — PR 348 — landing=landings/PLAN-29.md — status: shipped
 <!-- END GENERATED: resume-summary -->
 
 ### Annotations
@@ -139,13 +139,16 @@ job (field-absent admits).
 <!-- BEGIN GENERATED: ordered-queue -->
 | # | Plan | Workstream | Status | Surface (expected) |
 |---|------|------------|--------|--------------------|
-| 1 | PLAN-29 | WS-09 | launched | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/BffLogMessages.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/TokenRefreshCoordinator.java; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/refresh/TokenRefreshCoordinatorTest.java; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/BuildGateCoverageContractTest.java; doc/LogMessages.adoc; doc/development/README.adoc; doc/development/local-test-environment-caveats.adoc |
+| — | (empty) | — | — | — |
 <!-- END GENERATED: ordered-queue -->
 
 ### Queue annotations
 
 <!-- ANNOTATION ZONE — hand-written, OUTSIDE the generated table markers. -->
 
+- ✅ **RETIRED 2026-09-23 — PLAN-29 shipped (#348).** See `landings/PLAN-29.md` and the "PLAN-29
+  landing and inbox drain" Decisions entry. This was the epic's last staged plan — the queue is now
+  fully terminal.
 - ▶ **2026-09-23 — PLAN-29 EMITTED and auto-recorded `launched`** (`auto_emit=true`), intended as
   this epic's LAST plan. Staged after a full close-readiness sweep re-verified every live Open Defect
   and Watch against HEAD `1994f28`, found 13 already resolved (never marked), retired 5 Watches as
@@ -224,6 +227,12 @@ job (field-absent admits).
   but did not author the method, so it declined the fix in-scope. **This is the one
   item worth a decision before `close`** — fold into a tiny follow-up plan, resolve it
   ad hoc, or accept it and close with the defect recorded for a future epic.
+  ✅ **ROUTED 2026-09-23, not decided here.** Re-verified at HEAD `070eda5` — the method is
+  unchanged since PLAN-23. Rather than this closing epic deciding its disposition, it was handed to
+  `api-sheriff-0-2-0`'s inbox as a `finding` (`deployment-configurability-020.md`, envelope
+  validated) — that epic continues touching this repository's code and can own the decision
+  (fold/resolve/accept-and-close) instead of it being left to whichever epic happens to be open next.
+  This closes the "decision owed before close" obligation by transferring ownership, not by deciding.
 
 - ▶ **2026-09-15 — PLAN-26 staged (refresh failure dispositions + IdP-side reuse detection shipped and proven,
   12 deliverables, unit AND IT lanes).** Order once slots free: **PLAN-26 after PLAN-25, and not concurrent with
@@ -1220,6 +1229,60 @@ described the `<release>`→21 rewrite as live; rewritten to record the #242 res
   reconciled as the full ship — 10 + 1 + 7 + 1 = 19. `manage-lessons list` confirms **15** active
   local lessons after this drain (was 5, +10 new).
 
+### PLAN-29 landing and inbox drain — 2026-09-23
+
+- 2026-09-23 — **PLAN-29 shipped** (#348, squash `070eda54d465f532e77cca717d2f2bfd06172328`, merge
+  queue). 2/2 spec deliverables landed; deliverable 1 (gateway-side `scopeDelta` WARN) dropped by
+  operator decision after finding the engine already logs it — independently re-verified via `javap`
+  against `token-sheriff-client:0.9.6`, not taken on trust. See `landings/PLAN-29.md`.
+- 2026-09-23 — **Opportunistic fix, outside spec**: the ADR-0050 cross-epic ordinal collision (routed
+  to `api-sheriff-0-2-0` on 2026-09-22) was fixed directly in this PR instead — renumbered to 0053, 5
+  files touched. Both affected Open Defects (scopeDelta, ADR-0050) closed above with evidence.
+- 2026-09-23 — **The `re_review_on_loopback: false` cost is now quantified, not merely predicted.**
+  This run burned its entire 5-iteration loop-back budget on `participated_stale` churn from that
+  setting — recorded as lesson `2026-09-23-15-003`. The PLAN-28 rationale for keeping the setting
+  still stands; this is evidence for a future reconsideration, not an action taken now.
+- 2026-09-23 — **Inbox drain: 7 messages, 7 archived, 0 invalid.** Dispositions:
+
+  | Message | Disposition | Destination / reason |
+  |---|---|---|
+  | `-007` landing | reconciled | PLAN-29 full ship |
+  | `-001` | promoted | local lesson `2026-09-23-15-001` (new doc duplicated existing coverage) |
+  | `-002` | promoted | local lesson `2026-09-23-15-002` (diagnostic doc evidence overclaim) |
+  | `-003` | promoted | local lesson `2026-09-23-15-003` (re_review_on_loopback cost, quantified) |
+  | `-004`, `-005`, `-006` | routed | bundled into one finding, `lessons-routing` epic inbox, `api-sheriff-deployment-configurability-004.md` there — `-005` is a confirmed recurrence of an already-forwarded finding (`process-compliance`) |
+
+  3 lessons promoted, 3 routed, 1 reconciled — 3 + 3 + 1 = 7.
+
+### Pre-close lessons-corpus and Sonar handoff — 2026-09-23
+
+- 2026-09-23 — **Operator directive: empty the local lessons corpus before close, splitting by
+  audience rather than discarding.** Reviewed all 18 lessons then live in `.plan/local/lessons-learned/`
+  (the 3 promoted from PLAN-29's own drain plus 15 accumulated over the epic's life, including one
+  malformed lesson, `2026-09-22-09-001`, whose non-standard `- id:`/`- component:` header
+  `manage-lessons` could not parse — recovered from the raw file rather than dropped). Finding: **none
+  were genuinely plan-marshall-specific** — every lesson this epic ever promoted into the local
+  `api-sheriff`-component corpus was already correctly scoped to this repository's own code, docs, or
+  authoring practice, because plan-marshall tooling gaps were always routed straight to
+  `lessons-routing` as findings rather than promoted here in the first place (see the PLAN-28 and
+  PLAN-29 drain sections above). So the plan-marshall/other split resolved to 0 / 18, not an even
+  division.
+- 2026-09-23 — **All 18 lessons handed to `api-sheriff-0-2-0`'s inbox** as `kind: candidate-lesson`
+  messages (`deployment-configurability-002.md` through `-019.md`, envelopes validated), each
+  carrying the full original content plus its current status (several — the stale-jfr-image lesson,
+  the DSL-JSON-converter lesson, the overdetermined-guard lesson — are already marked FIXED in their
+  own body so the receiving epic does not re-open closed work; two — the AGENTS.md/CLAUDE.md
+  module-list contract test, and the image-revision-label discrimination half of the jfr lesson —
+  are marked genuinely still open). That epic now owns Promote/Fold/Discard for each, per its own
+  review — not decided here.
+- 2026-09-23 — **Sonar `java:S3398` (finding `93017f`) also routed, not decided here** — see the Open
+  Defects entry below. Same rationale: `api-sheriff-0-2-0` continues touching this code and can own
+  the disposition.
+- 2026-09-23 — **Local lessons corpus confirmed empty**: `manage-lessons list` returns `total: 0`.
+  Each removal used `--coverage-verdict superseded` (custody transferred to the receiving epic's own
+  review, not obsoleted or redundant) and the malformed lesson used `--allow-unreadable` — tombstones
+  preserved for all 18 at `.plan/local/lessons-learned/.tombstones/`.
+
 ## Open Defects
 
 > ↪ Relocated to `settled.md` § "Open Defects — handled (relocated 2026-09-11)" — 59 resolved, retired, superseded or retracted entries, each with its closing evidence; the entries below are the live ones.
@@ -1236,6 +1299,13 @@ described the `<release>`→21 rewrite as live; rewritten to record the #242 res
   (`deployment-configurability-001.md`, envelope validated) rather than staged as a plan in this epic
   — this epic's queue is otherwise fully terminal, and the offending later PR belongs to that epic's
   own PLAN-16 work. Unowned by `deployment-configurability`; awaiting that epic's disposition.
+  ✅ **RESOLVED 2026-09-23 by PLAN-29 (#348) — fixed opportunistically, not by `api-sheriff-0-2-0`.**
+  While executing an unrelated deliverable, PLAN-29 found and fixed the collision directly: the
+  portal-templates ADR renamed `0050-Portal_templates...` → `0053-Portal_templates...` (commit
+  `32c20d1`), with all four referencing docs updated. Verified: no duplicate ADR ordinals remain in
+  `doc/adr/`. The routed finding in `api-sheriff-0-2-0`'s own inbox
+  (`deployment-configurability-001.md`) is superseded by this fix — left as-is there (not this epic's
+  ledger to edit), but this epic's own record now carries the correct attribution.
 - ⚠ **`GatewayEdgePipelineTest.metersDisallowedVerbUnderItsRoute` flaked once, self-resolved on retry
   (2026-09-22, surfaced via PR #342, an unrelated automated `chore/update-org-workflows-v0.29.0` bump).**
   Operator-pasted CI failure, verified against ground truth rather than taken at face value: PR #342
@@ -1555,6 +1625,13 @@ described the `<release>`→21 rewrite as live; rewritten to record the #242 res
   whose entire subject is the refresh path — a scope change during refresh is exactly the class of
   silent behaviour its reproduction attempt might otherwise miss. Unowned. — source: PLAN-04 landing
   message.
+  ✅ **CLOSED 2026-09-23 by PLAN-29 (#348) — not fixed gateway-side, closed as already covered.**
+  PLAN-29 staged a gateway-side `TokenRefreshCoordinator` WARN for this (deliverable 1), then dropped
+  it after finding the engine's `RefreshFlow.reportScopeDelta` already logs `TokenSheriffClient-110`
+  (`SCOPE_NARROWED`) / `-111` (`SCOPE_BROADENED`) at WARN — independently verified via `javap` against
+  the resolved `token-sheriff-client-0.9.6.jar` rather than taken on the plan's word. A gateway-side
+  record would have duplicated an existing signal. `TokenRefreshCoordinator.rotate()` still does not
+  read `scopeDelta()` itself, and that is now the correct end state, not a residual gap.
 - ⚠ **The JWKS knob has no deployment-activation guard** — proven at unit level only, by operator
   decision. Recorded so a later reader does not mistake unit coverage for deployment proof. — source:
   PLAN-04 landing message.
