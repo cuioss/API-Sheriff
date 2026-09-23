@@ -70,7 +70,9 @@ endpoint:
                                    #   header, present: false requires its ABSENCE; value
                                    #   requires that exact, case-sensitive value. The fields
                                    #   of one matcher AND together; present: false together
-                                   #   with value can never match and fails the boot
+                                   #   with value can never match and fails the boot, and so
+                                   #   do two matchers of one route that name the same
+                                   #   header and can never both hold (see "Route ordering")
           - { name: X-Tenant, present: true }
       auth:                        # route-level override of endpoint.auth (whole block
         require: bearer            #   replaces, no merge); scopes are NOT part of auth, so
@@ -605,6 +607,16 @@ exactly as this rule assumes, so a certified-disjoint pair selects the same rout
 of the two is declared first. This keeps the canonical virtual-hosting case
 expressible: `/api` on `a.example.com` -> `APP_A` and `/api` on `b.example.com` -> `APP_B`
 live in two endpoint files and are disjoint by host.
+
+The same "cannot both hold" test also guards a *single* route. Every header matcher of a route
+must hold, so a route declaring two matchers on the same header name (compared
+case-insensitively) that cannot both hold -- two different exact values, or one matcher requiring
+the header (`present: true` or a `value`) while the other forbids it (`present: false`) -- could
+never match any request. Such a route fails the boot, naming the route and both matchers, with one
+error per conflicting pair. Redundant but compatible pairs on one route stay valid: an exact
+`value` with `present: true`, two identical values, two `present: true` or two `present: false`
+matchers. The pair that makes two *different* same-key routes disjoint -- an exact `value` on one
+and `present: false` on the other -- is exactly the pair that makes a single route dead.
 
 A request that matches no route is rejected with `404`.
 

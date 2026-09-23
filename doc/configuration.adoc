@@ -2605,6 +2605,12 @@ a| Header matchers, each naming a request header by `name` plus a `present` flag
   * A matcher declaring `present: false` together with `value` could never match, so it is
     *refused at boot*, naming the route and the header. `present: true` together with `value` is
     valid.
+  * Two matchers of *one route* that name the same header (compared case-insensitively) and can
+    never both hold -- two different values, or one requiring the header (`present: true` or a
+    `value`) while the other forbids it (`present: false`) -- leave the route unable to match any
+    request, so the route is *refused at boot*, naming the route and both matchers, one error per
+    conflicting pair. Redundant but compatible pairs (`value` with `present: true`, identical
+    values, identical presence flags) are valid.
 
   A route selected on a header matcher announces that header in its response's `Vary`, by its
   lower-case name. Two same-prefix routes are disjoint on a header when one matcher requires it
@@ -3590,6 +3596,14 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   the route and the header: `present: false` forbids the header the `value` requires, and the two
   compose with AND, so the matcher could never match. Every such matcher is reported in the same
   pass (see link:#_match[`match`]).
+* A route declaring two `match.headers` matchers on the same header name (compared
+  case-insensitively) that can never both hold -- two different `value`s, or one requiring the
+  header (`present: true` or a `value`) while the other forbids it (`present: false`) -- fails the
+  boot, naming the route and both matchers: every matcher of a route must hold, so the route could
+  never match. One error is reported per conflicting pair, all in the same pass. Redundant but
+  compatible pairs (`value` with `present: true`, identical values, identical presence flags) are
+  valid. Across two *different* routes the same `value` vs `present: false` pair stays disjoint and
+  valid (see the disjointness rule above).
 * A route resolves *exactly one* terminal action: a `redirect` block together with an `asset` block or
   an `upstream` block fails the boot. A route under a `type: asset` anchor declares an `asset` or a
   `redirect` block; an `asset` block under any other anchor type, or on an unanchored route, fails the
