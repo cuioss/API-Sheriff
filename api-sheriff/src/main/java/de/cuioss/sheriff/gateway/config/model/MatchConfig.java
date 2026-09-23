@@ -120,11 +120,24 @@ List<HeaderMatcher> headers) {
     }
 
     /**
-     * A single header matcher: presence or exact value.
+     * A single header matcher: a presence constraint, an exact value, or both.
+     * <p>
+     * This record binds the operator's spelling of {@code name} verbatim; the compiled route matcher
+     * lower-cases it once with {@code toLowerCase(Locale.ROOT)} and looks it up in the lower-case-keyed
+     * request header map. For ASCII names — the characters an RFC 9110 field name is made of — that is
+     * case-insensitive matching. Outside ASCII it is not per-character case folding: a name spelled
+     * with U+0130 (capital I with dot above) and its plain-{@code I} twin lower-case to two different
+     * names, so they read two different headers. The declared fields compose with AND: {@code present: true} requires the header,
+     * {@code present: false} requires its absence, and {@code value} requires that exact,
+     * case-sensitive value and therefore the header's presence. A matcher declaring
+     * {@code present: false} together with {@code value} can never match and is refused at boot.
      *
-     * @param name    the header name (mandatory)
-     * @param present whether the header must merely be present, {@code null} when omitted
-     * @param value   the exact required value, {@code null} when omitted
+     * @param name    the header name (mandatory), matched after {@code Locale.ROOT} lower-casing, so
+     *                ASCII names match case-insensitively
+     * @param present {@code true} when the header must be present, {@code false} when it must be
+     *                absent, {@code null} when omitted
+     * @param value   the exact, case-sensitive required value, {@code null} when omitted; refused
+     *                at boot together with {@code present: false}
      * @author API Sheriff Team
      * @since 1.0
      */

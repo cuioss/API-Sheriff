@@ -95,6 +95,15 @@ import org.jspecify.annotations.Nullable;
  * enum, which cannot represent those verbs, so no post-binding rule is needed for
  * them.
  * <p>
+ * The header-matcher consistency refusal runs directly after route disjointness: a
+ * {@code match.headers} matcher must not declare {@code present: false} together with
+ * {@code value}, because {@code present: false} forbids the header the value requires and the
+ * two compose with AND, so such a matcher could never match and its route would be silently dead.
+ * The same refusal covers two matchers of one route that name the same header (compared exactly as
+ * the runtime normalises the names, lower-cased under {@link Locale#ROOT}) and can never hold
+ * together — two differing values, or one requiring the
+ * header while the other forbids it — because every matcher of a route must hold.
+ * <p>
  * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
  * existence, route/namespace membership agreement, anchor-namespace coverage (no route
  * outside an anchor may swallow the anchor's namespace unless a route under the anchor
@@ -278,6 +287,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRouteIdUniqueness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRouteDisjointness(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateHeaderMatcherConsistency(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateBaseUrlResolvable(endpoints, topology, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorPrefixDisjointness(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorReferencesExist(gateway, endpoints, errors),
@@ -813,6 +823,16 @@ public final class ConfigValidator {
      *       route is selected first by design, and the prefix route keeps serving every other path
      *       below it.</li>
      * </ul>
+     * A header matcher distinguishes two routes when both name the same header (compared exactly as
+     * the runtime normalises the names — see {@link #runtimeHeaderName}) and either both declare a
+     * {@code value} and the values differ (compared case-sensitively), or one matcher requires the
+     * header — it declares
+     * {@code present: true} or a {@code value} — while the other forbids it with
+     * {@code present: false}. So an exact {@code value} and {@code present: false} are disjoint, while
+     * {@code value} vs {@code present: true}, {@code present: true} vs {@code present: true} and
+     * {@code present: false} vs {@code present: false} collide. These are exactly the pairs the
+     * compiled route matcher can never select for the same request, so the precedence this rule
+     * certifies never depends on declaration order.
      */
     private static void validateRouteDisjointness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         List<RouteWithOwner> routes = flattenRoutes(endpoints);
@@ -890,13 +910,40 @@ public final class ConfigValidator {
     private static boolean headersDistinguish(MatchConfig first, MatchConfig second) {
         for (HeaderMatcher headerA : first.headers()) {
             for (HeaderMatcher headerB : second.headers()) {
-                if (headerA.name().equalsIgnoreCase(headerB.name())
-                        && (valuesDistinguish(headerA, headerB) || presenceDistinguishes(headerA, headerB))) {
+                if (neverHoldTogether(headerA, headerB)) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    /**
+     * Whether no request can satisfy both matchers: they name the same header (their
+     * {@link #runtimeHeaderName runtime names} are equal) and either declare differing values or one
+     * requires the header the other forbids. Across two routes this makes the routes disjoint; within
+     * one route it makes the route dead, since every matcher of a route must hold.
+     */
+    private static boolean neverHoldTogether(HeaderMatcher headerA, HeaderMatcher headerB) {
+        return runtimeHeaderName(headerA).equals(runtimeHeaderName(headerB))
+                && (valuesDistinguish(headerA, headerB) || presenceContradicts(headerA, headerB));
+    }
+
+    /**
+     * The name a header matcher reads at runtime: its configured name lower-cased under
+     * {@link Locale#ROOT}, exactly the normalisation {@code RouteMatcher.from} applies before the
+     * matcher looks the name up in the lower-case-keyed request header map.
+     * <p>
+     * Every comparison of two {@code match.headers} names in this validator goes through here, never
+     * through {@link String#equalsIgnoreCase}. The two disagree outside ASCII: {@code equalsIgnoreCase}
+     * folds case per character, so a name spelled with U+0130 (capital I with dot above) where another
+     * has a plain {@code I} equals it, while full {@code Locale.ROOT} lower-casing maps U+0130 to
+     * {@code i} plus a combining dot and so yields two different names. Judging names by per-character
+     * folding would let this validator certify two routes disjoint, or refuse a route as dead, on the
+     * strength of a name equality the runtime never sees.
+     */
+    private static String runtimeHeaderName(HeaderMatcher header) {
+        return header.name().toLowerCase(Locale.ROOT);
     }
 
     private static boolean valuesDistinguish(HeaderMatcher headerA, HeaderMatcher headerB) {
@@ -905,10 +952,88 @@ public final class ConfigValidator {
         return valueA != null && valueB != null && !valueA.equals(valueB);
     }
 
-    private static boolean presenceDistinguishes(HeaderMatcher headerA, HeaderMatcher headerB) {
-        Boolean presentA = headerA.present();
-        Boolean presentB = headerB.present();
-        return presentA != null && presentB != null && !presentA.equals(presentB);
+    /**
+     * Whether one matcher requires the header another one forbids — no request can satisfy both, so
+     * the two routes can never match the same request.
+     */
+    private static boolean presenceContradicts(HeaderMatcher headerA, HeaderMatcher headerB) {
+        return (requiresPresence(headerA) && forbidsPresence(headerB))
+                || (requiresPresence(headerB) && forbidsPresence(headerA));
+    }
+
+    /**
+     * A matcher requires the header when it declares {@code present: true} or a {@code value} — an
+     * exact value can only match a header that is there.
+     */
+    private static boolean requiresPresence(HeaderMatcher header) {
+        return header.value() != null || Boolean.TRUE.equals(header.present());
+    }
+
+    private static boolean forbidsPresence(HeaderMatcher header) {
+        return Boolean.FALSE.equals(header.present());
+    }
+
+    /**
+     * Rule: a header matcher must not declare {@code present: false} together with {@code value}.
+     * <p>
+     * {@code present: false} forbids the header while {@code value} requires it, and the two compose
+     * with AND, so such a matcher can never hold: its route is silently dead. The boot refuses it
+     * rather than letting the declaration stand inert. {@code present: true} with {@code value} is
+     * coherent (the value already implies presence) and stays valid.
+     * <p>
+     * The rule also judges every pair of matchers within one route that name the same header
+     * (compared exactly as {@code RouteMatcher} normalises the names — see
+     * {@link #runtimeHeaderName}). Every matcher of a route must hold, so a pair that can never hold
+     * together — both declare a value and the values
+     * differ, or one requires the header ({@code value} or {@code present: true}) while the other
+     * forbids it ({@code present: false}) — leaves the route silently dead, and the boot refuses it
+     * with one error per conflicting pair. Redundant but compatible pairs ({@code value} with
+     * {@code present: true}, identical values, or matching presence flags) stay valid.
+     * <p>
+     * Header names are echoed through {@link #renderForMessage}, so they cannot forge boot log lines
+     * (CWE-117). Every violation collects into the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateHeaderMatcherConsistency(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                List<HeaderMatcher> headers = route.match().headers();
+                for (int i = 0; i < headers.size(); i++) {
+                    HeaderMatcher header = headers.get(i);
+                    if (forbidsPresence(header) && header.value() != null) {
+                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                                ("route '%s' declares header matcher '%s' with both present: false and value; "
+                                        + "present: false forbids the header while value requires it, so the "
+                                        + "matcher can never match — drop value, or declare present: true")
+                                        .formatted(route.id(), renderForMessage(header.name()))));
+                    }
+                    checkSameNameMatchersCompatible(endpoint, route, header, headers.subList(i + 1, headers.size()),
+                            errors);
+                }
+            }
+        }
+    }
+
+    /**
+     * Refuses every matcher in {@code laterHeaders} that names the same header as {@code header} and
+     * can never hold together with it — one error per conflicting pair, so each pair of one route is
+     * reported exactly once.
+     */
+    private static void checkSameNameMatchersCompatible(EndpointConfig endpoint, RouteConfig route,
+            HeaderMatcher header, List<HeaderMatcher> laterHeaders, List<ConfigError> errors) {
+        for (HeaderMatcher other : laterHeaders) {
+            if (neverHoldTogether(header, other)) {
+                String conflict = valuesDistinguish(header, other)
+                        ? "they require different values"
+                        : "one requires the header while the other forbids it";
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        ("route '%s' declares header matchers '%s' and '%s' that can never hold together: %s; "
+                                + "header names compare lower-cased, as the runtime reads them, and every "
+                                + "matcher of a route must hold, so the route can never match — drop one "
+                                + "matcher, or make them agree")
+                                .formatted(route.id(), renderForMessage(header.name()),
+                                        renderForMessage(other.name()), conflict)));
+            }
+        }
     }
 
     /**
