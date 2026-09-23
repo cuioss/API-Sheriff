@@ -21,7 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Locale;
+import java.util.Arrays;
+import java.util.List;
 
 import io.restassured.response.ExtractableResponse;
 import io.restassured.response.Response;
@@ -356,9 +357,14 @@ class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
         void headerSelectedResponseVariesOnMatcherHeader(String prefix) {
             ExtractableResponse<Response> response = requestWithHeader(prefix);
 
-            String vary = String.join(", ", response.headers().getValues("Vary"));
-            assertTrue(vary.toLowerCase(Locale.ROOT).contains(MATCHER_HEADER.toLowerCase(Locale.ROOT)),
-                    "route selection depends on the matcher header, so Vary must name it: " + vary);
+            List<String> varyValues = response.headers().getValues("Vary");
+            boolean varyNamesMatcherHeader = varyValues.stream()
+                    .flatMap(value -> Arrays.stream(value.split(",")))
+                    .map(String::trim)
+                    .anyMatch(MATCHER_HEADER::equalsIgnoreCase);
+            String vary = String.join(", ", varyValues);
+            assertTrue(varyNamesMatcherHeader,
+                    "route selection depends on the matcher header, so a Vary field name must equal it: " + vary);
         }
     }
 }
