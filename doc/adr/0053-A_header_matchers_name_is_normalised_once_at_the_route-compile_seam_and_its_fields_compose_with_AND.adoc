@@ -1,0 +1,139 @@
+= ADR-0053: A header matcher's name is normalised once at the route-compile seam and its fields compose with AND
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A match.headers matcher's configured name is lower-cased under Locale.ROOT exactly once, when the route is compiled at boot, so the per-request test is a plain lookup in the lower-case-keyed request-header map and never converts case; the config model keeps the operator's spelling. The matcher's fields compose with AND — present true requires the header, present false requires its absence, value requires that exact case-sensitive value (and so presence) — and no field is shadowed by another. Vary announces the normalised lower-case names.
+// tags: routing, route-selection, header-matching, normalisation, boot-compilation, configuration-model, vary, rfc9110
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A route may narrow its selection on request headers through `match.headers`. Each matcher names a
+header and may declare `present` (`true` or `false`) and an exact `value`. Route selection is
+first-match over a route table sorted by path specificity, so a header matcher is what lets two
+routes share one path prefix and still receive different requests: the canonical shape is a pair
+whose one member requires a header and whose other member forbids it.
+
+Two properties of such a matcher are structural, and each has a failure mode that is silent.
+
+*Name comparison.* HTTP field names are case-insensitive (RFC 9110 §5.1), and HTTP/2 and HTTP/3
+carry them lower-case on the wire. The request side of the gateway therefore keys its header map by
+the lower-cased name. The configured side is written by an operator in whatever spelling reads
+naturally — `Authorization`, `X-Tenant`. If the two sides are compared in different spellings, a
+matcher never finds its header and a route that looks correct never matches, with nothing in the
+boot log to say so. The choice point is *where* the two spellings are reconciled: in the config
+model at bind time, in the compiled matcher at boot, or on every request.
+
+*Field composition.* A matcher carries up to three constraints. If they are evaluated as a chain of
+alternatives — test the value, otherwise test presence — then declaring one field shadows another,
+and a constraint the operator wrote is silently ignored. The sharpest case is `present: false`:
+evaluated only on the positive branch, it constrains nothing, so a "header absent" route matches
+every request, and whichever member of a present/absent pair happens to sort first swallows the
+traffic the other was declared for. Route precedence then depends on declaration order, which the
+route model promises it never does.
+
+Both failures sit on the security-relevant path: route selection decides which auth posture,
+security filter and upstream a request reaches.
+
+== Decision
+
+*A configured header-matcher name is normalised exactly once, when the route is compiled at boot,
+and every field a matcher declares must hold.*
+
+* *One normalisation site.* The route compiler (`RouteMatcher.from`) copies every configured
+  matcher with its `name` lower-cased under `Locale.ROOT`, keeping `present` and `value` unchanged.
+  It is the single compile seam every runtime consumer of a route's match block goes through, and it
+  runs once per route at boot. The per-request test is a plain lookup in the lower-case-keyed map the
+  request carries (`PipelineRequest#singleValueHeaders`); nothing is lower-cased per request.
+* *The config model keeps the operator's spelling.* `MatchConfig.HeaderMatcher` binds the name
+  verbatim, so boot-time validation messages quote exactly what was written.
+* *AND composition inside a matcher, with no precedence between fields.* `present: false` fails when
+  the header is present; `value` fails unless the header carries exactly that value; `present: true`
+  fails when the header is absent. Matchers of one route compose with AND as before, so the matcher
+  set is a conjunction all the way down.
+* *Values stay case-sensitive.* A header value is opaque; the gateway compares it byte-for-byte.
+* *`Vary` announces the normalised names.* The names a route's selection depends on are derived
+  from the compiled matchers, so `Vary` carries the lower-case name and two matchers whose names
+  normalise to the same string announce it once.
+
+== Consequences
+
+=== Positive
+
+* A header-discriminated route pair selects the same route whichever order it is declared in, which
+  is the precondition for the boot-time disjointness check meaning anything (see the companion
+  link:0054-The_boot_validator_judges_header_matchers_exactly_as_the_runtime_evaluates_them_and_a_matcher_set_that_can_never_hold_is_refused.adoc[ADR-0054]).
+* The request path carries no case conversion and no second comparison semantics; the normalisation
+  cost is paid once per route at boot.
+* Operators see their own spelling in every boot diagnostic, while the runtime works on one
+  canonical form.
+
+=== Negative
+
+* A `present: false` route that previously matched requests carrying its header no longer does. This
+  is the corrected contract rather than a regression, but deployments that relied on the old
+  behaviour change routing.
+* `Vary` no longer echoes the declared spelling. Field names are case-insensitive, so caches are
+  unaffected, but a human reading the response sees a different spelling than the config.
+
+=== Risks
+
+* `Locale.ROOT` lower-casing is case-insensitive matching only for ASCII names. Outside ASCII it is
+  not per-character case folding: `U+0130` and its plain-`I` twin lower-case to different names, and
+  `U+212A` (Kelvin sign) lower-cases to ASCII `k`. RFC 9110 field names are tokens and therefore
+  ASCII, so the residual is confined to names no conforming client can send; any other comparison of
+  matcher names must use this same function, not a look-alike.
+
+== Alternatives Considered
+
+=== Normalise the name when the config model binds
+
+The binding record would lower-case `name` in its constructor, so every consumer of the model sees
+the canonical form. *Rejected because* the model is the operator's record of what was written: every
+validator message would quote a spelling the operator never typed, and the model would stop being a
+faithful projection of the file. Normalisation is a runtime concern of the matcher, and the compile
+seam is where runtime forms are built.
+
+=== Compare case-insensitively on every request
+
+Keep the configured spelling and look the header up with a case-insensitive comparison (or a
+case-insensitive map) per request. *Rejected because* it moves a boot-time constant into the hot path
+and introduces a second comparison semantics beside the lower-case-keyed map the request already
+carries, which is exactly the kind of divergence this decision removes.
+
+=== Keep precedence between fields (value first, presence otherwise)
+
+Evaluate `value` and fall back to `present` only when no value is declared. *Rejected because* it
+makes one declared constraint silently void another. A matcher is a conjunction of what the operator
+wrote; any precedence rule turns part of the declaration into dead text.
+
+=== Treat `present: false` as "unconstrained"
+
+Read `present` as an opt-in presence check whose negative value means "do not check". *Rejected
+because* the documented contract has always described `present: true` and `present: false` as
+mutually exclusive, the boot disjointness check already treated a present/absent pair as disjoint,
+and a negative value that means nothing is the silent-failure class a security gateway must not
+carry.
+
+== References
+
+* link:0007-anchor-scoped-policy.adoc[ADR-0007] — route membership and namespace rules the route
+  table enforces at boot
+* link:0014-asset-serving-terminal-action.adoc[ADR-0014] — the route model's terminal actions and
+  exact-path routes
+* link:../user/endpoint-routes.adoc[Endpoint routes] — the operator-facing `match.headers` contract
+  and route ordering
+* link:../configuration.adoc[Configuration Model] — the field-level `match.headers` contract
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/routing/RouteMatcher.java` — the compile seam
+  and the per-request test
