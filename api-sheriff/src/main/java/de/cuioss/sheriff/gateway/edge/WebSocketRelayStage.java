@@ -271,7 +271,7 @@ public final class WebSocketRelayStage {
         // The admission permit stays held for the relay's whole lifetime — the session releases it from
         // its single teardown funnel, never here at upgrade completion.
         RelaySession session = new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds,
-                eventCounter, releaseAdmission, observer);
+                releaseAdmission);
         observer.beforeWiring(session::start);
     }
 
@@ -357,8 +357,12 @@ public final class WebSocketRelayStage {
      * {@link #closeBoth} is the single idempotent teardown funnel every terminal path reaches — client
      * close, upstream close, idle reclaim and relay error alike — so it is also the single site the
      * admission-release callback is invoked from, exactly once.
+     * <p>
+     * A non-static inner class: the session holds no event counter or relay observer of its own but reads
+     * both from the enclosing stage — the stage's {@code eventCounter}, which it meters the idle reclaim
+     * on, and the stage's {@code observer}, which it reports its wiring time and first relayed frames to.
      */
-    private static final class RelaySession {
+    private final class RelaySession {
 
         private final Vertx vertx;
         private final String routeId;
@@ -366,26 +370,22 @@ public final class WebSocketRelayStage {
         private final WebSocket upstreamWs;
         private final int idleSeconds;
         private final long idleMillis;
-        private final GatewayEventCounter eventCounter;
         private final Runnable releaseAdmission;
-        private final RelayObserver observer;
-        /** The directions whose first data frame has already been reported to {@link #observer}. */
+        /** The directions whose first data frame has already been reported to the enclosing stage's observer. */
         private final Set<RelayObserver.Direction> reportedDirections =
                 EnumSet.noneOf(RelayObserver.Direction.class);
         private long idleTimerId = -1L;
         private boolean closed;
 
         RelaySession(Vertx vertx, String routeId, ServerWebSocket clientWs, WebSocket upstreamWs, int idleSeconds,
-                GatewayEventCounter eventCounter, Runnable releaseAdmission, RelayObserver observer) {
+                Runnable releaseAdmission) {
             this.vertx = vertx;
             this.routeId = routeId;
             this.clientWs = clientWs;
             this.upstreamWs = upstreamWs;
             this.idleSeconds = idleSeconds;
             this.idleMillis = idleSeconds * 1000L;
-            this.eventCounter = eventCounter;
             this.releaseAdmission = releaseAdmission;
-            this.observer = observer;
         }
 
         void start() {
