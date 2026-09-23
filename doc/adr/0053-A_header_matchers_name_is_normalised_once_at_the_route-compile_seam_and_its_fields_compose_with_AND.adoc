@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A match.headers matcher's configured name is lower-cased under Locale.ROOT exactly once, when the route is compiled at boot, so the per-request test is a plain lookup in the lower-case-keyed request-header map and never converts case; the config model keeps the operator's spelling. The matcher's fields compose with AND — present true requires the header, present false requires its absence, value requires that exact case-sensitive value (and so presence) — and no field is shadowed by another. Vary announces the normalised lower-case names.
+// summary: A match.headers matcher's configured name is lower-cased under Locale.ROOT exactly once, when the route is compiled at boot, so the per-request test is a plain lookup in the lower-case-keyed request-header map and never converts case; the config model keeps the operator's spelling. The matcher's fields compose with AND — present true requires the header, present false requires its absence, value requires that exact value under case-sensitive string equality (and so presence) — and no field is shadowed by another. Vary announces the normalised lower-case names.
 // tags: routing, route-selection, header-matching, normalisation, boot-compilation, configuration-model, vary, rfc9110
 // affects: api-sheriff
 // supersedes:
@@ -62,7 +62,7 @@ and every field a matcher declares must hold.*
   the header is present; `value` fails unless the header carries exactly that value; `present: true`
   fails when the header is absent. Matchers of one route compose with AND as before, so the matcher
   set is a conjunction all the way down.
-* *Values stay case-sensitive.* A header value is opaque; the gateway compares it byte-for-byte.
+* *Values stay case-sensitive.* A header value is opaque; the gateway compares it with exact, case-sensitive string equality (`String.equals` in `RouteMatcher.headersMatch`).
 * *`Vary` announces the normalised names.* The names a route's selection depends on are derived
   from the compiled matchers, so `Vary` carries the lower-case name and two matchers whose names
   normalise to the same string announce it once.
@@ -92,8 +92,14 @@ and every field a matcher declares must hold.*
 * `Locale.ROOT` lower-casing is case-insensitive matching only for ASCII names. Outside ASCII it is
   not per-character case folding: `U+0130` and its plain-`I` twin lower-case to different names, and
   `U+212A` (Kelvin sign) lower-cases to ASCII `k`. RFC 9110 field names are tokens and therefore
-  ASCII, so the residual is confined to names no conforming client can send; any other comparison of
-  matcher names must use this same function, not a look-alike.
+  ASCII, but a configured matcher name is not restricted to ASCII, so the residual is not confined to
+  names no client can send: a configured name containing `U+212A` lower-cases to ASCII `k` and
+  therefore matches a conforming request that carries a header named `k`. The boot validator applies
+  the same `Locale.ROOT` lower-casing (see the companion
+  link:0054-The_boot_validator_judges_header_matchers_exactly_as_the_runtime_evaluates_them_and_a_matcher_set_that_can_never_hold_is_refused.adoc[ADR-0054]),
+  so validator and runtime agree on such a name: it is a documented property of the normalisation, not
+  a validator/runtime divergence. Any other comparison of matcher names must use this same function,
+  not a look-alike.
 
 == Alternatives Considered
 
