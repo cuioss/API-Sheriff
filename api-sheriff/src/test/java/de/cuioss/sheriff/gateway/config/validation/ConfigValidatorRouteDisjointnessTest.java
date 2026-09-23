@@ -64,7 +64,9 @@ import org.junit.jupiter.params.ParameterizedTest;
  * <p>
  * The class also pins the companion refusal of a single matcher declaring {@code present: false}
  * together with {@code value} — a matcher that can never hold — including that every such matcher
- * is reported in one pass.
+ * is reported in one pass, and the intra-route refusal of two matchers naming the same header
+ * (compared case-insensitively) that can never hold together: differing values, or one requiring the
+ * header while the other forbids it. Redundant but compatible pairs stay valid.
  */
 @EnableGeneratorController
 class ConfigValidatorRouteDisjointnessTest {
@@ -110,6 +112,21 @@ class ConfigValidatorRouteDisjointnessTest {
                 .routes(List.of(route("first", first), route("second", second)))
                 .build();
 
+        return validator.validate(GatewayConfig.builder().version(1).build(), List.of(endpoint),
+                topologyWith("ORDERS"));
+    }
+
+    /**
+     * Validates one endpoint holding exactly the supplied routes.
+     */
+    private List<ConfigError> validateEndpoint(RouteConfig... routes) {
+        EndpointConfig endpoint = EndpointConfig.builder()
+                .id("orders")
+                .enabled(true)
+                .baseUrl("ORDERS")
+                .auth(new AuthConfig(Require.NONE, null))
+                .routes(List.of(routes))
+                .build();
         return validator.validate(GatewayConfig.builder().version(1).build(), List.of(endpoint),
                 topologyWith("ORDERS"));
     }
@@ -419,18 +436,6 @@ class ConfigValidatorRouteDisjointnessTest {
 
         private static final String CONTRADICTION_MESSAGE = "both present: false and value";
 
-        private List<ConfigError> validateEndpoint(RouteConfig... routes) {
-            EndpointConfig endpoint = EndpointConfig.builder()
-                    .id("orders")
-                    .enabled(true)
-                    .baseUrl("ORDERS")
-                    .auth(new AuthConfig(Require.NONE, null))
-                    .routes(List.of(routes))
-                    .build();
-            return validator.validate(GatewayConfig.builder().version(1).build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-        }
-
         private static HeaderMatcher contradictory(String name, String value) {
             return HeaderMatcher.builder().name(name).present(false).value(value).build();
         }
@@ -483,6 +488,135 @@ class ConfigValidatorRouteDisjointnessTest {
                             () -> "dead-one missing: " + refusals),
                     () -> assertTrue(refusals.stream().anyMatch(error -> error.message().contains("'dead-two'")),
                             () -> "dead-two missing: " + refusals));
+        }
+    }
+
+    @Nested
+    @DisplayName("The intra-route same-name matcher contradiction refusal")
+    class IntraRouteSameNameContradiction {
+
+        private static final String PAIR_MESSAGE = "can never hold together";
+
+        private List<ConfigError> validateSingleRoute(String routeId, HeaderMatcher... headers) {
+            return validateEndpoint(route(routeId, sharedPrefix(HttpMethod.GET).headers(List.of(headers)).build()));
+        }
+
+        private static List<ConfigError> pairRefusals(List<ConfigError> errors) {
+            return errors.stream().filter(error -> error.message().contains(PAIR_MESSAGE)).toList();
+        }
+
+        private static void assertSinglePairRefusal(List<ConfigError> errors, String routeId, String firstName,
+                String secondName, String conflict) {
+            List<ConfigError> refusals = pairRefusals(errors);
+            assertEquals(1, refusals.size(), () -> "Exactly one pair refusal expected, got: " + errors);
+            String message = refusals.getFirst().message();
+            assertAll("The refusal names the route, both header matchers and the conflict",
+                    () -> assertTrue(message.contains("'" + routeId + "'"), () -> "route id missing: " + message),
+                    () -> assertTrue(message.contains("'" + firstName + "'"), () -> "first name missing: " + message),
+                    () -> assertTrue(message.contains("'" + secondName + "'"),
+                            () -> "second name missing: " + message),
+                    () -> assertTrue(message.contains(conflict), () -> "conflict missing: " + message));
+        }
+
+        private static void assertNoPairRefusal(List<ConfigError> errors) {
+            assertTrue(pairRefusals(errors).isEmpty(),
+                    () -> "A redundant but compatible pair must not be refused, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should refuse a value matcher and a present: false matcher on the same header in one route")
+        void shouldRefuseValueAgainstPresentFalse(String value) {
+            List<ConfigError> errors = validateSingleRoute("dead-route",
+                    headerWithValue("X-Tenant", value), headerWithPresence("X-Tenant", false));
+
+            assertSinglePairRefusal(errors, "dead-route", "X-Tenant", "X-Tenant", "forbids");
+        }
+
+        @Test
+        @DisplayName("Should refuse a present: true matcher and a present: false matcher on the same header")
+        void shouldRefusePresentTrueAgainstPresentFalse() {
+            List<ConfigError> errors = validateSingleRoute("dead-route",
+                    headerWithPresence("X-Internal", true), headerWithPresence("X-Internal", false));
+
+            assertSinglePairRefusal(errors, "dead-route", "X-Internal", "X-Internal", "forbids");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should refuse two differing values on the same header in one route")
+        void shouldRefuseDifferingValues(String value) {
+            List<ConfigError> errors = validateSingleRoute("dead-route",
+                    headerWithValue("X-Tenant", value + "-a"), headerWithValue("X-Tenant", value + "-b"));
+
+            assertSinglePairRefusal(errors, "dead-route", "X-Tenant", "X-Tenant", "different values");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should refuse a contradiction between header names differing only in case")
+        void shouldRefuseMixedCaseContradiction(String value) {
+            List<ConfigError> errors = validateSingleRoute("dead-route",
+                    headerWithValue("X-Tenant", value), headerWithPresence("x-tenant", false));
+
+            assertSinglePairRefusal(errors, "dead-route", "X-Tenant", "x-tenant", "forbids");
+        }
+
+        @Test
+        @DisplayName("Should compare values case-sensitively, refusing values differing only in case")
+        void shouldRefuseValuesDifferingOnlyInCase() {
+            List<ConfigError> errors = validateSingleRoute("dead-route",
+                    headerWithValue("X-Tenant", "alpha"), headerWithValue("x-tenant", "ALPHA"));
+
+            assertSinglePairRefusal(errors, "dead-route", "X-Tenant", "x-tenant", "different values");
+        }
+
+        @Test
+        @DisplayName("Should report every conflicting pair of one route in one pass")
+        void shouldReportEveryConflictingPair() {
+            List<ConfigError> errors = validateSingleRoute("dead-route",
+                    headerWithValue("X-Tenant", "alpha"), headerWithValue("x-tenant", "beta"),
+                    headerWithPresence("X-TENANT", false));
+
+            assertEquals(3, pairRefusals(errors).size(),
+                    () -> "Each of the three conflicting pairs is refused once, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept a value matcher and a present: true matcher on the same header")
+        void shouldAcceptValueWithPresentTrue(String value) {
+            assertNoPairRefusal(validateSingleRoute("live-route",
+                    headerWithValue("X-Tenant", value), headerWithPresence("x-tenant", true)));
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept two identical values on the same header")
+        void shouldAcceptIdenticalValues(String value) {
+            assertNoPairRefusal(validateSingleRoute("live-route",
+                    headerWithValue("X-Tenant", value), headerWithValue("x-tenant", value)));
+        }
+
+        @Test
+        @DisplayName("Should accept two present: true matchers on the same header")
+        void shouldAcceptTwoPresentTrue() {
+            assertNoPairRefusal(validateSingleRoute("live-route",
+                    headerWithPresence("X-Internal", true), headerWithPresence("x-internal", true)));
+        }
+
+        @Test
+        @DisplayName("Should accept two present: false matchers on the same header")
+        void shouldAcceptTwoPresentFalse() {
+            assertNoPairRefusal(validateSingleRoute("live-route",
+                    headerWithPresence("X-Internal", false), headerWithPresence("x-internal", false)));
+        }
+
+        @Test
+        @DisplayName("Should accept conflicting-looking matchers that name different headers")
+        void shouldAcceptDifferentHeaderNames() {
+            assertNoPairRefusal(validateSingleRoute("live-route",
+                    headerWithValue("X-Tenant", "alpha"), headerWithPresence("X-Region", false)));
         }
     }
 }
