@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
@@ -58,9 +59,13 @@ import org.junit.jupiter.params.ParameterizedTest;
  * and prefix normalization); this class covers the discriminator matrix, which is where the
  * fail-open risk lives — a matcher wrongly treated as distinguishing would let two colliding routes
  * boot, and the request would then be dispatched to whichever route won an undefined ordering. The
- * header discriminator mirrors the runtime matcher: names compare case-insensitively, values
- * case-sensitively, and a matcher requiring the header (a {@code value} or {@code present: true})
- * is disjoint from one forbidding it ({@code present: false}).
+ * header discriminator mirrors the runtime matcher: names compare exactly as {@code RouteMatcher}
+ * normalises them (lower-cased under {@link Locale#ROOT}, so ASCII names compare case-insensitively),
+ * values case-sensitively, and a matcher requiring the header (a {@code value} or
+ * {@code present: true}) is disjoint from one forbidding it ({@code present: false}). A dedicated
+ * group pins the non-ASCII name pair where per-character case folding and {@code Locale.ROOT}
+ * lower-casing disagree, so the validator can never judge two names equal that the runtime reads as
+ * two different headers.
  * <p>
  * The class also pins the companion refusal of a single matcher declaring {@code present: false}
  * together with {@code value} — a matcher that can never hold — including that every such matcher
@@ -617,6 +622,76 @@ class ConfigValidatorRouteDisjointnessTest {
         void shouldAcceptDifferentHeaderNames() {
             assertNoPairRefusal(validateSingleRoute("live-route",
                     headerWithValue("X-Tenant", "alpha"), headerWithPresence("X-Region", false)));
+        }
+    }
+
+    /**
+     * Pins that header-matcher names are compared exactly as {@code RouteMatcher.from} normalises them
+     * — {@code toLowerCase(Locale.ROOT)} — and not by {@link String#equalsIgnoreCase}. The two agree
+     * on ASCII but not on U+0130 (capital I with dot above): per-character folding equates it with a
+     * plain {@code I}, while {@code Locale.ROOT} lower-casing maps it to {@code i} plus a combining
+     * dot. The name pair below is therefore one header to {@code equalsIgnoreCase} and two headers to
+     * the runtime; every verdict must follow the runtime.
+     */
+    @Nested
+    @DisplayName("Header names compared as the runtime normalises them")
+    class RuntimeNameNormalisation {
+
+        /** A header name carrying U+0130, the character per-character case folding conflates. */
+        private static final String DOTTED_CAPITAL_I_NAME = "X-İd";
+
+        /** The ASCII name {@code equalsIgnoreCase} equates with {@link #DOTTED_CAPITAL_I_NAME}. */
+        private static final String PLAIN_I_NAME = "X-Id";
+
+        private static final String PAIR_MESSAGE = "can never hold together";
+
+        @Test
+        @DisplayName("Should use a name pair that case folding equates but runtime lower-casing keeps apart")
+        void shouldUseNamePairThatOnlyCaseFoldingEquates() {
+            assertAll("The fixture names must reproduce the folding/lower-casing disagreement",
+                    () -> assertTrue(DOTTED_CAPITAL_I_NAME.equalsIgnoreCase(PLAIN_I_NAME),
+                            "equalsIgnoreCase must treat the pair as one name"),
+                    () -> assertNotEquals(PLAIN_I_NAME.toLowerCase(Locale.ROOT),
+                            DOTTED_CAPITAL_I_NAME.toLowerCase(Locale.ROOT),
+                            "Locale.ROOT lower-casing must yield two different runtime names"));
+        }
+
+        @Test
+        @DisplayName("Should not certify present: false and present: true on runtime-distinct names as disjoint")
+        void shouldRejectPresenceMatchersOnRuntimeDistinctNames() {
+            List<ConfigError> errors = validateRoutes(
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithPresence(DOTTED_CAPITAL_I_NAME, false))).build(),
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithPresence(PLAIN_I_NAME, true))).build());
+
+            assertCollides(errors);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should not certify a value matcher and present: false on runtime-distinct names as disjoint")
+        void shouldRejectValueAgainstAbsenceOnRuntimeDistinctNames(String value) {
+            List<ConfigError> errors = validateRoutes(
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithValue(PLAIN_I_NAME, value))).build(),
+                    sharedPrefix(HttpMethod.GET)
+                            .headers(List.of(headerWithPresence(DOTTED_CAPITAL_I_NAME, false))).build());
+
+            assertCollides(errors);
+        }
+
+        @Test
+        @DisplayName("Should not refuse present: false and present: true on runtime-distinct names in one route")
+        void shouldAcceptPresenceMatchersOnRuntimeDistinctNamesInOneRoute() {
+            List<ConfigError> errors = validateEndpoint(route("live-route", sharedPrefix(HttpMethod.GET)
+                    .headers(List.of(headerWithPresence(DOTTED_CAPITAL_I_NAME, false),
+                            headerWithPresence(PLAIN_I_NAME, true)))
+                    .build()));
+
+            assertTrue(errors.stream().noneMatch(error -> error.message().contains(PAIR_MESSAGE)),
+                    () -> "The two matchers read different runtime headers and must not be refused, got: "
+                            + errors);
         }
     }
 }

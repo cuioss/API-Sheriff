@@ -99,8 +99,9 @@ import org.jspecify.annotations.Nullable;
  * {@code match.headers} matcher must not declare {@code present: false} together with
  * {@code value}, because {@code present: false} forbids the header the value requires and the
  * two compose with AND, so such a matcher could never match and its route would be silently dead.
- * The same refusal covers two matchers of one route that name the same header (compared
- * case-insensitively) and can never hold together — two differing values, or one requiring the
+ * The same refusal covers two matchers of one route that name the same header (compared exactly as
+ * the runtime normalises the names, lower-cased under {@link Locale#ROOT}) and can never hold
+ * together — two differing values, or one requiring the
  * header while the other forbids it — because every matcher of a route must hold.
  * <p>
  * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
@@ -822,9 +823,10 @@ public final class ConfigValidator {
      *       route is selected first by design, and the prefix route keeps serving every other path
      *       below it.</li>
      * </ul>
-     * A header matcher distinguishes two routes when both name the same header (compared
-     * case-insensitively, as the runtime matches it) and either both declare a {@code value} and the
-     * values differ (compared case-sensitively), or one matcher requires the header — it declares
+     * A header matcher distinguishes two routes when both name the same header (compared exactly as
+     * the runtime normalises the names — see {@link #runtimeHeaderName}) and either both declare a
+     * {@code value} and the values differ (compared case-sensitively), or one matcher requires the
+     * header — it declares
      * {@code present: true} or a {@code value} — while the other forbids it with
      * {@code present: false}. So an exact {@code value} and {@code present: false} are disjoint, while
      * {@code value} vs {@code present: true}, {@code present: true} vs {@code present: true} and
@@ -917,14 +919,31 @@ public final class ConfigValidator {
     }
 
     /**
-     * Whether no request can satisfy both matchers: they name the same header (compared
-     * case-insensitively, as {@code RouteMatcher} does) and either declare differing values or one
+     * Whether no request can satisfy both matchers: they name the same header (their
+     * {@link #runtimeHeaderName runtime names} are equal) and either declare differing values or one
      * requires the header the other forbids. Across two routes this makes the routes disjoint; within
      * one route it makes the route dead, since every matcher of a route must hold.
      */
     private static boolean neverHoldTogether(HeaderMatcher headerA, HeaderMatcher headerB) {
-        return headerA.name().equalsIgnoreCase(headerB.name())
+        return runtimeHeaderName(headerA).equals(runtimeHeaderName(headerB))
                 && (valuesDistinguish(headerA, headerB) || presenceContradicts(headerA, headerB));
+    }
+
+    /**
+     * The name a header matcher reads at runtime: its configured name lower-cased under
+     * {@link Locale#ROOT}, exactly the normalisation {@code RouteMatcher.from} applies before the
+     * matcher looks the name up in the lower-case-keyed request header map.
+     * <p>
+     * Every comparison of two {@code match.headers} names in this validator goes through here, never
+     * through {@link String#equalsIgnoreCase}. The two disagree outside ASCII: {@code equalsIgnoreCase}
+     * folds case per character, so a name spelled with U+0130 (capital I with dot above) where another
+     * has a plain {@code I} equals it, while full {@code Locale.ROOT} lower-casing maps U+0130 to
+     * {@code i} plus a combining dot and so yields two different names. Judging names by per-character
+     * folding would let this validator certify two routes disjoint, or refuse a route as dead, on the
+     * strength of a name equality the runtime never sees.
+     */
+    private static String runtimeHeaderName(HeaderMatcher header) {
+        return header.name().toLowerCase(Locale.ROOT);
     }
 
     private static boolean valuesDistinguish(HeaderMatcher headerA, HeaderMatcher headerB) {
@@ -963,8 +982,9 @@ public final class ConfigValidator {
      * coherent (the value already implies presence) and stays valid.
      * <p>
      * The rule also judges every pair of matchers within one route that name the same header
-     * (compared case-insensitively, as {@code RouteMatcher} normalises the names). Every matcher of a
-     * route must hold, so a pair that can never hold together — both declare a value and the values
+     * (compared exactly as {@code RouteMatcher} normalises the names — see
+     * {@link #runtimeHeaderName}). Every matcher of a route must hold, so a pair that can never hold
+     * together — both declare a value and the values
      * differ, or one requires the header ({@code value} or {@code present: true}) while the other
      * forbids it ({@code present: false}) — leaves the route silently dead, and the boot refuses it
      * with one error per conflicting pair. Redundant but compatible pairs ({@code value} with
@@ -1007,8 +1027,9 @@ public final class ConfigValidator {
                         : "one requires the header while the other forbids it";
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                         ("route '%s' declares header matchers '%s' and '%s' that can never hold together: %s; "
-                                + "header names compare case-insensitively and every matcher of a route must "
-                                + "hold, so the route can never match — drop one matcher, or make them agree")
+                                + "header names compare lower-cased, as the runtime reads them, and every "
+                                + "matcher of a route must hold, so the route can never match — drop one "
+                                + "matcher, or make them agree")
                                 .formatted(route.id(), renderForMessage(header.name()),
                                         renderForMessage(other.name()), conflict)));
             }
