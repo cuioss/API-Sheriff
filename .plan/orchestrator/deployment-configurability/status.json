@@ -1,0 +1,330 @@
+{
+  "kind": "orchestrator",
+  "title": "Deployment Configurability: Health-Check, Context Path, Hostname Verification, Refresh Reliability",
+  "phase": "orchestrating",
+  "workstreams": [
+    {
+      "id": "WS-01",
+      "slug": "container-health-check",
+      "title": "Container Health-Check for Docker-Only Deployment",
+      "status": "active"
+    },
+    {
+      "id": "WS-02",
+      "slug": "configurable-context-path",
+      "title": "Configurable Context Path",
+      "status": "active"
+    },
+    {
+      "id": "WS-03",
+      "slug": "hostname-verification",
+      "title": "Configurable Hostname Verification (Outbound Connections)",
+      "status": "active"
+    },
+    {
+      "id": "WS-04",
+      "slug": "refresh-token-reliability",
+      "title": "BFF Refresh-Token Reliability",
+      "status": "active"
+    },
+    {
+      "id": "WS-05",
+      "slug": "forwarded-trust-configurability",
+      "title": "Forwarded-Trust Allow-List Configurability and Coverage",
+      "status": "active"
+    },
+    {
+      "id": "WS-06",
+      "slug": "tls-material-and-termination-modes",
+      "title": "TLS Material Contract and Termination Modes",
+      "status": "active"
+    },
+    {
+      "id": "WS-07",
+      "slug": "test-suite-reliability",
+      "title": "Test-Suite Reliability and Local Environment",
+      "status": "active"
+    },
+    {
+      "id": "WS-08",
+      "slug": "configuration-security-hardening",
+      "title": "Configuration Security Hardening",
+      "status": "active"
+    },
+    {
+      "id": "WS-09",
+      "slug": "closeout-residual-hardening",
+      "title": "Closeout Residual Hardening",
+      "status": "active"
+    }
+  ],
+  "plans": [
+    {
+      "id": "PLAN-01",
+      "slug": "distroless-health-check",
+      "workstream": "WS-01",
+      "status": "shipped",
+      "plan_marshall_plan_id": "distroless-health-check",
+      "pr": "230",
+      "landing": "landings/PLAN-01.md"
+    },
+    {
+      "id": "PLAN-02",
+      "slug": "configurable-context-path",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "configurable-context-path",
+      "pr": "248",
+      "landing": "landings/PLAN-02.md"
+    },
+    {
+      "id": "PLAN-03",
+      "slug": "upstream-hostname-verification",
+      "workstream": "WS-03",
+      "status": "shipped",
+      "plan_marshall_plan_id": "upstream-hostname-verification",
+      "pr": "268",
+      "landing": "landings/PLAN-03.md"
+    },
+    {
+      "id": "PLAN-04",
+      "slug": "jwks-hostname-verification",
+      "workstream": "WS-03",
+      "status": "shipped",
+      "plan_marshall_plan_id": "jwks-hostname-verification",
+      "pr": "272",
+      "landing": "landings/PLAN-04.md"
+    },
+    {
+      "id": "PLAN-05",
+      "slug": "bff-refresh-integration-coverage",
+      "workstream": "WS-04",
+      "status": "shipped",
+      "plan_marshall_plan_id": "bff-refresh-integration-coverage",
+      "pr": "282",
+      "landing": "landings/PLAN-05.md"
+    },
+    {
+      "id": "PLAN-06",
+      "slug": "forwarded-trust-env-configurability",
+      "workstream": "WS-05",
+      "status": "shipped",
+      "plan_marshall_plan_id": "forwarded-trust-env-configurability",
+      "pr": "254",
+      "landing": "landings/PLAN-06.md"
+    },
+    {
+      "id": "PLAN-07",
+      "slug": "tls-material-audit-and-trust-contract",
+      "workstream": "WS-06",
+      "status": "shipped",
+      "plan_marshall_plan_id": "tls-material-audit-and-trust-contract",
+      "pr": "283",
+      "landing": "landings/PLAN-07.md"
+    },
+    {
+      "id": "PLAN-08",
+      "slug": "plain-http-termination-mode",
+      "workstream": "WS-06",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plain-http-termination-mode",
+      "pr": "286",
+      "landing": "landings/PLAN-08.md"
+    },
+    {
+      "id": "PLAN-09",
+      "slug": "tls-scenario-guide",
+      "workstream": "WS-06",
+      "status": "superseded",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-10",
+      "slug": "adr-0038-preboot-health-probe",
+      "workstream": "WS-01",
+      "status": "shipped",
+      "plan_marshall_plan_id": "adr-preboot-health-probe",
+      "pr": "257",
+      "landing": "landings/PLAN-10.md"
+    },
+    {
+      "id": "PLAN-11",
+      "slug": "macos-loopback-hang-investigation",
+      "workstream": "WS-07",
+      "status": "shipped",
+      "plan_marshall_plan_id": "macos-loopback-hang-investigation",
+      "pr": "243",
+      "landing": "landings/PLAN-11.md"
+    },
+    {
+      "id": "PLAN-12",
+      "slug": "kqueue-readiness-instrumentation",
+      "workstream": "WS-07",
+      "status": "landed",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": "landings/PLAN-12.md"
+    },
+    {
+      "id": "PLAN-13",
+      "slug": "loopback-stall-fix",
+      "workstream": "WS-07",
+      "status": "shipped",
+      "plan_marshall_plan_id": "loopback-stall-fix-and-instrumentation",
+      "pr": "255",
+      "landing": "landings/PLAN-13.md"
+    },
+    {
+      "id": "PLAN-14",
+      "slug": "healthprobe-javadoc-port-claim",
+      "workstream": "WS-01",
+      "status": "superseded",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-15",
+      "slug": "trusted-proxy-breadth-and-probe-doc",
+      "workstream": "WS-05",
+      "status": "shipped",
+      "plan_marshall_plan_id": "trusted-proxy-breadth-and-probe-doc",
+      "pr": "267",
+      "landing": "landings/PLAN-15.md"
+    },
+    {
+      "id": "PLAN-16",
+      "slug": "cookie-deliverability-and-ceiling",
+      "workstream": "WS-04",
+      "status": "shipped",
+      "plan_marshall_plan_id": "cookie-deliverability-and-ceiling",
+      "pr": "284",
+      "landing": "landings/PLAN-16.md"
+    },
+    {
+      "id": "PLAN-17",
+      "slug": "cookie-mode-refresh-viability",
+      "workstream": "WS-04",
+      "status": "shipped",
+      "plan_marshall_plan_id": "cookie-mode-refresh-viability",
+      "pr": "288",
+      "landing": "landings/PLAN-17.md"
+    },
+    {
+      "id": "PLAN-18",
+      "slug": "pro-forma-integration-test-fixes",
+      "workstream": "WS-06",
+      "status": "shipped",
+      "plan_marshall_plan_id": "pro-forma-integration-test-fixes",
+      "pr": "308",
+      "landing": "landings/PLAN-18.md"
+    },
+    {
+      "id": "PLAN-19",
+      "slug": "release-readiness-doc-review",
+      "workstream": "WS-06",
+      "status": "superseded",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-20",
+      "slug": "egress-leg-pinning-and-sweep",
+      "workstream": "WS-03",
+      "status": "superseded",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-21",
+      "slug": "session-cookie-config-validation",
+      "workstream": "WS-04",
+      "status": "superseded",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-22",
+      "slug": "trusted-proxy-breadth-threshold",
+      "workstream": "WS-05",
+      "status": "superseded",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-23",
+      "slug": "unit-lane-vacuity-audit",
+      "workstream": "WS-07",
+      "status": "shipped",
+      "plan_marshall_plan_id": "unit-lane-vacuity-audit",
+      "pr": "336",
+      "landing": "landings/PLAN-23.md"
+    },
+    {
+      "id": "PLAN-24",
+      "slug": "release-docs-and-tls-scenario-guide",
+      "workstream": "WS-06",
+      "status": "shipped",
+      "plan_marshall_plan_id": "release-docs-and-tls-scenario-guide",
+      "pr": "305",
+      "landing": "landings/PLAN-24.md"
+    },
+    {
+      "id": "PLAN-25",
+      "slug": "configuration-security-hardening",
+      "workstream": "WS-08",
+      "status": "shipped",
+      "plan_marshall_plan_id": "configuration-security-hardening",
+      "pr": "306",
+      "landing": "landings/PLAN-25.md"
+    },
+    {
+      "id": "PLAN-26",
+      "slug": "refresh-failure-dispositions",
+      "workstream": "WS-04",
+      "status": "shipped",
+      "plan_marshall_plan_id": "refresh-failure-dispositions",
+      "pr": "314",
+      "landing": "landings/PLAN-26.md"
+    },
+    {
+      "id": "PLAN-27",
+      "slug": "idp-refresh-reuse-strict-rotation-e2e",
+      "workstream": "WS-04",
+      "status": "superseded",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-28",
+      "slug": "closeout-residual-hardening",
+      "workstream": "WS-09",
+      "status": "shipped",
+      "plan_marshall_plan_id": "closeout-residual-hardening",
+      "pr": "341",
+      "landing": "landings/PLAN-28.md"
+    },
+    {
+      "id": "PLAN-29",
+      "slug": "final-gap-closure",
+      "workstream": "WS-09",
+      "status": "launched",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    }
+  ],
+  "resume_anchor": "2026-09-23: PR #338 queued for merge via the platform merge queue (awaiting completion). Staged and emitted PLAN-29 (WS-09 final-gap-closure, 3 deliverables) covering the last genuinely-open gaps from the close-readiness sweep: TokenRefreshCoordinator.scopeDelta observability, BuildGateCoverageContractTest line citation, port-collision-flakiness doc. Two other candidates (GatewayEdgePipelineTest flake, TlsEdgeProducerTest loopback) were dropped after verification found them already fixed by unrelated sibling-epic PRs. Command: /plan-marshall task=\"implement .plan/orchestrator/deployment-configurability/plans/PLAN-29-final-gap-closure.md\" -- auto-recorded launched (auto_emit=true), operator still needs to run it. NEXT: confirm PR #338 merged, run PLAN-29, then analyze its landing and run /plan-marshall:plan-orchestrator close slug=deployment-configurability.",
+  "metadata": {
+    "parallelization_scope": "3"
+  },
+  "created": "2026-08-27T13:09:14Z",
+  "updated": "2026-09-23T07:56:06Z"
+}
