@@ -332,6 +332,40 @@ public class GatewayEdgeRoute {
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint) {
+        this(routeTable, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening, sheriffMetrics,
+                bffRuntime, egressTrustProfileResolver, portalEndpoint, WebSocketRelayStage.RelayObserver.NO_OP);
+    }
+
+    /**
+     * <strong>Test-only.</strong> Assembles the edge exactly as the CDI constructor does, but hands
+     * the WebSocket relay stage the given {@link WebSocketRelayStage.RelayObserver}, so a full-edge
+     * relay test can observe the wiring time and the first relayed frame per direction of every relay
+     * this edge builds. Its only callers are the full-edge relay tests in {@code WebSocketRelayStageTest}.
+     * <p>
+     * Not a CDI entry point: CDI resolves only the {@link Inject @Inject} constructor, which delegates
+     * here with {@link WebSocketRelayStage.RelayObserver#NO_OP}, so production behaviour is unchanged.
+     * The observer type is package-private, and no configuration key or system property selects it.
+     *
+     * @param routeTable                 as for the CDI constructor
+     * @param gatewayConfig             as for the CDI constructor
+     * @param tokenValidator             as for the CDI constructor
+     * @param vertx                      as for the CDI constructor
+     * @param virtualThreadExecutor      as for the CDI constructor
+     * @param hardening                  as for the CDI constructor
+     * @param sheriffMetrics             as for the CDI constructor
+     * @param bffRuntime                 as for the CDI constructor
+     * @param egressTrustProfileResolver as for the CDI constructor
+     * @param portalEndpoint             as for the CDI constructor
+     * @param relayObserver              the observer every WebSocket relay this edge builds reports to
+     */
+    // The parameter list mirrors the CDI constructor's by construction, plus the observer; a parameter
+    // object would exist only to satisfy the count and would diverge from the CDI signature it mirrors.
+    @SuppressWarnings("java:S107") // test-only overload of the @Inject constructor
+    GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig, Instance<TokenValidator> tokenValidator,
+            Vertx vertx, ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
+            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
+            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
+            WebSocketRelayStage.RelayObserver relayObserver) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
@@ -463,7 +497,7 @@ public class GatewayEdgeRoute {
             webSocketClientOptions.setTrustOptions(upstreamTrustOptions);
         }
         this.webSocketRelayStage = new WebSocketRelayStage(vertx.createWebSocketClient(webSocketClientOptions),
-                upstreamFailureMapper, gatewayEventCounter);
+                upstreamFailureMapper, gatewayEventCounter, relayObserver);
         this.grpcStatusMapper = new GrpcStatusMapper();
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType

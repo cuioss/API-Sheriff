@@ -15,8 +15,10 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -133,24 +135,12 @@ public final class WebSocketRelayStage {
     private final RelayObserver observer;
 
     /**
-     * Creates the production relay stage, which runs every relay's wiring immediately (the no-op
-     * {@link RelayObserver#NO_OP} observer).
-     *
-     * @param webSocketClient the edge-wide dialer for every upstream WebSocket handshake
-     * @param failureMapper the shared mapper turning an upstream dial failure into the error contract
-     * @param eventCounter  the shared in-process event counter
-     */
-    public WebSocketRelayStage(WebSocketClient webSocketClient, UpstreamFailureMapper failureMapper,
-            GatewayEventCounter eventCounter) {
-        this(webSocketClient, failureMapper, eventCounter, RelayObserver.NO_OP);
-    }
-
-    /**
-     * <strong>Test-only.</strong> Creates a relay stage whose relay wiring is handed to the given
-     * {@link RelayObserver} instead of running directly, so a test can observe or deliberately delay
-     * the moment the relay's frame handlers are installed. Package-private and selected by no
-     * configuration key or system property; production code constructs the stage through the public
-     * constructor, which passes {@link RelayObserver#NO_OP}.
+     * Creates a relay stage whose relay wiring is handed to the given {@link RelayObserver} instead of
+     * running directly, and which reports each relay's wiring time and first relayed frame per
+     * direction to it, so a test can observe or deliberately delay the moment the relay's frame
+     * handlers are installed. Package-private and selected by no configuration key or system property.
+     * Production builds the stage through {@code GatewayEdgeRoute}'s CDI constructor, which passes
+     * {@link RelayObserver#NO_OP}; only a test hands it anything else.
      *
      * @param webSocketClient the edge-wide dialer for every upstream WebSocket handshake
      * @param failureMapper the shared mapper turning an upstream dial failure into the error contract
@@ -281,7 +271,7 @@ public final class WebSocketRelayStage {
         // The admission permit stays held for the relay's whole lifetime — the session releases it from
         // its single teardown funnel, never here at upgrade completion.
         RelaySession session = new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds,
-                eventCounter, releaseAdmission);
+                eventCounter, releaseAdmission, observer);
         observer.beforeWiring(session::start);
     }
 
@@ -292,21 +282,25 @@ public final class WebSocketRelayStage {
     }
 
     /**
-     * <strong>Test-only</strong> observation seam on an established relay's wiring. Every established
-     * relay hands the installation of its frame, pong, close and exception handlers
+     * <strong>Test-only</strong> observation seam on an established relay's wiring and first frames.
+     * Every established relay hands the installation of its frame, pong, close and exception handlers
      * ({@code RelaySession.start()}) to {@link #beforeWiring(Runnable)} rather than running it
      * directly, so a test can defer that installation and reproduce a frame that reaches a leg before
-     * its handler exists.
+     * its handler exists. The relay then reports the moment its handlers are installed
+     * ({@link #wired(long)}) and the moment it relays the first data frame in each direction
+     * ({@link #frameRelayed(Direction, long)}), so a test that times out waiting for a relayed frame
+     * can tell whether that frame was written before the relay was wired.
      * <p>
-     * Package-private and reachable only through the stage's package-private constructor: no
-     * configuration key or system property selects an observer, and production always runs with
-     * {@link #NO_OP}.
+     * Package-private and reachable only through the package-private constructors of this stage and
+     * of {@code GatewayEdgeRoute}: no configuration key or system property selects an observer, and
+     * production always runs with {@link #NO_OP}. The two reporting callbacks default to no-ops; the
+     * relay itself neither logs nor meters what it reports here.
      *
      * @since 1.0
      */
     interface RelayObserver {
 
-        /** The production observer: runs the wiring immediately, on the calling thread. */
+        /** The production observer: runs the wiring immediately, on the calling thread, and records nothing. */
         RelayObserver NO_OP = Runnable::run;
 
         /**
@@ -317,6 +311,41 @@ public final class WebSocketRelayStage {
          * @param wiring installs every handler on both relay legs and arms the idle timer
          */
         void beforeWiring(Runnable wiring);
+
+        /**
+         * Called once per relay, on the client connection's context, when every handler on both legs
+         * is installed — before either leg is resumed, so it precedes every
+         * {@link #frameRelayed(Direction, long)} of the same relay. The default does nothing.
+         *
+         * @param nanoTime the {@link System#nanoTime()} reading taken at that moment
+         */
+        default void wired(long nanoTime) {
+            // no-op by default: production observes nothing
+        }
+
+        /**
+         * Called on the client connection's context when the relay forwards its first data frame —
+         * text, binary or continuation — in {@code direction}; at most once per direction per relay.
+         * Ping, pong and close frames are not reported. The default does nothing.
+         *
+         * @param direction the leg the frame arrived on and the leg it is forwarded to
+         * @param nanoTime  the {@link System#nanoTime()} reading taken as the frame is forwarded, just
+         *                  before it is written to the other leg — so the report precedes the frame's
+         *                  arrival at the far end
+         */
+        default void frameRelayed(Direction direction, long nanoTime) {
+            // no-op by default: production observes nothing
+        }
+
+        /** The two directions a relay forwards frames in. */
+        enum Direction {
+
+            /** A frame the client sent, forwarded to the upstream. */
+            CLIENT_TO_UPSTREAM,
+
+            /** A frame the upstream sent, forwarded to the client. */
+            UPSTREAM_TO_CLIENT
+        }
     }
 
     /**
@@ -339,11 +368,15 @@ public final class WebSocketRelayStage {
         private final long idleMillis;
         private final GatewayEventCounter eventCounter;
         private final Runnable releaseAdmission;
+        private final RelayObserver observer;
+        /** The directions whose first data frame has already been reported to {@link #observer}. */
+        private final Set<RelayObserver.Direction> reportedDirections =
+                EnumSet.noneOf(RelayObserver.Direction.class);
         private long idleTimerId = -1L;
         private boolean closed;
 
         RelaySession(Vertx vertx, String routeId, ServerWebSocket clientWs, WebSocket upstreamWs, int idleSeconds,
-                GatewayEventCounter eventCounter, Runnable releaseAdmission) {
+                GatewayEventCounter eventCounter, Runnable releaseAdmission, RelayObserver observer) {
             this.vertx = vertx;
             this.routeId = routeId;
             this.clientWs = clientWs;
@@ -352,17 +385,20 @@ public final class WebSocketRelayStage {
             this.idleMillis = idleSeconds * 1000L;
             this.eventCounter = eventCounter;
             this.releaseAdmission = releaseAdmission;
+            this.observer = observer;
         }
 
         void start() {
-            wire(clientWs, upstreamWs);
-            wire(upstreamWs, clientWs);
+            wire(clientWs, upstreamWs, RelayObserver.Direction.CLIENT_TO_UPSTREAM);
+            wire(upstreamWs, clientWs, RelayObserver.Direction.UPSTREAM_TO_CLIENT);
             clientWs.closeHandler(v -> closeBoth(resolveCloseCode(clientWs.closeStatusCode()), clientWs.closeReason()));
             upstreamWs.closeHandler(v ->
                     closeBoth(resolveCloseCode(upstreamWs.closeStatusCode()), upstreamWs.closeReason()));
             clientWs.exceptionHandler(this::abort);
             upstreamWs.exceptionHandler(this::abort);
             resetIdle();
+            // Reported before the resume below, so the wiring time precedes every relayed frame's.
+            observer.wired(System.nanoTime());
             // Both legs were paused at acquisition; only now that every handler is installed may their
             // buffered frames flow. This precedes any write-queue backpressure pause, which is only ever
             // applied from a relayed frame.
@@ -370,14 +406,15 @@ public final class WebSocketRelayStage {
             upstreamWs.resume();
         }
 
-        private void wire(WebSocketBase source, WebSocketBase target) {
-            source.frameHandler(frame -> relayFrame(source, target, frame));
+        private void wire(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction) {
+            source.frameHandler(frame -> relayFrame(source, target, direction, frame));
             // Vert.x surfaces received pong frames on a dedicated handler (not the frame handler) and
             // auto-responds to pings; a pong is relay activity, so it resets the idle timer.
             source.pongHandler(pong -> resetIdle());
         }
 
-        private void relayFrame(WebSocketBase source, WebSocketBase target, WebSocketFrame frame) {
+        private void relayFrame(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction,
+                WebSocketFrame frame) {
             if (closed) {
                 return;
             }
@@ -389,6 +426,10 @@ public final class WebSocketRelayStage {
             if (frame.isPing()) {
                 target.writeFrame(WebSocketFrame.pingFrame(frame.binaryData()));
                 return;
+            }
+            // Reported before the write, so the report is on record before the frame can reach the other end.
+            if (reportedDirections.add(direction)) {
+                observer.frameRelayed(direction, System.nanoTime());
             }
             target.writeFrame(dataFrame(frame));
             applyBackpressure(source, target);

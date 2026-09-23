@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -22,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.lang.annotation.Annotation;
@@ -34,6 +36,7 @@ import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -59,6 +62,8 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.edge.WebSocketRelayStage.RelayObserver;
+import de.cuioss.sheriff.gateway.edge.WebSocketRelayStage.RelayObserver.Direction;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
@@ -103,6 +108,13 @@ import org.junit.jupiter.api.Test;
  * unreachable upstream maps to {@code 502} before the {@code 101}, and an idle relay is reclaimed while
  * a heartbeated one survives. The Docker-backed matrix in {@code integration-tests} complements these
  * server-local guarantees.
+ * <p>
+ * Every await on a frame the relay forwards — through the full edge or through a relay-only server —
+ * goes through {@link #awaitRelayed}, so a timeout carries the relay's wiring-versus-frame timeline: the
+ * client's first write, the moment the relay installed its handlers, and its first relayed frame per
+ * direction. A stall shape that has more than one cause is then told apart in the message itself. Awaits
+ * on something other than a relayed frame — the handshake rejections, the idle reclaim's close — keep
+ * their plain {@link Awaits} calls.
  */
 @EnableGeneratorController
 @DisplayName("WebSocketRelayStage — end-to-end WebSocket dispatch over a live Vert.x server")
@@ -126,6 +138,17 @@ class WebSocketRelayStageTest {
      */
     private static final int EARLY_FRAME_EDGE_UPGRADES = 20;
 
+    /** The one-line verdict a relay timeline gives when the client wrote before the relay was wired. */
+    private static final String FRAME_WRITTEN_BEFORE_HANDLER = "frame written before handler installed";
+
+    /**
+     * The release callback for relay-only servers whose tests observe frames or threads rather than the
+     * admission permit; it records nothing.
+     */
+    private static final Runnable UNOBSERVED_ADMISSION_RELEASE = () -> {
+        // the admission lifecycle is pinned by AdmissionReleaseCallback, not here
+    };
+
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
     private HttpServer upstreamServer;
@@ -137,6 +160,12 @@ class WebSocketRelayStageTest {
     private int deadPort;
     private final AtomicInteger upstreamConnects = new AtomicInteger();
     private final AtomicReference<String> upstreamCustomHeader = new AtomicReference<>();
+
+    /**
+     * The timeline of the relay under await. The full edge and every relay-only server report into it,
+     * and {@link #awaitRelayed} folds it into the message of a relay await that times out.
+     */
+    private final RelayTimeline relayTimeline = new RelayTimeline();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -177,10 +206,12 @@ class WebSocketRelayStageTest {
                 .version(1)
                 .securityHeaders(securityHeaders())
                 .build();
+        // Built through the test-only constructor so every relay this edge establishes reports its
+        // wiring-versus-frame timeline into the recorder the relay awaits read on timeout.
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(), relayTimeline.observer(RelayObserver.NO_OP));
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
@@ -211,10 +242,10 @@ class WebSocketRelayStageTest {
         socket.textMessageHandler(echoed::complete);
 
         // Act
-        socket.writeTextMessage("hello-relay");
+        writeRelayed(socket, "hello-relay");
 
         // Assert — the frame crosses to the upstream, is echoed, and relays back to the client
-        assertEquals("hello-relay", Awaits.connect(echoed, "the echoed frame to return through the relay"));
+        assertEquals("hello-relay", awaitRelayed(echoed, "the echoed frame to return through the relay"));
     }
 
     /**
@@ -236,11 +267,13 @@ class WebSocketRelayStageTest {
                     .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setURI("/ws-open/room")
                     .addHeader("Origin", ALLOWED_ORIGIN);
 
+            relayTimeline.startUpgrade();
+
             // Act — the first frame leaves the client inside its upgrade callback
             wsClient.connect(options)
                     .onSuccess(socket -> {
                         socket.textMessageHandler(echoed::complete);
-                        socket.writeTextMessage(frame);
+                        writeRelayed(socket, frame);
                         opened.complete(socket);
                     })
                     .onFailure(failure -> {
@@ -249,7 +282,7 @@ class WebSocketRelayStageTest {
                     });
 
             // Assert — the frame crosses the edge's relay to the echo upstream and comes back
-            assertEquals(frame, Awaits.connect(echoed, "upgrade " + upgrade + " of " + EARLY_FRAME_EDGE_UPGRADES
+            assertEquals(frame, awaitRelayed(echoed, "upgrade " + upgrade + " of " + EARLY_FRAME_EDGE_UPGRADES
                     + ": the first frame, written in the client's upgrade callback, to echo through the edge"));
             Awaits.teardown(Awaits.connect(opened, "upgrade " + upgrade + " to report its socket").close(),
                     "upgrade " + upgrade + "'s relayed WebSocket to close");
@@ -278,10 +311,10 @@ class WebSocketRelayStageTest {
         socket.textMessageHandler(echoed::complete);
 
         // Act
-        socket.writeTextMessage("allowed");
+        writeRelayed(socket, "allowed");
 
         // Assert
-        assertEquals("allowed", Awaits.connect(echoed, "the echoed frame to return through the relay"));
+        assertEquals("allowed", awaitRelayed(echoed, "the echoed frame to return through the relay"));
     }
 
     @Test
@@ -337,8 +370,8 @@ class WebSocketRelayStageTest {
         socket.textMessageHandler(echoed::complete);
 
         // Act
-        socket.writeTextMessage("go");
-        Awaits.connect(echoed, "the echoed frame to return through the relay");
+        writeRelayed(socket, "go");
+        awaitRelayed(echoed, "the echoed frame to return through the relay");
 
         // Assert — the upstream handshake never saw the unlisted header
         assertNull(upstreamCustomHeader.get(),
@@ -361,8 +394,8 @@ class WebSocketRelayStageTest {
         socket.textMessageHandler(echoed::complete);
 
         // Act
-        socket.writeTextMessage("go");
-        Awaits.connect(echoed, "the echoed frame to return through the relay");
+        writeRelayed(socket, "go");
+        awaitRelayed(echoed, "the echoed frame to return through the relay");
 
         // Assert
         assertEquals("leak", upstreamCustomHeader.get(),
@@ -398,8 +431,8 @@ class WebSocketRelayStageTest {
         for (int i = 0; i < 3; i++) {
             CompletableFuture<String> echoed = new CompletableFuture<>();
             socket.textMessageHandler(echoed::complete);
-            socket.writeTextMessage("beat-" + i);
-            Awaits.connect(echoed, "the heartbeat frame to be echoed");
+            writeRelayed(socket, "beat-" + i);
+            awaitRelayed(echoed, "the heartbeat frame to be echoed");
             Thread.sleep(400);
         }
 
@@ -428,8 +461,8 @@ class WebSocketRelayStageTest {
                 WebSocket socket = connectTo(relayServer.actualPort());
                 CompletableFuture<String> echoed = new CompletableFuture<>();
                 socket.textMessageHandler(echoed::complete);
-                socket.writeTextMessage("live");
-                Awaits.connect(echoed, "the echoed frame to return through the relay");
+                writeRelayed(socket, "live");
+                awaitRelayed(echoed, "the echoed frame to return through the relay");
                 assertEquals(0, releases.get(), "an established relay keeps holding its admission permit");
 
                 // Act
@@ -491,8 +524,8 @@ class WebSocketRelayStageTest {
         }
 
         private WebSocket connectTo(int port) throws Exception {
-            return Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
-                            .setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/relay")),
+            relayTimeline.startUpgrade();
+            return Awaits.connect(wsClient.connect(relayOnlyOptions(port)),
                     "the WebSocket upgrade against the relay-only server");
         }
     }
@@ -517,14 +550,6 @@ class WebSocketRelayStageTest {
         /** How long the stage under test defers each relay's wiring once both legs are upgraded. */
         private static final long DEFERRED_WIRING_MILLIS = 500;
 
-        /**
-         * The early-frame cases observe frames, not the admission permit, so the stage is handed a
-         * release callback that records nothing.
-         */
-        private static final Runnable UNOBSERVED_ADMISSION_RELEASE = () -> {
-            // the admission lifecycle is pinned by AdmissionReleaseCallback, not here
-        };
-
         @Test
         @DisplayName("relays a client frame written inside the client's own upgrade callback")
         void relaysClientFrameWrittenOnUpgrade() throws Exception {
@@ -533,17 +558,18 @@ class WebSocketRelayStageTest {
             HttpServer relayServer = startDeferredWiringRelayServer(upstreamPort);
             try {
                 CompletableFuture<String> echoed = new CompletableFuture<>();
+                relayTimeline.startUpgrade();
 
                 // Act — the first frame leaves the client inside its upgrade callback, with no gap
-                wsClient.connect(relayOptions(relayServer.actualPort()))
+                wsClient.connect(relayOnlyOptions(relayServer.actualPort()))
                         .onSuccess(socket -> {
                             socket.textMessageHandler(echoed::complete);
-                            socket.writeTextMessage(frame);
+                            writeRelayed(socket, frame);
                         })
                         .onFailure(echoed::completeExceptionally);
 
                 // Assert — the frame crosses the relay to the echo upstream and comes back
-                assertEquals(frame, Awaits.connect(echoed,
+                assertEquals(frame, awaitRelayed(echoed,
                         "the client's first frame, written in its upgrade callback, to echo through the relay"));
             } finally {
                 Awaits.teardown(relayServer.close(), "the deferred-wiring relay server to close");
@@ -564,14 +590,15 @@ class WebSocketRelayStageTest {
                 HttpServer relayServer = startDeferredWiringRelayServer(greetingServer.actualPort());
                 try {
                     CompletableFuture<String> greeted = new CompletableFuture<>();
+                    relayTimeline.startUpgrade();
 
                     // Act — the client only listens; the upstream's greeting is the first frame on the relay
-                    wsClient.connect(relayOptions(relayServer.actualPort()))
+                    wsClient.connect(relayOnlyOptions(relayServer.actualPort()))
                             .onSuccess(socket -> socket.textMessageHandler(greeted::complete))
                             .onFailure(greeted::completeExceptionally);
 
                     // Assert — the greeting crosses the relay to the client
-                    assertEquals(greeting, Awaits.connect(greeted,
+                    assertEquals(greeting, awaitRelayed(greeted,
                             "the upstream's greeting, written on accept, to reach the client"));
                 } finally {
                     Awaits.teardown(relayServer.close(), "the deferred-wiring relay server to close");
@@ -597,7 +624,7 @@ class WebSocketRelayStageTest {
                     .build();
             WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
                     new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
-                    wiring -> vertx.setTimer(DEFERRED_WIRING_MILLIS, timerId -> wiring.run()));
+                    relayTimeline.observer(wiring -> vertx.setTimer(DEFERRED_WIRING_MILLIS, timerId -> wiring.run())));
             Router router = Router.router(vertx);
             router.route().handler(ctx -> {
                 ctx.request().pause();
@@ -611,9 +638,6 @@ class WebSocketRelayStageTest {
                     "the deferred-wiring relay server to start listening");
         }
 
-        private WebSocketConnectOptions relayOptions(int port) {
-            return new WebSocketConnectOptions().setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/relay");
-        }
     }
 
     /**
@@ -636,14 +660,6 @@ class WebSocketRelayStageTest {
         /** Sequential upgrades whose relay threads are each checked against the router handler's thread. */
         private static final int THREAD_IDENTITY_UPGRADES = 4;
 
-        /**
-         * The threading case observes threads, not the admission permit, so the stage is handed a release
-         * callback that records nothing.
-         */
-        private static final Runnable UNOBSERVED_ADMISSION_RELEASE = () -> {
-            // the admission lifecycle is pinned by AdmissionReleaseCallback, not here
-        };
-
         private final AtomicReference<@Nullable Thread> routerThread = new AtomicReference<>();
         private final AtomicReference<@Nullable Thread> wiringThread = new AtomicReference<>();
         private final Set<Thread> upstreamFrameThreads = ConcurrentHashMap.newKeySet();
@@ -658,16 +674,16 @@ class WebSocketRelayStageTest {
                     routerThread.set(null);
                     wiringThread.set(null);
                     upstreamFrameThreads.clear();
+                    relayTimeline.startUpgrade();
                     String frame = Generators.letterStrings(1, 32).next();
-                    WebSocket socket = Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
-                                    .setHost(LoopbackHost.ADDRESS).setPort(relayServer.actualPort()).setURI("/relay")),
+                    WebSocket socket = Awaits.connect(wsClient.connect(relayOnlyOptions(relayServer.actualPort())),
                             "upgrade " + upgrade + " against the thread-recording relay server");
                     CompletableFuture<String> echoed = new CompletableFuture<>();
                     socket.textMessageHandler(echoed::complete);
 
                     // Act — one frame round-trip: client leg to the echo upstream, upstream leg back
-                    socket.writeTextMessage(frame);
-                    assertEquals(frame, Awaits.connect(echoed,
+                    writeRelayed(socket, frame);
+                    assertEquals(frame, awaitRelayed(echoed,
                             "upgrade " + upgrade + ": the frame to echo through the relay"));
 
                     // Assert
@@ -705,10 +721,10 @@ class WebSocketRelayStageTest {
             WebSocketRelayStage stage = new WebSocketRelayStage(
                     frameThreadRecordingDialer(relayUpstreamClient, upstreamFrameThreads),
                     new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
-                    wiring -> {
+                    relayTimeline.observer(wiring -> {
                         wiringThread.set(Thread.currentThread());
                         wiring.run();
-                    });
+                    }));
             Router router = Router.router(vertx);
             router.route().handler(ctx -> {
                 ctx.request().pause();
@@ -783,11 +799,109 @@ class WebSocketRelayStageTest {
     }
 
     /**
+     * A relay-await timeout reports the relay's wiring-versus-frame timeline, so a relay test that
+     * times out says whether its first frame was written before the relay installed its handlers. The
+     * first test drives a real timeout through the helper; the second proves the full edge reports
+     * into the recorder at all — without it, every full-edge timeline could silently read
+     * "never wired".
+     */
+    @Nested
+    @DisplayName("relay timeline — a relay-await timeout says whether the first frame preceded the wiring")
+    class RelayTimelineReport {
+
+        /** The bounded wait the forced timeout runs against; the relay's wiring is held well past it. */
+        private static final long BOUNDED_AWAIT_MILLIS = 250;
+
+        @Test
+        @DisplayName("names a first write that preceded the wiring when a relay await times out")
+        void reportsFrameWrittenBeforeHandlerInstalledOnTimeout() throws Exception {
+            // Arrange — a relay-only server whose relay wiring is held until the test releases it
+            AtomicReference<@Nullable Runnable> heldWiring = new AtomicReference<>();
+            HttpServer relayServer = startRelayOnlyServer(upstreamPort, UNOBSERVED_ADMISSION_RELEASE, wiring -> {
+                Context relayContext = Vertx.currentContext();
+                heldWiring.set(() -> relayContext.runOnContext(v -> wiring.run()));
+            });
+            try {
+                relayTimeline.startUpgrade();
+                WebSocket socket = Awaits.connect(wsClient.connect(relayOnlyOptions(relayServer.actualPort())),
+                        "the WebSocket upgrade against the wiring-holding relay server");
+                CompletableFuture<String> echoed = new CompletableFuture<>();
+                socket.textMessageHandler(echoed::complete);
+                writeRelayed(socket, Generators.letterStrings(1, 32).next());
+                AtomicReference<@Nullable TimeoutException> original = new AtomicReference<>();
+
+                // Act — a real bounded wait on an echo that cannot arrive while the wiring is held
+                TimeoutException failure = assertThrows(TimeoutException.class,
+                        () -> withRelayTimeline(relayTimeline, () -> {
+                            try {
+                                return echoed.get(BOUNDED_AWAIT_MILLIS, TimeUnit.MILLISECONDS);
+                            } catch (TimeoutException timedOut) {
+                                original.set(timedOut);
+                                throw timedOut;
+                            }
+                        }));
+
+                // Assert — the rethrown timeout keeps the original as cause and carries the timeline
+                String message = failure.getMessage();
+                assertAll("the relay timeline in the timeout message",
+                        () -> assertSame(original.get(), failure.getCause(),
+                                "the rethrown timeout carries the original timeout as its cause"),
+                        () -> assertFalse(message.contains("client first write: none recorded"),
+                                () -> "the client's first write is on the timeline: " + message),
+                        () -> assertTrue(message.contains("relay wired: never wired"),
+                                () -> "the held wiring reads as never wired: " + message),
+                        () -> assertTrue(message.contains("first frame " + Direction.CLIENT_TO_UPSTREAM + ": none"),
+                                () -> "no frame was relayed towards the upstream: " + message),
+                        () -> assertTrue(message.contains("first frame " + Direction.UPSTREAM_TO_CLIENT + ": none"),
+                                () -> "no frame was relayed towards the client: " + message),
+                        () -> assertTrue(message.contains("verdict: " + FRAME_WRITTEN_BEFORE_HANDLER),
+                                () -> "the verdict names the write that preceded the wiring: " + message));
+            } finally {
+                Runnable wiring = heldWiring.get();
+                if (wiring != null) {
+                    wiring.run();
+                }
+                Awaits.teardown(relayServer.close(), "the wiring-holding relay server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("records the wiring and a first relayed frame in each direction for a relay the full edge builds")
+        void fullEdgeRelayReportsIntoTheRecorder() throws Exception {
+            // Arrange
+            WebSocket socket = connect("/ws-open/room", ALLOWED_ORIGIN);
+            CompletableFuture<String> echoed = new CompletableFuture<>();
+            socket.textMessageHandler(echoed::complete);
+
+            // Act — one frame round-trip through the edge's relay
+            writeRelayed(socket, Generators.letterStrings(1, 32).next());
+            awaitRelayed(echoed, "the echoed frame to return through the edge's relay");
+
+            // Assert — the edge handed its observer to the relay stage it built
+            assertAll("the full edge reports its relay into the recorder",
+                    () -> assertTrue(relayTimeline.wasWired(), "the edge's relay reported its wiring"),
+                    () -> assertEquals(Set.of(Direction.CLIENT_TO_UPSTREAM, Direction.UPSTREAM_TO_CLIENT),
+                            relayTimeline.relayedDirections(),
+                            "the edge's relay reported a first relayed frame in both directions"));
+        }
+    }
+
+    /**
      * Stands up a front server whose single route hands the request straight to a fresh
      * {@link WebSocketRelayStage} — no edge, no pipeline — so {@code releaseAdmission} is observable as
-     * a plain callback instead of the edge's private admission semaphore.
+     * a plain callback instead of the edge's private admission semaphore. The stage runs each relay's
+     * wiring immediately and reports into {@link #relayTimeline}.
      */
     private HttpServer startRelayOnlyServer(int upstreamTargetPort, Runnable releaseAdmission) throws Exception {
+        return startRelayOnlyServer(upstreamTargetPort, releaseAdmission, RelayObserver.NO_OP);
+    }
+
+    /**
+     * As {@link #startRelayOnlyServer(int, Runnable)}, with each relay's wiring handed to
+     * {@code wiringDelegate}, so a test can hold or defer it.
+     */
+    private HttpServer startRelayOnlyServer(int upstreamTargetPort, Runnable releaseAdmission,
+            RelayObserver wiringDelegate) throws Exception {
         RouteRuntime route = RouteRuntime.builder()
                 .id("relay-only")
                 .protocol(Protocol.WEBSOCKET)
@@ -795,7 +909,8 @@ class WebSocketRelayStageTest {
                 .effectiveWebSocketIdleTimeoutSeconds(300)
                 .build();
         WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
-                new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter());
+                new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
+                relayTimeline.observer(wiringDelegate));
         Router router = Router.router(vertx);
         router.route().handler(ctx -> {
             // Mirror GatewayEdgeRoute.handle(): the request stream is paused before the dispatch, so the
@@ -808,6 +923,179 @@ class WebSocketRelayStageTest {
         return Awaits.connect(
                 vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the relay-only server to start listening");
+    }
+
+    private static WebSocketConnectOptions relayOnlyOptions(int port) {
+        return new WebSocketConnectOptions().setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/relay");
+    }
+
+    /**
+     * Writes a text frame the relay under await is expected to forward, recording the client's first
+     * write on {@link #relayTimeline}.
+     */
+    private void writeRelayed(WebSocket socket, String text) {
+        relayTimeline.recordClientWrite();
+        socket.writeTextMessage(text);
+    }
+
+    /**
+     * Awaits a frame the relay forwards, on the connect tier. A timeout is rethrown with the relay's
+     * wiring-versus-frame timeline appended — see {@link #withRelayTimeline}.
+     *
+     * @param relayed the future the relayed frame completes
+     * @param what    what is being awaited, surfaced verbatim in the timeout diagnostics
+     * @return the relayed value
+     */
+    private <T> T awaitRelayed(CompletableFuture<T> relayed, String what)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        return withRelayTimeline(relayTimeline, () -> Awaits.connect(relayed, what));
+    }
+
+    /**
+     * Runs a relay await and, when it times out, rethrows a {@link TimeoutException} whose cause is the
+     * original and whose message is the original message plus {@code timeline}'s rendering. Every
+     * other outcome passes through unchanged. {@code Awaits} itself stays generic: the timeline is
+     * appended here, at the one place that knows a relay is being awaited.
+     *
+     * @param timeline   the timeline of the relay under await
+     * @param relayAwait the await to run
+     * @return the awaited value
+     */
+    private static <T> T withRelayTimeline(RelayTimeline timeline, RelayAwait<T> relayAwait)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        try {
+            return relayAwait.await();
+        } catch (TimeoutException timedOut) {
+            TimeoutException withTimeline = new TimeoutException(
+                    Objects.requireNonNullElse(timedOut.getMessage(), timedOut.toString())
+                            + System.lineSeparator() + timeline.render());
+            withTimeline.initCause(timedOut);
+            throw withTimeline;
+        }
+    }
+
+    /**
+     * An await on a relayed frame.
+     *
+     * @param <T> the awaited value's type
+     */
+    @FunctionalInterface
+    private interface RelayAwait<T> {
+
+        T await() throws InterruptedException, ExecutionException, TimeoutException;
+    }
+
+    /**
+     * Records the timeline of the relay under await: the client's first write, the relay's wiring
+     * time and its first relayed frame per direction, all as {@link System#nanoTime()} readings.
+     * <p>
+     * One timeline covers one relay. {@link #startUpgrade()} clears it before each client upgrade, and
+     * each relay restarts the relay-side half at its {@code beforeWiring}. That is sound because every
+     * test in this class drives its upgrades sequentially: no two relays are ever live against one
+     * recorder at once. Thread-safe: the relay reports from an event loop while the test thread records
+     * writes and renders.
+     */
+    private static final class RelayTimeline {
+
+        private final AtomicReference<@Nullable Long> clientFirstWriteAt = new AtomicReference<>();
+        private final AtomicReference<@Nullable Long> wiredAt = new AtomicReference<>();
+        private final Map<Direction, Long> firstFrameAt = new ConcurrentHashMap<>();
+
+        /** Clears the whole timeline ahead of a new client upgrade. */
+        void startUpgrade() {
+            clientFirstWriteAt.set(null);
+            restartRelay();
+        }
+
+        /** Records the client's first write since {@link #startUpgrade()}; later writes are ignored. */
+        void recordClientWrite() {
+            clientFirstWriteAt.compareAndSet(null, System.nanoTime());
+        }
+
+        boolean wasWired() {
+            return wiredAt.get() != null;
+        }
+
+        Set<Direction> relayedDirections() {
+            return Set.copyOf(firstFrameAt.keySet());
+        }
+
+        /**
+         * An observer that records into this timeline and hands each relay's wiring to
+         * {@code wiringDelegate}.
+         *
+         * @param wiringDelegate receives the wiring — {@link RelayObserver#NO_OP} runs it immediately
+         * @return the recording observer
+         */
+        RelayObserver observer(RelayObserver wiringDelegate) {
+            return new RelayObserver() {
+
+                @Override
+                public void beforeWiring(Runnable wiring) {
+                    restartRelay();
+                    wiringDelegate.beforeWiring(wiring);
+                }
+
+                @Override
+                public void wired(long nanoTime) {
+                    wiredAt.set(nanoTime);
+                }
+
+                @Override
+                public void frameRelayed(Direction direction, long nanoTime) {
+                    firstFrameAt.putIfAbsent(direction, nanoTime);
+                }
+            };
+        }
+
+        /**
+         * Renders the timeline, each relay event with its offset from the client's first write, and a
+         * one-line verdict.
+         *
+         * @return the rendering, never {@code null}
+         */
+        String render() {
+            Long write = clientFirstWriteAt.get();
+            Long wiring = wiredAt.get();
+            StringBuilder text = new StringBuilder(256)
+                    .append("relay timeline (System.nanoTime; offsets from the client's first write):");
+            line(text, "client first write", write == null ? "none recorded" : write + " ns");
+            line(text, "relay wired", wiring == null ? "never wired" : at(wiring, write));
+            for (Direction direction : Direction.values()) {
+                Long frame = firstFrameAt.get(direction);
+                line(text, "first frame " + direction, frame == null ? "none" : at(frame, write));
+            }
+            line(text, "verdict", verdict(write, wiring));
+            return text.toString();
+        }
+
+        private void restartRelay() {
+            wiredAt.set(null);
+            firstFrameAt.clear();
+        }
+
+        private String verdict(@Nullable Long write, @Nullable Long wiring) {
+            if (write == null) {
+                return "no client write recorded";
+            }
+            boolean writePrecededWiring = wiring == null || wiring - write > 0;
+            if (writePrecededWiring && firstFrameAt.isEmpty()) {
+                return FRAME_WRITTEN_BEFORE_HANDLER;
+            }
+            return "the first write did not precede an unwired relay";
+        }
+
+        private static String at(long nanos, @Nullable Long write) {
+            if (write == null) {
+                return nanos + " ns";
+            }
+            long offset = nanos - write;
+            return nanos + " ns (" + (offset >= 0 ? "+" : "") + offset + " ns)";
+        }
+
+        private static void line(StringBuilder text, String label, String value) {
+            text.append(System.lineSeparator()).append("  ").append(label).append(": ").append(value);
+        }
     }
 
     private static void awaitReleases(AtomicInteger releases, String message) throws TimeoutException {
@@ -909,6 +1197,7 @@ class WebSocketRelayStageTest {
     private WebSocket connect(String uri, String origin) throws Exception {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
                 .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setURI(uri).addHeader("Origin", origin);
+        relayTimeline.startUpgrade();
         return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
 
@@ -917,6 +1206,7 @@ class WebSocketRelayStageTest {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
                 .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setURI(uri)
                 .addHeader("Origin", ALLOWED_ORIGIN).addHeader("X-Custom", "leak");
+        relayTimeline.startUpgrade();
         return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
 
