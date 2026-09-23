@@ -21,18 +21,24 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Locale;
+
 import io.restassured.response.ExtractableResponse;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Acceptance of the route-table and response-path behaviour against the native image over the public
  * HTTPS edge: exact routes and the redirect terminal action (AS-3), asset-only endpoints without a
  * {@code base_url} (AS-4), anchor-scoped security headers with their per-header precedence (AS-8), the
- * appended {@code upstream.path} (AS-9) and the opt-in {@code Location} rewrite (AS-11).
+ * appended {@code upstream.path} (AS-9), the opt-in {@code Location} rewrite (AS-11), and header-matcher
+ * route selection: a {@code present: true} / {@code present: false} route pair on one prefix selects the
+ * same route whichever order it is declared in, with the matcher name compared case-insensitively.
  * <p>
  * The stack runs the native binary, so every configuration record these features introduced — the
  * redirect block, the header modes, the asset index and fallback, the rewrite toggle — is bound by the
@@ -40,7 +46,9 @@ import org.junit.jupiter.api.Test;
  * <p>
  * Every assertion is driven by the mounted descriptors: {@code sheriff-config/gateway.yaml} (the global
  * {@code security_headers} block and the {@code api} anchor block), {@code endpoints/httpbin.yaml} (the
- * exact redirect route), {@code endpoints/origin-headers.yaml} (the precedence and rewrite routes) and
+ * exact redirect route), {@code endpoints/origin-headers.yaml} (the precedence and rewrite routes, and
+ * the two header-discriminated route pairs under {@code /proxy/header-order/present-first} and
+ * {@code /proxy/header-order/absent-first}) and
  * {@code endpoints/assets.yaml}. Redirects are never followed, so the gateway's own answer is observed.
  */
 class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
@@ -287,6 +295,70 @@ class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
             assertAll("THE CONTROL: the rewrite never touches a location outside the route upstream",
                     () -> assertEquals(302, response.statusCode()),
                     () -> assertEquals("https://elsewhere.example/landing", response.header(LOCATION)));
+        }
+    }
+
+    @Nested
+    @DisplayName("header-discriminated route pairs select independent of declaration order")
+    class HeaderDiscriminatedRoutePairs {
+
+        /**
+         * The matcher header, sent in a letter case different from the {@code X-Sheriff-Variant} the
+         * descriptor declares, so every request here also proves case-insensitive name matching.
+         */
+        private static final String VARIANT_HEADER_ON_THE_WIRE = "x-SHERIFF-variant";
+        private static final String MATCHER_HEADER = "X-Sheriff-Variant";
+
+        private ExtractableResponse<Response> requestWithHeader(String prefix) {
+            return given()
+                    .header(VARIANT_HEADER_ON_THE_WIRE, "on")
+                    .when()
+                    .get(prefix + "/echo")
+                    .then()
+                    .extract();
+        }
+
+        private ExtractableResponse<Response> requestWithoutHeader(String prefix) {
+            return given()
+                    .when()
+                    .get(prefix + "/echo")
+                    .then()
+                    .extract();
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"/proxy/header-order/present-first", "/proxy/header-order/absent-first"})
+        @DisplayName("a request carrying the header reaches the present: true route in either declaration order")
+        void headerCarryingRequestReachesPresentRoute(String prefix) {
+            ExtractableResponse<Response> response = requestWithHeader(prefix);
+
+            assertAll("the present: true route answered, whatever order the pair is declared in",
+                    () -> assertEquals(200, response.statusCode()),
+                    () -> assertTrue(response.path("url").toString().contains("/anything/header-with"),
+                            "the header-carrying request was forwarded to the with route: " + response.asString()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"/proxy/header-order/present-first", "/proxy/header-order/absent-first"})
+        @DisplayName("a request without the header reaches the present: false route in either declaration order")
+        void headerlessRequestReachesAbsentRoute(String prefix) {
+            ExtractableResponse<Response> response = requestWithoutHeader(prefix);
+
+            assertAll("the present: false route answered, whatever order the pair is declared in",
+                    () -> assertEquals(200, response.statusCode()),
+                    () -> assertTrue(response.path("url").toString().contains("/anything/header-without"),
+                            "the header-less request was forwarded to the without route: " + response.asString()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"/proxy/header-order/present-first", "/proxy/header-order/absent-first"})
+        @DisplayName("the header-selected response announces the matcher header in Vary")
+        void headerSelectedResponseVariesOnMatcherHeader(String prefix) {
+            ExtractableResponse<Response> response = requestWithHeader(prefix);
+
+            String vary = String.join(", ", response.headers().getValues("Vary"));
+            assertTrue(vary.toLowerCase(Locale.ROOT).contains(MATCHER_HEADER.toLowerCase(Locale.ROOT)),
+                    "route selection depends on the matcher header, so Vary must name it: " + vary);
         }
     }
 }

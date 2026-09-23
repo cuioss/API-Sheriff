@@ -1,11 +1,11 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # Response-path acceptance endpoint exercised by RoutingAndResponseHeadersIT (and, for the
-# origin-status route, HtmlErrorPageIT). Its three proxy routes
+# origin-status route, HtmlErrorPageIT). Its proxy routes
 # reach go-httpbin through the HTTPBIN_ROOT alias, which — unlike UPSTREAM — carries NO base path, so
 # each route's upstream.path is the whole effective upstream base (ADR-0004 Amendment A2: alias base
 # path + upstream.path + remainder-after-match-key, with an empty alias base).
 #
-# Both routes ride the 'api' anchor (/proxy), so every response on them carries the anchor's
+# All routes ride the 'api' anchor (/proxy), so every response on them carries the anchor's
 # security_headers block rather than the global one (ADR-0007 Amendment A1). The endpoint declares the
 # require: none posture itself because the 'api' anchor is access: public and carries no auth block
 # (ADR-0013).
@@ -62,3 +62,48 @@ endpoint:
         path_prefix: /proxy/origin-status
       upstream:
         path: /status
+
+    # Header-discriminated route pairs (RoutingAndResponseHeadersIT). Each pair splits one prefix on
+    # X-Sheriff-Variant: the present: true route answers requests carrying the header, the
+    # present: false route answers requests without it. The validator certifies each pair as disjoint,
+    # so the selected route must never depend on declaration order — and one prefix can hold only one
+    # declaration order, hence two prefixes: present-first declares the present: true route first,
+    # absent-first declares the present: false route first. The matcher name is written in mixed case
+    # while the IT sends the header in a different letter case, so the pair also proves header names
+    # match case-insensitively. Both routes reach go-httpbin's /anything echo, whose echoed url names
+    # the upstream path and so reveals which route was selected.
+    - id: header-order-present-first-with
+      match:
+        path_prefix: /proxy/header-order/present-first
+        headers:
+          - name: X-Sheriff-Variant
+            present: true
+      upstream:
+        path: /anything/header-with
+
+    - id: header-order-present-first-without
+      match:
+        path_prefix: /proxy/header-order/present-first
+        headers:
+          - name: X-Sheriff-Variant
+            present: false
+      upstream:
+        path: /anything/header-without
+
+    - id: header-order-absent-first-without
+      match:
+        path_prefix: /proxy/header-order/absent-first
+        headers:
+          - name: X-Sheriff-Variant
+            present: false
+      upstream:
+        path: /anything/header-without
+
+    - id: header-order-absent-first-with
+      match:
+        path_prefix: /proxy/header-order/absent-first
+        headers:
+          - name: X-Sheriff-Variant
+            present: true
+      upstream:
+        path: /anything/header-with
