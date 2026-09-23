@@ -62,6 +62,7 @@ import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.MultiMap;
@@ -438,6 +439,122 @@ class WebSocketRelayStageTest {
             return Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
                             .setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/relay")),
                     "the WebSocket upgrade against the relay-only server");
+        }
+    }
+
+    /**
+     * A frame that reaches a relay leg the instant that leg is upgraded must survive until the relay has
+     * installed its handlers. Both cases run over a relay-only server whose stage defers every relay's
+     * wiring by {@link #DEFERRED_WIRING_MILLIS} — a fixed stand-in for any scheduling gap between a
+     * leg's upgrade and the installation of its frame handler — and whose router handler hands
+     * {@link WebSocketRelayStage#relay} to the fixture's virtual-thread executor, mirroring the edge's
+     * own hop off the event loop.
+     * <p>
+     * The first frame on each leg is written with no gap after that leg's {@code 101}: the client writes
+     * inside its own upgrade-completion callback, and the upstream greets from inside its own accept
+     * callback. A frame the relay drops is never delivered, so a loss surfaces as the connect-tier await
+     * timing out rather than as a wrong value.
+     */
+    @Nested
+    @DisplayName("early frame — a frame sent the instant a leg is upgraded survives until the relay is wired")
+    class EarlyFrame {
+
+        /** How long the stage under test defers each relay's wiring once both legs are upgraded. */
+        private static final long DEFERRED_WIRING_MILLIS = 500;
+
+        /**
+         * The early-frame cases observe frames, not the admission permit, so the stage is handed a
+         * release callback that records nothing.
+         */
+        private static final Runnable UNOBSERVED_ADMISSION_RELEASE = () -> {
+            // the admission lifecycle is pinned by AdmissionReleaseCallback, not here
+        };
+
+        @Test
+        @DisplayName("relays a client frame written inside the client's own upgrade callback")
+        void relaysClientFrameWrittenOnUpgrade() throws Exception {
+            // Arrange — the relay dials the setUp echo upstream
+            String frame = Generators.letterStrings(1, 32).next();
+            HttpServer relayServer = startDeferredWiringRelayServer(upstreamPort);
+            try {
+                CompletableFuture<String> echoed = new CompletableFuture<>();
+
+                // Act — the first frame leaves the client inside its upgrade callback, with no gap
+                wsClient.connect(relayOptions(relayServer.actualPort()))
+                        .onSuccess(socket -> {
+                            socket.textMessageHandler(echoed::complete);
+                            socket.writeTextMessage(frame);
+                        })
+                        .onFailure(echoed::completeExceptionally);
+
+                // Assert — the frame crosses the relay to the echo upstream and comes back
+                assertEquals(frame, Awaits.connect(echoed,
+                        "the client's first frame, written in its upgrade callback, to echo through the relay"));
+            } finally {
+                Awaits.teardown(relayServer.close(), "the deferred-wiring relay server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("relays an upstream greeting written the instant the upstream accepts the upgrade")
+        void relaysUpstreamGreetingWrittenOnAccept() throws Exception {
+            // Arrange — an upstream that speaks first: it greets from inside its own accept callback
+            String greeting = Generators.letterStrings(1, 32).next();
+            HttpServer greetingServer = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.toWebSocket()
+                                    .onSuccess(upstreamSide -> upstreamSide.writeTextMessage(greeting)))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the greeting stub upstream to start listening");
+            try {
+                HttpServer relayServer = startDeferredWiringRelayServer(greetingServer.actualPort());
+                try {
+                    CompletableFuture<String> greeted = new CompletableFuture<>();
+
+                    // Act — the client only listens; the upstream's greeting is the first frame on the relay
+                    wsClient.connect(relayOptions(relayServer.actualPort()))
+                            .onSuccess(socket -> socket.textMessageHandler(greeted::complete))
+                            .onFailure(greeted::completeExceptionally);
+
+                    // Assert — the greeting crosses the relay to the client
+                    assertEquals(greeting, Awaits.connect(greeted,
+                            "the upstream's greeting, written on accept, to reach the client"));
+                } finally {
+                    Awaits.teardown(relayServer.close(), "the deferred-wiring relay server to close");
+                }
+            } finally {
+                Awaits.teardown(greetingServer.close(), "the greeting stub upstream to close");
+            }
+        }
+
+        /**
+         * Stands up a relay-only front server whose stage defers every relay's wiring by
+         * {@link #DEFERRED_WIRING_MILLIS} on the relay's own Vert.x context, and whose router handler
+         * pauses the request on the event loop and then dispatches {@link WebSocketRelayStage#relay}
+         * from the fixture's virtual-thread executor — the same pause-then-hop the edge performs.
+         */
+        private HttpServer startDeferredWiringRelayServer(int upstreamTargetPort) throws Exception {
+            RouteRuntime route = RouteRuntime.builder()
+                    .id("early-frame")
+                    .protocol(Protocol.WEBSOCKET)
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamTargetPort, ""))
+                    .effectiveWebSocketIdleTimeoutSeconds(300)
+                    .build();
+            WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
+                    new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
+                    wiring -> vertx.setTimer(DEFERRED_WIRING_MILLIS, timerId -> wiring.run()));
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> {
+                ctx.request().pause();
+                virtualThreadExecutor.execute(() -> stage.relay(ctx, route, Map.of(), Map.of(), "/",
+                        UNOBSERVED_ADMISSION_RELEASE));
+            });
+            return Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the deferred-wiring relay server to start listening");
+        }
+
+        private WebSocketConnectOptions relayOptions(int port) {
+            return new WebSocketConnectOptions().setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/relay");
         }
     }
 

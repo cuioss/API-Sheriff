@@ -93,17 +93,39 @@ public final class WebSocketRelayStage {
     private final WebSocketClient webSocketClient;
     private final UpstreamFailureMapper failureMapper;
     private final GatewayEventCounter eventCounter;
+    private final RelayObserver observer;
 
     /**
+     * Creates the production relay stage, which runs every relay's wiring immediately (the no-op
+     * {@link RelayObserver#NO_OP} observer).
+     *
      * @param webSocketClient the edge-wide dialer for every upstream WebSocket handshake
      * @param failureMapper the shared mapper turning an upstream dial failure into the error contract
      * @param eventCounter  the shared in-process event counter
      */
     public WebSocketRelayStage(WebSocketClient webSocketClient, UpstreamFailureMapper failureMapper,
             GatewayEventCounter eventCounter) {
+        this(webSocketClient, failureMapper, eventCounter, RelayObserver.NO_OP);
+    }
+
+    /**
+     * <strong>Test-only.</strong> Creates a relay stage whose relay wiring is handed to the given
+     * {@link RelayObserver} instead of running directly, so a test can observe or deliberately delay
+     * the moment the relay's frame handlers are installed. Package-private and selected by no
+     * configuration key or system property; production code constructs the stage through the public
+     * constructor, which passes {@link RelayObserver#NO_OP}.
+     *
+     * @param webSocketClient the edge-wide dialer for every upstream WebSocket handshake
+     * @param failureMapper the shared mapper turning an upstream dial failure into the error contract
+     * @param eventCounter  the shared in-process event counter
+     * @param observer      the test observer every established relay hands its wiring to
+     */
+    WebSocketRelayStage(WebSocketClient webSocketClient, UpstreamFailureMapper failureMapper,
+            GatewayEventCounter eventCounter, RelayObserver observer) {
         this.webSocketClient = Objects.requireNonNull(webSocketClient, "webSocketClient");
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
         this.eventCounter = Objects.requireNonNull(eventCounter, "eventCounter");
+        this.observer = Objects.requireNonNull(observer, "observer");
     }
 
     /**
@@ -204,14 +226,43 @@ public final class WebSocketRelayStage {
         eventCounter.increment(EventType.REQUEST_FORWARDED);
         // The admission permit stays held for the relay's whole lifetime — the session releases it from
         // its single teardown funnel, never here at upgrade completion.
-        new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds, eventCounter,
-                releaseAdmission).start();
+        RelaySession session = new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds,
+                eventCounter, releaseAdmission);
+        observer.beforeWiring(session::start);
     }
 
     private static void closeQuietly(WebSocketBase ws, short code, @Nullable String reason) {
         if (!ws.isClosed()) {
             ws.close(code, reason);
         }
+    }
+
+    /**
+     * <strong>Test-only</strong> observation seam on an established relay's wiring. Every established
+     * relay hands the installation of its frame, pong, close and exception handlers
+     * ({@code RelaySession.start()}) to {@link #beforeWiring(Runnable)} rather than running it
+     * directly, so a test can defer that installation and reproduce a frame that reaches a leg before
+     * its handler exists.
+     * <p>
+     * Package-private and reachable only through the stage's package-private constructor: no
+     * configuration key or system property selects an observer, and production always runs with
+     * {@link #NO_OP}.
+     *
+     * @since 1.0
+     */
+    interface RelayObserver {
+
+        /** The production observer: runs the wiring immediately, on the calling thread. */
+        RelayObserver NO_OP = Runnable::run;
+
+        /**
+         * Receives an established relay's wiring. An implementation must run {@code wiring} exactly
+         * once, on the relay's Vert.x context — immediately, or later through that context (for example
+         * from a {@code vertx.setTimer} callback) to model a scheduling gap.
+         *
+         * @param wiring installs every handler on both relay legs and arms the idle timer
+         */
+        void beforeWiring(Runnable wiring);
     }
 
     /**
