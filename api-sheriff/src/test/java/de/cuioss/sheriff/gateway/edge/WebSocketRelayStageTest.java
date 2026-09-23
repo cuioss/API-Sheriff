@@ -48,6 +48,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -609,33 +610,14 @@ class WebSocketRelayStageTest {
         }
 
         /**
-         * Stands up a relay-only front server whose stage defers every relay's wiring by
-         * {@link #DEFERRED_WIRING_MILLIS} on the relay's own Vert.x context, and whose router handler
-         * pauses the request and captures the client connection's context on the event loop, then
-         * dispatches {@link WebSocketRelayStage#relay} from the fixture's virtual-thread executor — the
-         * same pause, capture and hop the edge performs.
+         * A {@link WebSocketRelayStageTest#startHoppingRelayServer hopping relay server} whose stage
+         * defers every relay's wiring by {@link #DEFERRED_WIRING_MILLIS} on the relay's own Vert.x context.
          */
         private HttpServer startDeferredWiringRelayServer(int upstreamTargetPort) throws Exception {
-            RouteRuntime route = RouteRuntime.builder()
-                    .id("early-frame")
-                    .protocol(Protocol.WEBSOCKET)
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamTargetPort, ""))
-                    .effectiveWebSocketIdleTimeoutSeconds(300)
-                    .build();
-            WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
-                    new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
-                    relayTimeline.observer(wiring -> vertx.setTimer(DEFERRED_WIRING_MILLIS, timerId -> wiring.run())));
-            Router router = Router.router(vertx);
-            router.route().handler(ctx -> {
-                ctx.request().pause();
-                // Captured on the event loop, before the hop, exactly as GatewayEdgeRoute.handle() does.
-                Context clientContext = Vertx.currentContext();
-                virtualThreadExecutor.execute(() -> stage.relay(ctx, clientContext, route, Map.of(), Map.of(),
-                        "/", UNOBSERVED_ADMISSION_RELEASE));
-            });
-            return Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the deferred-wiring relay server to start listening");
+            return startHoppingRelayServer(upstreamTargetPort, relayUpstreamClient,
+                    wiring -> vertx.setTimer(DEFERRED_WIRING_MILLIS, timerId -> wiring.run()), thread -> {
+                        // this fixture observes frames, not threads
+                    });
         }
 
     }
@@ -705,38 +687,16 @@ class WebSocketRelayStageTest {
         }
 
         /**
-         * Stands up a relay-only front server that records the thread of every relay's wiring and of its
-         * upstream leg's text-frame handling, and whose router handler records its own thread, pauses the
-         * request and captures the client connection's context on the event loop, then dispatches
-         * {@link WebSocketRelayStage#relay} from the fixture's virtual-thread executor — the same pause,
-         * capture and hop the edge performs.
+         * A {@link WebSocketRelayStageTest#startHoppingRelayServer hopping relay server} against the setUp
+         * echo upstream that records the thread of its router handler, of every relay's wiring and of its
+         * upstream leg's text-frame handling.
          */
         private HttpServer startThreadRecordingRelayServer() throws Exception {
-            RouteRuntime route = RouteRuntime.builder()
-                    .id("threading")
-                    .protocol(Protocol.WEBSOCKET)
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
-                    .effectiveWebSocketIdleTimeoutSeconds(300)
-                    .build();
-            WebSocketRelayStage stage = new WebSocketRelayStage(
-                    frameThreadRecordingDialer(relayUpstreamClient, upstreamFrameThreads),
-                    new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
-                    relayTimeline.observer(wiring -> {
+            return startHoppingRelayServer(upstreamPort,
+                    frameThreadRecordingDialer(relayUpstreamClient, upstreamFrameThreads), wiring -> {
                         wiringThread.set(Thread.currentThread());
                         wiring.run();
-                    }));
-            Router router = Router.router(vertx);
-            router.route().handler(ctx -> {
-                ctx.request().pause();
-                routerThread.set(Thread.currentThread());
-                // Captured on the event loop, before the hop, exactly as GatewayEdgeRoute.handle() does.
-                Context clientContext = Vertx.currentContext();
-                virtualThreadExecutor.execute(() -> stage.relay(ctx, clientContext, route, Map.of(), Map.of(),
-                        "/", UNOBSERVED_ADMISSION_RELEASE));
-            });
-            return Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the thread-recording relay server to start listening");
+                    }, routerThread::set);
         }
 
         private static String threadName(@Nullable Thread thread) {
@@ -923,6 +883,38 @@ class WebSocketRelayStageTest {
         return Awaits.connect(
                 vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the relay-only server to start listening");
+    }
+
+    /**
+     * Stands up a relay-only front server whose router handler pauses the request, hands its own thread
+     * to {@code routerThreadSink} and captures the client connection's context on the event loop, then
+     * dispatches {@link WebSocketRelayStage#relay} from the fixture's virtual-thread executor — the same
+     * pause, capture and hop the edge performs. The stage dials through {@code dialer}, hands each relay's
+     * wiring to {@code wiringDelegate} and reports into {@link #relayTimeline}.
+     */
+    private HttpServer startHoppingRelayServer(int upstreamTargetPort, WebSocketClient dialer,
+            RelayObserver wiringDelegate, Consumer<Thread> routerThreadSink) throws Exception {
+        RouteRuntime route = RouteRuntime.builder()
+                .id("hopping-relay")
+                .protocol(Protocol.WEBSOCKET)
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamTargetPort, ""))
+                .effectiveWebSocketIdleTimeoutSeconds(300)
+                .build();
+        WebSocketRelayStage stage = new WebSocketRelayStage(dialer,
+                new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
+                relayTimeline.observer(wiringDelegate));
+        Router router = Router.router(vertx);
+        router.route().handler(ctx -> {
+            ctx.request().pause();
+            routerThreadSink.accept(Thread.currentThread());
+            // Captured on the event loop, before the hop, exactly as GatewayEdgeRoute.handle() does.
+            Context clientContext = Vertx.currentContext();
+            virtualThreadExecutor.execute(() -> stage.relay(ctx, clientContext, route, Map.of(), Map.of(),
+                    "/", UNOBSERVED_ADMISSION_RELEASE));
+        });
+        return Awaits.connect(
+                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                "the hopping relay server to start listening");
     }
 
     private static WebSocketConnectOptions relayOnlyOptions(int port) {
