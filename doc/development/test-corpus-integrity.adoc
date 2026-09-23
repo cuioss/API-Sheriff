@@ -1854,11 +1854,30 @@ never an all-clear, and two limits travel with it:
 * *The Linux lane is the authority only for the 30-second stall signature*, which it has never
   reproduced. It is not the authority for macOS behaviour, and the macOS-local wildcard-ephemeral-bind
   condition is exactly the case a green Linux lane cannot clear.
++
+*Amendment 2026-09-23.* "Which it has never reproduced" no longer holds. Run 35802987168 is
+*reported by the plan spec* to have failed on the Linux lane at `c1b09c7` with a
+`WebSocketRelayStageTest` relay await timeout. It was not re-checked; see
+xref:build-gate-discipline.adoc#linux-relay-race-occurrence[the Linux occurrence in Build-Gate
+Discipline] for why. Its cause was not the wildcard-ephemeral-bind condition. It was a second
+mechanism, the relay's pre-wiring frame window. "macOS-local" above is scoped to the wildcard-bind
+occurrences, not to the stall. The authority rule keeps its direction: a Linux-lane stall is not the
+wildcard-bind condition, and it is a defect to find.
 * *The class sits in the live-socket population that condition acts on.* `WebSocketRelayStageTest` is
   one of the eleven classes constructing a live `Vertx.vertx()`, and the reading recorded against that
   population is a *uniform per-attempt hazard* rather than particular fixtures being special -- so no
   method in the class is exempt by name, including this one. What is settled is that *this method* was
   never among the recorded occurrences; what is not settled is the hazard the class carries.
++
+*Amendment 2026-09-23 -- a second hazard.* The class also carried the relay's pre-wiring frame
+window. A frame that reached a relay leg before the relay installed that leg's handler was lost, and
+the await on it timed out at the same 30-second ceiling. This hazard is not uniform per attempt. It
+belonged to the relay path under the class's plain virtual-thread executor, which binds no Vert.x
+context. It cannot reach this method either, because a handshake failure establishes no relay. The
+fix closed it: the relay now hops onto the client connection's context and holds both legs paused
+until they are wired. The production client leg is refuted *as far as measured*
+(`d3-production-verdict: GREEN`, no loss in N = 50 upgrades against the unfixed native gateway,
+inconclusive with stated power).
 
 Nothing was widened, quarantined or otherwise softened to reach this verdict, and no test or
 production file was modified by it: both are explicitly forbidden for this condition.
