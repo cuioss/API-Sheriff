@@ -41,6 +41,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -82,14 +83,17 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.ServerWebSocket;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.http.WebSocketFrame;
+import io.vertx.core.http.WebSocketFrameType;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -623,6 +627,97 @@ class WebSocketRelayStageTest {
     }
 
     /**
+     * A received pong is control traffic, not data. Vert.x hands a pong that reaches a relay leg to
+     * that leg's frame handler as well as to its pong handler, so the relay has to forward it as a pong
+     * itself. Were it to fall through to the data path, the other leg would receive it as a binary
+     * message, and it would take the direction's single first-data-frame report away from the first
+     * real data frame.
+     * <p>
+     * The stub upstream here sends an unsolicited pong the instant it accepts the upgrade — so it is the
+     * first frame on the upstream leg — and a text greeting only when the test signals it. The relay
+     * reports a data frame before writing it, so a pong it had reported would be on record before the
+     * client could receive it.
+     */
+    @Nested
+    @DisplayName("pong relay — a received pong is forwarded as a pong, never as data")
+    class PongRelay {
+
+        @Test
+        @DisplayName("forwards an upstream pong as a pong that takes no first-data-frame report")
+        void forwardsUpstreamPongAsPongWithoutDataFrameReport() throws Exception {
+            // Arrange — an upstream that sends a pong on accept and greets only when signalled
+            String pongPayload = Generators.letterStrings(1, 32).next();
+            String greeting = Generators.letterStrings(1, 32).next();
+            CompletableFuture<ServerWebSocket> upstreamSide = new CompletableFuture<>();
+            HttpServer pongServer = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.toWebSocket().onSuccess(accepted -> {
+                                accepted.writeFrame(WebSocketFrame.pongFrame(Buffer.buffer(pongPayload)));
+                                upstreamSide.complete(accepted);
+                            }))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the pong-first stub upstream to start listening");
+            try {
+                HttpServer relayServer = startRelayOnlyServer(pongServer.actualPort(), UNOBSERVED_ADMISSION_RELEASE);
+                try {
+                    List<WebSocketFrameType> clientFrameTypes = new CopyOnWriteArrayList<>();
+                    CompletableFuture<WebSocketFrameType> firstFrameType = new CompletableFuture<>();
+                    CompletableFuture<String> pongReceived = new CompletableFuture<>();
+                    CompletableFuture<String> greeted = new CompletableFuture<>();
+                    relayTimeline.startUpgrade();
+
+                    // Act — the client only listens; the upstream's pong is the first frame on the relay
+                    wsClient.connect(relayOnlyOptions(relayServer.actualPort()))
+                            .onSuccess(socket -> {
+                                socket.pongHandler(data -> pongReceived.complete(data.toString(StandardCharsets.UTF_8)));
+                                socket.frameHandler(frame -> {
+                                    clientFrameTypes.add(frame.type());
+                                    firstFrameType.complete(frame.type());
+                                    if (frame.isText()) {
+                                        greeted.complete(frame.textData());
+                                    }
+                                });
+                            })
+                            .onFailure(failure -> {
+                                firstFrameType.completeExceptionally(failure);
+                                pongReceived.completeExceptionally(failure);
+                                greeted.completeExceptionally(failure);
+                            });
+
+                    // Assert (a) — the pong reached the client as a pong, and nothing arrived as binary data
+                    assertEquals(WebSocketFrameType.PONG,
+                            awaitRelayed(firstFrameType, "the upstream's pong to reach the client"),
+                            "the first frame the client receives is the upstream's pong, not a data frame");
+                    assertEquals(pongPayload, awaitRelayed(pongReceived, "the client's pong handler to fire"),
+                            "the client's pong handler receives the upstream's pong payload");
+                    assertEquals(List.of(WebSocketFrameType.PONG), List.copyOf(clientFrameTypes),
+                            "the relayed pong reaches the client once, and never as a binary frame");
+
+                    // Assert (b) — the pong took no first-data-frame report
+                    assertEquals(0, relayTimeline.reportCount(Direction.UPSTREAM_TO_CLIENT),
+                            "a relayed pong is not reported as the direction's first data frame");
+
+                    // Act — the upstream now sends its first data frame
+                    Awaits.connect(upstreamSide, "the pong-first upstream to accept the relay's upgrade")
+                            .writeTextMessage(greeting);
+
+                    // Assert (c) — the greeting is relayed and is the one first-data-frame report
+                    assertEquals(greeting, awaitRelayed(greeted, "the upstream's greeting to reach the client"));
+                    assertAll("the greeting, not the pong, is the direction's first data frame",
+                            () -> assertEquals(1, relayTimeline.reportCount(Direction.UPSTREAM_TO_CLIENT),
+                                    "exactly one first-data-frame report is recorded towards the client"),
+                            () -> assertEquals(List.of(WebSocketFrameType.PONG, WebSocketFrameType.TEXT),
+                                    List.copyOf(clientFrameTypes),
+                                    "the client received the pong and then the greeting, and no binary frame"));
+                } finally {
+                    Awaits.teardown(relayServer.close(), "the relay-only server to close");
+                }
+            } finally {
+                Awaits.teardown(pongServer.close(), "the pong-first stub upstream to close");
+            }
+        }
+    }
+
+    /**
      * Pins the threading {@link WebSocketRelayStage}'s Javadoc claims: the relay's wiring and the
      * upstream leg's frame handling run on the client connection's context — the event-loop thread the
      * router handler ran on — whatever thread called {@link WebSocketRelayStage#relay}.
@@ -992,6 +1087,8 @@ class WebSocketRelayStageTest {
         private final AtomicReference<@Nullable Long> clientFirstWriteAt = new AtomicReference<>();
         private final AtomicReference<@Nullable Long> wiredAt = new AtomicReference<>();
         private final Map<Direction, Long> firstFrameAt = new ConcurrentHashMap<>();
+        /** Every first-frame report in arrival order, so a test can count them rather than only see one. */
+        private final List<Direction> reports = new CopyOnWriteArrayList<>();
 
         /** Clears the whole timeline ahead of a new client upgrade. */
         void startUpgrade() {
@@ -1010,6 +1107,16 @@ class WebSocketRelayStageTest {
 
         Set<Direction> relayedDirections() {
             return Set.copyOf(firstFrameAt.keySet());
+        }
+
+        /**
+         * The number of first-frame reports the current relay made in {@code direction}.
+         *
+         * @param direction the direction to count
+         * @return the report count — at most one from a correct relay
+         */
+        int reportCount(Direction direction) {
+            return (int) reports.stream().filter(direction::equals).count();
         }
 
         /**
@@ -1035,6 +1142,7 @@ class WebSocketRelayStageTest {
 
                 @Override
                 public void frameRelayed(Direction direction, long nanoTime) {
+                    reports.add(direction);
                     firstFrameAt.putIfAbsent(direction, nanoTime);
                 }
             };
@@ -1064,6 +1172,7 @@ class WebSocketRelayStageTest {
         private void restartRelay() {
             wiredAt.set(null);
             firstFrameAt.clear();
+            reports.clear();
         }
 
         private String verdict(@Nullable Long write, @Nullable Long wiring) {

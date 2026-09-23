@@ -37,6 +37,7 @@ import io.vertx.core.http.WebSocketBase;
 import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.http.WebSocketFrame;
+import io.vertx.core.http.WebSocketFrameType;
 import io.vertx.ext.web.RoutingContext;
 import org.jspecify.annotations.Nullable;
 
@@ -408,8 +409,9 @@ public final class WebSocketRelayStage {
 
         private void wire(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction) {
             source.frameHandler(frame -> relayFrame(source, target, direction, frame));
-            // Vert.x surfaces received pong frames on a dedicated handler (not the frame handler) and
-            // auto-responds to pings; a pong is relay activity, so it resets the idle timer.
+            // Vert.x delivers a received pong to BOTH the pong handler and the frame handler: relayFrame's
+            // pong branch forwards it to the other leg as a pong, and this handler only counts it as relay
+            // activity that resets the idle timer. Vert.x also auto-responds to pings.
             source.pongHandler(pong -> resetIdle());
         }
 
@@ -427,7 +429,13 @@ public final class WebSocketRelayStage {
                 target.writeFrame(WebSocketFrame.pingFrame(frame.binaryData()));
                 return;
             }
-            // Reported before the write, so the report is on record before the frame can reach the other end.
+            if (frame.type() == WebSocketFrameType.PONG) {
+                // A pong is control traffic: forwarded as a pong, never converted into a data frame by
+                // dataFrame() and never taking the direction's first-data-frame report below.
+                target.writeFrame(WebSocketFrame.pongFrame(frame.binaryData()));
+                return;
+            }
+            // Only text, binary and continuation frames get here. Reported before the write, so the report is on record before the frame can reach the other end.
             if (reportedDirections.add(direction)) {
                 observer.frameRelayed(direction, System.nanoTime());
             }
