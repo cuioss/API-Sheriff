@@ -534,7 +534,7 @@ the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
 === `portal`
 
 The application portal (link:user/portal.adoc[operator guide],
-link:adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050]).
+link:adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053]).
 An optional `gateway.yaml` block. When it is omitted the portal is off, no path is reserved, and the
 gateway behaves exactly as without it. When it is declared the gateway reserves one exact,
 host-independent path and answers it with an HTML overview of every enabled endpoint that declares an

@@ -11,7 +11,7 @@ user one landing address listing the applications behind the gateway. Each endpo
 
 This guide is task-oriented. The field-by-field contract for `portal.*` and `endpoint.catalog.*` is
 in the link:../configuration.adoc#_portal[Configuration Reference]. The design decision behind the
-template engine is link:../adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050],
+template engine is link:../adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053],
 and the threats the surface answers are catalogued under
 link:../security-threat-model.adoc#_html_surface_failure_catalogue[HTML surface] in the threat model.
 
