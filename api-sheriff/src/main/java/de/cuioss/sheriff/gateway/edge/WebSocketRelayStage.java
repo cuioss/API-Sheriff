@@ -63,8 +63,20 @@ import org.jspecify.annotations.Nullable;
  * WebSocket close code {@code 1001} (Going Away) on expiry and meters
  * {@link EventType#WEBSOCKET_IDLE_TIMEOUT}.
  * <p>
- * Every socket operation is event-loop-bound; the relay hops onto the request's Vert.x context so
- * both legs share one event loop and the frame relay is single-threaded.
+ * <strong>Threading.</strong> Every socket operation is event-loop-bound, so the relay runs on the client
+ * connection's context: {@code GatewayEdgeRoute.handle()} captures it on the connection's event loop
+ * before the virtual-thread hop, and {@link #relay} hops onto it whatever thread calls it. The upstream
+ * dial and its success and failure callbacks, the client upgrade's completion, {@code establishRelay} and
+ * every {@code RelaySession} handler — frame, pong, close, exception, idle timer and drain — run on the
+ * client connection's context; the upstream connection is created from that context and shares its
+ * event loop, so the frame relay is single-threaded. Before this fix the relay hopped onto the context
+ * of whatever thread called {@code relay()}. In production, Quarkus's context-preserving virtual-thread
+ * executor had already bound the client connection's context to that thread, and the early-frame
+ * integration test saw no loss in N = 50 upgrades; the client-leg production consequence is therefore
+ * refuted as far as measured ({@code d3-production-verdict: GREEN}, inconclusive with stated power —
+ * zero losses in 50 upgrades bounds the per-upgrade loss rate below about 6% at 95% confidence). The
+ * unit fixture's plain virtual-thread executor did not bind that context, and that is where the
+ * client-leg loss reproduced.
  * <p>
  * <strong>No frame reaches a leg before its handler.</strong> Vert.x delivers a WebSocket's inbound
  * frames from the moment the socket exists, while the relay installs its frame handlers only when
@@ -155,7 +167,8 @@ public final class WebSocketRelayStage {
 
     /**
      * Dials the upstream WebSocket and, on success, upgrades the client and establishes the opaque
-     * relay. Runs asynchronously on the request's Vert.x context; the caller returns immediately.
+     * relay. Runs asynchronously on the client connection's context, whatever thread calls it; the
+     * caller returns immediately.
      * <p>
      * The stage-0 security headers accumulated on the request are retained across the asynchronous
      * dial so that a handshake-failure response ({@link #onUpstreamFailure}) carries the same
@@ -308,8 +321,9 @@ public final class WebSocketRelayStage {
 
     /**
      * One established relay: the two legs, the idle-timeout timer, the frame-relay wiring, and the
-     * admission permit the relay holds for its lifetime. All callbacks run on the shared request event
-     * loop, so the mutable {@code closed} / timer state is single-threaded and needs no synchronization.
+     * admission permit the relay holds for its lifetime. All callbacks run on the client connection's
+     * context — the upstream leg's on the upstream connection created from it, which shares its event
+     * loop — so the mutable {@code closed} / timer state is single-threaded and needs no synchronization.
      * <p>
      * {@link #closeBoth} is the single idempotent teardown funnel every terminal path reaches — client
      * close, upstream close, idle reclaim and relay error alike — so it is also the single site the

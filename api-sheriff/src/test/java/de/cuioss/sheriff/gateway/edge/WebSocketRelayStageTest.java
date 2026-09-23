@@ -18,11 +18,16 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
 import java.lang.annotation.Annotation;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,6 +37,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -66,6 +72,8 @@ import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Context;
+import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -75,6 +83,7 @@ import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
+import io.vertx.core.http.WebSocketFrame;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -604,6 +613,172 @@ class WebSocketRelayStageTest {
 
         private WebSocketConnectOptions relayOptions(int port) {
             return new WebSocketConnectOptions().setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/relay");
+        }
+    }
+
+    /**
+     * Pins the threading {@link WebSocketRelayStage}'s Javadoc claims: the relay's wiring and the
+     * upstream leg's frame handling run on the client connection's context — the event-loop thread the
+     * router handler ran on — whatever thread called {@link WebSocketRelayStage#relay}.
+     * <p>
+     * The relay-only server records its router handler's thread, captures the client connection's
+     * context there and hands {@code relay()} to the fixture's plain virtual-thread executor, which binds
+     * no Vert.x context to the calling thread. A relay that hopped onto the calling thread's context
+     * instead of the captured one would dial the upstream — and so run the upstream leg's frame handling
+     * — on a freshly bound context. Vert.x spreads fresh contexts across its event loops, so a single
+     * upgrade could land on the router's loop by coincidence; the test therefore drives
+     * {@link #THREAD_IDENTITY_UPGRADES} sequential upgrades and asserts every one of them.
+     */
+    @Nested
+    @DisplayName("threading — wiring and upstream-leg frame handling run on the client connection's event loop")
+    class Threading {
+
+        /** Sequential upgrades whose relay threads are each checked against the router handler's thread. */
+        private static final int THREAD_IDENTITY_UPGRADES = 4;
+
+        /**
+         * The threading case observes threads, not the admission permit, so the stage is handed a release
+         * callback that records nothing.
+         */
+        private static final Runnable UNOBSERVED_ADMISSION_RELEASE = () -> {
+            // the admission lifecycle is pinned by AdmissionReleaseCallback, not here
+        };
+
+        private final AtomicReference<@Nullable Thread> routerThread = new AtomicReference<>();
+        private final AtomicReference<@Nullable Thread> wiringThread = new AtomicReference<>();
+        private final Set<Thread> upstreamFrameThreads = ConcurrentHashMap.newKeySet();
+
+        @Test
+        @DisplayName("runs the relay wiring and the upstream leg's frame handling on the router handler's event-loop thread")
+        void runsWiringAndUpstreamFrameHandlingOnTheClientConnectionEventLoop() throws Exception {
+            HttpServer relayServer = startThreadRecordingRelayServer();
+            try {
+                for (int upgrade = 1; upgrade <= THREAD_IDENTITY_UPGRADES; upgrade++) {
+                    // Arrange
+                    routerThread.set(null);
+                    wiringThread.set(null);
+                    upstreamFrameThreads.clear();
+                    String frame = Generators.letterStrings(1, 32).next();
+                    WebSocket socket = Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
+                                    .setHost(LoopbackHost.ADDRESS).setPort(relayServer.actualPort()).setURI("/relay")),
+                            "upgrade " + upgrade + " against the thread-recording relay server");
+                    CompletableFuture<String> echoed = new CompletableFuture<>();
+                    socket.textMessageHandler(echoed::complete);
+
+                    // Act — one frame round-trip: client leg to the echo upstream, upstream leg back
+                    socket.writeTextMessage(frame);
+                    assertEquals(frame, Awaits.connect(echoed,
+                            "upgrade " + upgrade + ": the frame to echo through the relay"));
+
+                    // Assert
+                    Thread eventLoop = routerThread.get();
+                    assertNotNull(eventLoop, "upgrade " + upgrade + ": the router handler recorded its thread");
+                    int current = upgrade;
+                    assertSame(eventLoop, wiringThread.get(), () -> "upgrade " + current
+                            + ": the relay's wiring runs on the client connection's event-loop thread "
+                            + eventLoop.getName() + ", not on " + threadName(wiringThread.get()));
+                    assertEquals(Set.of(eventLoop), Set.copyOf(upstreamFrameThreads), () -> "upgrade " + current
+                            + ": the upstream leg's frame handling runs on the client connection's event-loop thread "
+                            + eventLoop.getName() + ", not on " + upstreamFrameThreads.stream()
+                                    .map(Thread::getName).toList());
+                    Awaits.teardown(socket.close(), "upgrade " + upgrade + "'s relayed WebSocket to close");
+                }
+            } finally {
+                Awaits.teardown(relayServer.close(), "the thread-recording relay server to close");
+            }
+        }
+
+        /**
+         * Stands up a relay-only front server that records the thread of every relay's wiring and of its
+         * upstream leg's text-frame handling, and whose router handler records its own thread, pauses the
+         * request and captures the client connection's context on the event loop, then dispatches
+         * {@link WebSocketRelayStage#relay} from the fixture's virtual-thread executor — the same pause,
+         * capture and hop the edge performs.
+         */
+        private HttpServer startThreadRecordingRelayServer() throws Exception {
+            RouteRuntime route = RouteRuntime.builder()
+                    .id("threading")
+                    .protocol(Protocol.WEBSOCKET)
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                    .effectiveWebSocketIdleTimeoutSeconds(300)
+                    .build();
+            WebSocketRelayStage stage = new WebSocketRelayStage(
+                    frameThreadRecordingDialer(relayUpstreamClient, upstreamFrameThreads),
+                    new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
+                    wiring -> {
+                        wiringThread.set(Thread.currentThread());
+                        wiring.run();
+                    });
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> {
+                ctx.request().pause();
+                routerThread.set(Thread.currentThread());
+                // Captured on the event loop, before the hop, exactly as GatewayEdgeRoute.handle() does.
+                Context clientContext = Vertx.currentContext();
+                virtualThreadExecutor.execute(() -> stage.relay(ctx, clientContext, route, Map.of(), Map.of(),
+                        "/", UNOBSERVED_ADMISSION_RELEASE));
+            });
+            return Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the thread-recording relay server to start listening");
+        }
+
+        private static String threadName(@Nullable Thread thread) {
+            return thread == null ? "no thread (the wiring never ran)" : thread.getName();
+        }
+    }
+
+    /**
+     * Wraps the stage's upstream dialer so that every upstream leg it dials records, in
+     * {@code frameThreads}, the thread each text frame reaching that leg's frame handler is handled on.
+     * Every call is forwarded to the real dialer and the real leg unchanged; only the frame handler the
+     * relay installs on the upstream leg is decorated. The relay's frame handlers are private, so the
+     * dialer — a constructor argument of the stage — is the one place the upstream leg can be observed
+     * without a production seam.
+     *
+     * @param delegate     the real dialer
+     * @param frameThreads receives the thread of every text frame the upstream leg's handler receives
+     * @return a dialer handing the relay thread-recording upstream legs
+     */
+    private static WebSocketClient frameThreadRecordingDialer(WebSocketClient delegate, Set<Thread> frameThreads) {
+        return WebSocketClient.class.cast(Proxy.newProxyInstance(WebSocketClient.class.getClassLoader(),
+                new Class<?>[]{WebSocketClient.class}, (proxy, method, args) -> {
+                    Object result = invokeOn(delegate, method, args);
+                    if ("connect".equals(method.getName()) && result instanceof Future<?> dialed) {
+                        return dialed.map(upstreamWs -> frameThreadRecordingLeg(WebSocket.class.cast(upstreamWs),
+                                frameThreads));
+                    }
+                    return result;
+                }));
+    }
+
+    private static WebSocket frameThreadRecordingLeg(WebSocket delegate, Set<Thread> frameThreads) {
+        return WebSocket.class.cast(Proxy.newProxyInstance(WebSocket.class.getClassLoader(),
+                new Class<?>[]{WebSocket.class}, (proxy, method, args) -> {
+                    if ("frameHandler".equals(method.getName()) && args != null && args.length == 1
+                            && args[0] instanceof Handler<?> handler) {
+                        return invokeOn(delegate, method, new Object[]{threadRecording(handler, frameThreads)});
+                    }
+                    return invokeOn(delegate, method, args);
+                }));
+    }
+
+    private static <T> Handler<T> threadRecording(Handler<T> handler, Set<Thread> frameThreads) {
+        return event -> {
+            if (event instanceof WebSocketFrame frame && frame.isText()) {
+                frameThreads.add(Thread.currentThread());
+            }
+            handler.handle(event);
+        };
+    }
+
+    private static @Nullable Object invokeOn(Object delegate, Method method, @Nullable Object @Nullable [] args)
+            throws Throwable {
+        try {
+            return method.invoke(delegate, args);
+        } catch (InvocationTargetException wrapped) {
+            Throwable cause = wrapped.getCause();
+            throw cause != null ? cause : wrapped;
         }
     }
 
