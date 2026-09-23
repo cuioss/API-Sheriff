@@ -65,7 +65,8 @@ endpoint:
                                    #   own public vhost, not an upstream location. It is
                                    #   therefore environment-specific: express it as a ${VAR}
                                    #   placeholder rather than a literal
-        headers:                   # optional header matchers. The name matches
+        headers:                   # optional header matchers. The name is lower-cased
+                                   #   (Locale.ROOT) at boot, so ASCII names match
                                    #   case-insensitively; present: true requires the
                                    #   header, present: false requires its ABSENCE; value
                                    #   requires that exact, case-sensitive value. The fields
@@ -590,10 +591,11 @@ Two same-key routes are disjoint when one of these holds:
   prefix" pattern; give the fallback a different prefix or declare hosts on both);
 * their `methods` sets do not overlap (an omitted `methods` means all methods and overlaps
   everything); or
-* both declare a matcher on the *same header name* -- compared case-insensitively, so
-  `X-Tenant` and `x-tenant` name one header -- that cannot both hold: either different exact
-  values (e.g. `X-Tenant: a` vs `X-Tenant: b`; values compare case-sensitively), or one matcher
-  *requires* the header while the other *forbids* it. A matcher requires the header when it
+* both declare a matcher on the *same header name* -- compared after `Locale.ROOT`
+  lower-casing, as the runtime reads the name, so `X-Tenant` and `x-tenant` (ASCII) name one
+  header -- that cannot both hold: either different exact values (e.g. `X-Tenant: a` vs
+  `X-Tenant: b`; values compare case-sensitively), or one matcher *requires* the header while
+  the other *forbids* it. A matcher requires the header when it
   declares `present: true` or a `value`, and forbids it with `present: false`, so both
   `present: true` vs `present: false` and an exact `value` vs `present: false` are disjoint --
   no single request satisfies both at once. An exact `value` vs `present: true` is *not*
@@ -609,10 +611,10 @@ expressible: `/api` on `a.example.com` -> `APP_A` and `/api` on `b.example.com` 
 live in two endpoint files and are disjoint by host.
 
 The same "cannot both hold" test also guards a *single* route. Every header matcher of a route
-must hold, so a route declaring two matchers on the same header name (compared
-case-insensitively) that cannot both hold -- two different exact values, or one matcher requiring
-the header (`present: true` or a `value`) while the other forbids it (`present: false`) -- could
-never match any request. Such a route fails the boot, naming the route and both matchers, with one
+must hold, so a route declaring two matchers on the same header name (compared after
+`Locale.ROOT` lower-casing) that cannot both hold -- two different exact values, or one matcher
+requiring the header (`present: true` or a `value`) while the other forbids it
+(`present: false`) -- could never match any request. Such a route fails the boot, naming the route and both matchers, with one
 error per conflicting pair. Redundant but compatible pairs on one route stay valid: an exact
 `value` with `present: true`, two identical values, two `present: true` or two `present: false`
 matchers. The pair that makes two *different* same-key routes disjoint -- an exact `value` on one
