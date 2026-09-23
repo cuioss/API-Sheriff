@@ -2563,6 +2563,7 @@ the duplicate-refresh race: two gateway instances refreshing one session, or two
 requests on different instances, present the same token, and the second ends the session
 (link:variants/03-bff-cookie.adoc#_transparent_refresh_and_step_up[Variant 3]).
 
+[[_match]]
 === `match`
 
 Matchers compose with AND semantics; a route matches only if every declared matcher holds.
@@ -2591,7 +2592,25 @@ Matchers compose with AND semantics; a route matches only if every declared matc
 | Exact match against the request `Host` header / SNI.
 
 | `headers`
-| Header matchers: `present: true` or an exact `value`. All listed must hold.
+a| Header matchers, each naming a request header by `name` plus a `present` flag, an exact `value`,
+  or both. All listed matchers must hold, and within one matcher the declared fields compose with
+  AND:
+
+  * `name` is matched *case-insensitively* (RFC 9110 field names): `X-Tenant`, `x-tenant` and
+    `X-TENANT` name the same header. The gateway lower-cases the configured name once at boot.
+  * `present: true` requires the header to be present; `present: false` requires it to be
+    *absent* -- a request carrying the header does not match.
+  * `value` requires that exact value, compared *case-sensitively*, and therefore also requires the
+    header to be present.
+  * A matcher declaring `present: false` together with `value` could never match, so it is
+    *refused at boot*, naming the route and the header. `present: true` together with `value` is
+    valid.
+
+  A route selected on a header matcher announces that header in its response's `Vary`, by its
+  lower-case name. Two same-prefix routes are disjoint on a header when one matcher requires it
+  (`present: true` or a `value`) and the other forbids it (`present: false`) -- so an exact `value`
+  and `present: false` on one header are disjoint -- or when both declare different values; see
+  link:user/endpoint-routes.adoc#_route_ordering[Route ordering].
 |===
 
 [[_forward]]
@@ -3561,10 +3580,16 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * Any two routes with an identical `match.path_prefix` (compared normalized), or any two exact routes
   with an identical `match.path` (compared verbatim, so `/a` and `/a/` never collide) -- same file or
   not -- must be statically disjoint (both declare different `host` values, or non-overlapping
-  `methods`, or same-name header matchers with different exact values or opposite presence
-  assertions -- `present: true` on one and `present: false` on the other; a lone `present: true`
-  establishes nothing); otherwise the boot fails. An exact route never collides with a prefix route
-  (see link:user/endpoint-routes.adoc#_route_ordering[Route ordering]).
+  `methods`, or header matchers on the same name -- compared case-insensitively -- with different
+  exact values, or where one requires the header (`present: true` or a `value`) and the other
+  forbids it (`present: false`); so `value` vs `present: false` is disjoint, while `value` vs
+  `present: true` is not, and a lone `present: true` establishes nothing); otherwise the boot fails.
+  An exact route never collides with a prefix route (see
+  link:user/endpoint-routes.adoc#_route_ordering[Route ordering]).
+* A `match.headers` matcher declaring `present: false` together with `value` fails the boot, naming
+  the route and the header: `present: false` forbids the header the `value` requires, and the two
+  compose with AND, so the matcher could never match. Every such matcher is reported in the same
+  pass (see link:#_match[`match`]).
 * A route resolves *exactly one* terminal action: a `redirect` block together with an `asset` block or
   an `upstream` block fails the boot. A route under a `type: asset` anchor declares an `asset` or a
   `redirect` block; an `asset` block under any other anchor type, or on an unanchored route, fails the
