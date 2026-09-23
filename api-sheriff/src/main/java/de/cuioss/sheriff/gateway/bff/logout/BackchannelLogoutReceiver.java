@@ -17,9 +17,9 @@ package de.cuioss.sheriff.gateway.bff.logout;
 
 import java.time.Instant;
 import java.util.Objects;
-import java.util.Optional;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
@@ -43,6 +43,14 @@ import de.cuioss.tools.logging.CuiLogger;
  * no server-side index and cannot honour either form, so the receiver rejects the token rather than
  * reporting a destruction that never happened. The receiver is framework-agnostic; the
  * {@link de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint} owns the HTTP concern.
+ * <p>
+ * <strong>The path is observable at the default log level.</strong> An acceptance raises
+ * {@code ApiSheriff-13} carrying the destroyed-session count — and a {@code destroyed=0} acceptance is
+ * a first-class, distinguishable outcome, because it is precisely the signal that delivery and
+ * validation both succeeded while the {@code sid} recorded at login did not match the one the logout
+ * token carried. A rejection is recorded as {@code ApiSheriff-112} with a bounded
+ * {@link LogoutRejection} reason under the flood policy {@link LogoutRejectionLog} documents. Neither
+ * record carries token material, {@code sub}, or {@code sid} (BFF-10).
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -54,6 +62,7 @@ public final class BackchannelLogoutReceiver {
     private final LogoutTokenVerifier verifier;
     private final LogoutTokenValidator validator;
     private final SessionBinding sessionBinding;
+    private final LogoutRejectionLog rejectionLog = new LogoutRejectionLog(LOGGER);
 
     /**
      * Assembles the receiver with the signature-verification seam, the claim residual, and the binding.
@@ -82,8 +91,7 @@ public final class BackchannelLogoutReceiver {
         Objects.requireNonNull(now, "now");
 
         if (sessionBinding.idpDestruction() == SessionBinding.IdpDestruction.UNSUPPORTED) {
-            LOGGER.debug("Back-channel logout rejected — the active session binding cannot honour "
-                    + "IdP-driven sid/sub destruction");
+            rejectionLog.recordRejection(LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY);
             return BackchannelResult.rejected();
         }
 
@@ -91,18 +99,32 @@ public final class BackchannelLogoutReceiver {
         try {
             token = verifier.verify(rawLogoutToken);
         } catch (TokenSheriffException signatureFailure) {
-            LOGGER.debug(signatureFailure, "Back-channel logout token signature/validation failed — rejected");
+            // The exception's own detail stays at DEBUG: it is engine-authored text about an
+            // attacker-supplied input, so it is exactly what must not reach a default-level record.
+            LOGGER.debug(signatureFailure, "Back-channel logout token signature/validation failed");
+            rejectionLog.recordRejection(LogoutRejection.SIGNATURE_REJECTED);
             return BackchannelResult.rejected();
         }
 
-        Optional<LogoutTokenValidator.LogoutSubject> subject = validator.validate(token, now);
-        if (subject.isEmpty()) {
-            return BackchannelResult.rejected();
-        }
+        return switch (validator.validate(token, now)) {
+            case LogoutTokenValidator.Verdict.Rejected(var reason) -> {
+                rejectionLog.recordRejection(reason);
+                yield BackchannelResult.rejected();
+            }
+            case LogoutTokenValidator.Verdict.Accepted(var subject) -> destroy(subject);
+        };
+    }
 
-        LogoutTokenValidator.LogoutSubject logoutSubject = subject.get();
-        String sid = logoutSubject.sid();
-        String sub = logoutSubject.sub();
+    /**
+     * Destroys the sessions the validated subject names and records the acceptance.
+     * <p>
+     * {@code sid} wins over {@code sub} when both are present: it is the precise single-session
+     * destruction the IdP asked for, and widening it to every session of the subject would log out
+     * sessions the IdP did not name.
+     */
+    private BackchannelResult destroy(LogoutTokenValidator.LogoutSubject subject) {
+        String sid = subject.sid();
+        String sub = subject.sub();
         int destroyed;
         if (sid != null) {
             destroyed = sessionBinding.destroyBySid(sid);
@@ -111,7 +133,7 @@ public final class BackchannelLogoutReceiver {
         } else {
             destroyed = 0;
         }
-        LOGGER.debug("Back-channel logout accepted — destroyed %s session(s)", destroyed);
+        LOGGER.info(BffLogMessages.INFO.BACKCHANNEL_LOGOUT, destroyed);
         return BackchannelResult.accepted(destroyed);
     }
 

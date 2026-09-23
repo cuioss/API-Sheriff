@@ -468,7 +468,7 @@ class WebSocketRelayStageTest {
     }
 
     private static void awaitReleases(AtomicInteger releases, String message) throws TimeoutException {
-        Awaits.until(() -> releases.get() >= 1, message, Awaits.TEARDOWN_CEILING_SECONDS);
+        Awaits.until(() -> releases.get() >= 1, message, Awaits.ADMISSION_RELEASE_CEILING_SECONDS);
         assertEquals(1, releases.get(), message);
     }
 

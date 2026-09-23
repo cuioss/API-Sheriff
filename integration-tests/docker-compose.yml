@@ -49,6 +49,18 @@ services:
       - KC_HTTP_ENABLED=false
       - KC_HTTPS_PORT=8443
       - KC_HOSTNAME=localhost
+      # Lets Keycloak TRUST the gateway when it DIALS it. Everything else in this file concerns
+      # Keycloak as a TLS *server*; back-channel logout is the one leg where Keycloak is the TLS
+      # *client*, POSTing a logout token to the backchannel.logout.url the integration-client
+      # declares (https://api-sheriff:8443/auth/backchannel). The gateway serves the same
+      # self-signed localhost.crt this service does, which is in no default JVM truststore, so
+      # without this the POST fails the handshake, no logout token is ever delivered, and
+      # BffBackchannelLogoutIT fails with a live session it expected destroyed.
+      #
+      # The path re-uses the certificates volume already mounted above rather than adding a second
+      # mount, and hostname verification stays ON: the certificate's SAN already names
+      # dns:api-sheriff (see certificates/generate-certificates.sh), so the dialled name is covered.
+      - KC_TRUSTSTORE_PATHS=/opt/keycloak/certificates/localhost.crt
       # External hostname for Docker container well-known discovery
     networks:
       - api-sheriff

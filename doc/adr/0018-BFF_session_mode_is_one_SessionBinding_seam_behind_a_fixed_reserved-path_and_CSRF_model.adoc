@@ -72,6 +72,10 @@ route table, via a `ReservedPathRegistry` the edge consults first. A matched res
 terminated at the gateway and dispatched to its handler; it can never be captured by a proxy prefix,
 whatever the route configuration says.
 
+The *on the OIDC host* half of that rule is amended below for the one reserved path no browser ever
+reaches — see <<backchannel-host>>. Exact-path matching, and resolution ahead of the route table, are
+unamended and hold for all six.
+
 The set is closed and each entry is configuration-driven, so operators can move a reserved path out
 of a namespace they need — but they cannot make a reserved path proxyable, and no route ordering
 can shadow one.
@@ -277,6 +281,74 @@ unbounded one.
   test that constructs the callback itself. Only a real-browser end-to-end path can detect its
   return.
 
+[[backchannel-host]]
+== Amendment: the back-channel logout receiver is reserved on every host, not only the OIDC host
+
+Decision (i) binds every reserved path to the OIDC host — the host of `oidc.redirect_uri`. That is
+right for five of the six and wrong for the sixth, and the difference is categorical rather than one
+of degree.
+
+=== Five of them are browser-facing; one is not
+
+The callback, the login initiation, the RP-initiated logout, its return leg and the user-info fold are
+each reached by a *browser*, at the origin the gateway published to that browser. A request for one of
+those paths arriving on some other virtual host is by construction not that browser, so declining to
+treat it as reserved — and letting it fall through to the proxy route table — is exactly right.
+
+Back-channel logout is the one reserved endpoint no browser ever touches. The identity provider
+delivers the logout token server-to-server, to whatever address the relying party registered as its
+`backchannel_logout_uri`. In a containerised or internal-network deployment that address is a service
+name on the network the two share, while the OIDC host is the public name the browser uses. The two
+are *expected* to differ, and no configuration can make them coincide: the provider cannot dial a
+public name that does not resolve on its network, and the browser cannot use the internal one.
+
+=== The failure the unamended rule produced
+
+Under decision (i) as written, such a delivery is answered by the proxy route table instead of the
+receiver. No route claims the reserved path, so the gateway returns `404`, the logout token is never
+validated, and the session it was meant to destroy stays alive. Every documented piece of the
+mechanism — the registered URL, the `sid`-bearing token, the trust material on the TLS leg, the
+receiver itself — is present and correct, and none of it is consulted.
+
+The failure is silent from both ends, which is what makes it worth an amendment rather than a bug fix
+in passing: the provider records a delivery it considers failed, the gateway records a path it
+considers unrouted, and neither is looking at the session. `BffBackchannelLogoutIT` is what surfaced
+it — the first time that suite ran against a real Keycloak whose realm named the gateway by its
+compose service name, the session survived an IdP-initiated logout and the suite failed on the
+effect it exists to assert.
+
+=== The amendment
+
+`ReservedPathRegistry` matches `BACKCHANNEL_LOGOUT` on every host. The other five keep the OIDC-host
+gate unchanged, and path matching stays exact for all six.
+
+The widening grants no authorization. The receiver admits nothing but a logout token whose signature
+verifies against the provider's JWKS and whose `iss`/`aud` match the configured confidential client,
+and it destroys nothing on any other input — so reachability on a second host lets a caller attempt
+precisely what it could already attempt on the first. What the widening does cost is the ability to
+proxy the configured back-channel path on a non-OIDC virtual host: decision (i)'s "reserved paths
+permanently occupy their configured paths" now holds for that one path on *every* host. An operator
+who needs that namespace proxied relocates `oidc.logout.backchannel_path`, exactly as decision (i)
+already requires on the OIDC host.
+
+=== Alternatives considered for this amendment
+
+*Make the accepted back-channel host configurable.* A key naming the internal host the provider dials
+would keep the gate and admit the deployment. Rejected because its only correct value is whatever the
+provider was registered with, so the same fact is maintained in two places and any drift between them
+reproduces the silent `404` — a configuration surface whose failure mode is the defect it was added to
+remove.
+
+*Derive the accepted host from a full `backchannel_logout_url` rather than a path.* Rejected for the
+same reason wearing a different shape, and it adds a migration: the configuration declares a path
+today, so promoting it to a URL makes every existing descriptor's value incomplete while still
+requiring it to agree with the provider's registration.
+
+*Leave the gate and require deployments to expose the gateway to the provider under its public name.*
+The only alternative that changes no code. Rejected because it is not generally available: a provider
+on a private network frequently cannot resolve the public name at all, and arranging that it can means
+adding DNS or hairpin routing so that a gateway becomes reachable from a container standing beside it.
+
 == Consequences
 
 === Positive
@@ -297,7 +369,9 @@ unbounded one.
 === Negative
 
 * Reserved paths permanently occupy their configured paths on the OIDC host; an operator who wants
-  those namespaces proxied must relocate the reserved paths instead.
+  those namespaces proxied must relocate the reserved paths instead. The back-channel logout path
+  occupies its configured path on *every* host (see <<backchannel-host>>), so relocating it is the
+  only way to proxy that one path anywhere.
 * A truly cross-site SPA cannot be supported, because the fixed cookie policy will not attach the
   session cookie cross-site — such an SPA must be hosted under the gateway's site.
 * Any change to the sealed payload's field set forces a format-version bump, which invalidates every

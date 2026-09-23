@@ -26,15 +26,39 @@ if ! docker_daemon_up; then
     exit 0
 fi
 
-# Detect if JFR image is running to use matching compose files
-JFR_RUNNING=$(docker ps --format "{{.Image}}" | grep "^api-sheriff:jfr$" || true)
+# The teardown must compose the SAME overlay set the bring-up did, and the lane says which that
+# was: each Maven profile's stop-integration-app execution sets SHERIFF_IMAGE_TYPE to the same
+# value it set on start-integration-container.sh, so the two ends of the lifecycle agree by
+# declaration rather than by both guessing alike.
+#
+# Detecting it from the running containers is kept only for callers with no lane behind them —
+# the pre-clean cleanup execution, the benchmarks module, a hand-run teardown. It is a fallback
+# and not the rule because it answers wrongly in two ordinary situations: a stack that has
+# already died leaves nothing to inspect and reads as "distroless", and an api-sheriff:jfr
+# container belonging to a different checkout on the same daemon reads as "jfr" for a stack
+# that is not one.
+case "${SHERIFF_IMAGE_TYPE:-}" in
+    distroless | jfr)
+        MODE="$SHERIFF_IMAGE_TYPE"
+        ;;
+    "")
+        if docker ps --format "{{.Image}}" | grep -q "^api-sheriff:jfr$"; then
+            MODE="jfr"
+        else
+            MODE="distroless"
+        fi
+        ;;
+    *)
+        echo "❌ SHERIFF_IMAGE_TYPE=${SHERIFF_IMAGE_TYPE} is not a known image type"
+        echo "Expected 'distroless' or 'jfr', or leave it unset to detect one."
+        exit 1
+        ;;
+esac
 
-if [[ -n "$JFR_RUNNING" ]]; then
+if [[ "$MODE" == "jfr" ]]; then
     COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml -f docker-compose.jfr.yml"
-    MODE="jfr"
 else
     COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml"
-    MODE="distroless"
 fi
 
 # Stop and remove containers. --remove-orphans also tears down containers from

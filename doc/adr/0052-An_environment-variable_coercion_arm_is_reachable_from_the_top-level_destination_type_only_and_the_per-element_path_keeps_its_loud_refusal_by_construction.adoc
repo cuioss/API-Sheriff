@@ -1,0 +1,193 @@
+= ADR-0052: An environment-variable coercion arm is reachable from the top-level destination type only, and the per-element path keeps its loud refusal by construction
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A substituted environment variable is re-typed from the schema-declared destination type, and a newly added map-valued arm is reachable from the TOP-LEVEL destination type only — the per-element path maps an object item type to no declared type before delegating, so an array-of-objects pointer keeps falling through to shape inference and keeps being refused loudly by schema validation; the exclusion is enforced at the one delegation site rather than by the arm declining to act, because an arm reachable per element would convert a documented loud refusal into a silent bind.
+// tags: configuration-loading, environment-variables, type-coercion, json-schema, fail-loud, silent-acceptance, recursion-boundary, configuration-surface
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A configuration value supplied through an environment-variable placeholder arrives as a string. The
+mounted document's own literal values were typed by the YAML parser; a substituted one was not, so
+something must decide what type it becomes before the document is bound. Inferring that type from
+the value's *shape* is the obvious mechanism and the wrong one: it makes the destination type depend
+on what the deployment happened to put in the variable, so a port that reads `8080` becomes a number
+and one that reads `08080` becomes a string, and the difference surfaces as a bind failure far from
+its cause.
+
+The loader therefore re-types a substituted scalar from the *schema-declared destination type* at the
+value's own pointer, with shape inference surviving only as the fallback for pointers the schema pins
+no type for. Each declared type gets an arm, and the set of arms is the value space of "what an
+environment variable may supply".
+
+That design has a second dimension, and the dimension is where the risk lives. A list-valued
+destination is re-typed into the *whole list*: one resolved variable splits on a separator and each
+element is typed in turn by the destination's declared *item* type. So the coercion is
+**two-level** — the same arm table is consulted once for the value and again, recursively, for each
+element. Arms are declared per type, but they are reachable from two structurally different
+positions.
+
+This creates a standing hazard every time an arm is added. The list arm reaches *every* array-typed
+pointer the schemas declare — it carries no pointer test and no item-type predicate, deliberately, so
+its behaviour is uniform rather than a chosen few. Among those pointers are arrays whose items are
+*objects*. At such a pointer, no scalar arm pins an element's type today, each element falls through
+to shape inference, and the resulting array of scalars is refused moments later by schema validation
+with a diagnostic naming the expected and actual *types* and never the value. **That refusal is the
+designed behaviour, not a gap**: reaching those pointers and failing loudly is what makes the arm's
+uniformity safe, and silently skipping them is what it exists to avoid.
+
+Adding a *map-valued* arm — so one variable can supply a map as comma-separated `key=value` pairs —
+collides with exactly that. The new arm answers to the same type name that an array-of-objects
+pointer declares for its items. Reachable from the item position, it would type each element as a
+single-entry object, the array would become an array of objects, and it might then *satisfy* the
+schema. The loud refusal would become a silent bind — and a silent bind of a shape the operator
+never described.
+
+The architectural question is therefore not whether the map arm is useful. It is: *when a coercion
+table is consulted from two positions, where is an arm's reachability decided?*
+
+== Decision
+
+*A coercion arm is reachable from the position its semantics are defined for, and the boundary is
+enforced at the delegation site — not by the arm declining to act.*
+
+Concretely, for the map-valued arm: it is reachable from the **top-level destination type only**. The
+per-element path maps an object item type to *no declared type* before delegating, so an element at
+an array-of-objects pointer falls through to shape inference exactly as before, and the schema's loud
+refusal is preserved verbatim.
+
+Three properties make this a decision rather than an implementation detail.
+
+=== (1) The exclusion lives at the one delegation site
+
+There is exactly one place the item type is forwarded into the arm table, and that is the one place
+the boundary is enforced. The arm itself is unconditional: it does not ask where it was called from,
+and it has no position-dependent branch. An arm that policed its own caller would spread the boundary
+across every arm, each responsible for a rule it cannot see the need for locally, and the rule would
+then hold only as long as every arm remembered it.
+
+=== (2) The exclusion is expressed as "this position declares no type", not as a special case
+
+The item path does not carry a rule saying "the map arm is forbidden here". It carries the true
+statement that at an object-items pointer there is no *scalar* item type to pin, and hands the arm
+table nothing. The fallback behaviour that follows — shape inference, then the schema's type-mismatch
+refusal — is the table's ordinary behaviour for an unpinned type, not a carve-out. The boundary is
+therefore one substitution at one site, and it is the same shape a future non-scalar arm would need.
+
+=== (3) The preserved refusal is a contract, not an accident
+
+The documented behaviour at an array-of-objects pointer — reach it, infer nothing useful, and let the
+schema-validation pass refuse it with a diagnostic naming the expected and actual types and never the
+value — is a *contract*. This record makes widening it a deliberate change: admitting the map arm to
+the item path is not a refactor that happens to alter a corner case, it is a decision to convert a
+refusal into an acceptance, and it must be argued as one.
+
+*The direction of the asymmetry is the general principle.* Where a change to a shared table can turn
+a loud refusal into a silent acceptance, the burden falls on the change: the arm is admitted only to
+the position whose semantics it was defined for, and the other position keeps its refusal by
+construction. A silent bind of a shape the operator never wrote is strictly worse than a boot failure
+naming the expected type, because the boot failure is discovered in seconds and the silent bind is
+discovered by a request that behaves wrongly.
+
+== Consequences
+
+=== Positive
+
+* An operator can supply a map-valued key from a single environment variable, which is the capability
+  the arm exists for, with no change in behaviour at any other pointer.
+* The documented refusal at array-of-objects pointers is preserved *by construction*, not by a test
+  that would have to anticipate each new arm.
+* The boundary is one substitution at one site, so a reader auditing "what can an environment
+  variable turn into, and where" has a single place to look.
+* The arms stay position-agnostic. Each arm implements one type's wire format and nothing about the
+  recursion, so an arm can be read and reviewed in isolation.
+* The precedent generalises: the next non-scalar arm added to the table inherits the same question and
+  the same answer shape, rather than re-litigating the recursion boundary.
+* Failures at unreachable-by-design pointers remain loud and type-named, so a diagnostic never carries
+  a resolved secret.
+
+=== Negative
+
+* The two positions now genuinely differ, and the difference is invisible from the arm's own code. A
+  reader of the map arm cannot tell from it that it is unreachable per element; the knowledge lives at
+  the delegation site and in this record.
+* An operator *cannot* supply an array of objects from one environment variable, even where the wire
+  format would be unambiguous. That capability is declined here, not merely unimplemented.
+* The constraint is carried by one line of mapping. Nothing in the type system prevents a future
+  change from forwarding the item type unmapped, and the resulting regression is silent at the
+  loader — it surfaces only as a configuration that binds when it should have failed.
+
+=== Risks
+
+* *Erosion by plausible local change.* "Just forward the item type" reads as a simplification and
+  removes the boundary. The mitigation is that the delegation site names the reason at the point of
+  the mapping, and this record is the argument behind it.
+* *Silent regression.* The failure mode of losing the boundary is an acceptance rather than an error,
+  so no boot fails and no diagnostic appears. It is detectable only by a test that asserts the
+  refusal, and a test asserting a *refusal* is the kind most easily deleted as an obstacle.
+* *Generalisation to a future arm being forgotten.* The principle is stated here, but a third arm
+  added without reading this record inherits nothing automatically — the delegation site pins the
+  behaviour of the arm it names, not of arms that do not yet exist.
+
+== Alternatives Considered
+
+*Let the map arm be reachable from the per-element path too.* This is the smallest change — one
+table, consulted uniformly from both positions, with no mapping at the delegation site — and it is
+the shape a reader would assume by default. Rejected because it silently converts a documented loud
+refusal into an acceptance: each element of an array-of-objects pointer would bind as a single-entry
+object, the array might then satisfy the schema, and the deployment would boot on a shape nobody
+described. A change whose failure mode is a successful boot with wrong data is the one class that
+must not be made by default.
+
+*Exclude the arm by having it detect and decline the item position.* This keeps the delegation site
+uniform and localises the rule inside the arm that needs it. Rejected because it inverts
+responsibility: the arm would have to know about a caller it cannot see, every future arm would have
+to be told the same rule, and the boundary would hold only as long as each one remembered. One
+enforced site beats N remembered ones.
+
+*Teach the schema to forbid an environment-variable substitution at array-of-objects pointers.*
+This would move the boundary into the declaration where types already live, and make it data rather
+than code. Rejected because the schema declares *what a valid document looks like*, not *what the
+substitution pass may do to a document on its way there*, and a second vocabulary inside the schema
+for the loader's benefit is a second thing to keep in sync with the arms — with the usual failure
+mode that the looser copy silently wins.
+
+*Give the item path its own arm table.* This makes the two positions explicitly different, which is
+what they in fact are, and removes any ambiguity about reachability. Rejected as disproportionate:
+the tables would be identical but for one arm, and duplication of a type table is precisely how two
+positions come to disagree about what `integer` means. The one-line mapping expresses the same
+difference without the duplicate.
+
+*Support arrays of objects from a single variable with a richer wire format.* This would deliver the
+capability the exclusion declines, rather than merely refusing it. Rejected as answering a different
+question: a nested wire format needs escaping rules, a nesting bound and its own diagnostics, and
+none of that is required by the requirement that motivated the map arm. The refusal stays loud and
+the capability stays available through the mounted document, which is where a structured value
+belongs.
+
+The rejected alternatives divide cleanly. One group dissolves the distinction between the two
+positions — forwarding the arm everywhere, or letting the schema and the loader both express the
+rule — and pays with a silent acceptance or with drift between two copies. The other group keeps the
+distinction but pays too much for it, whether by duplicating the table or by building a nested wire
+format nobody asked for. The chosen position states the difference once, at the single site where
+the recursion actually happens, and leaves every arm ignorant of it.
+
+== References
+
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011 -- gateway.yaml exposes JWKS trust and egress as neutral names bound by the deployment] -- establishes the configuration language whose destination types this coercion pass re-types against, and the deployment-supplies-the-material layering the environment-variable path serves. Not superseded.
+* link:0010-YAML_expansion_limits_enforced_in_a_compose-only_pre-pass_before_bind.adoc[ADR-0010 -- YAML expansion limits enforced in a compose-only pre-pass before bind] -- the sibling decision on the same load pipeline, placing a check at the one stage where it can actually observe what it guards. Not superseded.
+* link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032 -- The shipped artifact declares nothing test-shaped] -- the layering rule that makes environment-variable substitution the deployment's binding mechanism rather than a convenience. Not superseded.
+* link:0038-A_build-time_key_the_shipped_artifact_declares_is_made_configurable_through_a_carrier_key_in_the_build_tools_own_namespace.adoc[ADR-0038 -- A build-time key is made configurable through a carrier key] -- the same silent-inertness concern on the build-time half of the configuration surface. Not superseded.
+* link:../configuration.adoc[Configuration Reference] -- the declared destination types and the environment-variable placeholder syntax this pass resolves.

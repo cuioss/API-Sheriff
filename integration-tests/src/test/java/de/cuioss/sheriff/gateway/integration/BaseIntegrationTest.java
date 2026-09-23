@@ -65,7 +65,7 @@ public abstract class BaseIntegrationTest {
         // so a suite run against a relocated root path needs no per-test edit. Normalised so the
         // shipped default "/" collapses to the empty string — REST Assured's own default — leaving
         // the default-path behaviour byte-identical to before this key existed.
-        String httpRootPath = normalisePath(System.getProperty("test.http.root-path", DEFAULT_HTTP_ROOT_PATH));
+        String httpRootPath = RootPaths.normalize(System.getProperty("test.http.root-path", DEFAULT_HTTP_ROOT_PATH));
         RestAssured.basePath = httpRootPath;
 
         // cui-rewrite:disable CuiLoggerStandardsRecipe
@@ -118,7 +118,7 @@ public abstract class BaseIntegrationTest {
      * @return the configured management context path, normalised for concatenation
      */
     static String managementRootPath() {
-        return normalisePath(System.getProperty("test.management.root-path", DEFAULT_MANAGEMENT_ROOT_PATH));
+        return RootPaths.normalize(System.getProperty("test.management.root-path", DEFAULT_MANAGEMENT_ROOT_PATH));
     }
 
     /**
@@ -134,30 +134,5 @@ public abstract class BaseIntegrationTest {
      */
     static RequestSpecification givenManagement() {
         return RestAssured.given().baseUri(managementBaseUri()).basePath("");
-    }
-
-    /**
-     * Normalises a context path for concatenation: the ENTIRE trailing run of slashes is removed, so
-     * appending {@code "/health"} never yields a double slash, and the root value {@code "/"} collapses
-     * to the empty string rather than leaving one behind.
-     * <p>
-     * The whole run rather than a single character is load-bearing: stripping only the last separator
-     * leaves {@code "/ops//"} as {@code "/ops/"}, which still splices a doubled separator into every
-     * composed URL. It would also diverge from the host-side Compose probe in
-     * {@code integration-tests/scripts/start-integration-container.sh}, which collapses the full run —
-     * and since {@link ManagementRootPathLabelIT} runs THIS method over both sides of its comparison,
-     * a multi-slash label would be reported as a divergence that is not one.
-     * <p>
-     * Package-private rather than private so a test comparing an INDEPENDENTLY obtained path against
-     * this class's configured one applies the identical rule to both sides.
-     * {@link ManagementRootPathLabelIT} needs exactly that: it compares the Compose label against
-     * {@link #managementRootPath()}, and normalising only one side would report a {@code "/"} label
-     * and the empty effective path as a divergence when they denote the same path.
-     *
-     * @param path the configured context path
-     * @return the path with every trailing slash removed
-     */
-    static String normalisePath(String path) {
-        return path.replaceAll("/+$", "");
     }
 }

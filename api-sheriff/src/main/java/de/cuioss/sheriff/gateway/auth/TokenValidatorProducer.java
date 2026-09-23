@@ -104,6 +104,17 @@ public class TokenValidatorProducer {
      * {@link #issuerKeySetStatus(TokenValidator)}.
      */
     private final AtomicReference<IssuerKeySetStatus> keySetStatus = new AtomicReference<>();
+    /**
+     * The token-sheriff issuer configurations assembled by {@link #gatewayTokenValidator()}, published
+     * by that assembly and read by {@link #signatureOnlyTokenVerifier(TokenValidator)}.
+     * <p>
+     * The library exposes no accessor for the issuers a built {@link TokenValidator} carries, so the
+     * list is captured here at the single point it is constructed rather than re-derived from
+     * configuration — re-deriving it would build a second set of JWKS loaders for the same issuers,
+     * doubling the key fetches and letting the two copies drift apart.
+     */
+    private final AtomicReference<List<de.cuioss.sheriff.token.validation.IssuerConfig>> validationIssuers =
+            new AtomicReference<>();
 
     /**
      * @param gatewayConfig        the bound gateway document carrying the {@code token_validation}
@@ -190,7 +201,35 @@ public class TokenValidatorProducer {
         }
         TokenValidator validator = TokenValidator.builder().issuerConfigs(issuers).build();
         keySetStatus.set(new IssuerKeySetStatus(keySets));
+        validationIssuers.set(List.copyOf(issuers));
         return validator;
+    }
+
+    /**
+     * Produces the signature-only verifier over the <em>same</em> issuer configurations — and therefore
+     * the same JWKS loaders — the gateway validator was built from.
+     * <p>
+     * The verifier answers "was this JWT signed by a configured issuer?" without imposing any token
+     * type's claim semantics. Its one consumer today is the BFF back-channel logout seam, whose
+     * logout token is neither an access token nor an ID token; see {@link SignatureOnlyTokenVerifier}
+     * for why no engine entry point fits that case.
+     * <p>
+     * {@link Singleton} (no client proxy) because the verifier is immutable and fixed once the
+     * validator is built. The validator parameter is touched first to force its assembly, exactly as
+     * {@link #issuerKeySetStatus(TokenValidator)} does — the issuer list is published by that
+     * assembly, so it never exists without the loaders it reads.
+     *
+     * @param validator the gateway validator proxy whose assembly publishes the issuer list
+     * @return the signature-only verifier over the gateway's configured issuers
+     */
+    @Produces
+    @Singleton
+    public SignatureOnlyTokenVerifier signatureOnlyTokenVerifier(@GatewayValidator TokenValidator validator) {
+        // Any method call on the proxy forces contextual-instance creation, exactly as onStartup does.
+        validator.toString();
+        return new SignatureOnlyTokenVerifier(
+                Objects.requireNonNull(validationIssuers.get(), "gateway validator assembled without an issuer list"),
+                validator.getSecurityEventCounter());
     }
 
     /**

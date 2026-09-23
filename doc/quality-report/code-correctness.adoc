@@ -12,7 +12,11 @@ toc::[]
 
 == Summary
 
-No CRITICAL finding. One HIGH finding (CFG-1). No exploitable authentication or routing
+No CRITICAL finding. One HIGH finding remains open (CFG-1); two further findings were later
+confirmed as HIGH and are now RESOLVED — BFF-11, whose "engine behavior, unverifiable from this
+repo" hedge resolved to a real defect, and BFF-12, found while confirming it. Both were
+fail-*closed* defects on the back-channel logout path: a spec-valid logout token was refused, so
+IdP-initiated logout never destroyed a session. No exploitable authentication or routing
 bypass, no fail-open error path, and no crypto misuse were found. One resource-exhaustion
 hazard exists in the default configuration — DP-6, where fault-tolerance timeouts against a
 slow upstream strand pooled connections; the other resource-bound finding (DP-4) requires the
@@ -380,18 +384,27 @@ runtime's concern.")
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: javadoc / false-security (observability)
-|Location |`bff/BffLogMessages.java`; `bff/csrf/CsrfDefence.java:128`; `bff/logout/BackchannelLogoutReceiver.java:114`
+|Location |`bff/BffLogMessages.java`; `bff/csrf/CsrfDefence.java:128`
 |===
 
 Only 6 of the catalogue's records are emitted. `INFO.SESSION_CREATED` (10),
-`INFO.SESSION_DESTROYED` (11), `INFO.BACKCHANNEL_LOGOUT` (13), `INFO.RP_LOGOUT_COMPLETED` (14),
-`WARN.CSRF_REJECTED` (110), and `WARN.LOGOUT_TOKEN_REJECTED` (112) have no production emission
-site. `CsrfDefence.rejected` logs at DEBUG; the back-channel receiver logs rejections at DEBUG
-only; session create/destroy/logout-complete are never logged at all. For a security gateway,
-session establishment/destruction, accepted back-channel logouts, and CSRF rejections produce
-no structured WARN/INFO audit line — a SIEM keying on the documented `ApiSheriff-xxx` records
-never fires. (The `CSRF_REJECTED` *metric* counter does fire via the edge `GatewayException`;
-only the log record is dead.)
+`INFO.SESSION_DESTROYED` (11), `INFO.RP_LOGOUT_COMPLETED` (14) and `WARN.CSRF_REJECTED` (110)
+still have no production emission site. `CsrfDefence.rejected` logs at DEBUG; session
+create/destroy/logout-complete are never logged at all. For a security gateway, session
+establishment/destruction and CSRF rejections produce no structured WARN/INFO audit line — a
+SIEM keying on the documented `ApiSheriff-xxx` records never fires. (The `CSRF_REJECTED`
+*metric* counter does fire via the edge `GatewayException`; only the log record is dead.)
+
+*The two back-channel records are now emitted.* `INFO.BACKCHANNEL_LOGOUT` (13) fires on every
+accepted logout token carrying the destroyed-session count, and `WARN.LOGOUT_TOKEN_REJECTED`
+(112) fires on every refusal carrying a bounded reason from the closed `LogoutRejection`
+vocabulary. That closes the diagnostic hole this finding described at its worst: with the whole
+path at DEBUG, a logout that was never delivered, one that was delivered and refused, and one
+that was accepted but matched no session were byte-identical silence in a production log — and
+no re-run of a failing integration test could tell them apart. The three dispositions an
+unauthenticated caller can drive are latched to one WARN per process (see ApiSheriff-112 in
+link:../LogMessages.adoc[LogMessages]) so the reserved path is not a log-amplification lever;
+the six a signature-verified token reaches are emitted on every occurrence.
 
 === BFF-3 — Back-channel logout "replay guard" is freshness-window-only
 
@@ -505,20 +518,68 @@ Tokens, session id, and nonce are redacted, but `sub`, `sid`, `acr`, `authTime` 
 passes either record (verified), so latent — but a future `LOGGER.x("… %s", record)` would leak
 `sub`/`sid`, contradicting the stated no-PII contract.
 
-=== BFF-11 — Logout token `typ` header not validated; ID-token validation seam
+=== BFF-11 — Logout token `typ` header not validated; ID-token validation seam (RESOLVED)
 
 [cols="1,4"]
 |===
-|Severity |INFO — Confidence MEDIUM — Category: oidc
-|Location |`bff/logout/LogoutTokenValidator.java:96-128`; `quarkus/BffRuntimeProducer.java:315`
+|Severity |*HIGH* as confirmed (was INFO — Confidence MEDIUM) — Category: oidc
+|Location |`bff/logout/LogoutTokenValidator.java`; `auth/SignatureOnlyTokenVerifier.java`; `quarkus/BffRuntimeProducer.java`
 |===
 
-OIDC back-channel logout §2.4 recommends verifying `typ: logout+jwt`; the validator relies on
-mandatory-`events`/prohibited-`nonce` instead (which does distinguish a logout token from an ID
-token — defense-in-depth only). The signature seam is `idBridge::validateRefreshedIdToken`,
-i.e. the logout token is signature-verified through the ID-token validation path; if that
-engine method imposes ID-token-specific constraints it could reject spec-valid logout tokens.
-Engine behavior, unverifiable from this repo; flagged for awareness.
+The seam half of this finding was confirmed and is fixed; the `typ` half stands as originally
+written.
+
+*The seam (confirmed, then fixed).* The "if that engine method imposes ID-token-specific
+constraints" hedge resolved to *yes*. `IdTokenValidationBridge.validateRefreshedIdToken`
+drives `TokenValidator.createIdToken` → `IdTokenValidationPipeline`, whose final stage is a
+`TokenClaimValidator` enforcing `TokenType.ID_TOKEN`'s mandatory set — `iss`, `exp`, `iat`,
+`sub`, `aud` — with `AuthorizedPartyValidator` additionally demanding `azp` whenever the issuer
+config declares an expected client id. A back-channel logout token has no `exp`, need not carry
+`sub`, and has no `azp` at all (OIDC Back-Channel Logout §2.4: `iss`, `aud`, `iat`, `jti`,
+`events`, plus `sub` *and/or* `sid`). So a spec-valid `sid`-only logout token — precisely what
+`backchannel.logout.session.required=true` produces, and precisely the shape
+`LogoutTokenValidator.LogoutSubject.sub` is `@Nullable` to support — was rejected before the
+gateway's own claim residual ran. The documented `sid`-only path was unreachable in production:
+our seam contradicted our own validator's stated contract.
+
+The verifier is now `SignatureOnlyTokenVerifier`, which runs the engine's ID-token pipeline
+*minus its final claim-validation stage* (decode → issuer resolve → header → signature → claim
+mapping) over the same per-issuer JWKS loaders the bearer path uses, so
+`LogoutTokenValidator` is the sole claim authority on this path. Nothing in the trust boundary
+was relaxed: a tampered signature, an unknown issuer and a malformed token are all still
+refused. `SignatureOnlyTokenVerifierTest` pins both arms of the matched pair — the same signed,
+`sid`-only, `exp`-less, `azp`-less token is accepted by the new seam and rejected by
+`validateRefreshedIdToken` — so the fix cannot silently regress into the old seam and still
+pass.
+
+*The `typ` header (unchanged).* OIDC back-channel logout §2.4 recommends verifying
+`typ: logout+jwt`; the validator still relies on mandatory-`events`/prohibited-`nonce` instead,
+which does distinguish a logout token from an ID token. Defense-in-depth only.
+
+=== BFF-12 — `events` matcher assumed a serialization the engine never produces (RESOLVED)
+
+[cols="1,4"]
+|===
+|Severity |*HIGH* — Confidence HIGH — Category: consistency / oidc
+|Location |`bff/logout/LogoutTokenValidator.java`
+|===
+
+Found while confirming BFF-11, in the same claim-residual path, and fixed with it.
+
+`hasBackchannelLogoutEventMember` required the back-channel-logout URI to appear as a *quoted*
+member key followed by `:` — that is, JSON object syntax — and its Javadoc justified this with
+"the engine surfaces a JSON-object claim as its serialized text". The engine does no such
+thing. `TokenBuilder.extractClaims` has no `ClaimMapper` for `events`, so it falls through to
+`MapRepresentation.getString`, which returns empty for a non-`String` value, and then to
+`getValue(...).toString()`. A JSON *object* is deserialized by DSL-JSON into a `Map`, so the
+claim reaches the validator in Java map syntax — `{http://…/backchannel-logout={}}`, unquoted
+key, `=` instead of `:`. The quoted-key matcher therefore never matched, and every logout token
+carrying the spec-prescribed object-valued `events` claim — which is what Keycloak sends — was
+rejected as `events-missing`.
+
+Both surfaced forms are now accepted, each with the member-*key* discrimination intact, so a
+scalar or array `events` that merely contains the event URI is still rejected. The matched
+positive and negative controls for both forms are in `LogoutTokenValidatorTest`.
 
 === BFF verified positives
 

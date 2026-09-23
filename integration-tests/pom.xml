@@ -389,6 +389,18 @@
                                     <environmentVariables>
                                         <!-- Pass target directory for Quarkus file logging -->
                                         <LOG_TARGET_DIR>${project.build.directory}</LOG_TARGET_DIR>
+                                        <!-- Name the image THIS lane just built, rather than letting the
+                                             start script sniff the daemon for one. The docker-build-distroless
+                                             execution above builds and tags api-sheriff:distroless, and that is
+                                             the only image this lane's ITs are about: ImageMetadataIT asserts
+                                             its OCI labels, and the JFR lane's ImageMetadataJfrIT is excluded
+                                             here precisely because api-sheriff:jfr is a different lane's
+                                             artifact. Without this the script's fallback heuristic preferred
+                                             any api-sheriff:jfr image it found, so a stale one left behind by
+                                             an earlier -Pjfr run hijacked this lane and the suite ran against
+                                             an image this build never produced — green or red, the result was
+                                             about the wrong binary. -->
+                                        <SHERIFF_IMAGE_TYPE>distroless</SHERIFF_IMAGE_TYPE>
                                     </environmentVariables>
                                 </configuration>
                             </execution>
@@ -417,6 +429,14 @@
                                 <configuration>
                                     <executable>./scripts/stop-integration-container.sh</executable>
                                     <workingDirectory>${project.basedir}</workingDirectory>
+                                    <environmentVariables>
+                                        <!-- The teardown must compose the SAME overlay set the bring-up did,
+                                             so it is told the lane rather than inferring it from whatever is
+                                             still running. A stack that already died, or a foreign
+                                             api-sheriff:jfr container belonging to another checkout on the
+                                             same daemon, both answer that question wrongly. -->
+                                        <SHERIFF_IMAGE_TYPE>distroless</SHERIFF_IMAGE_TYPE>
+                                    </environmentVariables>
                                 </configuration>
                             </execution>
                         </executions>
@@ -579,6 +599,15 @@
                                     <environmentVariables>
                                         <!-- Pass target directory for Quarkus file logging -->
                                         <LOG_TARGET_DIR>${project.build.directory}</LOG_TARGET_DIR>
+                                        <!-- Name the image THIS lane just built. The docker-build-jfr
+                                             execution above builds and tags api-sheriff:jfr, and the start
+                                             script must compose the jfr overlay against THAT image rather
+                                             than reach a matching conclusion by sniffing the daemon. The
+                                             sniff happened to be right for this lane and wrong for the other
+                                             one — it preferred jfr unconditionally — so pinning both lanes
+                                             is what makes the selection a declaration instead of a
+                                             coincidence. -->
+                                        <SHERIFF_IMAGE_TYPE>jfr</SHERIFF_IMAGE_TYPE>
                                     </environmentVariables>
                                 </configuration>
                             </execution>
@@ -607,6 +636,12 @@
                                 <configuration>
                                     <executable>./scripts/stop-integration-container.sh</executable>
                                     <workingDirectory>${project.basedir}</workingDirectory>
+                                    <environmentVariables>
+                                        <!-- Same reason as the integration-tests lane above: the teardown
+                                             composes the overlay set the bring-up used because it is told
+                                             which lane it is, not because it inspected the survivors. -->
+                                        <SHERIFF_IMAGE_TYPE>jfr</SHERIFF_IMAGE_TYPE>
+                                    </environmentVariables>
                                 </configuration>
                             </execution>
                         </executions>

@@ -1,0 +1,70 @@
+= Automatic Re-Review on Loop-Back -- Why It Is Off
+:toc:
+:toclevels: 2
+:sectnums:
+
+Why this repository leaves plan-marshall's `re_review_on_loopback` set to `false`, what turning it
+on would actually buy, and how to ask for a fresh review by hand on the occasions a loop-back
+warrants one. The setting lives under the `plan-marshall:automatic-review` step in
+link:../../.plan/marshal.json[`.plan/marshal.json`], which is the authoritative source for its
+value; this page states the *reasoning*, not the value.
+
+== What a loop-back is
+
+A plan-marshall run does not always move forward. When the finalize phase finds something it cannot
+ship -- a red check, a review finding that needs code rather than a reply, a gate that refuses --
+it *loops back*: control returns to the execute phase, the work is done, and finalize is re-entered
+from the top. The branch is the same branch and the pull request is the same pull request; only the
+commits on it have moved on.
+
+That is the distinction the setting turns on. A loop-back is not a new review subject. It is the
+same PR, mid-flight, having just received another push.
+
+== Why the setting is off
+
+`re_review_on_loopback: false` asks plan-marshall not to *request* a review pass on each loop-back.
+It is off because, for this repository's two required bots, an explicit request is either redundant
+or ineffective -- and it is never free.
+
+*CodeRabbit re-reviews on push, without being asked.* A loop-back ends in a push, and that push is
+already CodeRabbit's trigger. Requesting a pass explicitly adds nothing except a second run over
+the same diff.
+
+*PR-Agent does not re-trigger on a loop-back, and asking on every loop-back would not be the right
+way to fix that.* link:../../.github/workflows/pr-agent.yml[`.github/workflows/pr-agent.yml`] fires
+on `opened`, `reopened` and `ready_for_review`, plus on-demand `issue_comment` commands. A
+mid-flight push is none of those, so PR-Agent stays quiet through a loop-back by design.
+
+So the two required bots pull in opposite directions, and neither is served by a blanket automatic
+request: one performs the pass anyway, and the other performs it only when asked -- but a plan can
+loop back several times over one pull request, and every automatic request spends review-bot quota
+that the project's rate-window handling then has to wait out. The cost is paid on every loop-back;
+the benefit accrues only on the ones where a re-review would actually have said something new. That
+is the trade the `false` records.
+
+== The contrast: re-review does fire at branch cleanup
+
+The neighbouring `re_review_on_branch_cleanup` is `true`, and the asymmetry is the point rather than
+an inconsistency.
+
+Branch cleanup is the last thing that happens before the branch is merged and removed. A re-review
+there runs once per plan, against the final state of the pull request -- the diff that is about to
+land, not an intermediate one. That is exactly where a bot pass is worth its quota, and exactly
+where a missed finding is most expensive.
+
+Read the pair together: *no* automatic pass on the intermediate states, *one* automatic pass on the
+state that ships.
+
+== The manual escape hatch
+
+Nothing about `re_review_on_loopback: false` prevents a re-review. It only removes the automatic
+one. When a loop-back changed enough that a fresh pass is genuinely warranted -- a substantive
+rework rather than a small fix -- request it by hand by posting a comment on the pull request:
+
+[source,text]
+----
+/review
+----
+
+That is the same on-demand `issue_comment` path the PR-Agent workflow declares, so it reaches the
+bot that a push alone does not. Use it deliberately, on the loop-backs that earned it.

@@ -33,18 +33,34 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
-@DisplayName("SecurityProfile — the canonical strict/lenient/minimal inbound-filter mode set")
+@DisplayName("SecurityProfile — the canonical strict/paranoid/lenient/minimal inbound-filter mode set")
 class SecurityProfileTest {
+
+    /**
+     * One of the two modes whose preset tightens the cui-http baseline. Both carry the single
+     * deliberate deviation this enum makes ({@code allowLineBreaksInParameterValues} off), so the
+     * guards below run over the pair rather than restating one assertion per mode. An annotation
+     * value must be a compile-time constant, which is why the names are held here rather than being
+     * derived from {@link SecurityProfile#values()}; {@link #upstreamPresetOf(SecurityProfile)}
+     * fails loudly if the pair and the enum ever disagree.
+     */
+    private static final String MODE_STRICT = "STRICT";
+
+    /** The second tightened mode; see {@link #MODE_STRICT}. */
+    private static final String MODE_PARANOID = "PARANOID";
 
     @ParameterizedTest
     @CsvSource({
             "strict,STRICT",
+            "paranoid,PARANOID",
             "lenient,LENIENT",
             "minimal,MINIMAL",
             "STRICT,STRICT",
+            "PARANOID,PARANOID",
             "Lenient,LENIENT",
             "MINIMAL,MINIMAL",
-            "  minimal  ,MINIMAL"
+            "  minimal  ,MINIMAL",
+            "  Paranoid  ,PARANOID"
     })
     @DisplayName("Should parse every accepted value case-insensitively")
     void shouldParseAcceptedValues(String raw, SecurityProfile expected) {
@@ -89,42 +105,96 @@ class SecurityProfileTest {
                 "LENIENT is backed by SecurityConfiguration.lenient()");
     }
 
-    @Test
-    @DisplayName("Should refuse decoded line breaks in parameter values under STRICT")
-    void shouldRefuseLineBreaksInParameterValuesUnderStrict() {
+    @ParameterizedTest
+    @EnumSource(value = SecurityProfile.class, names = {MODE_STRICT, MODE_PARANOID})
+    @DisplayName("Should refuse decoded line breaks in parameter values under every tightened mode")
+    void shouldRefuseLineBreaksInParameterValues(SecurityProfile profile) {
+        // Arrange - cui-http admits decoded CR/LF in every one of its presets, paranoid() included,
+        // so a mode sold as a tightening that took its preset verbatim would be LOOSER than STRICT
+        // on this one axis. Both tightened modes must therefore switch it off.
+        SecurityConfiguration upstream = upstreamPresetOf(profile);
+
         // Act
-        SecurityConfiguration strict = SecurityProfile.STRICT.preset();
+        SecurityConfiguration tightened = profile.preset();
 
         // Assert
-        assertFalse(strict.allowLineBreaksInParameterValues(),
-                "STRICT refuses a url-parameter value that decodes to CR or LF");
-        assertNotEquals(SecurityConfiguration.strict(), strict,
-                "the deviation is real: the cui-http strict preset admits line breaks in parameter values");
+        assertTrue(upstream.allowLineBreaksInParameterValues(),
+                ("the premise of this guard is that the cui-http preset backing %s admits line breaks;"
+                        + " upstream has changed and the deviation may no longer be needed").formatted(profile));
+        assertFalse(tightened.allowLineBreaksInParameterValues(),
+                "%s refuses a url-parameter value that decodes to CR or LF".formatted(profile));
+        assertNotEquals(upstream, tightened,
+                "the deviation is real: the cui-http preset backing %s admits line breaks".formatted(profile));
     }
 
-    @Test
-    @DisplayName("Should equal the cui-http strict preset in every component but the line-break flag")
-    void shouldEqualStrictPresetExceptLineBreakFlag() {
+    @ParameterizedTest
+    @EnumSource(value = SecurityProfile.class, names = {MODE_STRICT, MODE_PARANOID})
+    @DisplayName("Should equal its cui-http preset in every component but the line-break flag")
+    void shouldEqualUpstreamPresetExceptLineBreakFlag(SecurityProfile profile) {
         // Arrange
-        SecurityConfiguration upstream = SecurityConfiguration.strict();
+        SecurityConfiguration upstream = upstreamPresetOf(profile);
 
         // Act - put the one deviating component back to the upstream value
         SecurityConfiguration reseeded = SecurityConfigurations
-                .builderSeededFrom(SecurityProfile.STRICT.preset())
+                .builderSeededFrom(profile.preset())
                 .allowLineBreaksInParameterValues(upstream.allowLineBreaksInParameterValues())
                 .build();
 
         // Assert
         assertEquals(upstream, reseeded,
-                "allowLineBreaksInParameterValues is the only component STRICT changes");
+                "allowLineBreaksInParameterValues is the only component %s changes".formatted(profile));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SecurityProfile.class, names = {MODE_STRICT, MODE_PARANOID})
+    @DisplayName("Should return the same cached policy on every call for a tightened mode")
+    void shouldCacheTightenedPreset(SecurityProfile profile) {
+        // Act + Assert
+        assertSame(profile.preset(), profile.preset(),
+                "%s's derived policy is built once, not per call".formatted(profile));
     }
 
     @Test
-    @DisplayName("Should return the same cached STRICT policy on every call")
-    void shouldCacheStrictPreset() {
-        // Act + Assert
-        assertSame(SecurityProfile.STRICT.preset(), SecurityProfile.STRICT.preset(),
-                "the derived strict policy is built once, not per call");
+    @DisplayName("Should make PARANOID strictly tighter than STRICT — content block-lists added, nothing relaxed")
+    void shouldMakeParanoidStrictlyTighterThanStrict() {
+        // Arrange
+        SecurityConfiguration strict = SecurityProfile.STRICT.preset();
+
+        // Act
+        SecurityConfiguration paranoid = SecurityProfile.PARANOID.preset();
+
+        // Assert - the two block-lists are what PARANOID adds …
+        assertFalse(paranoid.blockedPathPatterns().isEmpty(),
+                "PARANOID seeds the sensitive-path block-list STRICT leaves empty");
+        assertFalse(paranoid.blockedParameterNames().isEmpty(),
+                "PARANOID seeds the suspicious-parameter-name block-list STRICT leaves empty");
+        assertTrue(paranoid.blockedPathPatterns().containsAll(strict.blockedPathPatterns()),
+                "PARANOID may only add to STRICT's path block-list, never drop from it");
+        assertTrue(paranoid.blockedParameterNames().containsAll(strict.blockedParameterNames()),
+                "PARANOID may only add to STRICT's parameter-name block-list, never drop from it");
+
+        // … and nothing else differs, so no axis is quietly relaxed. Copying PARANOID's block-lists
+        // onto STRICT must reproduce PARANOID exactly.
+        assertEquals(paranoid,
+                strict.withContentBlockLists(paranoid.blockedPathPatterns(), paranoid.blockedParameterNames()),
+                "PARANOID differs from STRICT in the two content block-lists and in nothing else");
+    }
+
+    /**
+     * The unmodified cui-http preset a tightened mode is built from — the baseline each guard above
+     * compares against.
+     *
+     * @param profile one of the tightened modes
+     * @return the upstream preset backing it
+     */
+    private static SecurityConfiguration upstreamPresetOf(SecurityProfile profile) {
+        return switch (profile) {
+            case STRICT -> SecurityConfiguration.strict();
+            case PARANOID -> SecurityConfiguration.paranoid();
+            case LENIENT, MINIMAL -> throw new IllegalArgumentException(
+                    profile + " is not a tightened mode; MODE_STRICT/MODE_PARANOID and this helper"
+                            + " have drifted apart");
+        };
     }
 
     @Test
@@ -159,6 +229,15 @@ class SecurityProfileTest {
         assertEquals(SecurityProfile.STRICT,
                 SecurityProfile.limitsProfile(SecurityProfile.MINIMAL, SecurityProfile.MINIMAL),
                 "an all-minimal chain falls back to STRICT, so the body cap stays enforceable");
+
+        // PARANOID is limits-bearing like any other non-minimal mode — it supplies its own limits
+        // and is what a 'minimal' route inherits when it sits beneath one.
+        assertEquals(SecurityProfile.PARANOID,
+                SecurityProfile.limitsProfile(SecurityProfile.PARANOID, SecurityProfile.MINIMAL),
+                "PARANOID supplies its own limits and is unaffected by a 'minimal' fallback");
+        assertEquals(SecurityProfile.PARANOID,
+                SecurityProfile.limitsProfile(SecurityProfile.MINIMAL, SecurityProfile.PARANOID),
+                "a 'minimal' route under a paranoid gateway takes the paranoid limits");
     }
 
     @ParameterizedTest
@@ -173,21 +252,32 @@ class SecurityProfileTest {
                 "every mode — 'minimal' included — resolves a concrete, enforceable body cap");
     }
 
-    @Test
+    @ParameterizedTest
+    @EnumSource(SecurityProfile.class)
     @DisplayName("Should disable the skippable validation half only for MINIMAL")
-    void shouldGateSkippableValidationOnMinimalOnly() {
-        // Act + Assert
-        assertTrue(SecurityProfile.STRICT.skippableValidationEnabled(), "STRICT runs the full check set");
-        assertTrue(SecurityProfile.LENIENT.skippableValidationEnabled(), "LENIENT runs the full check set");
-        assertFalse(SecurityProfile.MINIMAL.skippableValidationEnabled(),
-                "MINIMAL is the one mode that skips the url-parameter validation and the pipeline re-run");
+    void shouldGateSkippableValidationOnMinimalOnly(SecurityProfile profile) {
+        // Arrange - the population is the enum itself rather than a hand-listed trio, so a mode added
+        // later is covered by this guard on the day it is declared instead of being silently omitted
+
+        // Act
+        boolean enabled = profile.skippableValidationEnabled();
+
+        // Assert
+        assertEquals(profile != SecurityProfile.MINIMAL, enabled,
+                ("MINIMAL is the one mode that skips the url-parameter validation and the pipeline"
+                        + " re-run; %s reported %s").formatted(profile, enabled));
     }
 
     @Test
     @DisplayName("Should declare STRICT as the fail-closed default for an omitted block")
     void shouldDefaultToStrict() {
-        // Assert
+        // Assert - STRICT, not PARANOID: the default is the tightest mode that judges form alone,
+        // because PARANOID's content block-lists reject ordinary REST vocabulary and must be an
+        // explicit operator choice rather than something an omitted block opts into
         assertEquals(SecurityProfile.STRICT, SecurityProfile.DEFAULT_PROFILE,
-                "an omitted security_defaults block resolves to the most restrictive mode");
+                "an omitted security_defaults block resolves to STRICT");
+        assertNotEquals(SecurityProfile.PARANOID, SecurityProfile.DEFAULT_PROFILE,
+                "adding PARANOID must not move the default; opting into content block-lists is a"
+                        + " deployment decision, never an inherited one");
     }
 }

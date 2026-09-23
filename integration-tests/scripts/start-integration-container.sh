@@ -30,21 +30,74 @@ cd "${PROJECT_DIR}"
 
 # Check build approach - Native executable + Docker copy vs Docker build
 RUNNER_FILE=$(find "${APP_TARGET_DIR}" -name "*-runner" -type f 2>/dev/null | head -n 1)
-# Detect image type - prefer JFR if available, fallback to distroless
-JFR_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^api-sheriff:jfr$" || true)
-DISTROLESS_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^api-sheriff:distroless$" || true)
 
-if [[ -n "$JFR_IMAGE" ]]; then
-    AVAILABLE_IMAGE="$JFR_IMAGE"
-    IMAGE_TYPE="jfr"
+# Which image this stack runs is DECLARED by the lane that starts it, not inferred from the
+# daemon. Each Maven profile's start-integration-app execution sets SHERIFF_IMAGE_TYPE to the
+# image it has just built and tagged — "distroless" for -Pintegration-tests, "jfr" for -Pjfr —
+# and that declaration is read first here.
+#
+# It replaces a heuristic that sniffed `docker images` and preferred api-sheriff:jfr whenever
+# one existed, falling back to api-sheriff:distroless otherwise. The preference is local state
+# masquerading as intent: an api-sheriff:jfr image left on the daemon by an earlier -Pjfr run
+# outlives that run, so a later -Pintegration-tests run composed the jfr overlay and tested a
+# week-old binary while the distroless image it had just built sat unused. That produced a
+# failing suite whose failure was about neither the code under test nor the image the lane
+# built — the most expensive kind of false negative, because nothing in the output says the
+# wrong image was selected.
+#
+# A declared type is REQUIRED to exist. Falling back to the other image is exactly the silent
+# substitution this replaces, so a missing image fails loudly and names what it expected.
+resolve_image_tag() {
+    docker images --format "{{.Repository}}:{{.Tag}}" | grep "^api-sheriff:$1$" || true
+}
+
+case "${SHERIFF_IMAGE_TYPE:-}" in
+    distroless | jfr)
+        IMAGE_TYPE="$SHERIFF_IMAGE_TYPE"
+        AVAILABLE_IMAGE="$(resolve_image_tag "$IMAGE_TYPE")"
+        if [[ -z "$AVAILABLE_IMAGE" ]]; then
+            echo "❌ SHERIFF_IMAGE_TYPE=${IMAGE_TYPE} but no api-sheriff:${IMAGE_TYPE} image exists"
+            echo "The lane that set it builds that image before starting the stack, so this is a"
+            echo "build-order or tagging failure. Refusing to substitute a different image —"
+            echo "that substitution is how a stale image silently hijacks a run."
+            echo "Available images:"
+            docker images | grep api-sheriff || echo "  No api-sheriff images found"
+            exit 1
+        fi
+        echo "🎯 Image type declared by the lane: SHERIFF_IMAGE_TYPE=${IMAGE_TYPE}"
+        ;;
+    "")
+        # No lane declared one. This is the benchmarks module, a hand-run bring-up, or any other
+        # caller that legitimately has no profile behind it, so the old sniff is kept for them —
+        # as a fallback for the undeclared case only, never as an override of a declared one.
+        echo "ℹ️  SHERIFF_IMAGE_TYPE unset — falling back to detecting an image on the daemon"
+        JFR_IMAGE="$(resolve_image_tag jfr)"
+        DISTROLESS_IMAGE="$(resolve_image_tag distroless)"
+        if [[ -n "$JFR_IMAGE" ]]; then
+            AVAILABLE_IMAGE="$JFR_IMAGE"
+            IMAGE_TYPE="jfr"
+        elif [[ -n "$DISTROLESS_IMAGE" ]]; then
+            AVAILABLE_IMAGE="$DISTROLESS_IMAGE"
+            IMAGE_TYPE="distroless"
+        else
+            AVAILABLE_IMAGE=""
+            IMAGE_TYPE="none"
+        fi
+        ;;
+    *)
+        echo "❌ SHERIFF_IMAGE_TYPE=${SHERIFF_IMAGE_TYPE} is not a known image type"
+        echo "Expected 'distroless' or 'jfr', or leave it unset to detect one."
+        exit 1
+        ;;
+esac
+
+# The overlay set follows from the selected type. COMPOSE_CMD is deliberately left unset for
+# "none": there is no image to run, and the missing-image branch below exits before any compose
+# command is built.
+if [[ "$IMAGE_TYPE" == "jfr" ]]; then
     COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml -f docker-compose.jfr.yml"
-elif [[ -n "$DISTROLESS_IMAGE" ]]; then
-    AVAILABLE_IMAGE="$DISTROLESS_IMAGE"
-    IMAGE_TYPE="distroless"
+elif [[ "$IMAGE_TYPE" == "distroless" ]]; then
     COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml"
-else
-    AVAILABLE_IMAGE=""
-    IMAGE_TYPE="none"
 fi
 
 # Benchmark mode: overlay the static nginx backend and repoint the gateway upstream
@@ -123,6 +176,11 @@ fi
 # gateway's own configuration. Deriving it means moving the gateway's management context path needs
 # no edit in this script. Both labels are REQUIRED, never defaulted — see the discovery block.
 #
+# The root-path label's value is carried out of the discovery program RAW. The trailing-slash trim
+# that renders a root path of "/" as the empty string lives ONCE, in lib-docker-compose.sh's
+# normalize_root_path, and every read loop below applies it to the column it just read — so the rule
+# cannot drift between the Python discovery and the shell that consumes it.
+#
 # Keycloak carries the same labels for the same reason, so its wait derives its scheme and port here
 # too rather than restating either. Its management ROOT PATH is the one thing not derived: Keycloak
 # serves health at /health/ready under no prefix at all, so its root-path column is deliberately
@@ -182,7 +240,17 @@ for name in sorted(selected):
                         "found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
         usable = False
     if usable:
-        rows.append("%s %s %s %s" % (name, scheme, published[0], root_path.rstrip("/")))
+        # The root path is emitted RAW, and LAST. The column order is unchanged and stays
+        # LOAD-BEARING: the shell `read` calls downstream name this field last, so appending a
+        # fifth column after it would shift every later column and silently hand the wrong value
+        # to GATEWAY_MGMT_ROOT.
+        #
+        # Raw, because the trailing-slash trim has exactly ONE home -- normalize_root_path() in
+        # lib-docker-compose.sh -- which the shell applies to this field after reading each row. An
+        # rstrip("/") here would be a second copy of that rule, free to drift from the shell one.
+        # Raw also means this field is never empty (the check above rejects a root path that is not
+        # absolute), so the trim can no longer collapse it to a whitespace-only column.
+        rows.append("%s %s %s %s" % (name, scheme, published[0], root_path))
 
 if problems:
     sys.exit("probe-target discovery failed:\n  " + "\n  ".join(problems))
@@ -369,6 +437,7 @@ if ! (cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d --wait --wait-timeout 180 $GATEW
     echo "❌ Not every gateway instance reported healthy within 180s"
     while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
         [[ -z "$GATEWAY_SERVICE" ]] && continue
+        GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
         capture_gateway_diagnostics "${GATEWAY_SERVICE}" \
             "${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}" "${GATEWAY_MGMT_ROOT}"
     done <<< "$READINESS_TARGETS"
@@ -379,6 +448,7 @@ echo "✅ Every gateway instance reported healthy — asserting readiness semant
 GATEWAY_COUNT=0
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
+    GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
     GATEWAY_COUNT=$((GATEWAY_COUNT + 1))
     GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
     GATEWAY_READY_URL="${GATEWAY_MGMT_URL}${GATEWAY_MGMT_ROOT}/health/ready"
@@ -428,6 +498,7 @@ echo "📱 Application URLs:"
 # the plain-management instance makes false.
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
+    GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
     echo "  🔍 ${GATEWAY_SERVICE} management: ${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}${GATEWAY_MGMT_ROOT}/health (metrics at ${GATEWAY_MGMT_ROOT}/metrics)"
 done <<< "$READINESS_TARGETS"
 echo "  🔑 Keycloak:       https://localhost:1443/auth"

@@ -49,6 +49,15 @@ to *run* the finished gateway).
   rules -- the version-changed guard is the release decision, and a trigger removal merges on its
   own.
 
+| link:re-review-on-loopback.adoc[Automatic Re-Review on Loop-Back -- Why It Is Off]
+| Why `re_review_on_loopback` is deliberately `false` -- a loop-back is the same pull request
+  mid-flight, and of the two required bots CodeRabbit already re-reviews on the push that ends one
+  while PR-Agent triggers on `opened`/`reopened`/`ready_for_review` and on-demand comments only, so
+  an automatic request per loop-back spends review-bot quota on a pass one bot performs anyway and
+  the other will not. Contrasts the neighbouring `re_review_on_branch_cleanup: true`, which buys one
+  pass against the state that actually ships, and records the manual escape hatch -- posting
+  `/review` on the pull request.
+
 | link:protocol-processors.adoc[Protocol Processors -- SPI and dispatch seam]
 | The `ProtocolProcessor` SPI, the boot-time registry that binds a protocol to its processor, and
   the edge protocol-dispatch seam that routes WebSocket and gRPC down their specialised paths --

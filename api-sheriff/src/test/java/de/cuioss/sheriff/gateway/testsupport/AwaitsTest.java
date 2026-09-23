@@ -24,11 +24,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.time.Duration;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -48,9 +52,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * The matched control for {@link Awaits}. Every other test in this module consumes the two tiers
- * and would stay green if the timeout diagnostics silently stopped working — a ceiling that is
- * never reached exercises none of the reporting. This class is the one place that reaches a
+ * The matched control for {@link Awaits}. Every other test in this module merely consumes the
+ * tiers and would stay green if the timeout diagnostics silently stopped working — a ceiling that
+ * is never reached exercises none of the reporting. This class is the one place that reaches a
  * ceiling on purpose and asserts what the resulting failure says.
  *
  * <p>It drives the package-private {@link Duration}-taking seam rather than the public tier
@@ -96,6 +100,21 @@ class AwaitsTest {
      */
     private static final Pattern STACK_FRAME =
             Pattern.compile("^\\s+(?:at )?\\S+\\.[^\\s.(]+\\(", Pattern.MULTILINE);
+
+    /** The naming convention every {@link Awaits} tier ceiling follows; the derivation keys off it. */
+    private static final String CEILING_SUFFIX = "_CEILING_SECONDS";
+
+    /**
+     * The contracted ceiling per tier — the <em>expected</em> side of {@link #pinsTheTierCeilings()}.
+     * This map is hand-maintained on purpose: it is the recorded decision a tier's value carries, and
+     * the derived side it is compared against is what forces a newly-added tier through here rather
+     * than letting it ship unpinned. A tier genuinely added to {@link Awaits} is recorded by adding
+     * its entry; nothing else in the test needs touching.
+     */
+    private static final Map<String, Long> CONTRACTED_CEILINGS = Map.of(
+            "CONNECT_CEILING_SECONDS", 30L,
+            "ADMISSION_RELEASE_CEILING_SECONDS", 15L,
+            "TEARDOWN_CEILING_SECONDS", 5L);
 
     @Test
     @DisplayName("a future that never completes fails with the label, a measured elapsed time and a dump carrying both the stuck thread and a parked virtual thread")
@@ -432,14 +451,60 @@ class AwaitsTest {
                 });
     }
 
+    /**
+     * Pins every tier ceiling {@link Awaits} declares against the contracted value.
+     *
+     * <p>The asserted population is <em>derived</em> from {@code Awaits} by reflection rather than
+     * listed here, which is what makes the claim true: a tier added without a contracted ceiling
+     * arrives as an unexpected key and reddens this method, where a hand-listed set would have stayed
+     * green and let the gap ship. The method extends itself — {@link #CONTRACTED_CEILINGS} below is
+     * the one place a genuinely-added tier is recorded.
+     */
     @Test
-    @DisplayName("the two tiers carry the declared ceilings")
-    void pinsTheTwoTierCeilings() {
+    @DisplayName("every declared tier ceiling matches its contracted value, over a derived population")
+    void pinsTheTierCeilings() {
+        Map<String, Long> declared = declaredCeilings();
+
         assertAll("tier ceilings",
-                () -> assertEquals(30L, Awaits.CONNECT_CEILING_SECONDS,
-                        "the connect tier is generous enough for a loaded CI machine"),
-                () -> assertEquals(5L, Awaits.TEARDOWN_CEILING_SECONDS,
-                        "the teardown tier is tight enough to surface a leak"));
+                () -> assertFalse(declared.isEmpty(),
+                        "the reflection must actually find the ceilings — an empty derivation would "
+                                + "make the equality below pass against a population of nothing"),
+                () -> assertEquals(CONTRACTED_CEILINGS, declared,
+                        "the *_CEILING_SECONDS fields Awaits declares must match the contract exactly:"
+                                + " a tier added without a contracted ceiling shows up as an extra key,"
+                                + " a retired one as a missing key, and a retuned one as a wrong value"),
+                () -> assertTrue(
+                        Awaits.TEARDOWN_CEILING_SECONDS < Awaits.ADMISSION_RELEASE_CEILING_SECONDS
+                                && Awaits.ADMISSION_RELEASE_CEILING_SECONDS < Awaits.CONNECT_CEILING_SECONDS,
+                        "the admission-release tier sits strictly between the other two"));
+    }
+
+    /**
+     * The tier inventory {@link Awaits} actually declares — every {@code static long} field whose name
+     * ends {@value #CEILING_SUFFIX}, read reflectively so the population is derived rather than
+     * restated.
+     *
+     * @return declared ceiling name to declared value
+     */
+    private static Map<String, Long> declaredCeilings() {
+        Map<String, Long> ceilings = new TreeMap<>();
+        for (Field field : Awaits.class.getDeclaredFields()) {
+            if (isDeclaredCeiling(field)) {
+                ceilings.put(field.getName(), assertDoesNotThrow(() -> field.getLong(null),
+                        "a declared ceiling must be readable: " + field.getName()));
+            }
+        }
+        return ceilings;
+    }
+
+    /**
+     * @param field a field declared on {@link Awaits}
+     * @return {@code true} when the field is one of the tier ceilings this contract covers
+     */
+    private static boolean isDeclaredCeiling(Field field) {
+        return field.getName().endsWith(CEILING_SUFFIX)
+                && Modifier.isStatic(field.getModifiers())
+                && field.getType() == long.class;
     }
 
     /**

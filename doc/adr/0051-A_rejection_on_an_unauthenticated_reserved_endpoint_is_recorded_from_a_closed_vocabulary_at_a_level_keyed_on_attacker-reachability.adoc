@@ -1,0 +1,210 @@
+= ADR-0051: A rejection on an unauthenticated reserved endpoint is recorded from a closed vocabulary at a level keyed on attacker-reachability
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emission point from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether an unauthenticated caller can reach that reason: a pre-verification reason is latched to one WARN per reason per process and DEBUG thereafter, while a reason reachable only after the credential has been cryptographically verified is recorded at WARN unconditionally.
+// tags: security, logging, secure-logging, log-flooding, denial-of-service, bff, back-channel-logout, unauthenticated-surface, observability, closed-vocabulary
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A gateway mounts reserved endpoints that are, by protocol design, reachable *without a credential*.
+A protocol peer posts to them unauthenticated and the endpoint decides, from the request's own
+content, whether to act. The OIDC back-channel logout receiver is the archetype: any host that can
+reach the gateway can post to it, and the only thing separating a genuine identity-provider delivery
+from noise is the signature on the token in the body.
+
+Such an endpoint rejects far more often than it acts, and each rejection poses the same two questions
+— *what may be said about it*, and *how loudly*. Both were being answered by reflex rather than by
+decision, and each reflex has its own failure mode.
+
+*Silence is indistinguishable from absence.* Recording every rejection at `DEBUG` makes the whole
+path invisible at the default log level. A delivery that never arrived and a delivery that arrived
+and was refused produce byte-identical silence. The operator question behind an unexpected logout
+behaviour — *did the identity provider even reach us?* — then has no answer short of raising the
+level and waiting for the condition to recur, which on a cross-service integration may never happen
+on demand.
+
+*Volume is a denial-of-service surface.* Recording every rejection at `WARN` inverts the problem.
+The path is unauthenticated, so an unbounded `WARN` flood is available to anyone who can reach the
+gateway — no session, no credential, not even a well-formed body. A log sink that an anonymous caller
+can drive is a resource, and the cost lands on the operator's storage, their alerting, and their
+ability to see anything else.
+
+*A reason string is a sink.* Whatever level is chosen, the rejection wants to say *why*. The
+tempting shape is to interpolate the offending detail: the claim that failed, the value that was
+wrong, the subject it concerned. On this path that detail is attacker-supplied and may be
+identity-bearing — a `sub`, a `sid`, a fragment of a token. A free-text reason parameter is a
+general-purpose exfiltration channel into the log, and once the parameter is free-text, nothing
+structural stops the next caller from filling it.
+
+The two questions are not independent, and that is the structural observation. *Which* rejections an
+anonymous caller can drive is not a property of the endpoint — it is a property of each individual
+reason, and it is decided by exactly one thing: whether that reason sits before or after the
+signature check. A reason reachable only after verification cannot be reached by an attacker at all,
+because an attacker cannot mint a token the configured issuer signed.
+
+== Decision
+
+*A rejection on a reserved endpoint reachable without a credential is recorded through one emission
+point, from a closed enumerated vocabulary, at a level keyed on whether an unauthenticated caller can
+reach that reason.*
+
+Three coupled mechanisms realise it.
+
+=== (1) The reason vocabulary is closed and enumerated, and carries no value
+
+Every rejection reason is a member of a fixed enumeration, and each member's only payload is a fixed
+lower-case token. No token material, no `sub`, no `sid`, no raw offending value. The structured log
+record's single placeholder accepts a member of that enumeration and nothing else, so the record
+*cannot widen into a free-text sink* — the constraint is carried by the type, not by a review
+convention that the next caller has to be told about.
+
+The closure is the load-bearing half. A bounded-but-open vocabulary — a string the caller is asked to
+keep short and non-sensitive — has exactly the failure mode the closed one removes: it works until
+someone needs one more detail, and the parameter admits it.
+
+=== (2) The level discriminator is attacker-reachability, carried by the vocabulary itself
+
+Each member declares whether it is reachable only *after* the credential has been cryptographically
+verified. That one fact is the level discriminator, and it lives on the member rather than at the
+call sites, so adding a reason forces the question to be answered once, at the point the reason is
+defined.
+
+* *Post-verification reasons* are reachable only by a token the configured identity provider actually
+  signed. An attacker cannot mint one, so there is no flood to bound: they are recorded at `WARN` on
+  every occurrence. These are the reasons that carry real operator signal — a misconfigured audience,
+  a clock outside the replay window, a token missing the protocol's own required claims.
+* *Pre-verification reasons* are attacker-triggerable, so they are *latched*: the first occurrence of
+  each reason in a process is recorded at `WARN`, and every repeat drops to `DEBUG`.
+
+=== (3) The flood bound is a per-reason, per-process latch
+
+The latch bounds the flood to at most one line per reason for the lifetime of the process, while the
+first real occurrence of each reason still reaches the default log level — which is the point. The
+operator learns *that* the condition occurred without the volume being attacker-controlled.
+
+The bound applies per assembled runtime: each component that can reject holds its own emitter, bound
+to its own logger, so the record is attributed to the class that actually refused the request rather
+than to a shared logging utility.
+
+=== What the latch deliberately does not give
+
+Absence of a repeated `WARN` says *nothing about the rate*. An attacker who consumes a reason's latch
+early makes a later genuine occurrence of that same reason `DEBUG`-only. Both are accepted costs,
+named here so a future reader does not rediscover them as defects: the `WARN` channel answers *did
+this happen at all*, and the `DEBUG` channel answers *how often* and *is it still happening*.
+
+== Consequences
+
+=== Positive
+
+* The unauthenticated path is no longer invisible. An operator at the default log level can tell a
+  delivery that never arrived from one that arrived and was refused — and which refusal it was.
+* The log-volume surface an anonymous caller can drive is bounded by construction, at one line per
+  reason per process, rather than by the caller's restraint.
+* The rejection record cannot leak identity-bearing or attacker-supplied data, because there is no
+  parameter that could carry it. Secure logging is a property of the type, not of each call site.
+* The reasons that carry the most operator signal are the ones recorded unconditionally. Level
+  follows value, and the correlation is not a coincidence: the reasons only a genuinely signed token
+  reaches are exactly the ones describing a real integration problem.
+* Adding a rejection reason forces its reachability to be classified at the point of definition. The
+  question cannot be skipped, because the enumeration member does not compile without an answer.
+* Every rejection flows through one emission point, so the flood policy is stated once and cannot be
+  partially applied.
+
+=== Negative
+
+* The `WARN` channel understates rate for latched reasons, permanently and by design. An operator
+  diagnosing a *volume* question must read `DEBUG`, and must know to.
+* A latch consumed by an attacker demotes a later genuine occurrence of that same reason. The first
+  occurrence is guaranteed; the *informative* one is not.
+* The closed vocabulary is a maintenance obligation: a rejection whose reason is not in the set
+  cannot be recorded with a reason at all until the set is extended, which is a deliberate change
+  rather than a local one.
+* The record is coarser than a free-text one. An operator learns the reason class, not the offending
+  value, and closing the remaining gap is a `DEBUG`-level or upstream-side exercise.
+* Latch state is per process and per assembled runtime, so a restart re-arms every latch and two
+  runtimes in one process each emit their own first `WARN`. The bound is "one per reason per
+  emitter", not a global one.
+
+=== Risks
+
+* *The latch being read as a rate limiter.* It is not: it is a one-shot per reason. A reader who
+  expects sampled `WARN`s under sustained load will see exactly one and conclude the condition
+  stopped.
+* *Erosion of the closed vocabulary.* Each future request to add "just this one value" to the record
+  is individually plausible and collectively reconstructs the free-text sink. The closure is the
+  limit, not a starting point.
+* *Mis-classification of a reason's reachability.* A reason wrongly marked post-verification
+  reinstates the unbounded flood for that reason. The declaration sits on the member where it is
+  reviewable, but nothing computes it from the code path.
+* *The discriminator drifting from the pipeline.* If a check moves from after the signature stage to
+  before it, its reason's classification must move with it, and no mechanism enforces that coupling.
+
+== Alternatives Considered
+
+*Record every rejection at `DEBUG`.* This is the minimal-risk choice on volume and leaks nothing by
+level. Rejected because it makes an entire protocol integration unobservable at the level operators
+actually run: the two states an operator needs to distinguish — nothing arrived, versus something
+arrived and was refused — are rendered identically as silence, and the distinction can only be
+recovered by reproducing a cross-service condition on demand.
+
+*Record every rejection at `WARN`.* This maximises signal and needs no per-reason classification.
+Rejected because it hands an unbounded, unauthenticated write into the operator's log sink to anyone
+who can reach the gateway. A defence that an anonymous caller can turn into a resource-exhaustion
+vector is not a defence, and "the path is rarely hit" is an assumption about the absence of an
+adversary.
+
+*Rate-limit the emission with a token bucket instead of a latch.* This preserves the rate signal
+under load and still bounds the volume. Rejected as disproportionate for what it buys here: it
+introduces per-reason time state and a refill policy — two knobs with no obviously correct values —
+to improve a channel that already carries the rate question at `DEBUG`. The latch is one
+concurrent-set insertion and states its own limitation plainly; the bucket would state a
+rate-fidelity promise it only approximately keeps.
+
+*Discriminate on request origin — trusted source address, mTLS peer — instead of on
+attacker-reachability.* This is the intuitive reading of "can an attacker drive this". Rejected
+because it makes the log policy depend on deployment-supplied network trust, which is exactly the
+input a reserved unauthenticated endpoint must not rely on for a security property. The signature
+check is the boundary the protocol itself defines; deriving the discriminator from it keeps the
+policy correct under every network topology, including the one where the gateway is directly
+reachable.
+
+*Keep a free-text reason parameter with a documented "no sensitive values" rule.* This preserves
+full diagnostic detail and costs nothing to implement. Rejected because it relocates a structural
+guarantee into a convention. The parameter's type would admit a `sub`, a `sid`, or a token fragment,
+and the only thing preventing it is that each future caller remembers. A sink that is safe by
+discipline is a sink.
+
+*Let each rejection site choose its own level.* This is the most flexible shape and needs no central
+emitter. Rejected because the flood policy is exactly the kind of rule that must hold *everywhere*
+to hold at all: one site choosing unconditional `WARN` for an attacker-reachable reason removes the
+bound for the whole endpoint, and nothing would surface that it had.
+
+The rejected alternatives divide cleanly. One group picks a single global level — all `DEBUG` or all
+`WARN` — and so must sacrifice either observability or the volume bound, because it refuses to let
+the two rejection classes differ. The other keeps the distinction but grounds it in something
+weaker than the protocol's own trust boundary: network origin, caller discipline, or per-site
+judgement. The chosen position derives the discriminator from the one fact that actually decides
+attacker-reachability, and carries both it and the reason vocabulary in the type system so neither
+can be partially applied.
+
+== References
+
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode is one SessionBinding seam behind a fixed reserved-path model] -- establishes the reserved, mode-neutral path model the unauthenticated endpoint this record governs is mounted under. Not superseded.
+* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths bypass the url-parameter value pipeline] -- the companion record on what a reserved path's exposure is, and the blast-radius reasoning this record's flood bound extends to the log surface. Not superseded.
+* link:0050-A_JWT_whose_type_the_engine_exposes_no_entry_point_for_is_verified_signature-only_and_its_claim_set_is_the_callers_authority.adoc[ADR-0050 -- A JWT of an unexposed type is verified signature-only] -- defines the signature stage whose position this record's level discriminator is derived from, and the caller-owned claim checks that produce the post-verification reasons. Not superseded.
+* link:../LogMessages.adoc[Log Messages] -- the structured log-record catalogue the rejection record is registered in, including its identifier and range.
+* link:../security-threat-model.adoc[Security Threat Model] -- the unauthenticated-surface and resource-exhaustion classes this record's flood bound answers.

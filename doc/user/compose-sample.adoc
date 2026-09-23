@@ -371,9 +371,13 @@ MGMT_ROOT="${MGMT_ROOT%"${MGMT_ROOT##*[!/]}"}"
 curl -k "https://localhost:9000${MGMT_ROOT}/health/ready"
 ----
 
-That normalisation is the same rule the rest of the project applies to this label --
-`BaseIntegrationTest.normalisePath`, `integration-tests/scripts/start-integration-container.sh` and
-the k6 resolver all collapse the whole trailing run before composing.
+That normalisation is the same rule the rest of the project applies to this label, and the project
+keeps exactly one implementation of it per language boundary: `RootPaths.normalize` on the Java side,
+`normalize_root_path` in `integration-tests/scripts/lib-docker-compose.sh` on the shell side -- which
+both `start-integration-container.sh` and `demo-client/scripts/start-dev-environment.sh` source
+rather than re-implement -- and the k6 resolver. All of them collapse the whole trailing run before
+composing. The line above is the sample's own inline copy, kept deliberately: this stack is shipped
+to be read and adapted standalone, so it sources nothing from `integration-tests/`.
 
 The endpoint names beneath that path (`/health`, `/health/ready`, `/health/live`, `/metrics`) are
 Quarkus' own fixed suffixes, so those alone stay spelled out. What the path itself can be, and why

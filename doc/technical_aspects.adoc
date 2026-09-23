@@ -303,9 +303,11 @@ Tests are executed via Maven Failsafe plugin with the `integration-tests` profil
 
 NOTE: The three token-sheriff modules this Quarkus application depends on --
 `token-sheriff-client`, `token-sheriff-client-quarkus`, and `token-sheriff-validation-quarkus`
--- are *direct* Maven dependencies today, with versions supplied by the `token-sheriff-bom` at
-`0.9.2` (not a future, approval-pending addition). The `token-sheriff-client` *core* jar is a
-direct dependency, so the core artifacts do not arrive only transitively; only
+-- are *direct* Maven dependencies today (not a future, approval-pending addition), with versions
+supplied by the `token-sheriff-bom`. That BOM's version is the `version.token-sheriff` property in
+the root `pom.xml`, which is the authoritative source and reads `0.9.6` at the time of writing --
+check the property rather than this sentence, which only mirrors it. The `token-sheriff-client`
+*core* jar is a direct dependency, so the core artifacts do not arrive only transitively; only
 `token-sheriff-validation` core arrives transitively, through `token-sheriff-validation-quarkus`.
 
 [cols="2,2,1"]

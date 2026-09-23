@@ -172,7 +172,7 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
     @DisplayName("verify-invalid-config-fails.sh's hand-maintained root path agrees with the advertised label")
     void invalidConfigScriptRootPathAgreesWithLabel() {
         String rootPath = normalisedRootPathLabel();
-        String scriptRootPath = normalisePath(invalidConfigScriptRootPath());
+        String scriptRootPath = RootPaths.normalize(invalidConfigScriptRootPath());
 
         assertEquals(rootPath, scriptRootPath,
                 () -> INVALID_CONFIG_SCRIPT + " sets " + SCRIPT_ROOT_PATH_VAR + "='" + scriptRootPath
@@ -213,14 +213,15 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
      * {@code prometheus.yml}'s {@code /metrics}. Both legs would fail against a correctly-configured
      * gateway, reporting a drift that does not exist.
      * <p>
-     * This is the same trailing-slash rule {@link BaseIntegrationTest#normalisePath(String)} applies
-     * to the configured side, applied to the advertised side, so both halves of every comparison are
-     * normalised identically.
+     * This is the same trailing-slash rule {@link RootPaths#normalize(String)} applies to the
+     * configured side (via {@link BaseIntegrationTest#managementRootPath()}), applied to the
+     * advertised side, so both halves of every comparison are normalised identically — one rule,
+     * one implementation, both sides.
      *
      * @return the advertised management root path, normalised for concatenation
      */
     private static String normalisedRootPathLabel() {
-        return normalisePath(assertedRootPathLabel());
+        return RootPaths.normalize(assertedRootPathLabel());
     }
 
     /**

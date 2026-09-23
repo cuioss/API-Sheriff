@@ -88,6 +88,11 @@ COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml"
 # gateway's own configuration. Deriving it means moving the gateway's management context path needs
 # no edit in this script. Both labels are REQUIRED, never defaulted — see the discovery block.
 #
+# The root-path label's value is carried out of the discovery program RAW. The trailing-slash trim
+# that renders a root path of "/" as the empty string lives ONCE, in lib-docker-compose.sh's
+# normalize_root_path — already sourced above — and the readiness loop applies it to the column it
+# just read, so the rule cannot drift between the Python discovery and the shell that consumes it.
+#
 # It runs BEFORE the image rebuild on purpose: a model this script cannot read is a failure worth
 # having in two seconds rather than after a native image build.
 #
@@ -156,17 +161,22 @@ for name in wanted:
                             "port %s, found %r" % (name, role, container_port, ports[role]))
             usable = False
     if usable:
-        # The root path is emitted LAST, matching deployment/compose-sample/scripts/start-sample.sh
-        # and integration-tests/scripts/start-integration-container.sh. That position is
-        # LOAD-BEARING, not cosmetic: rstrip("/") normalises a trailing slash away so the endpoint
-        # suffix appended downstream cannot produce a doubled separator, and a root path of exactly
-        # "/" therefore collapses to the empty string -- the correct rendering of "served at the
-        # port root". Under default IFS, shell `read` collapses the resulting run of whitespace, so
-        # an empty field is harmless ONLY while it is the trailing one. Emitted in a middle column
-        # it would shift every later column left by one, silently handing the public port to
-        # GATEWAY_MGMT_ROOT. Do not append a sixth column after this one.
+        # The root path is emitted RAW, and LAST -- the same position it holds in
+        # deployment/compose-sample/scripts/start-sample.sh and
+        # integration-tests/scripts/start-integration-container.sh. The column order is unchanged
+        # and stays LOAD-BEARING: the `read` calls downstream name this field last, so appending a
+        # sixth column after it would shift every later column left by one and silently hand the
+        # public port to GATEWAY_MGMT_ROOT.
+        #
+        # Raw, because the trailing-slash trim -- the rule that renders a root path of exactly "/"
+        # as the empty string, the correct spelling of "served at the port root" -- has exactly ONE
+        # home: normalize_root_path() in lib-docker-compose.sh, which this script already sources
+        # and applies to this column after reading each row. An rstrip("/") here would be a second
+        # copy of that rule, free to drift from the shell one. Raw also means this field is never
+        # empty (the check above rejects a root path that is not absolute), so it no longer depends
+        # on being the trailing column to survive shell `read` collapsing a run of whitespace.
         rows.append("%s %s %s %s %s" % (name, scheme, ports["management"][0],
-                                        ports["public"][0], root_path.rstrip("/")))
+                                        ports["public"][0], root_path))
 
 if problems:
     sys.exit("demo stack port discovery failed:\n  " + "\n  ".join(problems))
@@ -271,6 +281,7 @@ GATEWAY_READY_ATTEMPTS=30
 echo "⏳ Waiting for the demo gateway instances to be ready..."
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _ GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
+    GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
 
     GATEWAY_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
     GATEWAY_DIAG_OPTS=(-s --connect-timeout 2 --max-time 5)

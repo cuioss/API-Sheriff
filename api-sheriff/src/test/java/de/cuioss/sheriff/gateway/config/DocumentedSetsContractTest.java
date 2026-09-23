@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -40,6 +41,7 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -58,16 +60,21 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Six shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Ten shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
- * {@link AssetResponseEnvelope#builtInExtensions()}, one lists the inbound-filter mode set
- * carried by {@link SecurityProfile}, and the two bundled JSON Schemas each list the authentication
- * posture set carried by {@link Require}. A restated list has no mechanical tie to its source, so
+ * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
+ * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
+ * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — and those two
+ * schemas each additionally list the
+ * authentication posture set carried by {@link Require}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
  * still reads as authoritative while describing a gateway that no longer exists. The project's own review policy
  * treats a hardcoded list mirroring a set defined elsewhere as a defect unless it is derived from
@@ -178,6 +185,36 @@ class DocumentedSetsContractTest {
     private static final String REQUIRE_ENUM_POINTER = "/$defs/auth/properties/require/enum";
 
     /**
+     * JSON pointer to the {@code profile} enum array declared on the shared {@code securityFilter}
+     * definition. Both bundled schemas carry that definition, so this one pointer names two of the
+     * three sites the mode set is gated at.
+     * <p>
+     * <strong>Why this guard exists.</strong> The value range of {@code profile} is enforced by the
+     * bundled schema rather than by {@code ConfigValidator}, and nothing mechanically tied those
+     * enum arrays to {@link SecurityProfile}. A mode added to the enum while one of the three sites
+     * was missed produced <em>unreachable configuration</em> — the mode exists, the operator writes
+     * it, and the boot refuses it with a value-range violation — while every unit test stayed green.
+     * That is the same drift class {@link #REQUIRE_ENUM_POINTER} closes for the posture set.
+     */
+    private static final String SECURITY_FILTER_PROFILE_ENUM_POINTER =
+            "/$defs/securityFilter/properties/profile/enum";
+
+    /**
+     * JSON pointer to the third {@code profile} site: the gateway-wide {@code security_defaults}
+     * block, which declares its own enum rather than referencing the {@code securityFilter}
+     * definition. Asserting it separately is what makes the guard cover all three sites — the two
+     * sharing a definition cannot stand in for it.
+     */
+    private static final String SECURITY_DEFAULTS_PROFILE_ENUM_POINTER =
+            "/properties/security_defaults/properties/profile/enum";
+
+    /** The property name every inbound-filter mode site declares; the derivation keys off it. */
+    private static final String PROFILE_KEY = "profile";
+
+    /** The JSON Schema keyword carrying a closed value set. */
+    private static final String SCHEMA_ENUM = "enum";
+
+    /**
      * Anchor for {@code doc/configuration.adoc}'s bare extension enumeration. The stated count
      * immediately precedes it ("…own 21-entry extension map"), and the parenthesised, backticked
      * list immediately follows.
@@ -200,6 +237,19 @@ class DocumentedSetsContractTest {
      * whose own line also carries a {@code #} comment containing the {@code |}-separated mode list.
      */
     private static final String CONFIG_PROFILE_ANCHOR = "profile: strict";
+
+    /**
+     * Anchor for {@code doc/user/README.adoc}'s bare mode enumeration ("The mode set is exactly
+     * `strict`, …"). The backticked list runs from the anchor to the sentence's own full stop, which
+     * no mode name can contain.
+     * <p>
+     * The operator guide restates the mode set twice — this sentence and the mode table its
+     * {@code | `mode`} rows build — and neither restatement was bound to {@link SecurityProfile}
+     * until this anchor and {@link #hasModeDefinitionRow(String, String)} were pointed at it. That
+     * left the document an operator is most likely to read as the one that could silently describe a
+     * mode set the gateway no longer has.
+     */
+    private static final String README_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly";
 
     /**
      * Anchor for the cookie-mode exhibit in {@code doc/user/bff-cookie.adoc} — the sentence that
@@ -495,6 +545,66 @@ class DocumentedSetsContractTest {
         assertRequirePostures(ENDPOINT_SCHEMA_RESOURCE);
     }
 
+    @ParameterizedTest(name = "{1} in {0}")
+    @MethodSource("profileEnumSites")
+    @DisplayName("every profile enum the bundled schemas declare equals the SecurityProfile mode set")
+    void everyDeclaredProfileEnumEqualsTheProfileModes(String resource, String pointer) throws Exception {
+        assertProfileModes(resource, pointer);
+    }
+
+    /**
+     * Guards the derivation that feeds {@link #everyDeclaredProfileEnumEqualsTheProfileModes}: the walk
+     * must still reach each site known to exist.
+     * <p>
+     * The three pointers below are a <em>floor</em>, not the asserted population — that population is
+     * derived, which is what makes a fourth site covered on the day it is declared. Without this floor
+     * a walk that silently stopped reaching a site would leave the parameterized guard above passing
+     * over fewer sites than the schemas declare, which is the same blindness in a new place.
+     *
+     * @throws Exception when a bundled schema cannot be read
+     */
+    @Test
+    @DisplayName("the profile-enum derivation still reaches all three known schema sites")
+    void profileEnumDerivationReachesTheKnownSites() throws Exception {
+        Set<String> gateway = profileEnumPointers(schemaTree(GATEWAY_SCHEMA_RESOURCE));
+        Set<String> endpoint = profileEnumPointers(schemaTree(ENDPOINT_SCHEMA_RESOURCE));
+
+        assertAll("derived profile-enum sites",
+                () -> assertTrue(gateway.contains(SECURITY_FILTER_PROFILE_ENUM_POINTER),
+                        GATEWAY_SCHEMA_RESOURCE + ": the walk no longer reaches "
+                                + SECURITY_FILTER_PROFILE_ENUM_POINTER + ". Derived: " + gateway),
+                () -> assertTrue(gateway.contains(SECURITY_DEFAULTS_PROFILE_ENUM_POINTER),
+                        GATEWAY_SCHEMA_RESOURCE + ": the walk no longer reaches "
+                                + SECURITY_DEFAULTS_PROFILE_ENUM_POINTER + ". Derived: " + gateway),
+                () -> assertTrue(endpoint.contains(SECURITY_FILTER_PROFILE_ENUM_POINTER),
+                        ENDPOINT_SCHEMA_RESOURCE + ": the walk no longer reaches "
+                                + SECURITY_FILTER_PROFILE_ENUM_POINTER + ". Derived: " + endpoint));
+    }
+
+    /**
+     * Every {@code profile} enum site the two bundled schemas declare, <em>derived</em> by walking each
+     * schema rather than listed.
+     * <p>
+     * Listing the sites is what the earlier form did, and it covered exactly the sites that existed
+     * when it was written: a {@code properties/profile/enum} added anywhere else went unasserted and
+     * could drift from {@link SecurityProfile} while the suite stayed green. Deriving the population
+     * means a new site is covered on the day it is declared. One argument set per site keeps the
+     * per-site failure naming the earlier form had — a pooled assertion would report the very drift
+     * this guard exists to localise as one anonymous mismatch.
+     *
+     * @return one {@code (resource, pointer)} pair per declared site
+     * @throws IOException when a bundled schema cannot be read
+     */
+    static Stream<Arguments> profileEnumSites() throws IOException {
+        List<Arguments> sites = new ArrayList<>();
+        for (String resource : List.of(GATEWAY_SCHEMA_RESOURCE, ENDPOINT_SCHEMA_RESOURCE)) {
+            for (String pointer : profileEnumPointers(schemaTree(resource))) {
+                sites.add(Arguments.of(resource, pointer));
+            }
+        }
+        return sites.stream();
+    }
+
     @Test
     @DisplayName("doc/configuration.adoc's mode enumeration equals the SecurityProfile value set")
     void configurationAdocEnumeratesTheSecurityProfileModes() throws Exception {
@@ -534,6 +644,60 @@ class DocumentedSetsContractTest {
                             + "' declared by SecurityProfile. The mode-set table must carry one cell"
                             + " holding exactly \"" + modeDefinitionRow(mode) + "\" per mode, so a newly"
                             + " added mode gets its entry and a removed one has its entry deleted");
+        }
+    }
+
+    @Test
+    @DisplayName("doc/user/README.adoc's mode enumeration equals the SecurityProfile value set")
+    void userReadmeEnumeratesTheSecurityProfileModes() throws Exception {
+        // Arrange
+        String document = read(USER_README_ADOC);
+        int anchor = anchorIndex(document, README_PROFILE_MODE_SET_ANCHOR, USER_README_ADOC.toString());
+
+        // Act — the sentence names the set inline and ends at its own full stop; the raw token count
+        // comes back alongside the set because the set alone cannot observe a mode named twice
+        int listStart = anchor + README_PROFILE_MODE_SET_ANCHOR.length();
+        int listEnd = document.indexOf('.', listStart);
+        if (listEnd < 0) {
+            fail(USER_README_ADOC + ": the mode list after the anchor \"" + README_PROFILE_MODE_SET_ANCHOR
+                    + "\" is not terminated by a full stop; the anchor no longer describes the document"
+                    + " and this guard would otherwise assert over the rest of the file");
+        }
+        TokenList documented = backtickedTokens(document.substring(listStart, listEnd));
+
+        // Assert
+        assertFalse(documented.tokens().isEmpty(), USER_README_ADOC + ": anchor \""
+                + README_PROFILE_MODE_SET_ANCHOR + "\" matched but yielded no modes — the guard would"
+                + " pass vacuously");
+        assertEquals(modeNames(), sorted(documented.tokens()),
+                USER_README_ADOC + " enumerates the security_defaults.profile mode set, which is"
+                        + " authoritatively defined by SecurityProfile, and has drifted from it. This is the"
+                        + " document an operator reads to decide which mode to set, so a mode it omits is one"
+                        + " nobody is told exists, and one it names that the enum does not is a value the"
+                        + " gateway refuses to boot on");
+        assertEquals(SecurityProfile.values().length, documented.rawCount(),
+                USER_README_ADOC + " lists a different number of modes than SecurityProfile declares."
+                        + " The count is taken over the raw backticked tokens rather than over the"
+                        + " de-duplicated set, so a mode listed twice fails here even though the set"
+                        + " equality above still holds");
+    }
+
+    @Test
+    @DisplayName("doc/user/README.adoc gives every SecurityProfile mode a definition row of its own")
+    void userReadmeDocumentsEverySecurityProfileMode() throws Exception {
+        // Arrange — the per-mode guidance is free-form prose, so the table row that introduces it is
+        // the structural thing worth asserting, exactly as it is for doc/configuration.adoc
+        String document = read(USER_README_ADOC);
+
+        // Act + Assert
+        for (SecurityProfile profile : SecurityProfile.values()) {
+            String mode = profile.name().toLowerCase(Locale.ROOT);
+            assertTrue(hasModeDefinitionRow(document, mode),
+                    USER_README_ADOC + " has no definition row of its own for the mode '" + mode
+                            + "' declared by SecurityProfile. The operator guide's mode table must carry"
+                            + " one cell holding exactly \"" + modeDefinitionRow(mode) + "\" per mode, so a"
+                            + " newly added mode gets the guidance that tells an operator when to choose it"
+                            + " and a removed one has its entry deleted");
         }
     }
 
@@ -1059,7 +1223,7 @@ class DocumentedSetsContractTest {
      * @throws IOException when the bundled schema cannot be read
      */
     private static void assertRequirePostures(String resource) throws IOException {
-        TokenList declared = schemaRequireEnum(resource);
+        TokenList declared = schemaEnumAt(resource, REQUIRE_ENUM_POINTER);
 
         assertFalse(declared.tokens().isEmpty(), resource + ": " + REQUIRE_ENUM_POINTER + " resolved to"
                 + " an empty enum array — the guard would pass vacuously");
@@ -1076,20 +1240,100 @@ class DocumentedSetsContractTest {
     }
 
     /**
-     * The {@code auth.require} enum array of a bundled schema, read structurally through
-     * {@link #REQUIRE_ENUM_POINTER}.
+     * Asserts one {@code profile} enum array against {@link SecurityProfile} — the set it names, and
+     * how many entries it listed to name it.
+     * <p>
+     * The comparison is against the lower-cased constant names because that is the spelling an
+     * operator writes and the schema declares. Each of the three sites is asserted separately and
+     * names its own pointer on failure: the whole point of the guard is that a mode reaching two
+     * sites and missing the third is <em>unreachable configuration at the third</em>, so an assertion
+     * that pooled the sites would report the very drift it exists to localise as a single anonymous
+     * mismatch.
+     * <p>
+     * The listed-entry count rides along for the reason every other enumeration here asserts it: a
+     * {@link Set} cannot observe a duplicate, so an array naming {@code strict} twice collapses into
+     * exactly the set a correct array produces and would otherwise pass.
      *
-     * @param resource the classpath resource of the schema to read
-     * @return the de-duplicated posture values and the number of entries that produced them
+     * @param resource the classpath resource of the schema to assert
+     * @param pointer  the JSON pointer of the {@code profile} enum array within it
      * @throws IOException when the bundled schema cannot be read
      */
-    private static TokenList schemaRequireEnum(String resource) throws IOException {
-        JsonNode array = new ObjectMapper().readTree(readSchema(resource)).at(REQUIRE_ENUM_POINTER);
+    private static void assertProfileModes(String resource, String pointer) throws IOException {
+        TokenList declared = schemaEnumAt(resource, pointer);
+
+        assertFalse(declared.tokens().isEmpty(), resource + ": " + pointer + " resolved to an empty enum"
+                + " array — the guard would pass vacuously");
+        assertEquals(modeNames(), sorted(declared.tokens()),
+                resource + " enumerates the inbound-filter mode set at " + pointer + ", which is"
+                        + " authoritatively defined by SecurityProfile, and has drifted from it. The schema is"
+                        + " what refuses an unknown mode before binding ever reaches the type, so a mode the"
+                        + " enum declares and this site omits is unreachable configuration at this site even"
+                        + " when the other sites carry it, and one this site declares and the enum omits fails"
+                        + " the boot bind instead of the validation");
+        assertEquals(SecurityProfile.values().length, declared.rawCount(),
+                resource + " lists a different number of modes at " + pointer + " than SecurityProfile"
+                        + " declares. The count is taken over the raw array entries rather than over the"
+                        + " de-duplicated set, so a mode listed twice fails here even though the set equality"
+                        + " above still holds");
+    }
+
+    /**
+     * Every JSON pointer at which a schema declares a {@code profile} enum, found by walking the tree.
+     * <p>
+     * A site is a node carrying {@code properties/profile} whose value declares an {@code enum} array —
+     * the shape all three known sites are written in. Requiring the {@code properties} parent is what
+     * keeps the walk from claiming an unrelated field that merely happens to be named {@code profile}.
+     * The walk descends through every object field and array element, so a site is found wherever it is
+     * declared: under {@code $defs}, under {@code properties}, or anywhere a future schema puts one.
+     *
+     * @param schema the parsed schema tree
+     * @return the declared {@code profile} enum pointers, in pointer order
+     */
+    private static Set<String> profileEnumPointers(JsonNode schema) {
+        Set<String> pointers = new TreeSet<>();
+        collectProfileEnumPointers(schema, "", pointers);
+        return pointers;
+    }
+
+    /**
+     * Recursive half of {@link #profileEnumPointers(JsonNode)}.
+     *
+     * @param node     the node being visited
+     * @param pointer  the JSON pointer of {@code node}
+     * @param pointers the accumulating result
+     */
+    private static void collectProfileEnumPointers(JsonNode node, String pointer, Set<String> pointers) {
+        if (node.isObject()) {
+            if (node.path(SCHEMA_PROPERTIES).path(PROFILE_KEY).path(SCHEMA_ENUM).isArray()) {
+                pointers.add(pointer + "/" + SCHEMA_PROPERTIES + "/" + PROFILE_KEY + "/" + SCHEMA_ENUM);
+            }
+            for (Map.Entry<String, JsonNode> field : node.properties()) {
+                collectProfileEnumPointers(field.getValue(), pointer + "/" + field.getKey(), pointers);
+            }
+        } else if (node.isArray()) {
+            for (int index = 0; index < node.size(); index++) {
+                collectProfileEnumPointers(node.get(index), pointer + "/" + index, pointers);
+            }
+        }
+    }
+
+    /**
+     * The enum array a bundled schema declares at a pointer, read structurally rather than scraped:
+     * the schema already models these as arrays, so extraction cannot be defeated by reformatting and
+     * a moved declaration fails naming the pointer that stopped resolving.
+     *
+     * @param resource the classpath resource of the schema to read
+     * @param pointer  the JSON pointer of the enum array
+     * @return the de-duplicated values and the number of entries that produced them
+     * @throws IOException when the bundled schema cannot be read
+     */
+    private static TokenList schemaEnumAt(String resource, String pointer) throws IOException {
+        JsonNode array = schemaTree(resource).at(pointer);
         if (!array.isArray()) {
-            return fail(resource + ": nothing resolves at " + REQUIRE_ENUM_POINTER + ", so this contract"
-                    + " guard no longer reaches the posture enumeration it protects. Restore the auth"
-                    + " definition, or update REQUIRE_ENUM_POINTER in DocumentedSetsContractTest to match"
-                    + " where the schema now declares it.");
+            return fail(resource + ": nothing resolves at " + pointer + ", so this contract guard no"
+                    + " longer reaches the enumeration it protects. Restore the declaration, or update the"
+                    + " matching pointer constant in DocumentedSetsContractTest to match where the schema"
+                    + " now declares it.");
         }
         Set<String> tokens = new LinkedHashSet<>();
         int rawCount = 0;

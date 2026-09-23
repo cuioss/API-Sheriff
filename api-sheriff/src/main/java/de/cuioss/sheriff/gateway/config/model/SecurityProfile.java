@@ -28,11 +28,20 @@ import org.jspecify.annotations.Nullable;
  * gated by the bundled JSON Schema (three symmetric enum sites), so this enum never sees an
  * unrecognized value at boot; {@link #parse(String)} exists for the model layer and for tests.
  * <p>
- * <strong>Two contracts this enum makes explicit.</strong>
+ * <strong>Three contracts this enum makes explicit.</strong>
  * <ol>
  *   <li><strong>An omitted block resolves to {@link #STRICT}</strong> ({@link #DEFAULT_PROFILE}).
  *       When {@code security_defaults} is absent, or present without a {@code profile}, the
- *       gateway-wide effective profile is {@code STRICT} — the fail-closed choice.</li>
+ *       gateway-wide effective profile is {@code STRICT} — the fail-closed choice. Adding
+ *       {@link #PARANOID} did not move that default: the tightest <em>available</em> mode and the
+ *       <em>default</em> mode are deliberately different questions.</li>
+ *   <li><strong>The line-break deviation is carried by every tightened mode.</strong> cui-http
+ *       admits decoded CR/LF in url-parameter values in <em>every</em> preset, {@code paranoid()}
+ *       included — it is {@code strict()} plus two content block-lists and differs in nothing else.
+ *       {@link #STRICT} and {@link #PARANOID} therefore both switch
+ *       {@code allowLineBreaksInParameterValues} off, so that {@code PARANOID} is tighter than
+ *       {@code STRICT} on every axis and looser on none. A tightened mode that took the preset
+ *       verbatim would be the silent inversion this contract exists to rule out.</li>
  *   <li><strong>{@link #MINIMAL} contributes no limits policy.</strong> {@code minimal} is a
  *       statement about <em>validation</em>, never about <em>limits</em>: a {@code minimal} route
  *       still needs a concrete {@link SecurityConfiguration} so the retained {@code max_body_bytes}
@@ -56,11 +65,24 @@ import org.jspecify.annotations.Nullable;
 public enum SecurityProfile {
 
     /**
-     * The tightest inbound posture, backed by {@link SecurityConfiguration#strict()} with exactly one
-     * deviation: decoded line breaks (CR/LF) in url-parameter values are refused — see
-     * {@link #preset()}.
+     * The tightest posture that judges <em>form</em> only, backed by
+     * {@link SecurityConfiguration#strict()} with exactly one deviation: decoded line breaks (CR/LF)
+     * in url-parameter values are refused — see {@link #preset()}.
      */
     STRICT,
+
+    /**
+     * {@link #STRICT} plus the application-layer <em>content</em> detection no lower mode performs:
+     * backed by {@link SecurityConfiguration#paranoid()}, which seeds cui-http's sensitive-path and
+     * suspicious-parameter-name block-lists. It carries {@code STRICT}'s line-break deviation too,
+     * because {@code paranoid()} admits decoded CR/LF exactly as {@code strict()} does.
+     * <p>
+     * <strong>Has a real false-positive profile.</strong> The block-listed literals are filesystem
+     * paths and configuration filenames, and parameter names such as {@code file}, {@code path} and
+     * {@code url} — ordinary REST vocabulary. Select it for a surface whose paths and parameters
+     * genuinely reach a filesystem; {@link #STRICT} stays the right choice elsewhere.
+     */
+    PARANOID,
 
     /** The relaxed inbound posture, backed by {@link SecurityConfiguration#lenient()}. */
     LENIENT,
@@ -86,6 +108,24 @@ public enum SecurityProfile {
      */
     private static final SecurityConfiguration STRICT_PRESET = SecurityConfigurations
             .builderSeededFrom(SecurityConfiguration.strict())
+            .allowLineBreaksInParameterValues(false)
+            .build();
+
+    /**
+     * The {@link #PARANOID} policy: the cui-http {@link SecurityConfiguration#paranoid()} preset
+     * carrying the same {@code allowLineBreaksInParameterValues} deviation {@link #STRICT_PRESET}
+     * carries.
+     * <p>
+     * <strong>Why the deviation is repeated rather than inherited.</strong> {@code paranoid()} is
+     * {@code strict()} plus two content block-lists — it does not derive from this project's
+     * {@code STRICT_PRESET}, so the line-break switch is not inherited through it. cui-http
+     * documents {@code allowLineBreaksInParameterValues} as defaulting to {@code true} in
+     * <em>every</em> preset, and reading the shipped {@code PARANOID_CONFIGURATION} confirms it:
+     * taking the preset verbatim would make {@code PARANOID} admit a decoded CR/LF that
+     * {@code STRICT} refuses, i.e. looser than the mode it is sold as tightening.
+     */
+    private static final SecurityConfiguration PARANOID_PRESET = SecurityConfigurations
+            .builderSeededFrom(SecurityConfiguration.paranoid())
             .allowLineBreaksInParameterValues(false)
             .build();
 
@@ -129,11 +169,13 @@ public enum SecurityProfile {
     /**
      * Returns the backing cui-http policy for this mode.
      * <p>
-     * {@link #LENIENT} returns {@link SecurityConfiguration#lenient()} unchanged. {@link #STRICT}
-     * returns {@link SecurityConfiguration#strict()} with <strong>one deliberate deviation</strong>:
-     * {@code allowLineBreaksInParameterValues} is {@code false}, so a url-parameter value that decodes
-     * to CR or LF is refused rather than forwarded upstream. Every other component equals the cui-http
-     * preset. The strict policy is a cached constant, so repeated calls return the same instance.
+     * {@link #LENIENT} returns {@link SecurityConfiguration#lenient()} unchanged. {@link #STRICT} and
+     * {@link #PARANOID} return {@link SecurityConfiguration#strict()} and
+     * {@link SecurityConfiguration#paranoid()} respectively, each with <strong>the same single
+     * deliberate deviation</strong>: {@code allowLineBreaksInParameterValues} is {@code false}, so a
+     * url-parameter value that decodes to CR or LF is refused rather than forwarded upstream. Every
+     * other component equals the cui-http preset. Both tightened policies are cached constants, so
+     * repeated calls return the same instance.
      *
      * @return the backing cui-http policy for this mode
      * @throws IllegalStateException when called on {@link #MINIMAL}, which contributes no limits
@@ -143,6 +185,7 @@ public enum SecurityProfile {
     public SecurityConfiguration preset() {
         return switch (this) {
             case STRICT -> STRICT_PRESET;
+            case PARANOID -> PARANOID_PRESET;
             case LENIENT -> SecurityConfiguration.lenient();
             case MINIMAL -> throw new IllegalStateException(
                     "profile 'minimal' has no cui-http preset; resolve the limits profile via limitsProfile(..)");

@@ -156,6 +156,22 @@ public final class ConfigLoader {
      * reaches every array-typed pointer the bundled schemas declare rather than a chosen few.
      */
     private static final String ARRAY_TYPE = "array";
+    /**
+     * The schema-declared destination type that selects the map-valued substitution arm, so a
+     * map-valued key can be supplied from one environment variable as comma-separated
+     * {@code key=value} pairs.
+     * <p>
+     * <strong>Reachable from the top-level destination type only.</strong> Unlike {@link #ARRAY_TYPE},
+     * which is its arm's whole selector, this constant deliberately does <em>not</em> reach the
+     * per-element path {@link #coerceList} delegates through: an {@code object} item type is mapped to
+     * {@code null} there, so an array-of-objects pointer keeps falling through to shape inference and
+     * keeps failing loudly at the schema-validation pass exactly as documented on {@link #coerce}.
+     * Letting the arm onto the item path would convert that deliberate refusal into an array of
+     * single-entry objects that may bind — a silent behaviour change to a documented contract.
+     */
+    private static final String OBJECT_TYPE = "object";
+    /** Separates the two halves of one {@code key=value} pair on the {@link #OBJECT_TYPE} wire format. */
+    private static final char MAP_PAIR_SEPARATOR = '=';
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     /**
      * Bound on {@code $ref} indirections followed when resolving a destination type. The bundled
@@ -466,6 +482,11 @@ public final class ConfigLoader {
      * indistinguishability argument above is a property of list destinations only, so widening the
      * refusal would change behaviour across the whole configuration surface for no stated reason.
      * <p>
+     * Where the destination is an {@code object}, this method owns the secrets-rule refusal: a
+     * whole-object substitution is refused at any pointer that <em>contains</em> a secret-classified
+     * field — see {@link #coversSecretPointer} for why the refusal has to live here rather than in
+     * {@link #validateSecretReferences}.
+     * <p>
      * The recorded {@link ConfigError} names the pointer and the rule and never echoes the resolved
      * value, which at an allow-list pointer is topology intelligence.
      */
@@ -478,6 +499,13 @@ public final class ConfigLoader {
         try {
             String resolved = secretResolver.resolve(child.asText());
             String declared = declaredType(schemaTree, pointer);
+            if (OBJECT_TYPE.equals(declared) && coversSecretPointer(pointer)) {
+                errors.add(new ConfigError(file, pointer,
+                        "placeholder at an object-typed field that contains a secret-classified field; "
+                                + "write the bare ${VAR} reference at the secret field itself, so the "
+                                + "secrets rule can be enforced on it"));
+                return;
+            }
             String itemType = null;
             if (ARRAY_TYPE.equals(declared)) {
                 if (hasBlankElement(resolved)) {
@@ -503,6 +531,30 @@ public final class ConfigLoader {
      */
     private static boolean hasBlankElement(String value) {
         return Stream.of(value.split(",", -1)).anyMatch(String::isBlank);
+    }
+
+    /**
+     * Reports whether {@code pointer} names an object that <em>contains</em> a secret-classified
+     * field — whether any {@link #SECRET_POINTERS} entry lies strictly beneath it.
+     * <p>
+     * <strong>Why the refusal lives at the substitution site.</strong>
+     * {@link #validateSecretReferences} enforces the bare-{@code ${VAR}} secrets rule on the
+     * <em>pre-substitution</em> tree, so it can only see a secret field the operator actually wrote.
+     * The {@code object} arm of {@link #coerce} can synthesise one <em>after</em> that pass has already
+     * run: {@code session: "${VAR:-encryption_key=…}"} materialises
+     * {@code /oidc/session/encryption_key} out of a defaulted placeholder — precisely the form the rule
+     * exists to refuse — and the boot would then accept a literal secret written into the mounted
+     * configuration file, with the rule reporting nothing. Re-running the rule after substitution
+     * cannot close that gap either: post-substitution the value IS the resolved secret, so every
+     * legitimately-resolved secret would fail the bare-reference test.
+     * <p>
+     * Refusing the whole-object substitution at these pointers is what keeps the rule enforceable. It
+     * costs the operator nothing a secret is allowed to do: a secret is written at its own field, as a
+     * bare {@code ${VAR}}, where the pre-substitution pass can see it.
+     */
+    private static boolean coversSecretPointer(String pointer) {
+        String prefix = pointer + "/";
+        return SECRET_POINTERS.stream().anyMatch(secret -> secret.startsWith(prefix));
     }
 
     /**
@@ -539,6 +591,18 @@ public final class ConfigLoader {
      * inference, and the resulting array of scalars is refused moments later by the schema-validation
      * pass, with a diagnostic naming the expected and actual types and never the value. Reaching those
      * pointers and failing loudly is the deliberate behaviour; silently skipping them is not.
+     * <strong>The {@code object} arm below is deliberately unreachable from that item path</strong> —
+     * {@link #coerceList} maps an {@code object} item type to {@code null} before delegating — so the
+     * refusal described in this paragraph is preserved verbatim. Were the arm reachable there, each
+     * element would bind as a single-entry object and the array might satisfy the schema, turning a
+     * documented loud refusal into a silent acceptance.
+     * <p>
+     * A destination declared {@code object} is re-typed into the whole map, mirroring the {@code array}
+     * arm's convention: one resolved {@code ${VAR}} splits on {@code ,}, each element is stripped and
+     * split on its FIRST {@code =}, and the pairs become an object of string values —
+     * {@code HOST1=ALIAS1,HOST2=ALIAS2}. Splitting on the first separator only is what lets a value
+     * contain one; an element carrying no {@code =}, or an empty key, leaves the whole resolved value a
+     * {@link TextNode} for schema validation to refuse as the file's established discipline requires.
      *
      * @param value        the fully substituted string
      * @param declaredType the type the schema declares at the value's own pointer, or {@code null} when
@@ -553,6 +617,7 @@ public final class ConfigLoader {
             case "boolean" -> coerceBoolean(value);
             case "integer", "number" -> coerceNumber(value);
             case ARRAY_TYPE -> coerceList(value, itemType);
+            case OBJECT_TYPE -> coerceMap(value);
             case null, default -> inferFromShape(value);
         };
     }
@@ -561,13 +626,56 @@ public final class ConfigLoader {
      * Splits a resolved value on {@code ,} into the list its destination declares, stripping each
      * element and typing it from {@code itemType}. Blank elements never reach here — {@link
      * #substituteChild} refuses them before the split, so every member below is a non-blank value.
+     * <p>
+     * An {@code object} item type is mapped to {@code null} rather than forwarded, which is what keeps
+     * the {@link #coerceMap} arm off the per-element path. This is the one place that boundary is
+     * enforced; see {@link #OBJECT_TYPE} for why it must hold.
      */
     private static ArrayNode coerceList(String value, @Nullable String itemType) {
+        String scalarItemType = OBJECT_TYPE.equals(itemType) ? null : itemType;
         ArrayNode list = JsonNodeFactory.instance.arrayNode();
         for (String element : value.split(",", -1)) {
-            list.add(coerce(element.strip(), itemType, null));
+            list.add(coerce(element.strip(), scalarItemType, null));
         }
         return list;
+    }
+
+    /**
+     * Builds the map a resolved {@code ${VAR}} supplies for an {@code object}-typed destination:
+     * comma-separated {@code key=value} pairs, each stripped, each split on its FIRST {@code =}.
+     * <p>
+     * Values are always {@link TextNode}s. The map-valued keys this arm serves declare
+     * {@code additionalProperties: {type: string}}, and there is no per-property type to consult the way
+     * the list arm consults an item type — so inferring a shape here would reintroduce exactly the
+     * value-dependent retyping {@link #coerce} exists to remove.
+     * <p>
+     * A malformed input — an element with no {@code =}, or with an empty key — returns the resolved
+     * value unchanged as a {@link TextNode}, deliberately rather than reporting an error here. Schema
+     * validation runs next and refuses it as "expected object, got string", a diagnostic naming the
+     * expected and actual <em>types</em> and never the value, which is what keeps a resolved secret out
+     * of every collected {@link ConfigError}. The accepted tradeoff is that this diagnostic is a generic
+     * type mismatch rather than the bespoke message the {@code array} arm's empty-resolution refusal
+     * emits; that refusal is deliberately not widened to object destinations, because its
+     * indistinguishability argument is a property of list destinations alone.
+     *
+     * @param value the fully substituted string
+     * @return the object the pairs describe, or {@code value} unchanged when any pair is malformed
+     */
+    private static JsonNode coerceMap(String value) {
+        ObjectNode map = JsonNodeFactory.instance.objectNode();
+        for (String element : value.split(",", -1)) {
+            String pair = element.strip();
+            int separator = pair.indexOf(MAP_PAIR_SEPARATOR);
+            if (separator < 0) {
+                return TextNode.valueOf(value);
+            }
+            String key = pair.substring(0, separator).strip();
+            if (key.isEmpty()) {
+                return TextNode.valueOf(value);
+            }
+            map.put(key, pair.substring(separator + 1).strip());
+        }
+        return map;
     }
 
     private static JsonNode coerceBoolean(String value) {

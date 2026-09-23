@@ -190,6 +190,8 @@ tls:                               # TLS POLICY for the terminated listener. Neu
   alpn: [h2, http/1.1]             # HTTP/2 (also carries gRPC) + HTTP/1.1
   passthrough_sni: {}              # SNI hostname -> topology alias, relayed at L4 without
                                    #   decryption, e.g. { legacy.example.com: LEGACY }
+                                   #   ONE variable carries the WHOLE map: "${VAR}" with
+                                   #   VAR=host1=ALIAS1,host2=ALIAS2 (split on the first '=')
   mtls:
     enabled: false
     client_ca: /etc/sheriff/ca.pem
@@ -248,7 +250,9 @@ security_headers:                  # response-header middleware (global block). 
     allow_credentials: true
 
 security_defaults:                 # baseline inbound filter mode; overridable per route/anchor
-  profile: strict                  # strict | lenient | minimal   (omitted block => strict)
+  profile: strict                  # strict | paranoid | lenient | minimal   (omitted block => strict)
+                                   # 'paranoid' is 'strict' PLUS content block-lists -- it rejects
+                                   # 'file'/'path'/'url' parameter names and sensitive path segments
                                    # 'minimal' is a PARTIAL disable, not an off switch:
                                    # see "The `minimal` mode" below for the closed definition
   allow_get_with_content_length_body: false   # OPTIONAL, default false. Admits a Content-Length-
@@ -1674,9 +1678,11 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | Config field | cui-http mapping | Notes
 
 | `profile`
-| `SecurityConfiguration.strict()` / `lenient()`; `minimal` maps to *no preset*
-| The inbound-filter mode. `strict` and `lenient` are baseline presets that the limits below
-  override individually. `minimal` is a *dispatch mode*, not a preset: it carries no
+| `SecurityConfiguration.strict()` / `paranoid()` / `lenient()`; `minimal` maps to *no preset*
+| The inbound-filter mode. `strict`, `paranoid` and `lenient` are baseline presets that the limits
+  below override individually. `paranoid` carries `strict`'s numbers exactly and adds the
+  application-layer content block-lists on top -- see the mode table under `security_defaults`.
+  `minimal` is a *dispatch mode*, not a preset: it carries no
   `SecurityConfiguration` of its own and inherits its limits from the nearest non-`minimal` profile in
   the fallback chain (landing on `strict` when the whole chain is `minimal`), which is what keeps its
   retained `max_body_bytes` cap concrete. See link:#_the_minimal_mode[The `minimal` mode].
@@ -1720,9 +1726,11 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 [[_preset_limits]]
 ==== Preset limits
 
-The two presets are not just "tight" and "loose" labels -- they carry concrete numbers, and a route
+The presets are not just "tight" and "loose" labels -- they carry concrete numbers, and a route
 that declares no limit key of its own lands exactly on them. Because an omitted `security_defaults`
 block resolves to `strict`, the `strict` column is what an undeclared deployment actually enforces.
+`paranoid` has no column of its own because it needs none: it is `strict` on every limit below and
+differs from it only in the two content block-lists, which are not limits.
 
 [cols="3,1,1"]
 |===
@@ -1762,9 +1770,11 @@ block resolves to `strict`, the `strict` column is what an undeclared deployment
 |===
 
 All length limits are measured in *characters* -- the `cui-http` unit -- not bytes. The presets also
-differ in their non-length validators: `strict` normalizes Unicode, compares case-sensitively, fails
-on suspicious patterns, and permits neither double encoding, control characters, nor extended ASCII;
-`lenient` inverts each of those. Neither preset ever permits null bytes. The extended-ASCII choice
+differ in their non-length validators: `strict` normalizes Unicode, fails on suspicious patterns, and
+permits neither double encoding, control characters, nor extended ASCII; `lenient` inverts each of
+those. Comparison is case-*insensitive* under every preset and is not an axis they differ on --
+case sensitivity can only ever match a subset, so enabling it could only reduce detection. Neither
+preset ever permits null bytes. The extended-ASCII choice
 alone can be overridden gateway-wide with `security_defaults.allow_extended_ascii` -- see
 link:#_the_extended_ascii_override[The extended-ASCII override].
 
@@ -2318,6 +2328,12 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   only, where a validated logout token destroys the matching session; in `mode: cookie` the
   endpoint is *disabled* (`404`) -- there is no server-side state a logout token could
   destroy. See the statelessness limitation in link:variants/03-bff-cookie.adoc[Variant 3].
+
+  Unlike every other reserved path, this one is served on *every* host the gateway answers on,
+  not only the host of `redirect_uri`: the IdP reaches it server-to-server at whatever address
+  you registered as the client's back-channel logout URL, which in a container deployment is an
+  internal service name. Register that address with the IdP with this path, and reserve the path
+  somewhere no proxied namespace needs it on any host (ADR-0018, back-channel-host amendment).
 
 | `session.csrf.trusted_origins`
 | The browser origins allowed to make *unsafe-method* (non-GET/HEAD/OPTIONS) calls to
@@ -3086,14 +3102,23 @@ link:security-threat-model.adoc#gw-14[GW-14]).
 === `security_defaults`
 
 The gateway-wide inbound-filter baseline. `profile` selects the *inbound-filter mode*, and the mode
-set has exactly three members:
+set has exactly four members:
 
 [cols="1,4"]
 |===
 | Value | Meaning
 
 | `strict`
-| The tightest posture, backed by `SecurityConfiguration.strict()`.
+| The tightest posture that judges *form* alone, backed by `SecurityConfiguration.strict()`.
+
+| `paranoid`
+| `strict` plus the application-layer *content* detection no lower mode performs, backed by
+  `SecurityConfiguration.paranoid()`. It carries every one of `strict`'s limits unchanged and adds
+  two block-lists: sensitive path segments (filesystem paths and configuration filenames, matched
+  per `/`-delimited segment) and suspicious parameter names (`file`, `path`, `url` and their
+  siblings). *That is real vocabulary in many REST APIs*, so this mode has a genuine false-positive
+  profile -- choose it for a surface whose paths and parameters actually reach a filesystem, and
+  stay on `strict` everywhere else.
 
 | `lenient`
 | The relaxed posture, backed by `SecurityConfiguration.lenient()`. Even this preset never permits
@@ -3106,7 +3131,9 @@ set has exactly three members:
 |===
 
 *An omitted `security_defaults` block -- or a block omitting `profile` -- resolves to `strict`*, the
-fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly. The
+fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly, and one
+wanting the content block-lists must declare `paranoid` explicitly -- adding `paranoid` did not move
+the default, because the tightest available mode and the default mode are separate decisions. The
 concrete numbers each mode carries are tabulated under link:#_preset_limits[Preset limits].
 
 The block carries three further keys:
@@ -3185,7 +3212,7 @@ this key: every framing rejection is preserved.
 
 [IMPORTANT]
 ====
-The mode set is *closed*: `strict`, `lenient`, `minimal`, and nothing else. Any other value -- at
+The mode set is *closed*: `strict`, `paranoid`, `lenient`, `minimal`, and nothing else. Any other value -- at
 any of the three declaration sites (`security_defaults`, an anchor's `security_filter`, a route's
 `security_filter`) -- makes the gateway *fail to boot*. There is no fallback and no
 warning-and-continue.
@@ -3630,9 +3657,48 @@ Of the reachable keys, 3 are arrays of *objects* rather than strings (`token_val
 `routes`, `routes[].match.headers`): the first in `gateway.yaml`, the other two in an endpoint
 document. At each the mechanism *reaches* the key rather than silently skipping it, produces scalars
 where the schema requires objects, and the schema-validation pass then *refuses the document* -- a
-loud failure, not a wrong value. `tls.passthrough_sni` is *not* a member at all: it is an object map of
-SNI hostname to topology alias, not an array, so the rule never matches it and it cannot be
-supplied this way.
+loud failure, not a wrong value. That refusal is deliberate and is *preserved* by the map rule
+below: the `object` arm is reachable only from a key's own declared type and never from an array's
+item type, so an array-of-objects key keeps failing loudly instead of binding an array of
+single-entry objects.
+* *A `${VAR}` written at a map-valued key supplies the whole map.* Where the destination declares
+  `object`, the placeholder is typed from that declaration and split on `,` exactly as a list is,
+  and each element is then split on its *first* `=` into a key and a string value. The worked
+  example is `tls.passthrough_sni` -- an object map of SNI hostname to topology alias, which no
+  environment variable could supply before this rule existed:
++
+--
+[source,yaml]
+----
+tls:
+  passthrough_sni: "${SHERIFF_PASSTHROUGH_SNI}"
+----
+
+with `SHERIFF_PASSTHROUGH_SNI=legacy.example.com=legacy-tier,vault.example.com=vault-tier` binding
+the two-entry map. Splitting on the *first* `=` only is what lets an alias value contain one.
+--
++
+A *malformed* input -- an element carrying no `=`, or an empty key -- leaves the resolved value a
+string, which the schema-validation pass then refuses as `expected object, got string`, reported at
+the key's own pointer and naming the *types* rather than the value. An *empty resolution* is refused
+by that same path. The diagnostic is therefore the generic type mismatch rather than the bespoke
+message the list rule's empty-resolution refusal emits: that refusal stays scoped to `array`
+destinations, because the argument behind it -- that a validator cannot tell an explicitly-empty list
+from one a variable emptied -- is a property of lists alone, and an object destination already fails
+loudly without it.
++
+*One class of destination refuses the whole-map form outright.* Where the object-typed key
+*contains* a secret-classified field anywhere beneath it -- `oidc.session`, which holds the session
+encryption key, is the case an operator actually meets -- a `${VAR}` written at the map itself is
+refused at boot. The error names the pointer and the rule, and never echoes what the variable
+resolved to. The remedy is the one the secrets bullet below states in its own right: write the bare
+`${VAR}` at the secret field itself.
++
+The refusal has to happen at the substitution site rather than alongside the other secrets checks,
+because the whole-map form can *synthesise* a secret field after those checks have already run: the
+bare-reference rule reads the document as written, so a defaulted placeholder expanding to
+`encryption_key=...` would materialise the very shape the rule exists to refuse, with the rule
+reporting nothing. Refusing this one form costs an operator nothing a secret was ever allowed to do.
 * *Reachable is not recommended.* Per
   link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025],
   `forwarded.trusted_proxies` is *deployment-bound* -- genuinely different per environment -- and is

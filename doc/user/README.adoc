@@ -170,7 +170,7 @@ resolution chain live in
 link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
 section is the operator's decision guide.
 
-=== The three modes
+=== The modes
 
 [cols="1,2,3"]
 |===
@@ -183,6 +183,15 @@ section is the operator's decision guide.
   `Cookie` / `Set-Cookie` values are the one exception -- a cookie-mode BFF gateway validates them
   pre-route against a raised, gateway-wide cap derived from `oidc.session.max_cookie_size`. See
   link:../configuration.adoc#_oidc[Configuration Reference -- `oidc.session.max_cookie_size`].
+
+| `paranoid`
+| The surface really does reach a filesystem -- a document store, a static-asset origin, an
+  export/download API -- and you want path- and parameter-name content rejected on top of the
+  `strict` caps. *Do not reach for it as "strict, only more so" on an ordinary API*: it rejects a
+  parameter literally named `file`, `path` or `url`, which is everyday REST vocabulary.
+| Everything `strict` enforces, on identical caps, plus two block-lists: sensitive path segments
+  (filesystem paths and configuration filenames, matched per `/`-delimited segment) and suspicious
+  parameter names. Nothing is relaxed relative to `strict` -- this mode only adds.
 
 | `lenient`
 | A trusted internal caller legitimately needs headroom -- long tokens in headers, many query
@@ -235,9 +244,9 @@ specific public route that needs it.
 
 === An unrecognized `profile` value is a hard boot failure
 
-The mode set is exactly `strict`, `lenient`, `minimal`. Any other value makes the gateway *refuse to
-start*, with a value-range violation naming the offending site. There is no fallback and no
-warning-and-continue.
+The mode set is exactly `strict`, `paranoid`, `lenient`, `minimal`. Any other value makes the gateway
+*refuse to start*, with a value-range violation naming the offending site. There is no fallback and
+no warning-and-continue.
 
 The refusal applies at every site the key appears -- `security_defaults`, an anchor's
 `security_filter`, and a route's `security_filter`. `auth.require: none` is a *different* key in a
@@ -246,8 +255,13 @@ different value space and is unrelated to this set.
 === An omitted `security_defaults` block means `strict`
 
 A `gateway.yaml` that declares no `security_defaults` block -- or declares one without `profile` --
-resolves to `strict`. That is the fail-closed choice: the tightest posture is what you get when you
-say nothing.
+resolves to `strict`. That is the fail-closed choice, and it is deliberately *not* the tightest mode
+in the set: `paranoid` is tighter still. `strict` is the tightest posture that judges request *form*
+alone, which is what makes it safe to inherit sight-unseen. `paranoid` goes further by rejecting
+request *content* -- and the block-lists it adds reject everyday REST vocabulary (see the mode table
+above), so it has to be an operator's explicit decision rather than something an omitted block opts
+into. Select it with `security_defaults: { profile: paranoid }` where the surface warrants it, and
+validate it against real traffic before it reaches production.
 
 `strict` is genuinely strict, so a route that legitimately needs headroom must say so. If a request
 is rejected `400` -- or `413` when it is the body cap -- check it against the `strict` caps in the
