@@ -42,10 +42,7 @@ import org.jspecify.annotations.Nullable;
  * Header matchers follow RFC 9110 field-name semantics: a configured header name matches
  * case-insensitively. {@link #from} lower-cases every configured name exactly once, at boot, so
  * the per-request test is a plain lookup in the lower-case-keyed header map
- * {@code PipelineRequest#singleValueHeaders} supplies and performs no case conversion. Within one
- * header matcher, {@code present} and {@code value} compose with AND: {@code present: true}
- * requires the header, {@code present: false} requires its absence, and {@code value} requires
- * that exact, case-sensitive value (and therefore presence).
+ * {@code PipelineRequest#singleValueHeaders} supplies and performs no case conversion.
  * <p>
  * This is the match test only; the effective {@code allowed_methods} verb gate (405) is
  * carried separately on {@link RouteRuntime}.
