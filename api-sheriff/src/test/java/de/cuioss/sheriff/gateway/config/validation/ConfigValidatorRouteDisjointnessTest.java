@@ -688,7 +688,7 @@ class ConfigValidatorRouteDisjointnessTest {
                     .build()));
 
             assertTrue(errors.stream().noneMatch(
-                    error -> error.message().contains(IntraRouteSameNameContradiction.PAIR_MESSAGE)),
+                            error -> error.message().contains(IntraRouteSameNameContradiction.PAIR_MESSAGE)),
                     () -> "The two matchers read different runtime headers and must not be refused, got: "
                             + errors);
         }
