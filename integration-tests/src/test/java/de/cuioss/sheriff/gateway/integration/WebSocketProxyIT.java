@@ -30,6 +30,7 @@ import java.security.cert.X509Certificate;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -84,6 +85,18 @@ import org.junit.jupiter.api.Test;
  * exactly the shape of {@link #sequentialRelaysReturnTheirAdmissionPermitsAtTeardown()}: N sequential
  * relays, then a claim about the edge's remaining capacity. Adding an eighth per-request test would
  * have left the leak equally invisible.
+ * <p>
+ * <strong>Early first frame.</strong> {@link #firstFrameSentOnOpenEchoesOnEveryUpgrade()} measures the
+ * relay's <em>client leg</em> against the production gateway: across {@link #EARLY_FRAME_UPGRADES}
+ * sequential upgrades, the client sends its first text frame from {@code WebSocket.Listener.onOpen} —
+ * with no gap after the {@code 101} — and asserts that exact frame echoes back. A frame that reaches the
+ * gateway's client leg before the relay has installed its frame handler is dispatched to no handler and
+ * never echoes, so a loss surfaces as that upgrade's echo timing out. A run in which every upgrade
+ * echoes is a zero-reproduction result over those upgrades, not proof that the window cannot open. The
+ * relay's <em>upstream leg</em> is not observable here: the go-httpbin {@code /websocket/echo} upstream
+ * never speaks first, so no upstream frame can reach the gateway before the client has sent one. That
+ * leg's verdict rests on the deterministic reproduction in the {@code api-sheriff} module's
+ * {@code WebSocketRelayStageTest}.
  */
 class WebSocketProxyIT extends BaseIntegrationTest {
 
@@ -109,6 +122,13 @@ class WebSocketProxyIT extends BaseIntegrationTest {
      * value rather than by a copy of it, so lowering the upgrade count below a cap fails that guard.
      */
     static final int LOW_CAP_SEQUENTIAL_UPGRADES = 10;
+
+    /**
+     * Sequential upgrades the early-frame test drives against the primary instance, each sending its
+     * first frame from {@code onOpen}. This is the measurement's sample size: a zero-loss run is
+     * reported with this N, never as an all-clear.
+     */
+    private static final int EARLY_FRAME_UPGRADES = 50;
 
     private static String wsBaseUri;
     private static String lowCapWsBaseUri;
@@ -252,6 +272,42 @@ class WebSocketProxyIT extends BaseIntegrationTest {
                 .statusCode(200);
     }
 
+    @Test
+    @DisplayName("a first frame sent from onOpen, with no gap after the 101, echoes back on every upgrade")
+    void firstFrameSentOnOpenEchoesOnEveryUpgrade() throws Exception {
+        for (int upgrade = 1; upgrade <= EARLY_FRAME_UPGRADES; upgrade++) {
+            String payload = "sheriff-ws-early-frame-" + upgrade;
+            var listener = new SendOnOpenListener(payload);
+            WebSocket socket = httpClient.newWebSocketBuilder()
+                    .header("Origin", ALLOWED_ORIGIN)
+                    .buildAsync(URI.create(wsBaseUri + "/ws/echo"), listener)
+                    .get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            try {
+                listener.sent.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                String echoed = awaitEarlyEcho(listener, upgrade);
+                assertEquals(payload, echoed,
+                        "upgrade " + upgrade + " must echo the first frame it sent from onOpen verbatim");
+            } finally {
+                socket.sendClose(WebSocket.NORMAL_CLOSURE, "done");
+            }
+        }
+    }
+
+    /**
+     * Awaits the echo of an early first frame, translating a timeout into an assertion failure that
+     * names the upgrade and the frame-loss reading — a bare {@link TimeoutException} would say only
+     * that time ran out.
+     */
+    private static String awaitEarlyEcho(SendOnOpenListener listener, int upgrade) throws Exception {
+        try {
+            return listener.recorder.firstMessage.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (TimeoutException lost) {
+            throw new AssertionError("upgrade " + upgrade + " of " + EARLY_FRAME_UPGRADES
+                    + ": the first frame sent from onOpen never echoed — the gateway dropped a frame that"
+                    + " reached its client leg before the relay was wired", lost);
+        }
+    }
+
     /**
      * Opens one relay against the low-cap instance, translating a refused upgrade into an assertion
      * failure that names which upgrade in the sequence was refused — the raw
@@ -321,6 +377,50 @@ class WebSocketProxyIT extends BaseIntegrationTest {
         public void onError(WebSocket webSocket, Throwable error) {
             firstMessage.completeExceptionally(error);
             closed.completeExceptionally(error);
+        }
+    }
+
+    /**
+     * Sends one text frame from {@link #onOpen(WebSocket)} — the earliest point the JDK client allows,
+     * with no gap after the {@code 101} — and records everything received through a
+     * {@link RecordingListener}.
+     */
+    private static final class SendOnOpenListener implements WebSocket.Listener {
+
+        private final String payload;
+        private final RecordingListener recorder = new RecordingListener();
+        private final CompletableFuture<WebSocket> sent = new CompletableFuture<>();
+
+        SendOnOpenListener(String payload) {
+            this.payload = payload;
+        }
+
+        @Override
+        public void onOpen(WebSocket webSocket) {
+            webSocket.request(1);
+            webSocket.sendText(payload, true).whenComplete((socket, failure) -> {
+                if (failure != null) {
+                    sent.completeExceptionally(failure);
+                } else {
+                    sent.complete(socket);
+                }
+            });
+        }
+
+        @Override
+        public CompletableFuture<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+            return recorder.onText(webSocket, data, last);
+        }
+
+        @Override
+        public CompletableFuture<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            return recorder.onClose(webSocket, statusCode, reason);
+        }
+
+        @Override
+        public void onError(WebSocket webSocket, Throwable error) {
+            sent.completeExceptionally(error);
+            recorder.onError(webSocket, error);
         }
     }
 
