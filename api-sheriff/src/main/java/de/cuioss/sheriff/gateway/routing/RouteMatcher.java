@@ -39,10 +39,13 @@ import org.jspecify.annotations.Nullable;
  * on a segment boundary ({@code /proxy} matches {@code /proxy} and {@code /proxy/x} but not
  * {@code /proxy-helper}).
  * <p>
- * Header matchers follow RFC 9110 field-name semantics: a configured header name matches
- * case-insensitively. {@link #from} lower-cases every configured name exactly once, at boot, so
- * the per-request test is a plain lookup in the lower-case-keyed header map
- * {@code PipelineRequest#singleValueHeaders} supplies and performs no case conversion.
+ * Header-matcher names are normalised by lower-casing: {@link #from} lower-cases every configured
+ * name exactly once, at boot, under {@link Locale#ROOT}, so the per-request test is a plain lookup
+ * in the lower-case-keyed header map {@code PipelineRequest#singleValueHeaders} supplies and
+ * performs no case conversion. For ASCII names — the characters an RFC 9110 field name is made of —
+ * that is case-insensitive matching. Outside ASCII it is not per-character case folding: a name
+ * spelled with U+0130 (capital I with dot above) and its plain-{@code I} twin lower-case to two
+ * different names, and U+212A (Kelvin sign) lower-cases to an ASCII {@code k}.
  * <p>
  * This is the match test only; the effective {@code allowed_methods} verb gate (405) is
  * carried separately on {@link RouteRuntime}.
@@ -114,10 +117,11 @@ public final class RouteMatcher {
     }
 
     /**
-     * Returns the request-header names this route's {@code match.headers} matchers read, normalised
-     * to lower case, in declaration order with duplicates collapsed — two matchers whose configured
-     * names differ only in letter case read the same header and yield one name. Empty when the route
-     * declares no header matcher.
+     * Returns the request-header names this route's {@code match.headers} matchers read, lower-cased
+     * under {@link Locale#ROOT} by {@link #from}, in declaration order with duplicates collapsed — two
+     * matchers whose configured names lower-case to the same name (for ASCII names: names that differ
+     * only in letter case) read the same header and yield one name. Empty when the route declares no
+     * header matcher.
      * <p>
      * A header matcher makes <em>route selection</em> depend on a request header, so a cacheable
      * response served by such a route genuinely varies by that header. A shared cache keys a stored
