@@ -94,7 +94,9 @@ evidence before attempting any code fix:
 . *Re-run the failing tests.* A pass on re-run, with no change in between, is the first piece of
   evidence.
 . *Compare against a trusted baseline.* The same test green in CI on the same commit, or green on
-  `main`, establishes that the tree is not the cause.
+  `main`, supports the environmental hypothesis but does not by itself establish that the tree is
+  not the cause. Where possible, identify the foreign process holding the port before treating the
+  failure as environmental.
 . *Look at the machine.* A high load average or a concurrent build in another worktree makes a
   contended-environment failure more likely; the PLAN-03 sighting occurred under a load average of 119.
 
