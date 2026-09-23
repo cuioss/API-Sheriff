@@ -29,7 +29,7 @@ closes when every deliverable below either ships or is explicitly declined with 
 | Plan | Status | Notes |
 |------|--------|-------|
 | PLAN-28-closeout-residual-hardening | shipped (#341) | 7 deliverables, all landed |
-| PLAN-29-final-gap-closure | staged | 3 deliverables — the epic's close-readiness sweep found these are the only items STILL genuinely open and actionable after re-verifying every Open Defect against HEAD. Most had already shipped (mainly via PLAN-25/#306 and PLAN-28) but were never marked resolved; two more (`GatewayEdgePipelineTest`'s flake, `TlsEdgeProducerTest`/`SniFrontListenerTest`) turned out already fixed by unrelated PRs from sibling epics, confirmed by direct code read while drafting this plan and excluded before staging |
+| PLAN-29-final-gap-closure | shipped (#348) | 2/3 deliverables landed as spec'd; D1 (scopeDelta WARN) dropped by operator decision after confirming the engine already logs it. Opportunistically fixed the ADR-0050 cross-epic collision in the same PR. Last plan in this epic — queue is now fully terminal |
 
 ## Sequencing and Surface Notes
 

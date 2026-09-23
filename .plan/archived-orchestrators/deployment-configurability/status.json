@@ -1,7 +1,7 @@
 {
   "kind": "orchestrator",
   "title": "Deployment Configurability: Health-Check, Context Path, Hostname Verification, Refresh Reliability",
-  "phase": "orchestrating",
+  "phase": "closed",
   "workstreams": [
     {
       "id": "WS-01",
@@ -315,16 +315,16 @@
       "id": "PLAN-29",
       "slug": "final-gap-closure",
       "workstream": "WS-09",
-      "status": "launched",
-      "plan_marshall_plan_id": "",
-      "pr": "",
-      "landing": ""
+      "status": "shipped",
+      "plan_marshall_plan_id": "final-gap-closure",
+      "pr": "348",
+      "landing": "landings/PLAN-29.md"
     }
   ],
-  "resume_anchor": "2026-09-23: PR #338 queued for merge via the platform merge queue (awaiting completion). Staged and emitted PLAN-29 (WS-09 final-gap-closure, 3 deliverables) covering the last genuinely-open gaps from the close-readiness sweep: TokenRefreshCoordinator.scopeDelta observability, BuildGateCoverageContractTest line citation, port-collision-flakiness doc. Two other candidates (GatewayEdgePipelineTest flake, TlsEdgeProducerTest loopback) were dropped after verification found them already fixed by unrelated sibling-epic PRs. Command: /plan-marshall task=\"implement .plan/orchestrator/deployment-configurability/plans/PLAN-29-final-gap-closure.md\" -- auto-recorded launched (auto_emit=true), operator still needs to run it. NEXT: confirm PR #338 merged, run PLAN-29, then analyze its landing and run /plan-marshall:plan-orchestrator close slug=deployment-configurability.",
+  "resume_anchor": "epic closed \u2014 see history.md",
   "metadata": {
     "parallelization_scope": "3"
   },
   "created": "2026-08-27T13:09:14Z",
-  "updated": "2026-09-23T07:56:06Z"
+  "updated": "2026-09-23T15:55:19Z"
 }
