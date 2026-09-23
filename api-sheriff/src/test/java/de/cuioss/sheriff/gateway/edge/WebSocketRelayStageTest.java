@@ -696,7 +696,7 @@ class WebSocketRelayStageTest {
                     assertEquals(Set.of(eventLoop), Set.copyOf(upstreamFrameThreads), () -> "upgrade " + current
                             + ": the upstream leg's frame handling runs on the client connection's event-loop thread "
                             + eventLoop.getName() + ", not on " + upstreamFrameThreads.stream()
-                                    .map(Thread::getName).toList());
+                            .map(Thread::getName).toList());
                     Awaits.teardown(socket.close(), "upgrade " + upgrade + "'s relayed WebSocket to close");
                 }
             } finally {
