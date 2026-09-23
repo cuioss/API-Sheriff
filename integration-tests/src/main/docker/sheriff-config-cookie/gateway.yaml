@@ -100,14 +100,14 @@ token_validation:
     # mints for the browser session. The gateway's shared @GatewayValidator TokenValidator is built
     # from THIS token_validation block, so the integration issuer MUST be declared here or every
     # mediated session token is rejected. Same container-internal iss the integration realm pins via
-    # frontendUrl https://keycloak:8443, reached over the shared api-sheriff network; the same narrow
-    # SSRF egress widening and self-signed trust profile the benchmark issuer uses.
+    # frontendUrl https://keycloak:8443, reached over the shared api-sheriff network; it relies on the
+    # allowance derived from its jwks.url host, and uses the same self-signed trust profile.
     - name: integration-keycloak
       issuer: https://keycloak:8443/realms/integration
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
-        allowed_egress_hosts: ["keycloak"]
+        # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host
         tls_profile: benchmark-idp
 # --- Cookie-mode BFF confidential-client block (Variant 3, BFF-Cookie-* integration suite) --------
 # Activates the cookie-mode BffRuntime (BffRuntimeProducer builds the active runtime for either

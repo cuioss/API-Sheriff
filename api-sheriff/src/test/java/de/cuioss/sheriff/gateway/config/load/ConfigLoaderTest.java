@@ -475,7 +475,7 @@ class ConfigLoaderTest {
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
-        // Assert — no entries means the secure egress default is preserved downstream
+        // Assert — no entries means the host of jwks.url is derived as the egress allowance downstream
         IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
         assertEquals(List.of(), issuer.jwks().allowedEgressHosts());
     }
@@ -483,7 +483,8 @@ class ConfigLoaderTest {
     /**
      * One case per egress key whose value has the wrong JSON type, each written the way an operator
      * plausibly gets it wrong. Every case must be refused at boot rather than silently ignored: an
-     * ignored {@code allowed_egress_hosts} would drop the widening, an ignored {@code tls_profile} would
+     * ignored {@code allowed_egress_hosts} would silently fall back to the derived {@code jwks.url}
+     * host instead of the host set the operator declared, an ignored {@code tls_profile} would
      * leave the issuer on default trust while the operator believes a profile is in force, and a
      * coerced {@code oidc_verify_hostname} would relax hostname verification from a document the
      * operator believes disables nothing.

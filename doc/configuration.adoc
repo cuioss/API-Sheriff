@@ -367,10 +367,12 @@ token_validation:                  # offline bearer validation (routes with auth
         source: http               # http | file
         url: https://idp.example.com/realms/main/protocol/openid-connect/certs
         # file: /etc/sheriff/jwks.json   (air-gapped deployments)
-        # allowed_egress_hosts: [idp.internal]   # SSRF egress allowlist; OMIT unless needed.
-                                   #   Absent/empty keeps the secure default (private-address
-                                   #   JWKS targets refused). Host-exact, no wildcard; widen
-                                   #   only for a trusted IdP on a private network (GW-05).
+        # allowed_egress_hosts: [idp.internal]   # SSRF egress allowance. Absent/empty DERIVES it:
+                                   #   the jwks.url host (port dropped) is the one host exempted
+                                   #   from the private-address refusal. A non-empty list is
+                                   #   AUTHORITATIVE, host-exact, never merged with the derived
+                                   #   host; declare it to pin the allowance (GW-05). A blank or
+                                   #   host:port entry is refused at boot
         # tls_profile: corporate-idp             # logical trust profile; OMIT for a public-CA
                                    #   IdP. Names trust anchors without carrying them; the
                                    #   deployment binds the name. See "Trust profiles" below.
@@ -1990,14 +1992,37 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
   refreshed), or `source: file` -- the latter for air-gapped deployments.
 
 | `issuers[].jwks.allowed_egress_hosts`
-| SSRF egress allowlist for `source: http`, applied on the initial JWKS fetch *and* every
-  background refresh. *Omit it unless you must.* Absent or empty keeps
-  `EgressPolicy.secureDefault()`, which refuses a JWKS URL resolving to a loopback,
-  link-local, site-local, any-local, multicast, or unique-local address. Each entry exempts
-  exactly one host from that check -- the match is host-exact, with no wildcard or suffix
-  form -- so widen it only for a trusted IdP that genuinely lives on a private network, and
-  name that one host. See link:security-threat-model.adoc#gw-05[GW-05] and
-  link:security-threat-model.adoc#bff-07[BFF-07].
+| SSRF egress allowance for `source: http`, applied on the initial JWKS fetch *and* every
+  background refresh. The JWKS client refuses a JWKS URL resolving to a loopback, link-local,
+  site-local, any-local, multicast, or unique-local address, except for the hosts this allowance
+  exempts. The field has two forms:
+
+  * *Absent or empty -- the allowance is derived.* The host of the issuer's own `jwks.url` is the
+    single exempted host, spelled as the URL spells it with any port dropped
+    (`https://keycloak:8443/...` exempts `keycloak`). The issuer's key endpoint is therefore
+    reachable wherever it resolves, a private network included, with nothing declared. A `jwks.url`
+    that names no host (`file:/x`, `https:///path`) gives nothing to derive from and *fails the
+    boot* with `CONFIG_INVALID`; the message names the issuer and never echoes the URL.
+  * *Non-empty -- the list is authoritative.* Each entry exempts exactly the one host it names --
+    host-exact, with no wildcard or suffix form -- and the `jwks.url` host is *never* merged into
+    it. A list that does not name the `jwks.url` host keeps that host refused whenever it resolves
+    to a private address. Declaring the list is how an operator pins the allowance: a later edit of
+    `jwks.url` to another host then fails closed instead of silently moving the exemption with it.
+    A blank or whitespace-only entry and a `host:port` entry are *refused at boot*, naming the
+    offending entry (a bare IPv6 literal such as `fd00::1` is admitted).
+
+  *The trade-off of the derived form.* It exempts the `jwks.url` host from the private-address
+  check in *every* deployment, including one whose IdP is public: a public IdP hostname that
+  resolves to an internal address -- through a DNS change, a split-horizon resolver or a poisoned
+  cache -- was refused before this default existed and is now dialled. The allowance widens
+  nothing else. Certificate trust is unchanged: chain validation and hostname verification still
+  apply to the dialled host, so an endpoint presenting an untrusted or name-mismatched certificate
+  is still refused. No dedicated key restores the no-exemption posture for an `http` issuer; an
+  operator who wants a narrower allowance declares an explicit list, which is authoritative. See
+  link:security-threat-model.adoc#gw-05[GW-05],
+  link:security-threat-model.adoc#bff-07[BFF-07] and the
+  link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a1[ADR-0011
+  Amendment A1].
 
 | `issuers[].jwks.tls_profile`
 | Name of the logical *trust profile* used to verify the IdP's server certificate when fetching
@@ -2013,8 +2038,9 @@ issuer configured in link:#_oidc[`oidc`].
 [[_jwks_readiness]]
 ==== Key-set loading and readiness
 
-The validator is *assembled* at boot, and a misconfigured JWKS source -- a missing `url`, an
-unresolvable `tls_profile` -- still aborts startup. The key sets themselves are *fetched*
+The validator is *assembled* at boot, and a misconfigured JWKS source -- a missing `url`, a `url`
+without a host while `allowed_egress_hosts` is absent or empty, an unresolvable `tls_profile` --
+still aborts startup. The key sets themselves are *fetched*
 asynchronously, so a gateway can finish booting before an identity provider answers. Two behaviours
 cover that window:
 
@@ -2077,7 +2103,7 @@ token_validation:
       jwks:
         source: http
         url: https://idp.corp.internal/realms/main/protocol/openid-connect/certs
-        allowed_egress_hosts: [idp.corp.internal]   # private address -> widen egress (GW-05)
+        allowed_egress_hosts: [idp.corp.internal]   # optional: derived from url when omitted; declared, it pins the allowance (GW-05)
         tls_profile: corporate-idp                  # internal CA -> name the trust anchors
 ----
 
@@ -2185,11 +2211,14 @@ trust -- by saying nothing, not by naming an empty profile.
 
 ===== Relationship to `allowed_egress_hosts`
 
-The two settings are independent and frequently needed together, because they solve different
-halves of the same deployment. `allowed_egress_hosts` answers *"may I connect to this address?"*
-(the SSRF egress guard, which refuses private addresses by default); `tls_profile` answers *"do I
-trust the certificate I get back?"*. A cluster-internal IdP on a private address behind an internal
-CA needs both; a public-internet IdP behind a public CA needs neither.
+The two settings are independent, because they solve different halves of the same deployment.
+`allowed_egress_hosts` answers *"may I connect to this address?"* (the SSRF egress guard, which
+refuses private addresses except for the hosts the allowance exempts); `tls_profile` answers *"do I
+trust the certificate I get back?"*. Neither answers the other's question: the egress allowance --
+declared or derived -- never widens certificate trust, and a trust profile never admits an address
+the egress guard refuses. A cluster-internal IdP on a private address behind an internal CA needs a
+`tls_profile`; its address is reachable through the allowance derived from `jwks.url`, or through an
+explicit list when the operator pins it. A public-internet IdP behind a public CA needs neither key.
 
 [[_oidc]]
 === `oidc`
@@ -3641,6 +3670,12 @@ control, which is the rule above doing exactly the work it was added for.
   unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime
   builds its identity-provider client, before any dial (see
   link:#_oidc_back_channel_posture[The BFF OIDC back-channel]).
+* A `token_validation.issuers[].jwks.allowed_egress_hosts` entry of an `http`-sourced issuer that is
+  blank, whitespace-only or carries a `:port` suffix fails the boot, naming the entry (a bare IPv6
+  literal is admitted). An `http`-sourced issuer that declares no list must name a host in its
+  `jwks.url`, because that host is the derived egress allowance; a `jwks.url` without a host fails
+  the boot with `CONFIG_INVALID`, naming the issuer but never the URL (see the
+  link:#_token_validation[`allowed_egress_hosts`] field reference).
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected. `cors`
   is accepted in the global `security_headers` block only; a `cors` key inside an anchor's
   `security_headers` block fails the boot at schema load.

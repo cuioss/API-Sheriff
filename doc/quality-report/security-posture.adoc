@@ -70,9 +70,9 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 |FULLY
 |`auth/JwksTrustProfileResolver.java:120-156` — exact documented order
 
-|`allowed_egress_hosts` absent → secure default (GW-05/BFF-07)
+|`allowed_egress_hosts` absent → the `jwks.url` host is the single derived egress allowance; a non-empty list is authoritative, host-exact and never merged; blank / `host:port` entries and a hostless `jwks.url` refuse boot. Accepted trade-off: the `jwks.url` host is exempt from the private-address check in every deployment, certificate trust unchanged (GW-05/BFF-07, ADR-0011 A1)
 |FULLY (wiring)
-|`TokenValidatorProducer` per-issuer list; enforcement lives in the token-sheriff dependency (not re-audited here)
+|`TokenValidatorProducer.toHttpJwksLoaderConfig` / `jwksUrlHost`; `ConfigValidator.validateJwksEgressHosts`; proven end to end by `JwksEgressMismatchIT` (explicit list naming another host refused, single-key-removed control loads through the derived allowance); enforcement of the allowance lives in the token-sheriff dependency (not re-audited here)
 
 |GW-06: missing/malformed SNI fails closed to terminated-strict (ADR-0017)
 |PARTIAL (doc-admitted)

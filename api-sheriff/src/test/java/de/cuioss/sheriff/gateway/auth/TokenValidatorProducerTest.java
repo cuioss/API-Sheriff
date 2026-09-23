@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.auth;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -206,8 +207,17 @@ class TokenValidatorProducerTest {
         assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
     }
 
+    /**
+     * The issuer's SSRF egress allowance, asserted behaviourally through
+     * {@link EgressPolicy#check(URI)} — never by equality, because {@link EgressPolicy}'s equality
+     * does not carry the host allowlist, so every policy compares equal to
+     * {@link EgressPolicy#secureDefault()} whatever it exempts.
+     * <p>
+     * An absent or empty list derives the single host of {@code jwks.url}; a non-empty list is
+     * authoritative and never merged with that derived host.
+     */
     @Nested
-    @DisplayName("jwks.allowed_egress_hosts — SSRF egress allowlist")
+    @DisplayName("jwks.allowed_egress_hosts — SSRF egress allowlist, derived from jwks.url unless declared")
     class AllowedEgressHosts {
 
         /**
@@ -217,45 +227,121 @@ class TokenValidatorProducerTest {
          * {@code UnknownHostException}) and would therefore prove nothing.
          */
         private static final String BLOCKED_HOST = "localhost";
-        private static final URI BLOCKED_JWKS_URI = URI.create("https://localhost:8443/jwks");
+        private static final String BLOCKED_JWKS_URL = "https://localhost:8443/jwks";
+        private static final URI BLOCKED_JWKS_URI = URI.create(BLOCKED_JWKS_URL);
 
         @Test
-        @DisplayName("omitting the field keeps the secure default — a private-address JWKS URL stays blocked")
-        void omittedFieldKeepsSecureDefault() {
-            // Arrange — an http issuer that says nothing about egress
-            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+        @DisplayName("omitting the field derives the jwks.url host — a private-address JWKS host is admitted")
+        void omittedFieldDerivesTheJwksUrlHost() {
+            // Arrange — two http issuers that say nothing about egress, differing only in the jwks.url
+            // host: the one under test points at the loopback-resolving host, the control does not
+            IssuerConfig.Jwks derivingLoopback = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(BLOCKED_JWKS_URL)
+                    .build();
+            IssuerConfig.Jwks derivingElsewhere = IssuerConfig.Jwks.builder()
                     .source("http")
                     .url(JWKS_URL)
                     .build();
 
             // Act
-            EgressPolicy policy = egressPolicyFor(jwks);
+            EgressPolicy derived = egressPolicyFor(derivingLoopback);
+            EgressPolicy control = egressPolicyFor(derivingElsewhere);
 
-            // Assert — structurally the secure default, and behaviourally still blocking
-            assertEquals(EgressPolicy.secureDefault(), policy,
-                    "an absent allowed_egress_hosts must not widen egress");
-            assertThrows(TransportException.class, () -> policy.check(BLOCKED_JWKS_URI),
-                    "the secure default must refuse a JWKS URL resolving to a loopback address");
+            // Assert — the jwks.url host is exempted ...
+            assertDoesNotThrow(() -> derived.check(BLOCKED_JWKS_URI),
+                    "an absent allowed_egress_hosts must exempt the host of the issuer's own jwks.url");
+            // ... and the matched control attributes that admission to the derived host rather than to
+            // an inert guard: a jwks.url on another host still refuses the loopback-resolving host
+            assertThrows(TransportException.class, () -> control.check(BLOCKED_JWKS_URI),
+                    "the derived allowance must exempt only the jwks.url host, not every host");
         }
 
         @Test
-        @DisplayName("an empty list keeps the secure default — an empty allowlist is not a wildcard")
-        void emptyListKeepsSecureDefault() {
-            // Arrange — the field is present but carries no entries
-            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+        @DisplayName("an empty list derives the jwks.url host exactly like an omitted one — it is not a wildcard")
+        void emptyListDerivesTheJwksUrlHost() {
+            // Arrange — the field is present but carries no entries, on the same two jwks.url hosts
+            IssuerConfig.Jwks derivingLoopback = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(BLOCKED_JWKS_URL)
+                    .allowedEgressHosts(List.of())
+                    .build();
+            IssuerConfig.Jwks derivingElsewhere = IssuerConfig.Jwks.builder()
                     .source("http")
                     .url(JWKS_URL)
                     .allowedEgressHosts(List.of())
                     .build();
 
             // Act
-            EgressPolicy policy = egressPolicyFor(jwks);
+            EgressPolicy derived = egressPolicyFor(derivingLoopback);
+            EgressPolicy control = egressPolicyFor(derivingElsewhere);
 
             // Assert
-            assertEquals(EgressPolicy.secureDefault(), policy,
-                    "an empty allowed_egress_hosts must not widen egress");
+            assertDoesNotThrow(() -> derived.check(BLOCKED_JWKS_URI),
+                    "an empty allowed_egress_hosts must exempt the host of the issuer's own jwks.url");
+            assertThrows(TransportException.class, () -> control.check(BLOCKED_JWKS_URI),
+                    "an empty allowlist must not exempt a host other than the jwks.url host");
+        }
+
+        @Test
+        @DisplayName("an explicit list is authoritative — the jwks.url host is never merged into it")
+        void explicitListWinsOverTheDerivedHost() {
+            // Arrange — the jwks.url names the loopback-resolving host, the declared list another host
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(BLOCKED_JWKS_URL)
+                    .allowedEgressHosts(List.of("some-other-idp.internal"))
+                    .build();
+
+            // Act
+            EgressPolicy policy = egressPolicyFor(jwks);
+
+            // Assert — a merge of the derived host into the declared list would admit it here
             assertThrows(TransportException.class, () -> policy.check(BLOCKED_JWKS_URI),
-                    "an empty allowlist must still refuse a loopback-resolving JWKS URL");
+                    "a non-empty allowed_egress_hosts must not also exempt the jwks.url host");
+        }
+
+        /**
+         * A {@code jwks.url} the derivation cannot take a host from: no authority at all, a scheme
+         * without one, and an authority that does not parse as a URI.
+         */
+        @ParameterizedTest(name = "jwks.url ''{0}''")
+        @ValueSource(strings = {"https:///jwks", "file:/jwks", "https://idp example/jwks"})
+        @DisplayName("a jwks.url without a host fails config-invalid at assembly, naming the issuer but not the url")
+        void urlWithoutHostFailsAtAssembly(String url) {
+            // Arrange — no list declared, so the allowance has to be derived from the url
+            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+                    .name("hostless-issuer")
+                    .issuer(ISSUER)
+                    .jwks(IssuerConfig.Jwks.builder().source("http").url(url).build())
+                    .build());
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, producer::gatewayTokenValidator);
+
+            // Assert
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+            String message = thrown.getMessage();
+            assertTrue(message.contains("hostless-issuer"),
+                    "the refusal must name the offending issuer: " + message);
+            assertTrue(message.contains("jwks.url"), "the refusal must name the key: " + message);
+            assertFalse(message.contains(url), "the refusal must not echo the raw url: " + message);
+        }
+
+        @Test
+        @DisplayName("the same issuer with a hosted jwks.url assembles (matched control)")
+        void urlWithHostAssembles() {
+            // Arrange — identical to the hostless case above except that the url names a host, so that
+            // refusal is attributable to the missing host and not to the issuer or the derivation path
+            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+                    .name("hostless-issuer")
+                    .issuer(ISSUER)
+                    .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
+                    .build());
+
+            // Act & Assert
+            assertDoesNotThrow(producer::gatewayTokenValidator,
+                    "a jwks.url naming a host derives its allowance and assembles");
         }
 
         @Test
@@ -318,7 +404,7 @@ class TokenValidatorProducerTest {
          * with the very issuer the public entry point consumed. Driving
          * {@link TokenValidatorProducer#gatewayTokenValidator()} first is what proves the allowlist
          * does not abort the whole-graph assembly; the policy assertions are what prove it survived
-         * rather than being silently dropped back to the secure default.
+         * rather than being silently replaced by the allowance derived from {@code jwks.url}.
          */
         @Test
         @DisplayName("the allowlist is carried through the full producer path, not only the seam")
@@ -344,12 +430,13 @@ class TokenValidatorProducerTest {
                     "the allowlisted host must be reachable through the policy the producer path builds");
 
             // ... and the admission is attributable to the allowlist rather than to an inert guard:
-            // the same path over the same host refuses it once the allowlist is gone. Asserting the
-            // policy is not EgressPolicy.secureDefault() would NOT do this job — EgressPolicy's
-            // equality does not carry the host allowlist, so an allowlisted policy compares equal to
-            // the secure default.
+            // once the allowlist is gone, the allowance is derived from the jwks.url host
+            // (issuer.example), and the same path refuses the checked host. Asserting the policy is not
+            // EgressPolicy.secureDefault() would NOT do this job — EgressPolicy's equality does not
+            // carry the host allowlist, so an allowlisted policy compares equal to the secure default.
             assertThrows(TransportException.class, () -> withoutAllowlist.check(BLOCKED_JWKS_URI),
-                    "without the declared allowlist the same producer path must still refuse the host");
+                    "without the declared allowlist the same producer path must exempt only the jwks.url "
+                            + "host, not the checked one");
         }
 
         private static EgressPolicy egressPolicyFor(IssuerConfig.Jwks jwks) {
@@ -464,8 +551,8 @@ class TokenValidatorProducerTest {
         @Test
         @DisplayName("tls_profile and allowed_egress_hosts apply together on one issuer")
         void profileAndEgressAllowlistCombine() {
-            // Arrange — the real deployment shape: a private-network IdP behind an internal CA,
-            // which needs BOTH the egress widening and the trust profile to work at all
+            // Arrange — the real deployment shape: a private-network IdP behind an internal CA, with
+            // its egress allowance pinned by an explicit list and its anchors named by a trust profile
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
                     .url("https://localhost:8443/jwks")
@@ -682,23 +769,74 @@ class TokenValidatorProducerTest {
                             + "with a per-issuer tls_profile is refused");
         }
 
+        @Test
+        @DisplayName("with no allowed_egress_hosts the relaxed dial succeeds through the allowance derived from jwks.url")
+        void derivedAllowanceReachesTheRelaxedDial() {
+            // Arrange — the relaxed-dial acceptance of the case above, minus the declared list: the
+            // loopback JWKS host is now reachable only because it is derived from the issuer's jwks.url
+            TokenValidator derived = fixtureValidator(new EgressTlsConfig(true, false, null, true, null), List.of());
+            AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
+
+            // Act
+            AccessTokenContent accepted = assertDoesNotThrow(() -> derived.createAccessToken(request),
+                    "with no allowed_egress_hosts the jwks.url host must be exempted from the SSRF egress "
+                            + "guard, or the loopback dial never reaches the handshake");
+
+            // Assert
+            assertEquals(holder.getAudience(), accepted.getAudience(),
+                    "the token validated against keys fetched through the derived egress allowance");
+        }
+
+        @Test
+        @DisplayName("an explicit list naming another host refuses the dial the derived allowance would admit")
+        void explicitListNamingAnotherHostRefusesTheDial() {
+            // Arrange — the same server, token and relaxed flag as the relaxed-dial acceptance in
+            // hostnameVerificationGatesTheJwksFetch, which is this case's matched control. The single
+            // difference is the declared list, which does not name the dialled host.
+            TokenValidator mismatched = fixtureValidator(new EgressTlsConfig(true, false, null, true, null),
+                    List.of("some-other-idp.internal"));
+            TokenValidator control = fixtureValidator(new EgressTlsConfig(true, false, null, true, null));
+            AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
+
+            // Act & Assert — an explicit list is authoritative: merging the derived jwks.url host into
+            // it would let this dial through
+            assertThrows(TokenValidationException.class, () -> mismatched.createAccessToken(request),
+                    "a non-empty allowed_egress_hosts that does not name the jwks.url host must keep the "
+                            + "SSRF egress guard refusing it");
+            assertDoesNotThrow(() -> control.createAccessToken(request),
+                    "the matched control must reach the same server, or the refusal above proves nothing "
+                            + "about the declared list");
+        }
+
         /**
-         * A validator whose single issuer fetches its keys from the SAN-mismatched fixture server.
+         * A validator whose single issuer fetches its keys from the SAN-mismatched fixture server and
+         * declares the dialled host explicitly.
          *
          * @param egressTls the global block to bind, or {@code null} to declare none at all
          * @return the produced gateway validator
          */
         private TokenValidator fixtureValidator(@Nullable EgressTlsConfig egressTls) {
+            // Named explicitly, although the allowance derived from jwks.url would yield the same host:
+            // these legs are about hostname verification, and an explicit entry keeps them independent
+            // of the derivation, which derivedAllowanceReachesTheRelaxedDial covers on its own.
+            return fixtureValidator(egressTls, List.of(SanMismatchedJwksServer.dialledHost()));
+        }
+
+        /**
+         * A validator whose single issuer fetches its keys from the SAN-mismatched fixture server.
+         *
+         * @param egressTls          the global block to bind, or {@code null} to declare none at all
+         * @param allowedEgressHosts the issuer's declared allowlist; empty derives the jwks.url host
+         * @return the produced gateway validator
+         */
+        private TokenValidator fixtureValidator(@Nullable EgressTlsConfig egressTls, List<String> allowedEgressHosts) {
             IssuerConfig issuer = IssuerConfig.builder()
                     .name("san-mismatch")
                     .issuer(holder.getIssuer())
                     .jwks(IssuerConfig.Jwks.builder()
                             .source("http")
                             .url(server.jwksUrl())
-                            // Loopback is refused by the SSRF egress guard unless named, and an egress
-                            // refusal would fail BOTH legs before the handshake — collapsing the matched
-                            // control into two failures with one cause.
-                            .allowedEgressHosts(List.of(SanMismatchedJwksServer.dialledHost()))
+                            .allowedEgressHosts(allowedEgressHosts)
                             .build())
                     .build();
             return producerWith(egressTls, issuer, TestTlsConfigurationRegistry.empty())

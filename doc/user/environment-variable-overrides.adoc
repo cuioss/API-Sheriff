@@ -427,12 +427,19 @@ Read it as a map of what you can and cannot change, and of where the answer is "
 
 === JWKS trust and egress
 
-* *Defaults:* `allowed_egress_hosts` absent (the secure default: a JWKS URL resolving to a loopback,
-  link-local, site-local, any-local, multicast or unique-local address is *refused*), and
-  `tls_profile` absent (the JVM default trust store).
-* *Posture:* both defaults are the secure ones, and both widenings are opt-in and
-  default-preserving. `allowed_egress_hosts` is host-exact with no wildcard or suffix form, so the
-  widening cannot be broadened by a typo.
+* *Defaults:* `allowed_egress_hosts` absent, which *derives* the egress allowance: the host of the
+  issuer's own `jwks.url` (port dropped) is exempted from the refusal of a JWKS URL resolving to a
+  loopback, link-local, site-local, any-local, multicast or unique-local address, and every other
+  host stays refused. `tls_profile` absent means the JVM default trust store.
+* *Posture:* the derived allowance is a deliberate trade-off, not a secure-by-omission default. It
+  exempts the `jwks.url` host from the private-address check in every deployment -- a public IdP host
+  that resolves to an internal address is dialled rather than refused -- while certificate trust
+  (chain and hostname verification) is unchanged. A declared, non-empty `allowed_egress_hosts` is
+  *authoritative*: host-exact, with no wildcard or suffix form, and never merged with the `jwks.url`
+  host, so declaring it pins the allowance and a typo cannot broaden it. A blank or `host:port` entry
+  is refused at boot. See link:../security-threat-model.adoc#gw-05[GW-05] and
+  link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a1[ADR-0011
+  Amendment A1]. `tls_profile` stays opt-in and default-preserving.
 * *Override route:* *neutral*, `gateway.yaml` -- and this is the pattern the whole configuration
   model follows (link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]).
   The document names a logical trust *profile*; the deployment binds that name to anchors.
@@ -444,7 +451,8 @@ Read it as a map of what you can and cannot change, and of where the answer is "
 
 * *Default:* the shipped default profile configures *no* issuer; deployments supply their own.
 * *Posture:* the validator is assembled *eagerly at boot*, not lazily on the first bearer request, so
-  a misconfigured issuer -- an unresolvable trust profile, a missing JWKS source -- aborts startup
+  a misconfigured issuer -- an unresolvable trust profile, a missing JWKS source, a `jwks.url` with
+  no host to derive the egress allowance from -- aborts startup
   rather than surfacing later as a stream of token rejections that look like a client problem. This
   is a deliberate fail-fast choice and it is load-bearing: an `@ApplicationScoped` producer is
   injected as a lazy proxy, so the startup observer must actively invoke a method on it to force

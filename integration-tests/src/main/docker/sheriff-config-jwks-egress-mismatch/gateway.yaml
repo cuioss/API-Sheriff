@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the JWKS egress-MISMATCH gateway that JwksEgressMismatchIT starts as a
+# one-off `docker run` container. It is NOT a compose service: the compose readiness gate waits for
+# every api-sheriff* service to report UP, and this instance is DOWN by design for its whole life —
+# its issuer's key set can never load.
+#
+# It is a STANDALONE document, not an overlay of the shared sheriff-config directory, modelled on
+# sheriff-config-late-idp/gateway.yaml. The test mounts it as /app/sheriff-config/gateway.yaml together
+# with exactly one shared endpoint file, sheriff-config/endpoints/assets-secure.yaml, and no
+# topology.properties. The bearer-gated directory asset route serves the mounted /app/assets directory,
+# so an accepted bearer token would answer 200 without any upstream at all.
+#
+# THE POINT OF THIS INSTANCE: an explicit egress list is AUTHORITATIVE. The container joins the compose
+# network, where `keycloak` resolves to a site-local bridge address that token-sheriff's SSRF egress
+# guard refuses unless the host is allowed. An issuer that declares NO list is allowed the host of its
+# own jwks.url (the derived allowance). This issuer declares a well-formed list naming a DIFFERENT host,
+# so the derived host must NOT be merged in and the JWKS fetch must stay refused: readiness stays DOWN
+# and every bearer token is rejected 401. The entry carries no port, so boot validation accepts it and
+# only the egress guard can stop the fetch.
+#
+# The matched control is built by the test, not committed: it removes this issuer's
+# allowed_egress_hosts key and nothing else, and the SAME token must then be accepted 200. That
+# single-variable pair attributes the refusal to the explicit list rather than to DNS, TLS or a dead
+# IdP. EgressAllowlistActivationWiringTest carves this file out of its positive half by name and
+# asserts the inverse instead: the list is non-empty and does NOT name the host of its own jwks.url.
+#
+# ONE issuer. Readiness reports DOWN while ANY configured issuer has no key set, so a second issuer
+# would be irrelevant to the verdict at best and would muddy what the refusal proves at worst.
+version: 1
+metadata:
+  config_version: "integration-test-jwks-egress-mismatch"
+allowed_methods: ["GET"]
+# The strict preset is pinned for the same reason the base document pins it. The
+# max_authorization_header_value_length carve-out lets a Keycloak-minted bearer token reach bearer
+# validation instead of being rejected 400 at the pre-route floor, so the 401 the test observes is a
+# verdict about the key set and not about the header length.
+security_defaults:
+  profile: strict
+  max_authorization_header_value_length: 8192
+anchors:
+  # The bearer-gated asset surface the mounted assets-secure endpoint rides (ADR-0014). access:
+  # authenticated enforces the bearer floor BEFORE the directory source is resolved, so a token this
+  # gateway cannot validate is rejected 401 and never reads a file.
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: mismatch-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        # Deliberately NOT the jwks.url host. The .invalid TLD is reserved (RFC 2606), so the entry
+        # cannot collide with any real host the stack might one day run.
+        allowed_egress_hosts: ["not-the-jwks-host.invalid"]
+        # Keycloak serves the IT's self-signed certificate; the benchmark-idp profile binds the stack's
+        # trust store through the mounted benchmark-idp-trust.properties, exactly as in the control.
+        tls_profile: benchmark-idp

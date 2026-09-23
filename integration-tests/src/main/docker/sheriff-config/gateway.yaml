@@ -244,13 +244,13 @@ token_validation:
         url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
         # token-sheriff's SSRF egress guard refuses a JWKS URL that resolves to a
         # private address. 'keycloak' is a compose service name resolving to the
-        # bridge network's site-local 172.x address, so without this entry the key
-        # set never loads and every bearer request fails — the aspect would then
-        # measure a rejection path while reporting it as bearer throughput. The
-        # allowlist is host-exact (no wildcard) and names only this one trusted,
-        # benchmark-local IdP: exactly the narrow widening GW-05 / BFF-07 permit.
-        # The 'it-static' issuer above is deliberately NOT widened — it loads from
-        # a mounted file and needs no egress at all.
+        # bridge network's site-local 172.x address. An issuer that declares no list
+        # is exempted for the host of its own jwks.url, so this entry is not what makes
+        # the key set load. It is kept DELIBERATELY as the explicit-list-wins form: a
+        # non-empty list is authoritative and never merged with the derived host, so it
+        # pins the allowance to this one host-exact name, and a later jwks.url edit to
+        # another host fails closed instead of silently moving the exemption. The
+        # 'it-static' issuer above loads from a mounted file and needs no egress at all.
         allowed_egress_hosts: ["keycloak"]
         # Keycloak serves a self-signed certificate here, so the JWKS client must verify it
         # against the stack's own trust anchors rather than the JVM default store — otherwise
@@ -267,14 +267,14 @@ token_validation:
     # integration issuer MUST be declared here or every mediated session token is rejected.
     # Same container-internal iss the integration realm pins via frontendUrl
     # https://keycloak:8443, reached over the shared api-sheriff network where 'keycloak'
-    # resolves by service name; the same narrow SSRF egress widening and self-signed trust
-    # profile the benchmark issuer uses.
+    # resolves by service name. It declares no egress list and relies on the allowance derived
+    # from its jwks.url host, and uses the same self-signed trust profile as the benchmark issuer.
     - name: integration-keycloak
       issuer: https://keycloak:8443/realms/integration
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
-        allowed_egress_hosts: ["keycloak"]
+        # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host
         tls_profile: benchmark-idp
 # --- Server-mode BFF confidential-client block (BFF-* integration suite) -----------
 # Activates the server-mode BffRuntime (BffRuntimeProducer builds the active runtime

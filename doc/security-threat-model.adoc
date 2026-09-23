@@ -647,12 +647,36 @@ restricted to `http`/`https` at boot. Redirect following is disabled
 (`followRedirects(NEVER)` -- an SSRF-limiting default in the interim proxy, to be preserved).
 On the *control plane* (B4 -- OIDC discovery/JWKS/token), `token-sheriff-validation`'s
 `EgressPolicy` already blocks loopback/link-local/site-local/cloud-metadata targets on the
-initial fetch and every refresh (DNS-rebinding-safe); keep its secure defaults and only widen
-via `allowedEgressHost` for a trusted IdP. The gateway exposes that widening as the per-issuer
-`token_validation.issuers[].jwks.allowed_egress_hosts` list in `gateway.yaml`: absent or empty
-keeps `EgressPolicy.secureDefault()`, and each entry exempts exactly one host (host-exact, no
-wildcard form). Operators should egress-restrict the gateway and
-avoid pointing a topology alias at link-local/metadata ranges.
+initial fetch and every refresh (DNS-rebinding-safe), and it is widened only host by host, through
+the library's own `allowedEgressHost` seam. The gateway feeds that seam from the per-issuer
+`token_validation.issuers[].jwks.allowed_egress_hosts` list in `gateway.yaml`, in one of two forms
+(link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a1[ADR-0011
+Amendment A1]):
+
+* *Absent or empty -- derived.* The gateway passes exactly one host: the host of the issuer's own
+  `jwks.url`, port dropped. An `http` issuer whose `jwks.url` names no host is refused at boot
+  (`CONFIG_INVALID`), so a derived allowance never collapses into an empty one by accident.
+* *Non-empty -- authoritative.* Each entry exempts exactly one host (host-exact, no wildcard or
+  suffix form), and the `jwks.url` host is never merged into the list. A blank or `host:port` entry
+  is refused at boot.
+
+*The trade-off the derived form accepts.* It exempts the `jwks.url` host from the private-address
+refusal in *every* deployment -- not only one whose IdP lives on a private network. A public-IdP
+deployment is affected too: a public IdP hostname that resolves to an internal address (a DNS
+change, a split-horizon resolver, a poisoned cache) was refused before and is now dialled. The
+exemption is bounded to the one host the operator already named as the key endpoint, and it widens
+nothing else: certificate trust is unchanged, so chain validation and hostname verification
+(<<gw-06>>) still refuse an endpoint that cannot prove it is that host. The trade-off was accepted
+deliberately in exchange for a private IdP working without a second declaration of a host the
+configuration already carries. `EgressPolicy.secureDefault()` itself is unchanged upstream; the
+gateway passes one host through the library's seam, so this is not a local reversal of an upstream
+tightening (link:adr/0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+
+*Residual.* No dedicated key restores the no-exemption posture for an `http` issuer. An operator who
+wants a narrower allowance declares an explicit list, which is authoritative -- naming a host other
+than the `jwks.url` host keeps the `jwks.url` host refused whenever it resolves privately -- and an
+explicit list also pins the allowance against a later `jwks.url` edit. Operators should
+egress-restrict the gateway and avoid pointing a topology alias at link-local/metadata ranges.
 
 The `source: upstream` asset action (link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014])
 reuses this exact posture rather than opening a parallel fetch stack: a fixed, boot-resolved
@@ -670,7 +694,15 @@ upstream asset source reuses the same fixed-topology + scheme-allowlist + no-red
 *Assertion.* No request input (path, header, body) can change the resolved upstream host; a
 topology alias with a non-http(s) scheme fails boot; the data-plane client does not follow
 upstream 3xx to a new host; the upstream asset source honours the same no-redirect and
-fixed-topology guarantees and bounds the response size and timeout.
+fixed-topology guarantees and bounds the response size and timeout. On the JWKS leg, an issuer whose
+explicit `allowed_egress_hosts` names a host other than its `jwks.url` host keeps its key set refused
+against a private-address IdP, and the same gateway with only that key removed loads the key set
+through the derived allowance (`JwksEgressMismatchIT`, against the native image, with that
+single-variable control); the derived host (with a control on another `jwks.url` host), the
+explicit-list-wins rule, the hostless-`jwks.url` refusal, and a real dial against the local
+SAN-mismatched JWKS fixture that an explicit list naming another host refuses while the derived
+allowance reaches it, are pinned by `TokenValidatorProducerTest`; the blank / `host:port` boot
+refusals by `ConfigValidatorJwksEgressTest`.
 
 [#gw-06]
 === GW-06 -- TLS/SNI fail-open, upstream cert verification, mTLS bypass
@@ -829,7 +861,13 @@ different half: token-sheriff's `EgressPolicy` SSRF egress guard is applied to t
 URI* before the initial fetch and before each background refresh, constraining which host that URI
 may name, while a *cross-origin redirect hop* off that URI is what the HTTP handler's
 `RedirectPolicy.sameOrigin()` rejects; and the scope claim is proven by the untrusted-chain dial
-above rather than asserted. The mitigation for an operator whose IdP is behind an internal CA is
+above rather than asserted. One qualification applies to the first half of that bound: the
+`jwks.url` host itself is exempt from the guard's private-address refusal -- through the allowance
+derived from `jwks.url`, or through an explicit list naming it (<<gw-05>>) -- so a DNS answer that
+points *that* host at an internal address is not refused by the guard. Every host the allowance
+does not exempt -- one neither derived from `jwks.url` nor named in an explicit list -- still is,
+and the chain-trust check is what stands between such an answer and an attacker's key set. The
+mitigation for an operator whose IdP is behind an internal CA is
 `jwks.tls_profile`, which is a different key answering the chain-trust question -- and, on an
 `http`-sourced issuer, the two are *mutually exclusive* and the combination is refused at boot, so an
 operator cannot reach for both at once and end up with neither. A `file`-sourced issuer opens no TLS
@@ -1537,10 +1575,19 @@ are ignored (they appear nowhere in its key resolution; embedded `jwk` is active
 that blocks internal/metadata ranges on the initial fetch *and every background refresh*
 (DNS-rebinding-safe, GW-05 tie-in); it caches with a TTL, keeps a bounded rotation grace
 window, and `getKeyInfo(kid)` never triggers an on-demand fetch -- so a flood of unknown
-`kid`s cannot drive a fetch storm. Gateway residual: keep the secure egress defaults; widen only
-via `allowedEgressHost` for a trusted IdP -- surfaced in `gateway.yaml` as the per-issuer
-`token_validation.issuers[].jwks.allowed_egress_hosts` list (see <<gw-05>>), which defaults to
-the secure policy when absent or empty.
+`kid`s cannot drive a fetch storm. Gateway residual: the egress policy is widened only host by host,
+through the library's own `allowedEgressHost` seam, fed from the per-issuer
+`token_validation.issuers[].jwks.allowed_egress_hosts` list in `gateway.yaml` (see <<gw-05>>). When
+the list is absent or empty the gateway derives exactly one entry, the host of the issuer's own
+`jwks.url`; a non-empty list is authoritative, host-exact and never merged with that host; a blank or
+`host:port` entry, and a hostless `jwks.url` with no list, are refused at boot. The derived default
+is an accepted trade-off, recorded in full under <<gw-05>>: it exempts the `jwks.url` host from the
+private-address refusal in every deployment -- a public IdP host that resolves to an internal address
+included, which was refused before and now is not -- while certificate trust (chain and hostname
+verification) is unchanged. No dedicated key restores the no-exemption posture for an `http` issuer;
+an operator who wants it declares an explicit list, which is authoritative. The key set itself is
+still fetched only from the configured `jwks.url`; the allowance decides which *addresses* that one
+URL may resolve to, never which URL is fetched.
 
 *Key-set availability is the gateway's -- readiness and a bounded retry.* The library's own
 JWKS-readiness health check does not serve this gateway: its extension beans are excluded
@@ -1562,8 +1609,9 @@ storm. Each scheduled retry logs `WARN ApiSheriff-129` and a recovery logs `INFO
 both carrying the issuer's configured name only. The upstream defect -- no `UNDEFINED` to `OK`
 transition -- is reported to the library rather than depended on.
 
-*Status:* COVERED (validation lib, fail-closed, SSRF-guarded; key-set availability owned by the
-gateway's loader wrapper and readiness check).
+*Status:* COVERED (validation lib, fail-closed, SSRF-guarded with the `jwks.url` host exempted as
+recorded under <<gw-05>>; key-set availability owned by the gateway's loader wrapper and readiness
+check).
 
 *Assertion.* A token-supplied `jku`/`x5u` is ignored; JWKS is fetched only from the
 configured endpoint; a flood of unknown-`kid` tokens does not cause unbounded outbound
@@ -1572,7 +1620,10 @@ issuer has no key set and names no issuer, URL or host; a status read issues no 
 first fetch is retried on the bounded backoff and the key set arrives well inside the refresh
 interval (`RetryingJwksLoaderTest`, `SheriffMetricsTest`); against the native image, a gateway whose
 identity provider appears only after boot reports `DOWN`, turns `UP` within a minute of the provider
-appearing, and then accepts that provider's token (`JwksLateIdpReadinessIT`).
+appearing, and then accepts that provider's token (`JwksLateIdpReadinessIT`). The egress allowance
+is proven in both directions against the native image: an explicit list naming another host keeps
+the key set refused and a real token rejected `401`, and the same gateway with only that key removed
+loads the key set through the derived allowance and accepts the same token (`JwksEgressMismatchIT`).
 
 [#bff-08]
 === BFF-08 -- Refresh-token rotation / reuse-detection under concurrency
@@ -2075,7 +2126,7 @@ outstanding hardening work (next section).
 | <<gw-02>> | Reject ambiguous HTTP framing | Gateway/web-server (cui-http out of scope) | GAP
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
-| <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / token-sheriff `EgressPolicy` | COVERED
+| <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
@@ -2091,7 +2142,7 @@ outstanding hardening work (next section).
 | <<bff-04>> | `nonce` validated + single-use | Engine `IdTokenValidationBridge` + gateway pending-authorization record | COVERED
 | <<bff-05>> | Single-IdP; `iss` verification | Design + engine `IssValidator` | ELIMINATED
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
-| <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch; readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
+| <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
 | <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway) | Engine (RP-initiated) + gateway (back-channel receiver) | COVERED
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED

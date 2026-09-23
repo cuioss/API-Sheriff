@@ -65,18 +65,30 @@ paths. By the deletion discriminator, these two Layer-2 caps are enforced (by th
 validators) but not test-proven at their boundary. Already recorded as G6/G7 in the project's
 own coverage doctrine — independently verified as real.
 
-=== TST-3 — JWKS SSRF egress guard: no runtime refused-egress test
+=== TST-3 — JWKS SSRF egress guard: runtime refused-egress test (CLOSED)
 
 [cols="1,4"]
 |===
-|Severity |MEDIUM — Confidence HIGH — Category: missing-negative (project-acknowledged G2 runtime leg)
-|Location |`EgressAllowlistActivationWiringTest` (descriptor-parsing, correctly self-labelled WIRED); `TokenValidatorProducerTest.allowlistSurvivesTheProducerPath`
+|Severity |CLOSED — was MEDIUM — Category: missing-negative (project-acknowledged G2 runtime leg, now COVERED)
+|Location |`integration-tests/.../JwksEgressMismatchIT`; `TokenValidatorProducerTest.AllowedEgressHosts` and its SAN-mismatch dial legs; `EgressAllowlistActivationWiringTest`
 |===
 
-The producer-seam behavioural test exists with a matched no-allowlist control, but no test
-anywhere exercises an actual refused JWKS egress through a running gateway. For the flagship
-SSRF control of a security gateway this is the highest-value missing runtime negative; the
-project records it as the standing remainder's rank-2 item.
+The gap this finding recorded -- no test exercising an actual refused JWKS egress through a
+running gateway -- is closed. `JwksEgressMismatchIT` boots the shipped native image on the
+integration network with a single issuer whose explicit `allowed_egress_hosts` names a host other
+than its `jwks.url` host: readiness stays `DOWN` without disclosing the issuer, host, URL or entry,
+`ApiSheriff-129` is awaited so the refusal is observed after a completed load attempt, and a real
+Keycloak-minted token is rejected `401`. Its single-variable control removes only that key -- the
+written descriptor is re-parsed and asserted to equal the original minus the key -- and the same
+token is then accepted `200` through the allowance derived from the `jwks.url` host, so the refusal
+is attributed to the explicit list rather than to DNS, TLS or a dead identity provider.
+
+At unit level `TokenValidatorProducerTest` pins derive-from-url (with a control on another
+`jwks.url` host), explicit-list-wins (the `jwks.url` host is never merged into a declared list),
+the hostless-`jwks.url` boot refusal, and a real dial against the local SAN-mismatched JWKS fixture
+that an explicit list naming another host refuses while the derived allowance reaches it.
+`EgressAllowlistActivationWiringTest` holds every committed descriptor to one of the two forms and
+the mismatch fixture to the inverse. The project records G2 as COVERED in its own doctrine.
 
 === TST-4 — TLS runtime legs: no real below-floor handshake or ALPN assertion
 
@@ -243,4 +255,3 @@ coupling that is genuinely unusual rigor.
 
 1. TST-1 — `SecurityHeadersStage` response-header assertions + a deployment-activation IT row.
 2. TST-2 — G6/G7 1024/1025 boundary tests for parameter values and paths.
-3. TST-3 — the runtime refused-JWKS-egress negative through a running gateway.

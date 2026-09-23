@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *twenty-four files* under `integration-tests/src/main/docker/`.
+The declared surface is *twenty-five files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -53,11 +53,12 @@ disk without touching this table and the guard fails.
 | Surface | Count | Files
 
 | `sheriff-config*/gateway.yaml`
-| 10
+| 11
 | `sheriff-config/gateway.yaml` (base), `sheriff-config-cookie/gateway.yaml`,
   `sheriff-config-cookie-refresh/gateway.yaml`,
   `sheriff-config-egress-verify-off/gateway.yaml`,
   `sheriff-config-egress-verify-on/gateway.yaml`,
+  `sheriff-config-jwks-egress-mismatch/gateway.yaml`,
   `sheriff-config-late-idp/gateway.yaml`,
   `sheriff-config-mtls/gateway.yaml`, `sheriff-config-passthrough-empty/gateway.yaml`,
   `sheriff-config-refresh/gateway.yaml`,
@@ -89,7 +90,9 @@ Only the base directory carries `endpoints/`, `portal/` and `topology.properties
 directories replace `gateway.yaml` and nothing else, which is why the endpoints tree resolves
 identically for every gateway instance the compose stack boots.
 
-`sheriff-config-late-idp/gateway.yaml` is the one descriptor that is *not* an overlay. It backs
+`sheriff-config-late-idp/gateway.yaml` is one of the two descriptors that are *not* overlays -- the
+other, `sheriff-config-jwks-egress-mismatch/gateway.yaml`, is built on the same shape and is
+described under the citation notation below. It backs
 `JwksLateIdpReadinessIT`, which boots it as a one-off container rather than as a compose service --
 that gateway is `DOWN` by design until the test starts its identity provider, and the compose
 readiness gate would refuse it. It is a standalone, deliberately minimal document: the test mounts it
@@ -104,7 +107,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all twenty-four files it returns hits in exactly fifteen of them:
+Over all twenty-five files it returns hits in exactly sixteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -112,6 +115,7 @@ Over all twenty-four files it returns hits in exactly fifteen of them:
 * `sheriff-config-cookie-refresh/gateway.yaml`
 * `sheriff-config-egress-verify-off/gateway.yaml`
 * `sheriff-config-egress-verify-on/gateway.yaml`
+* `sheriff-config-jwks-egress-mismatch/gateway.yaml`
 * `sheriff-config-late-idp/gateway.yaml`
 * `sheriff-config-mtls/gateway.yaml`
 * `sheriff-config-passthrough-empty/gateway.yaml`
@@ -129,7 +133,7 @@ The remaining nine -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/portal-hidden.yaml`,
 `sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
 `sheriff-config/portal/portal.html` and `sheriff-config/topology.properties` -- declare none.
-That complement is the other half of the same claim, so asserting the fifteen exactly asserts both
+That complement is the other half of the same claim, so asserting the sixteen exactly asserts both
 halves at once.
 
 `sheriff-config/endpoints/origin-headers.yaml` is limit-free for the same structural reason as
@@ -148,13 +152,13 @@ Matrix row.
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the fifteen limit-bearing paths -- and uses them
+runtime -- the inventory table, the sweep pattern and the sixteen limit-bearing paths -- and uses them
 as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-fifteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+sixteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -239,11 +243,29 @@ the base's anchor value), `security_defaults.max_authorization_header_value_leng
 carve-out, at the base's value) and one issuer's `jwks.allowed_egress_hosts` (the *G2* allowlist,
 naming exactly the host its own `jwks.url` fetches from). None of the three is a new limit, so none
 owes a row of its own: *G2*'s `EgressAllowlistActivationWiringTest` discovers descriptors by glob
-and holds this file to the same exact-host rule as every other; and `JwksLateIdpReadinessIT` drives
+and holds this file to the same rule as every other -- a declared list must be exactly the
+`jwks.url` host; and `JwksLateIdpReadinessIT` drives
 a real Keycloak-minted bearer token -- longer than the strict preset's 1024-character header-value
 cap -- through this instance's pre-route floor, and fetches the key set through the allowlisted
 private address, so both keys are in effect on the positive leg. Their *boundaries* remain those the
 *G1* and *G2* rows record against the base document.
+
+`sheriff-config-jwks-egress-mismatch/gateway.yaml` is the second standalone descriptor, and it sits
+outside the `×N` notation for the same reason as the late-idp document. It backs
+`JwksEgressMismatchIT`, which boots it as a one-off container on the compose network rather than as
+a compose service -- that gateway is `DOWN` by design for its whole life, and the compose readiness
+gate would refuse it. It copies the late-idp shape: the single bearer-gated `assets-secure` anchor
+beside `sheriff-config/endpoints/assets-secure.yaml`, no `topology.properties`, and exactly three
+limit-shaped keys -- `allowed_methods` (global `["GET"]`, and the base's `["GET", "HEAD"]` on the
+anchor), `security_defaults.max_authorization_header_value_length: 8192` (the *G1* carve-out, at the
+base's value) and one issuer's `jwks.allowed_egress_hosts`. That last key is the one deliberate
+inversion: its list names `not-the-jwks-host.invalid`, *not* the host its own `jwks.url` fetches
+from, because the refusal that list produces is exactly what the *G2* row's runtime leg asserts. None
+of the three is a new limit, so the file owes no row of its own; it is the fixture behind the *G2*
+row's `COVERED` status. `EgressAllowlistActivationWiringTest` carves it out of its positive half by
+name and asserts the inverse instead -- the list is non-empty and does *not* contain the `jwks.url`
+host -- so the fixture cannot silently degrade into a matching or derived list and turn the refusal
+it exists for into a pass.
 
 *Seventeen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
 `csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *ten* base-only
@@ -302,7 +324,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | Declared limit (file:line) | Enforcing component | Status | Asserting test
 
 | `anchors.upload.security_filter.max_body_bytes: 67108864`
-  `gateway.yaml` ×4 -- base:186, cookie:64, mtls:71, ws:69
+  `gateway.yaml` ×4 -- base:187, cookie:64, mtls:71, ws:69
 | `ThoroughChecksStage` (per-route body cap)
 | COVERED
 | `LargeBodyIT` (runtime 413) + `BodyLimitActivationWiringTest` (framework-floor coupling)
@@ -324,7 +346,7 @@ declaration's *existence* is proven while its *boundary* is not.
   mismatch rather than the route refusing the shape outright)
 
 | `security_defaults.profile: strict`
-  `sheriff-config/gateway.yaml:50`
+  `sheriff-config/gateway.yaml:51`
 | Resolved `SecurityConfiguration` for every route omitting a profile
 | COVERED
 | `SecurityProfileModeIT` (strict-vs-minimal contrast on two routes)
@@ -336,20 +358,20 @@ declaration's *existence* is proven while its *boundary* is not.
 | `SecurityProfileModeIT` (`preRouteCollectionCapStillRejectsParameterCount`)
 
 | `security_defaults.allow_get_with_content_length_body: true`
-  `sheriff-config/gateway.yaml:52`
+  `sheriff-config/gateway.yaml:53`
 | The framing gate in `BasicChecksStage`
 | COVERED
 | `GetWithBodyIT` + `GetWithBodyActivationWiringTest`
 
 | `allowed_methods`
-  `sheriff-config/gateway.yaml:20` (global), `:175` (graphql), `:180` (upload), `:209`
-  (assets-public), `:219` (assets-secure)
+  `sheriff-config/gateway.yaml:20` (global), `:176` (graphql), `:181` (upload), `:210`
+  (assets-public), `:220` (assets-secure)
 | Route selection / method gate
 | COVERED
 | `PipelineVerbIT` (405 plus four positive controls)
 
 | `oidc.session.csrf.trusted_origins`
-  `gateway.yaml` ×4 -- base:326, cookie:177, mtls:156, ws:135
+  `gateway.yaml` ×4 -- base:327, cookie:177, mtls:156, ws:135
 | BFF CSRF origin gate
 | COVERED
 | `BffCsrfIT` (403 / 403 with a 401 control)
@@ -373,7 +395,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `WebSocketProxyIT` (`WsAdmissionExhaustion`) + `WsAdmissionActivationWiringTest`
 
 | `tls.passthrough_sni`
-  `sheriff-config/gateway.yaml:88-90`
+  `sheriff-config/gateway.yaml:89-91`
 | `SniFrontListener` via `TlsEdgeProducer` (accept-time L4/L7 split)
 | COVERED
 | `TlsPassthroughIT`, `HostSmuggleGuardIT`, `TlsEdgeActivationWiringTest`
@@ -392,14 +414,14 @@ declaration's *existence* is proven while its *boundary* is not.
   wins when a request violates both
 
 | `asset_defaults.content_types`
-  `sheriff-config/gateway.yaml:102-104`
+  `sheriff-config/gateway.yaml:103-105`
 | Asset response envelope (add-only map, boot-enforced)
 | WIRED
 | `AssetContentTypeActivationWiringTest` -- asserts the block is declared and collides with no
   built-in; no served-asset content type is asserted at runtime
 
 | `security_headers.hsts.max_age: 31536000`
-  `sheriff-config/gateway.yaml:117`
+  `sheriff-config/gateway.yaml:118`
 | `SecurityHeadersStage` (global block at stage 0; replaced wholesale by an anchor block at stage 2a)
 | PARTIAL
 | `RoutingAndResponseHeadersIT` -- the exact emitted value `max-age=31536000; includeSubDomains` on a
@@ -411,7 +433,7 @@ declaration's *existence* is proven while its *boundary* is not.
 
 | `security_headers.cors.allowed_origins` / `allowed_methods` / `allowed_headers` /
   `allow_credentials`
-  `sheriff-config/gateway.yaml:121-124`
+  `sheriff-config/gateway.yaml:122-125`
 | `SecurityHeadersStage` (global CORS and the preflight short-circuit, stage 0)
 | PARTIAL
 | `RoutingAndResponseHeadersIT` (`corsPreflightStaysPreAuthentication`) -- an allow-listed origin's
@@ -434,7 +456,7 @@ declaration's *existence* is proven while its *boundary* is not.
   which is what keeps this row off `COVERED`.
 
 | `oidc.session.refresh.leeway_seconds: 30`
-  `gateway.yaml` ×4 -- base:324, cookie:175, mtls:154, ws:133
+  `gateway.yaml` ×4 -- base:325, cookie:175, mtls:154, ws:133
 | Session refresh scheduling
 | COVERED
 | `BffTokenRefreshIT` on the dedicated `api-sheriff-refresh` instance -- the only place the boundary
@@ -459,7 +481,7 @@ declaration's *existence* is proven while its *boundary* is not.
   assertion on the existing suite.
 
 | *G1* `security_defaults.max_authorization_header_value_length: 8192`
-  `sheriff-config/gateway.yaml:51`
+  `sheriff-config/gateway.yaml:52`
 | `BasicChecksStage` -- the non-skippable pre-route floor, *before* route selection
 | COVERED
 | `DeclaredLimitBoundaryIT` -- 8192 admitted and reaching bearer validation (401), 8193 rejected 400
@@ -467,14 +489,25 @@ declaration's *existence* is proven while its *boundary* is not.
   `BearerValidationIT:120` independently proves the carve-out is in force on a real token.
 
 | *G2* `token_validation.issuers[*].jwks.allowed_egress_hosts`
-  `gateway.yaml` ×4 -- base:253,276; cookie:97,110; mtls:104,121; ws:102,109
+  `gateway.yaml` ×4 -- base:254, cookie:97, mtls:104, ws:102 (the `benchmark-keycloak` list; the
+  `integration-keycloak` issuer declares none in the base or in any overlay)
 | token-sheriff SSRF egress guard (GW-05 / BFF-07)
-| WIRED
-| `EgressAllowlistActivationWiringTest` -- every http-sourced issuer's allowlist is *exactly* the
-  host its own `jwks.url` names (no extra host, every entry a `String`), every file-sourced issuer
-  declares none, and every issuer's `jwks.source` is one of the two recognised values so none is
-  silently skipped. Descriptor-parsing only; no runtime egress refusal is exercised, which is why
-  this is `WIRED` and not `COVERED`.
+| COVERED
+| `JwksEgressMismatchIT` -- a one-off gateway whose only issuer declares an explicit list naming a
+  host other than its own `jwks.url` host stays readiness `DOWN`, logs `ApiSheriff-129` (a failed
+  load with a retry scheduled) and rejects a real Keycloak-minted token `401`; the matched control,
+  the same document with that one key removed, reaches `UP` and accepts the *same* token `200`. The
+  single variable attributes the refusal to the explicit list -- which is authoritative and never
+  merged with the host derived from `jwks.url` -- rather than to DNS, TLS or a dead IdP. The compose
+  bring-up proves the opposite direction: `integration-keycloak` declares no list, so the stack's
+  readiness gate reaches `UP` only through the allowance derived from its `jwks.url` host.
+  `EgressAllowlistActivationWiringTest` is the descriptor half: every http-sourced issuer declares
+  either no `allowed_egress_hosts` key (the derived form) or *exactly* the host its own `jwks.url`
+  names (the explicit form, every entry a `String`); a declared empty list is refused; both forms
+  must occur at least once, so neither can vanish from the descriptor set unnoticed; every
+  file-sourced issuer declares none; and every issuer's `jwks.source` is one of the two recognised
+  values so none is silently skipped. The mismatch fixture is carved out of that positive half by
+  name and held to the inverse.
 
 | *G3* Strict preset header-value length cap (1024)
   Layer 2 -- resolved, in no yaml
@@ -541,26 +574,26 @@ declaration's *existence* is proven while its *boundary* is not.
 | none
 
 | *G8* `tls.alpn: ["h2", "http/1.1"]`
-  `gateway.yaml` ×4 -- base:76, cookie:25, mtls:22, ws:26
+  `gateway.yaml` ×4 -- base:77, cookie:25, mtls:22, ws:26
 | `TlsServerCustomizer` (ALPN advertisement)
 | GAP
 | none -- the http2 benchmark aspect negotiates h2 but asserts no protocol
 
 | *G9* `oidc.session.ttl_seconds: 3600`
-  `gateway.yaml` ×4 -- base:321, cookie:158, mtls:151, ws:130
+  `gateway.yaml` ×4 -- base:322, cookie:158, mtls:151, ws:130
 | Session store expiry
 | GAP
 | none
 
 | *G10* `oidc.user_info.allowed_claims`
-  `gateway.yaml` ×4 -- base:329, cookie:180, mtls:159, ws:138
+  `gateway.yaml` ×4 -- base:330, cookie:180, mtls:159, ws:138
 | user_info claim projection
 | PARTIAL
 | `BffUserInfoIT` asserts the `default_view` projection; no negative leg proves a claim *outside*
   the allowlist is withheld
 
 | *G11* `tls.min_version: "1.2"` / `tls.cipher_suites`
-  `sheriff-config/gateway.yaml:63,68-72`
+  `sheriff-config/gateway.yaml:64,69-73`
 | `TlsServerCustomizer` (protocol floor + cipher allowlist)
 | PARTIAL
 | `CipherSuiteFixtureWiringTest` is descriptor-level only; no handshake asserts a below-floor
@@ -581,13 +614,14 @@ whose breach degrades the whole gateway outranks one that degrades a single requ
 
 *They did not all reach the same status.* **G1, G3, G4 and G5 reached `COVERED`** -- each is
 asserted at its boundary with a matched positive control. **G2 reached `WIRED` only**:
-`EgressAllowlistActivationWiringTest` proves the allowlist declaration is present and exactly
-scoped to the host its own `jwks.url` names, but no runtime egress refusal is exercised. By this
-note's own vocabulary that is not `COVERED`, so G2's runtime leg is *still open* and is counted
-below rather than dropped.
+`EgressAllowlistActivationWiringTest` proved the allowlist declaration present and exactly
+scoped to the host its own `jwks.url` names, but no runtime egress refusal was exercised. By this
+note's own vocabulary that was not `COVERED`, so G2's runtime leg was carried in the standing
+remainder rather than dropped -- until `JwksEgressMismatchIT` closed it (see the standing remainder
+below and the G2 matrix row).
 
-*Seven items remain* -- the G2 runtime egress-refusal leg and G6--G11 -- and they are listed as the
-standing remainder so the class stays countable.
+*Six items remain* -- G6--G11 -- and they are listed as the standing remainder so the class stays
+countable.
 
 [cols="1,1,1,4"]
 |===
@@ -600,8 +634,8 @@ standing remainder so the class stays countable.
 
 | 2 | G2 | gateway-wide
 | The SSRF egress guard on JWKS fetch (GW-05 / BFF-07). Its loss unguards outbound fetches from a
-  security gateway. *Landed `WIRED`, not `COVERED`* -- the descriptor guard fails on drift, the
-  runtime refusal is still unasserted and is carried in the standing remainder.
+  security gateway. *Landed `WIRED`, not `COVERED`* -- the descriptor guard failed on drift while the
+  runtime refusal stayed unasserted; it has since reached `COVERED` through `JwksEgressMismatchIT`.
 
 | 3 | G3 | gateway-wide
 | The resolved header-value floor every route inherits -- and the exact cap G1 carves out of.
@@ -621,12 +655,9 @@ standing remainder so the class stays countable.
 
 === The standing remainder
 
-*The G2 runtime leg and G6--G11 are deliberately not authored*, and are recorded so the class stays
-countable rather than forgotten:
+*G6--G11 are deliberately not authored*, and are recorded so the class stays countable rather than
+forgotten:
 
-* *G2* -- runtime egress-refusal leg: that a JWKS host *outside* `allowed_egress_hosts` is actually
-  refused. The descriptor half is `WIRED` by `EgressAllowlistActivationWiringTest`; proving the
-  refusal needs a rogue-host fixture the sweep's assertion budget could not fund.
 * *G6* -- strict parameter-value length cap (1024)
 * *G7* -- strict path length cap (1024)
 * *G8* -- `tls.alpn`
@@ -640,6 +671,15 @@ whose *both* legs were missing. It is now `COVERED` by `BffTokenRefreshIT`; see 
 above. What closed it is the part worth carrying forward: not a new assertion on the existing
 session ITs, but a dedicated gateway instance whose client mints a 45-second access token, because
 a leeway boundary is only reachable when the token expires faster than the leeway is wide.
+
+*The G2 runtime egress-refusal leg has left this list too.* It stood here as the proof that a JWKS
+host *outside* an explicit `allowed_egress_hosts` list is actually refused, with only the
+descriptor half `WIRED`, because it needed a rogue-host fixture the sweep's assertion budget could
+not fund. It is now `COVERED` by `JwksEgressMismatchIT`; see the G2 matrix row above. What closed
+it mirrors the leeway closure: not a new assertion on the compose instances, whose lists all name
+their own `jwks.url` host or are derived from it, but a dedicated one-off gateway
+(`sheriff-config-jwks-egress-mismatch/gateway.yaml`) whose explicit list deliberately names another
+host, paired with a control that differs from it by that single key.
 
 Two of these are additionally *impractical to boundary-test at proportionate cost*: G9 would need a
 one-hour wait, and G11's runtime leg needs a handshake fixture matrix. A future plan should pick
@@ -678,11 +718,11 @@ enlarge exactly the hole this note has chosen to report.
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
 paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
-fifteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+sixteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
 *boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
 so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *fifteen already limit-bearing* files
+The consequence: adding a limit-shaped key to one of the *sixteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
 row is forced. Only a key that makes one of the remaining nine --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
@@ -690,8 +730,8 @@ row is forced. Only a key that makes one of the remaining nine --
 `sheriff-config/endpoints/portal-hidden.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
 `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Fifteen of twenty-four is the *majority* of the surface,
-so this is the ordinary case rather than an edge one: for those fifteen files the "add its row here
+Sixteen of twenty-five is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those sixteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
 `hsts.max_age` and the CORS allow lists are limit-shaped, the base file was already limit-bearing, and
@@ -719,14 +759,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (twenty-four files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (twenty-five files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the fifteen limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the sixteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the fifteen/nine partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the sixteen/nine partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -735,7 +775,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the twenty-four files, add its row here in the same change --
+When you add a limit-shaped key to any of the twenty-five files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix

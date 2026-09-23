@@ -331,7 +331,7 @@
                   "file": { "type": "string" },
                   "allowed_egress_hosts": {
                     "type": "array",
-                    "description": "SSRF egress allowlist for 'source: http'. Omitted or empty keeps the secure default, which refuses a JWKS URL resolving to a loopback, link-local, site-local, any-local, multicast, or unique-local address. Each entry names one trusted IdP host that is exempted from that check — widen only for a trusted IdP (threat model GW-05 / BFF-07), never with a wildcard.",
+                    "description": "SSRF egress allowlist for 'source: http'. The JWKS client refuses a JWKS URL resolving to a loopback, link-local, site-local, any-local, multicast, or unique-local address, except for the hosts this allowance exempts (threat model GW-05 / BFF-07). Omitted or empty derives the allowance from jwks.url: its host (port dropped) is the single exempted host, and a jwks.url without a host is refused at boot. A non-empty list is authoritative and host-exact: each entry exempts exactly the one host it names, the jwks.url host is never added to it, and there is no wildcard form. TLS certificate trust (chain and hostname verification) is unaffected either way. A blank or whitespace-only entry and a host:port entry are REFUSED AT BOOT (a bare IPv6 literal such as fd00::1 is admitted). The rule is stated here in prose only: the configuration validator is the sole enforcing authority and names the offending entry at boot, which is why no pattern keyword is declared.",
                     "items": { "type": "string" }
                   },
                   "tls_profile": {

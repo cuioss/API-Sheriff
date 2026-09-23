@@ -36,10 +36,13 @@ Two boundaries are drawn, both as heavy dashed lines with a small open circle at
 
 * *Published host ports* -- the only surface reachable from outside the Compose network. Everything
   below the line is internal, addressed by Compose service name.
-* *Gateway egress* -- every outbound leg the gateway makes. The JWKS fetches are constrained by a
-  host-exact SSRF allowlist (`allowed_egress_hosts: ["keycloak"]`) and verified against a named TLS
-  trust profile rather than the JVM default store, because Keycloak serves a self-signed certificate
-  here.
+* *Gateway egress* -- every outbound leg the gateway makes. The JWKS fetches pass token-sheriff's SSRF
+  egress guard, which refuses the site-local address `keycloak` resolves to unless the host is
+  allowed, and both of its forms are in use here: the `integration-keycloak` issuer declares no
+  `allowed_egress_hosts` and reaches Keycloak through the allowance derived from its `jwks.url` host,
+  while the `benchmark-keycloak` issuer keeps the explicit, authoritative `allowed_egress_hosts:
+  ["keycloak"]` as the explicit-list control. Both are verified against a named TLS trust profile
+  rather than the JVM default store, because Keycloak serves a self-signed certificate here.
 
 Two *named egress trust profiles* are declared in this stack, on the two different egress surfaces
 ADR-0040 keeps disjoint. Both follow ADR-0011's boundary rule -- the gateway document names the
@@ -361,6 +364,15 @@ health check first reports healthy.
 that is *not* one of the compose instances above -- it is `DOWN` by design until the test starts its
 identity provider, which the readiness gate here would refuse. It asserts `DOWN` without the
 provider, `UP` within a minute of it appearing, and that the provider's token is then accepted.
+
+`JwksEgressMismatchIT` uses the same one-off shape, through the same shared harness, and is likewise
+*not* a compose instance: its gateway is `DOWN` by design for its whole life, because its single
+issuer's explicit `allowed_egress_hosts` names a host other than its `jwks.url` host. It joins the
+compose network so `keycloak` resolves to the same site-local address the compose instances dial,
+asserts `DOWN` without disclosure and a `401` for a real token, and then starts a second one-off
+control that differs only by that key's removal and must reach `UP` and accept the same token
+through the derived allowance. Neither one-off gateway adds a service, a port pair or a row to the
+table or the diagram above.
 
 What readiness still does not cover is worth stating plainly, because it is the thing most likely to
 be assumed wrong:
