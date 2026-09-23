@@ -1924,7 +1924,7 @@ in the refreshed token (`BffTokenRefreshIT`, `TokenRefreshCoordinatorTest`).
 == HTML surface failure catalogue
 
 The optional application portal (link:user/portal.adoc[operator guide],
-link:adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050])
+link:adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053])
 gives the gateway an HTML surface of its own. Two responses are gateway-authored HTML: the overview
 page on the reserved `portal.path`, and, with `portal.error_pages`, the negotiated HTML error page of
 a gateway-originated error. Without a `portal` block neither exists and every entry below is
@@ -2152,12 +2152,12 @@ outstanding hardening work (next section).
 | <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- gateway usage rule | COVERED
 | <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) | PARTIAL
 | <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048 | PARTIAL (session-wide scope growth accepted)
-| <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0050 | COVERED
-| <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0050 | COVERED (operator markup trusted, accepted)
+| <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
+| <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED
 | <<html-04>> | Catalog `entry` origin-relative, reviewed at boot, never echoed in the refusal | Schema + `PortalRules` (configuration validator) | COVERED
 | <<html-05>> | Error page status-only input, fixed per-status title, always anonymous, detail-free fallback | `PortalEndpoint.renderError` + `ErrorPageClassifier.titleFor` | COVERED
-| <<html-06>> | Gateway-originated errors only, exhaustive compile-checked classification; explicit `text/html` required; relayed origin responses never replaced; status unchanged | `ErrorPageClassifier` + `GatewayEdgeRoute` error writers -- ADR-0050 | COVERED
+| <<html-06>> | Gateway-originated errors only, exhaustive compile-checked classification; explicit `text/html` required; relayed origin responses never replaced; status unchanged | `ErrorPageClassifier` + `GatewayEdgeRoute` error writers -- ADR-0053 | COVERED
 |===
 
 == Gaps to close

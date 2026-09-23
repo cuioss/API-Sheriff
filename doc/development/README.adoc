@@ -39,6 +39,13 @@ to *run* the finished gateway).
   the non-gating `rewrite-report` job that reports all of it, the incremental-build rule, and the
   recorded discard of the fully-qualified-refspec fix.
 
+| link:local-test-environment-caveats.adoc[Local Test-Environment Caveats -- Loopback Port Collisions
+  on the Workstation]
+| Why a local test can fail on a loopback port that something else on the workstation holds -- the
+  symptom, the four recorded sightings, the *presumptively environmental* reading convention that
+  attributes such a failure by re-run and baseline evidence before any code fix, and why this is a
+  different mechanism from the wildcard-bind class PLAN-13 fixed.
+
 | link:release-process.adoc[Release Process]
 | How a release is cut -- merge a version change in `.github/project.yml`, which is the publishing
   act once the centrally-owned version-changed guard lets it through, with `workflow_dispatch` as the

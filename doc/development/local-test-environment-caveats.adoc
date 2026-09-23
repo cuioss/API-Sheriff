@@ -1,0 +1,115 @@
+= Local Test-Environment Caveats -- Loopback Port Collisions on the Workstation
+:toc:
+:toclevels: 2
+:sectnums:
+
+Some local test failures in this repository are caused by the machine the suite runs on, not by the
+change under test. This page records the one such class that has been seen often enough to name:
+something on the contributor workstation intermittently holds loopback ports that the test fixtures
+assume are free. It states the symptom, lists the recorded sightings, gives the reading convention a
+contributor applies before touching code, and separates this class from the wildcard-bind defect that
+was fixed earlier and has the same symptom.
+
+== The symptom
+
+A test that opens, probes or connects to a loopback port fails with a bind or connect error, or with a
+control precondition that expected a port to be free and found it taken. The failure has three
+recognisable properties:
+
+* It is *unrelated to the change under test* -- the failing test sits in code the branch did not
+  touch.
+* It is *intermittent* -- a re-run of the same suite on the same tree passes, and CI passes on the
+  same commit.
+* It is *machine-local* -- the port is held by a process that is not part of the test run: another
+  build, another plan's worktree, a local service, or a long-lived listener that happens to own a port
+  in the ephemeral range.
+
+The test fixtures pick ports they expect to be free and assume nothing else claims them for the
+duration of the test. On a busy workstation that assumption does not always hold, and the test
+reports the collision as its own failure.
+
+== The four recorded sightings
+
+The class has been observed four times. Each sighting was attributed to the environment by rerun or
+baseline evidence, not by assertion.
+
+[cols="1,4"]
+|===
+| Sighting | What was observed
+
+| PLAN-11
+| The first sighting: the macOS-local loopback connection stall investigated in PR #243. A fixed budget
+  of pre-registered runs reproduced the stall in 8 of 31 runs, each ending at the 30-second ceiling
+  with the acceptor and event loops idle. The investigation measured the symptom and ruled out the
+  held-listener form of the port-reuse hypothesis, but did not establish the mechanism.
+
+| PLAN-13
+| The wildcard-bind fix (PR #255). A follow-up measurement traced the stall PLAN-11 recorded to test
+  listeners bound to the wildcard address colliding with foreign `127.0.0.1` listeners; PLAN-13 fixed
+  it by binding the ephemeral test listeners to loopback explicitly. See <<not-the-wildcard-bind-class>> for why that fix
+  does not close this page's class.
+
+| PLAN-03
+| `TlsEdgeProducerTest` and `SniFrontListenerTest` each failed once locally on a port-collision control
+  precondition, under a load average of 119, and passed on re-run and in CI. The contended machine and
+  the port assumption met in the same run; neither alone explains the failure. The port-allocation
+  socket in `TlsEdgeProducerTest` was later moved from the wildcard address to loopback (PR #308),
+  which removes that fixture's exposure to the wildcard mechanism and does nothing about a foreign
+  holder.
+
+| Full-suite re-runs
+| The fourth sighting: machine-local port-collision failures cost two full-suite re-runs in a single
+  session, in tests the branch did not touch, with the re-runs passing.
+|===
+
+[[not-the-wildcard-bind-class]]
+== This is not the wildcard-bind class PLAN-13 fixed
+
+The two classes share a symptom and have different mechanisms. Reading the PLAN-13 fix as having
+closed this page's class is the mistake this section exists to prevent.
+
+*The wildcard-bind class (fixed).* A test listener bound with `listen(0)` binds the wildcard address.
+With `SO_REUSEADDR`, the kernel can hand it an ephemeral port that another process already holds as a
+`127.0.0.1` listener. A client that then dials `127.0.0.1` on that port is routed by the kernel's
+most-specific-match rule to the *other* process, and the test waits on a connection that never
+reaches it. PLAN-13 fixed this by binding test listeners to loopback explicitly
+(`listen(0, "127.0.0.1")`, through `LoopbackHost.ADDRESS`) and added
+`LoopbackEphemeralBindArchTest` so a new wildcard bind fails the build.
+
+*This class (open).* A *foreign* process holds a port the fixture assumes is free. Binding the
+fixture's own listener to loopback does not help: the port is taken before the fixture asks for it,
+whichever address the fixture binds. No test-side change removes the foreign holder -- the
+workstation owns it.
+
+A failure of this shape after the PLAN-13 fix is therefore not evidence that the fix regressed, and
+it is not a reason to reopen it.
+
+== Reading a failure of this shape
+
+A local failure that matches the symptom above is *presumptively environmental*. Attribute it with
+evidence before attempting any code fix:
+
+. *Check what the branch touched.* If the failing test and the code it exercises are outside the
+  branch's changes, the branch is an unlikely cause.
+. *Re-run the failing tests.* A pass on re-run, with no change in between, is the first piece of
+  evidence.
+. *Compare against a trusted baseline.* The same test green in CI on the same commit, or green on
+  `main`, supports the environmental hypothesis but does not by itself establish that the tree is
+  not the cause. Where possible, identify the foreign process holding the port before treating the
+  failure as environmental.
+. *Look at the machine.* A high load average or a concurrent build in another worktree makes a
+  contended-environment failure more likely; the PLAN-03 sighting occurred under a load average of 119.
+
+Only a failure that survives this -- it reproduces on re-run, it touches code the branch changed, or it
+fails on the baseline too -- is treated as a defect to fix in code.
+
+The convention has a precedent: a branch ran eight gate rounds with two green and six red, eight
+different sets of failing tests, every failing file untouched by the branch, and CI green at every
+pushed commit. Reading those failures as environmental was correct, and each round of code changes
+aimed at them would have chased the workstation rather than the change.
+
+The convention is not a licence to ignore a red test. It orders the investigation: establish where the
+signal comes from first, then decide whether code is at fault. The companion page
+link:build-gate-discipline.adoc[Build-Gate Discipline] covers the related rule that a green build is
+not by itself evidence that the work happened, and the pre-commit process these runs belong to is
+stated in link:../../CLAUDE.md[`CLAUDE.md`], section *Pre-Commit Process*.

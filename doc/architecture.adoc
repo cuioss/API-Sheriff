@@ -145,7 +145,7 @@ The authentication stage is where the three variants differ: offline bearer vali
 ==== Application portal (reserved path and HTML error pages)
 
 The portal (link:user/portal.adoc[operator guide],
-link:adr/0050-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0050])
+link:adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053])
 lives in the framework-agnostic `de.cuioss.sheriff.gateway.portal` package and is wired by one CDI
 producer, `PortalProducer`, following the ADR-0005 seam rule:
 
