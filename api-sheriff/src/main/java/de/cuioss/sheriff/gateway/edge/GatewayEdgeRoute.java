@@ -97,6 +97,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Context;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -243,6 +244,12 @@ public class GatewayEdgeRoute {
      * a completed upgrade takes the connection over, so the HTTP end handler never fires and
      * {@link #dispatchWebSocket} must hand the relay its own release callback. */
     private static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
+    /** Holds the client connection's own Vert.x {@link Context}, captured in {@link #handle} on that
+     * connection's event loop before the virtual-thread hop, for the same reason as
+     * {@link #ADMISSION_GUARD_KEY}: the hop carries only the {@link RoutingContext}. The WebSocket relay
+     * is its one reader — {@link #dispatchWebSocket} hands it to {@link WebSocketRelayStage#relay}, which
+     * runs the upstream dial and the client upgrade on it, whatever thread called {@code relay()}. */
+    private static final String CLIENT_CONTEXT_KEY = "sheriff.clientcontext";
     /** Holds the per-request release guard for the WebSocket relay sub-permit. Present ONLY once
      * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
      * release site knows there is no sub-permit to return. */
@@ -512,6 +519,10 @@ public class GatewayEdgeRoute {
         // under ADMISSION_GUARD_KEY because the virtual-thread hop carries only the RoutingContext.
         AtomicBoolean admissionReleased = new AtomicBoolean();
         ctx.put(ADMISSION_GUARD_KEY, admissionReleased);
+        // This handler runs on the client connection's event loop, so the current context IS that
+        // connection's context. It is captured here, before the virtual-thread hop, because a WebSocket
+        // relay must run its upstream dial and client upgrade on it (see dispatchWebSocket).
+        ctx.put(CLIENT_CONTEXT_KEY, Vertx.currentContext());
         ctx.addEndHandler(result -> {
             releaseAdmission(ctx, admissionReleased);
             recordRequestMetrics(ctx, startNanos);
@@ -1218,6 +1229,12 @@ public class GatewayEdgeRoute {
      * the general one, so long-lived relays cannot squeeze ordinary HTTP traffic out of the admission
      * pool. An upgrade beyond that cap is refused {@code 503}, releasing the general permit through
      * the shared guard on the way out so a refusal strands nothing.
+     * <p>
+     * <strong>Client connection context.</strong> This method runs on a virtual thread, whose Vert.x
+     * context is whatever the executor bound to it — the client connection's own context only when the
+     * executor propagates it. The relay is therefore handed the context {@link #handle} captured on the
+     * connection's event loop under {@link #CLIENT_CONTEXT_KEY}, so the upstream dial, the client upgrade
+     * and every relay callback run on the client connection's context regardless of the executor.
      */
     private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
@@ -1231,6 +1248,8 @@ public class GatewayEdgeRoute {
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
         AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(ADMISSION_GUARD_KEY),
                 "admission guard missing — handle() must stash it before dispatch");
+        Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
+                "client connection context missing — handle() must capture it before dispatch");
         if (!webSocketRelayAdmission.tryAcquire()) {
             // The relay sub-budget is exhausted. The general admission permit is still held and this
             // request will never reach the relay teardown that would return it, so release it here —
@@ -1247,8 +1266,8 @@ public class GatewayEdgeRoute {
         applyStageSetCookies(ctx.response(), request.responseSetCookies());
         // A handshake-failure response is gateway-authored — there is no origin header to defer to — so
         // the relay receives both header maps merged.
-        webSocketRelayStage.relay(ctx, route, forward.headers(), request.gatewayAuthoredResponseHeaders(), uri,
-                () -> releaseAdmission(ctx, admissionGuard));
+        webSocketRelayStage.relay(ctx, clientContext, route, forward.headers(),
+                request.gatewayAuthoredResponseHeaders(), uri, () -> releaseAdmission(ctx, admissionGuard));
     }
 
     /**

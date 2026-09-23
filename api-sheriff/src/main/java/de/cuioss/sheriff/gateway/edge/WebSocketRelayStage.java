@@ -25,6 +25,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.tools.logging.CuiLogger;
+import io.vertx.core.Context;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.ServerWebSocket;
@@ -64,6 +65,30 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * Every socket operation is event-loop-bound; the relay hops onto the request's Vert.x context so
  * both legs share one event loop and the frame relay is single-threaded.
+ * <p>
+ * <strong>No frame reaches a leg before its handler.</strong> Vert.x delivers a WebSocket's inbound
+ * frames from the moment the socket exists, while the relay installs its frame handlers only when
+ * {@code RelaySession.start()} runs; a frame arriving on either leg in between was dispatched to no
+ * handler and lost. {@code WebSocketRelayStageTest}'s deterministic reproductions, which defer the wiring
+ * by a fixed delay, proved that window on both legs — the client's first frame written in its own upgrade
+ * callback, and an upstream greeting written on accept, were each lost in every recorded run. Three
+ * remedies were evaluated against them:
+ * <ol>
+ *   <li><em>(a) Hop to the captured client connection context — taken.</em> {@link #relay} runs the
+ *       upstream dial, its callbacks and the client upgrade on the context {@code GatewayEdgeRoute}
+ *       captured on the client connection's event loop, whatever thread called {@code relay()}. On its
+ *       own it cannot close the upstream leg, whose window spans the whole asynchronous client upgrade,
+ *       nor survive a scheduling gap before the wiring runs.</li>
+ *   <li><em>(b) Pause each leg at acquisition, resume after wiring — taken.</em> The upstream leg is
+ *       paused as the first statement of the dial's success callback and the client leg as the first
+ *       statement of the upgrade's completion; {@code RelaySession.start()} installs every handler on
+ *       both legs, then resumes both. A frame that arrives in between waits in Vert.x's own inbound
+ *       buffer, so the reproductions pass with their deferred wiring still in place.</li>
+ *   <li><em>(c) A gateway-side early-frame buffer — rejected.</em> Pausing already buffers inside Vert.x;
+ *       a buffer of the gateway's own would add a bounded-drop surface — a drop log record and its
+ *       documentation — for no gain.</li>
+ * </ol>
+ * No frame is dropped by this design, so the window has no log record and no counter.
  * <p>
  * <strong>An established relay owns an admission permit for its lifetime.</strong> A completed client
  * upgrade takes the connection over, so the HTTP response never ends and the edge's end handler never
@@ -138,6 +163,9 @@ public final class WebSocketRelayStage {
      * ({@link GrpcStatusMapper#renderRejection}) rejection paths.
      *
      * @param ctx             the routing context (client request/response and Vert.x handle)
+     * @param clientContext   the client connection's own Vert.x context, captured on its event loop
+     *                        before any virtual-thread hop; the upstream dial, its callbacks, the client
+     *                        upgrade and every relay callback run on it
      * @param route           the resolved route runtime (upstream, shared client, idle timeout)
      * @param forwardHeaders  the mode-filtered forwarded header set computed by stage 5
      * @param securityHeaders the stage-0 security headers accumulated on the response, applied to a
@@ -147,9 +175,11 @@ public final class WebSocketRelayStage {
      *                        teardown — on the established relay's {@code closeBoth} funnel and on the
      *                        client-upgrade-failure branch — and never at upgrade completion
      */
-    public void relay(RoutingContext ctx, RouteRuntime route, Map<String, String> forwardHeaders,
-            Map<String, String> securityHeaders, String requestUri, Runnable releaseAdmission) {
+    public void relay(RoutingContext ctx, Context clientContext, RouteRuntime route,
+            Map<String, String> forwardHeaders, Map<String, String> securityHeaders, String requestUri,
+            Runnable releaseAdmission) {
         Objects.requireNonNull(ctx, "ctx");
+        Objects.requireNonNull(clientContext, "clientContext");
         Objects.requireNonNull(route, "route");
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
         Objects.requireNonNull(securityHeaders, "securityHeaders");
@@ -169,15 +199,26 @@ public final class WebSocketRelayStage {
                 .setSsl(HTTPS.equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri);
         forwardHeaders.forEach(options::addHeader);
-        ctx.vertx().runOnContext(v -> webSocketClient.connect(options)
+        // The client connection's own context, not the calling thread's: a virtual thread may carry no
+        // context, or one the executor bound for its own purposes, and a hop onto either would run the
+        // client upgrade's completion off the connection's event loop.
+        clientContext.runOnContext(v -> webSocketClient.connect(options)
                 .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs, releaseAdmission))
                 .onFailure(failure -> onUpstreamFailure(ctx, route, failure, retainedSecurityHeaders)));
     }
 
     private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs,
             Runnable releaseAdmission) {
+        // Hold the upstream leg's inbound frames from the moment it is acquired: an upstream that speaks
+        // first would otherwise reach a leg with no frame handler during the asynchronous client upgrade.
+        // RelaySession.start() resumes it once every handler is installed.
+        upstreamWs.pause();
         ctx.request().toWebSocket()
-                .onSuccess(clientWs -> establishRelay(ctx, route, clientWs, upstreamWs, releaseAdmission))
+                .onSuccess(clientWs -> {
+                    // Likewise for the client leg: its first frame may already be in flight.
+                    clientWs.pause();
+                    establishRelay(ctx, route, clientWs, upstreamWs, releaseAdmission);
+                })
                 .onFailure(failure -> {
                     // The upstream is already upgraded but the client handshake could not complete;
                     // there is no HTTP response to render anymore. Close the upstream leg and drop.
@@ -308,6 +349,11 @@ public final class WebSocketRelayStage {
             clientWs.exceptionHandler(this::abort);
             upstreamWs.exceptionHandler(this::abort);
             resetIdle();
+            // Both legs were paused at acquisition; only now that every handler is installed may their
+            // buffered frames flow. This precedes any write-queue backpressure pause, which is only ever
+            // applied from a relayed frame.
+            clientWs.resume();
+            upstreamWs.resume();
         }
 
         private void wire(WebSocketBase source, WebSocketBase target) {

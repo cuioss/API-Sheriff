@@ -65,6 +65,7 @@ import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.vertx.core.Context;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -109,6 +110,12 @@ class WebSocketRelayStageTest {
 
     /** Bound on the diagnostic subprocess: a report that has not arrived by now is not worth waiting for. */
     private static final long LSOF_TIMEOUT_SECONDS = 2;
+
+    /**
+     * Sequential upgrades the full-edge early-first-frame regression drives through
+     * {@link GatewayEdgeRoute}, each writing its first frame inside the client's own upgrade callback.
+     */
+    private static final int EARLY_FRAME_EDGE_UPGRADES = 20;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -199,6 +206,45 @@ class WebSocketRelayStageTest {
 
         // Assert — the frame crosses to the upstream, is echoed, and relays back to the client
         assertEquals("hello-relay", Awaits.connect(echoed, "the echoed frame to return through the relay"));
+    }
+
+    /**
+     * The full-edge regression for the relay's pre-wiring frame window. The edge runs its pipeline on the
+     * fixture's plain virtual-thread executor, which binds no Vert.x context to the thread that calls
+     * {@link WebSocketRelayStage#relay} — the shape that ran the race before the relay hopped onto the
+     * client connection's captured context and paused both legs until wired. Every upgrade writes its
+     * first frame inside the client's own upgrade callback, with no gap after the {@code 101}.
+     */
+    @Test
+    @DisplayName("relays a first frame written inside the client's upgrade callback through the full edge, on every upgrade")
+    void relaysEarlyFirstFrameThroughTheEdgeOnEveryUpgrade() throws Exception {
+        for (int upgrade = 1; upgrade <= EARLY_FRAME_EDGE_UPGRADES; upgrade++) {
+            // Arrange
+            String frame = Generators.letterStrings(1, 32).next();
+            CompletableFuture<String> echoed = new CompletableFuture<>();
+            CompletableFuture<WebSocket> opened = new CompletableFuture<>();
+            WebSocketConnectOptions options = new WebSocketConnectOptions()
+                    .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setURI("/ws-open/room")
+                    .addHeader("Origin", ALLOWED_ORIGIN);
+
+            // Act — the first frame leaves the client inside its upgrade callback
+            wsClient.connect(options)
+                    .onSuccess(socket -> {
+                        socket.textMessageHandler(echoed::complete);
+                        socket.writeTextMessage(frame);
+                        opened.complete(socket);
+                    })
+                    .onFailure(failure -> {
+                        echoed.completeExceptionally(failure);
+                        opened.completeExceptionally(failure);
+                    });
+
+            // Assert — the frame crosses the edge's relay to the echo upstream and comes back
+            assertEquals(frame, Awaits.connect(echoed, "upgrade " + upgrade + " of " + EARLY_FRAME_EDGE_UPGRADES
+                    + ": the first frame, written in the client's upgrade callback, to echo through the edge"));
+            Awaits.teardown(Awaits.connect(opened, "upgrade " + upgrade + " to report its socket").close(),
+                    "upgrade " + upgrade + "'s relayed WebSocket to close");
+        }
     }
 
     @Test
@@ -529,8 +575,9 @@ class WebSocketRelayStageTest {
         /**
          * Stands up a relay-only front server whose stage defers every relay's wiring by
          * {@link #DEFERRED_WIRING_MILLIS} on the relay's own Vert.x context, and whose router handler
-         * pauses the request on the event loop and then dispatches {@link WebSocketRelayStage#relay}
-         * from the fixture's virtual-thread executor — the same pause-then-hop the edge performs.
+         * pauses the request and captures the client connection's context on the event loop, then
+         * dispatches {@link WebSocketRelayStage#relay} from the fixture's virtual-thread executor — the
+         * same pause, capture and hop the edge performs.
          */
         private HttpServer startDeferredWiringRelayServer(int upstreamTargetPort) throws Exception {
             RouteRuntime route = RouteRuntime.builder()
@@ -545,8 +592,10 @@ class WebSocketRelayStageTest {
             Router router = Router.router(vertx);
             router.route().handler(ctx -> {
                 ctx.request().pause();
-                virtualThreadExecutor.execute(() -> stage.relay(ctx, route, Map.of(), Map.of(), "/",
-                        UNOBSERVED_ADMISSION_RELEASE));
+                // Captured on the event loop, before the hop, exactly as GatewayEdgeRoute.handle() does.
+                Context clientContext = Vertx.currentContext();
+                virtualThreadExecutor.execute(() -> stage.relay(ctx, clientContext, route, Map.of(), Map.of(),
+                        "/", UNOBSERVED_ADMISSION_RELEASE));
             });
             return Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -577,7 +626,9 @@ class WebSocketRelayStageTest {
             // Mirror GatewayEdgeRoute.handle(): the request stream is paused before the dispatch, so the
             // asynchronous upstream dial cannot race the body being read out from under toWebSocket().
             ctx.request().pause();
-            stage.relay(ctx, route, Map.of(), Map.of(), "/", releaseAdmission);
+            // The router handler runs on the client connection's event loop, so its current context is the
+            // one GatewayEdgeRoute.handle() captures and hands the relay.
+            stage.relay(ctx, Vertx.currentContext(), route, Map.of(), Map.of(), "/", releaseAdmission);
         });
         return Awaits.connect(
                 vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
