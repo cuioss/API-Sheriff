@@ -41,6 +41,15 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@code sun.nio.ch.KQueue.poll}, doing nothing. That establishes the work never <em>arrived</em>,
  * but it cannot say whether the work reached the machine at all. Only the kernel's own socket table
  * can, and this class is the capture of it.
+ * <p>
+ * <strong>Which stall that is (amended 2026-09-23).</strong> "The macOS-local loopback stall" above
+ * names the occurrences this class was written for: a dual-stack wildcard ephemeral bind coexisting with
+ * a foreign {@code 127.0.0.1} listener, recorded in {@code doc/development/build-gate-discipline.adoc}.
+ * The same stall shape — an await running to its ceiling with no progress at all — has also been
+ * reported on the Linux lane from a different cause: the WebSocket relay's pre-wiring frame window, now
+ * closed. A frame lost to a relay leg with no handler yet installed leaves the connection established,
+ * so the socket table cannot discriminate that case. The relay timeline that
+ * {@code WebSocketRelayStageTest} folds into a relay-await timeout is what does.
  *
  * <h2>How to read the capture</h2>
  * The two commands answer different halves of the question and are both required.

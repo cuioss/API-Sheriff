@@ -15,8 +15,10 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -25,6 +27,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.tools.logging.CuiLogger;
+import io.vertx.core.Context;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.ServerWebSocket;
@@ -34,6 +37,7 @@ import io.vertx.core.http.WebSocketBase;
 import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.http.WebSocketFrame;
+import io.vertx.core.http.WebSocketFrameType;
 import io.vertx.ext.web.RoutingContext;
 import org.jspecify.annotations.Nullable;
 
@@ -55,15 +59,52 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Opaque bidirectional relay.</strong> Every frame — text, binary, continuation, ping,
  * pong — is forwarded to the other leg with fragmentation preserved and no per-frame filtering;
- * close is relayed transparently and a half-close on either leg closes both. Data-frame relay
- * applies Vert.x write-queue backpressure (pause the busy source until the target drains). An
+ * close is relayed transparently and a half-close on either leg closes both. Every forwarded
+ * frame — data, ping and pong alike — applies Vert.x write-queue backpressure (pause the busy source
+ * until the target drains), so control frames cannot bypass the bound the data path is held to. An
  * established relay is bounded by the route's per-route {@code idle_timeout_seconds}: a timer,
  * reset by any frame in either direction (ping/pong counting as activity), closes both legs with
  * WebSocket close code {@code 1001} (Going Away) on expiry and meters
  * {@link EventType#WEBSOCKET_IDLE_TIMEOUT}.
  * <p>
- * Every socket operation is event-loop-bound; the relay hops onto the request's Vert.x context so
- * both legs share one event loop and the frame relay is single-threaded.
+ * <strong>Threading.</strong> Every socket operation is event-loop-bound, so the relay runs on the client
+ * connection's context: {@code GatewayEdgeRoute.handle()} captures it on the connection's event loop
+ * before the virtual-thread hop, and {@link #relay} hops onto it whatever thread calls it. The upstream
+ * dial and its success and failure callbacks, the client upgrade's completion, {@code establishRelay} and
+ * every {@code RelaySession} handler — frame, pong, close, exception, idle timer and drain — run on the
+ * client connection's context; the upstream connection is created from that context and shares its
+ * event loop, so the frame relay is single-threaded. Before this fix the relay hopped onto the context
+ * of whatever thread called {@code relay()}. In production, Quarkus's context-preserving virtual-thread
+ * executor had already bound the client connection's context to that thread, and the early-frame
+ * integration test saw no loss in N = 50 upgrades; the client-leg production consequence is therefore
+ * refuted as far as measured ({@code d3-production-verdict: GREEN}, inconclusive with stated power —
+ * zero losses in 50 upgrades bounds the per-upgrade loss rate below about 6% at 95% confidence). The
+ * unit fixture's plain virtual-thread executor did not bind that context, and that is where the
+ * client-leg loss reproduced.
+ * <p>
+ * <strong>No frame reaches a leg before its handler.</strong> Vert.x delivers a WebSocket's inbound
+ * frames from the moment the socket exists, while the relay installs its frame handlers only when
+ * {@code RelaySession.start()} runs; a frame arriving on either leg in between was dispatched to no
+ * handler and lost. {@code WebSocketRelayStageTest}'s deterministic reproductions, which defer the wiring
+ * by a fixed delay, proved that window on both legs — the client's first frame written in its own upgrade
+ * callback, and an upstream greeting written on accept, were each lost in every recorded run. Three
+ * remedies were evaluated against them:
+ * <ol>
+ *   <li><em>(a) Hop to the captured client connection context — taken.</em> {@link #relay} runs the
+ *       upstream dial, its callbacks and the client upgrade on the context {@code GatewayEdgeRoute}
+ *       captured on the client connection's event loop, whatever thread called {@code relay()}. On its
+ *       own it cannot close the upstream leg, whose window spans the whole asynchronous client upgrade,
+ *       nor survive a scheduling gap before the wiring runs.</li>
+ *   <li><em>(b) Pause each leg at acquisition, resume after wiring — taken.</em> The upstream leg is
+ *       paused as the first statement of the dial's success callback and the client leg as the first
+ *       statement of the upgrade's completion; {@code RelaySession.start()} installs every handler on
+ *       both legs, then resumes both. A frame that arrives in between waits in Vert.x's own inbound
+ *       buffer, so the reproductions pass with their deferred wiring still in place.</li>
+ *   <li><em>(c) A gateway-side early-frame buffer — rejected.</em> Pausing already buffers inside Vert.x;
+ *       a buffer of the gateway's own would add a bounded-drop surface — a drop log record and its
+ *       documentation — for no gain.</li>
+ * </ol>
+ * No frame is dropped by this design, so the window has no log record and no counter.
  * <p>
  * <strong>An established relay owns an admission permit for its lifetime.</strong> A completed client
  * upgrade takes the connection over, so the HTTP response never ends and the edge's end handler never
@@ -93,22 +134,33 @@ public final class WebSocketRelayStage {
     private final WebSocketClient webSocketClient;
     private final UpstreamFailureMapper failureMapper;
     private final GatewayEventCounter eventCounter;
+    private final RelayObserver observer;
 
     /**
+     * Creates a relay stage whose relay wiring is handed to the given {@link RelayObserver} instead of
+     * running directly, and which reports each relay's wiring time and first relayed frame per
+     * direction to it, so a test can observe or deliberately delay the moment the relay's frame
+     * handlers are installed. Package-private and selected by no configuration key or system property.
+     * Production builds the stage through {@code GatewayEdgeRoute}'s CDI constructor, which passes
+     * {@link RelayObserver#NO_OP}; only a test hands it anything else.
+     *
      * @param webSocketClient the edge-wide dialer for every upstream WebSocket handshake
      * @param failureMapper the shared mapper turning an upstream dial failure into the error contract
      * @param eventCounter  the shared in-process event counter
+     * @param observer      the test observer every established relay hands its wiring to
      */
-    public WebSocketRelayStage(WebSocketClient webSocketClient, UpstreamFailureMapper failureMapper,
-            GatewayEventCounter eventCounter) {
+    WebSocketRelayStage(WebSocketClient webSocketClient, UpstreamFailureMapper failureMapper,
+            GatewayEventCounter eventCounter, RelayObserver observer) {
         this.webSocketClient = Objects.requireNonNull(webSocketClient, "webSocketClient");
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
         this.eventCounter = Objects.requireNonNull(eventCounter, "eventCounter");
+        this.observer = Objects.requireNonNull(observer, "observer");
     }
 
     /**
      * Dials the upstream WebSocket and, on success, upgrades the client and establishes the opaque
-     * relay. Runs asynchronously on the request's Vert.x context; the caller returns immediately.
+     * relay. Runs asynchronously on the client connection's context, whatever thread calls it; the
+     * caller returns immediately.
      * <p>
      * The stage-0 security headers accumulated on the request are retained across the asynchronous
      * dial so that a handshake-failure response ({@link #onUpstreamFailure}) carries the same
@@ -116,6 +168,9 @@ public final class WebSocketRelayStage {
      * ({@link GrpcStatusMapper#renderRejection}) rejection paths.
      *
      * @param ctx             the routing context (client request/response and Vert.x handle)
+     * @param clientContext   the client connection's own Vert.x context, captured on its event loop
+     *                        before any virtual-thread hop; the upstream dial, its callbacks, the client
+     *                        upgrade and every relay callback run on it
      * @param route           the resolved route runtime (upstream, shared client, idle timeout)
      * @param forwardHeaders  the mode-filtered forwarded header set computed by stage 5
      * @param securityHeaders the stage-0 security headers accumulated on the response, applied to a
@@ -125,9 +180,11 @@ public final class WebSocketRelayStage {
      *                        teardown — on the established relay's {@code closeBoth} funnel and on the
      *                        client-upgrade-failure branch — and never at upgrade completion
      */
-    public void relay(RoutingContext ctx, RouteRuntime route, Map<String, String> forwardHeaders,
-            Map<String, String> securityHeaders, String requestUri, Runnable releaseAdmission) {
+    public void relay(RoutingContext ctx, Context clientContext, RouteRuntime route,
+            Map<String, String> forwardHeaders, Map<String, String> securityHeaders, String requestUri,
+            Runnable releaseAdmission) {
         Objects.requireNonNull(ctx, "ctx");
+        Objects.requireNonNull(clientContext, "clientContext");
         Objects.requireNonNull(route, "route");
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
         Objects.requireNonNull(securityHeaders, "securityHeaders");
@@ -147,15 +204,26 @@ public final class WebSocketRelayStage {
                 .setSsl(HTTPS.equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri);
         forwardHeaders.forEach(options::addHeader);
-        ctx.vertx().runOnContext(v -> webSocketClient.connect(options)
+        // The client connection's own context, not the calling thread's: a virtual thread may carry no
+        // context, or one the executor bound for its own purposes, and a hop onto either would run the
+        // client upgrade's completion off the connection's event loop.
+        clientContext.runOnContext(v -> webSocketClient.connect(options)
                 .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs, releaseAdmission))
                 .onFailure(failure -> onUpstreamFailure(ctx, route, failure, retainedSecurityHeaders)));
     }
 
     private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs,
             Runnable releaseAdmission) {
+        // Hold the upstream leg's inbound frames from the moment it is acquired: an upstream that speaks
+        // first would otherwise reach a leg with no frame handler during the asynchronous client upgrade.
+        // RelaySession.start() resumes it once every handler is installed.
+        upstreamWs.pause();
         ctx.request().toWebSocket()
-                .onSuccess(clientWs -> establishRelay(ctx, route, clientWs, upstreamWs, releaseAdmission))
+                .onSuccess(clientWs -> {
+                    // Likewise for the client leg: its first frame may already be in flight.
+                    clientWs.pause();
+                    establishRelay(ctx, route, clientWs, upstreamWs, releaseAdmission);
+                })
                 .onFailure(failure -> {
                     // The upstream is already upgraded but the client handshake could not complete;
                     // there is no HTTP response to render anymore. Close the upstream leg and drop.
@@ -204,8 +272,9 @@ public final class WebSocketRelayStage {
         eventCounter.increment(EventType.REQUEST_FORWARDED);
         // The admission permit stays held for the relay's whole lifetime — the session releases it from
         // its single teardown funnel, never here at upgrade completion.
-        new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds, eventCounter,
-                releaseAdmission).start();
+        RelaySession session = new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds,
+                releaseAdmission);
+        observer.beforeWiring(session::start);
     }
 
     private static void closeQuietly(WebSocketBase ws, short code, @Nullable String reason) {
@@ -215,15 +284,87 @@ public final class WebSocketRelayStage {
     }
 
     /**
+     * <strong>Test-only</strong> observation seam on an established relay's wiring and first frames.
+     * Every established relay hands the installation of its frame, pong, close and exception handlers
+     * ({@code RelaySession.start()}) to {@link #beforeWiring(Runnable)} rather than running it
+     * directly, so a test can defer that installation and reproduce a frame that reaches a leg before
+     * its handler exists. The relay then reports the moment its handlers are installed
+     * ({@link #wired(long)}) and the moment it relays the first data frame in each direction
+     * ({@link #frameRelayed(Direction, long)}), so a test that times out waiting for a relayed frame
+     * can tell whether that frame was written before the relay was wired.
+     * <p>
+     * Package-private and reachable only through the package-private constructors of this stage and
+     * of {@code GatewayEdgeRoute}: no configuration key or system property selects an observer, and
+     * production always runs with {@link #NO_OP}. The two reporting callbacks default to no-ops; the
+     * relay itself neither logs nor meters what it reports here.
+     *
+     * @since 1.0
+     */
+    interface RelayObserver {
+
+        /** The production observer: runs the wiring immediately, on the calling thread, and records nothing. */
+        RelayObserver NO_OP = Runnable::run;
+
+        /**
+         * Receives an established relay's wiring. An implementation must run {@code wiring} exactly
+         * once, on the relay's Vert.x context — immediately, or later through that context (for example
+         * from a {@code vertx.setTimer} callback) to model a scheduling gap.
+         *
+         * @param wiring installs every handler on both relay legs and arms the idle timer
+         */
+        void beforeWiring(Runnable wiring);
+
+        /**
+         * Called once per relay, on the client connection's context, when every handler on both legs
+         * is installed — before either leg is resumed, so it precedes every
+         * {@link #frameRelayed(Direction, long)} of the same relay. The default does nothing.
+         *
+         * @param nanoTime the {@link System#nanoTime()} reading taken at that moment
+         */
+        default void wired(long nanoTime) {
+            // no-op by default: production observes nothing
+        }
+
+        /**
+         * Called on the client connection's context when the relay forwards its first data frame —
+         * text, binary or continuation — in {@code direction}; at most once per direction per relay.
+         * Ping, pong and close frames are not reported. The default does nothing.
+         *
+         * @param direction the leg the frame arrived on and the leg it is forwarded to
+         * @param nanoTime  the {@link System#nanoTime()} reading taken as the frame is forwarded, just
+         *                  before it is written to the other leg — so the report precedes the frame's
+         *                  arrival at the far end
+         */
+        default void frameRelayed(Direction direction, long nanoTime) {
+            // no-op by default: production observes nothing
+        }
+
+        /** The two directions a relay forwards frames in. */
+        enum Direction {
+
+            /** A frame the client sent, forwarded to the upstream. */
+            CLIENT_TO_UPSTREAM,
+
+            /** A frame the upstream sent, forwarded to the client. */
+            UPSTREAM_TO_CLIENT
+        }
+    }
+
+    /**
      * One established relay: the two legs, the idle-timeout timer, the frame-relay wiring, and the
-     * admission permit the relay holds for its lifetime. All callbacks run on the shared request event
-     * loop, so the mutable {@code closed} / timer state is single-threaded and needs no synchronization.
+     * admission permit the relay holds for its lifetime. All callbacks run on the client connection's
+     * context — the upstream leg's on the upstream connection created from it, which shares its event
+     * loop — so the mutable {@code closed} / timer state is single-threaded and needs no synchronization.
      * <p>
      * {@link #closeBoth} is the single idempotent teardown funnel every terminal path reaches — client
      * close, upstream close, idle reclaim and relay error alike — so it is also the single site the
      * admission-release callback is invoked from, exactly once.
+     * <p>
+     * A non-static inner class: the session holds no event counter or relay observer of its own but reads
+     * both from the enclosing stage — the stage's {@code eventCounter}, which it meters the idle reclaim
+     * on, and the stage's {@code observer}, which it reports its wiring time and first relayed frames to.
      */
-    private static final class RelaySession {
+    private final class RelaySession {
 
         private final Vertx vertx;
         private final String routeId;
@@ -231,42 +372,52 @@ public final class WebSocketRelayStage {
         private final WebSocket upstreamWs;
         private final int idleSeconds;
         private final long idleMillis;
-        private final GatewayEventCounter eventCounter;
         private final Runnable releaseAdmission;
+        /** The directions whose first data frame has already been reported to the enclosing stage's observer. */
+        private final Set<RelayObserver.Direction> reportedDirections =
+                EnumSet.noneOf(RelayObserver.Direction.class);
         private long idleTimerId = -1L;
         private boolean closed;
 
         RelaySession(Vertx vertx, String routeId, ServerWebSocket clientWs, WebSocket upstreamWs, int idleSeconds,
-                GatewayEventCounter eventCounter, Runnable releaseAdmission) {
+                Runnable releaseAdmission) {
             this.vertx = vertx;
             this.routeId = routeId;
             this.clientWs = clientWs;
             this.upstreamWs = upstreamWs;
             this.idleSeconds = idleSeconds;
             this.idleMillis = idleSeconds * 1000L;
-            this.eventCounter = eventCounter;
             this.releaseAdmission = releaseAdmission;
         }
 
         void start() {
-            wire(clientWs, upstreamWs);
-            wire(upstreamWs, clientWs);
+            wire(clientWs, upstreamWs, RelayObserver.Direction.CLIENT_TO_UPSTREAM);
+            wire(upstreamWs, clientWs, RelayObserver.Direction.UPSTREAM_TO_CLIENT);
             clientWs.closeHandler(v -> closeBoth(resolveCloseCode(clientWs.closeStatusCode()), clientWs.closeReason()));
             upstreamWs.closeHandler(v ->
                     closeBoth(resolveCloseCode(upstreamWs.closeStatusCode()), upstreamWs.closeReason()));
             clientWs.exceptionHandler(this::abort);
             upstreamWs.exceptionHandler(this::abort);
             resetIdle();
+            // Reported before the resume below, so the wiring time precedes every relayed frame's.
+            observer.wired(System.nanoTime());
+            // Both legs were paused at acquisition; only now that every handler is installed may their
+            // buffered frames flow. This precedes any write-queue backpressure pause, which is only ever
+            // applied from a relayed frame.
+            clientWs.resume();
+            upstreamWs.resume();
         }
 
-        private void wire(WebSocketBase source, WebSocketBase target) {
-            source.frameHandler(frame -> relayFrame(source, target, frame));
-            // Vert.x surfaces received pong frames on a dedicated handler (not the frame handler) and
-            // auto-responds to pings; a pong is relay activity, so it resets the idle timer.
+        private void wire(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction) {
+            source.frameHandler(frame -> relayFrame(source, target, direction, frame));
+            // Vert.x delivers a received pong to BOTH the pong handler and the frame handler: relayFrame's
+            // pong branch forwards it to the other leg as a pong, and this handler only counts it as relay
+            // activity that resets the idle timer. Vert.x also auto-responds to pings.
             source.pongHandler(pong -> resetIdle());
         }
 
-        private void relayFrame(WebSocketBase source, WebSocketBase target, WebSocketFrame frame) {
+        private void relayFrame(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction,
+                WebSocketFrame frame) {
             if (closed) {
                 return;
             }
@@ -275,9 +426,24 @@ public final class WebSocketRelayStage {
                 // The close is surfaced separately via closeHandler, which closes both legs.
                 return;
             }
+            // Control frames are held to the same write-queue bound as data frames: without it a peer
+            // throttled on data could switch to pings or unsolicited pongs and grow the other leg's
+            // write queue without limit.
             if (frame.isPing()) {
                 target.writeFrame(WebSocketFrame.pingFrame(frame.binaryData()));
+                applyBackpressure(source, target);
                 return;
+            }
+            if (frame.type() == WebSocketFrameType.PONG) {
+                // A pong is control traffic: forwarded as a pong, never converted into a data frame by
+                // dataFrame() and never taking the direction's first-data-frame report below.
+                target.writeFrame(WebSocketFrame.pongFrame(frame.binaryData()));
+                applyBackpressure(source, target);
+                return;
+            }
+            // Only text, binary and continuation frames get here. Reported before the write, so the report is on record before the frame can reach the other end.
+            if (reportedDirections.add(direction)) {
+                observer.frameRelayed(direction, System.nanoTime());
             }
             target.writeFrame(dataFrame(frame));
             applyBackpressure(source, target);

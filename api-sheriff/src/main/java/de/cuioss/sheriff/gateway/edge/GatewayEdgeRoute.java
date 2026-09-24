@@ -97,6 +97,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Context;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -243,6 +244,12 @@ public class GatewayEdgeRoute {
      * a completed upgrade takes the connection over, so the HTTP end handler never fires and
      * {@link #dispatchWebSocket} must hand the relay its own release callback. */
     private static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
+    /** Holds the client connection's own Vert.x {@link Context}, captured in {@link #handle} on that
+     * connection's event loop before the virtual-thread hop, for the same reason as
+     * {@link #ADMISSION_GUARD_KEY}: the hop carries only the {@link RoutingContext}. The WebSocket relay
+     * is its one reader — {@link #dispatchWebSocket} hands it to {@link WebSocketRelayStage#relay}, which
+     * runs the upstream dial and the client upgrade on it, whatever thread called {@code relay()}. */
+    private static final String CLIENT_CONTEXT_KEY = "sheriff.clientcontext";
     /** Holds the per-request release guard for the WebSocket relay sub-permit. Present ONLY once
      * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
      * release site knows there is no sub-permit to return. */
@@ -325,6 +332,40 @@ public class GatewayEdgeRoute {
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint) {
+        this(routeTable, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening, sheriffMetrics,
+                bffRuntime, egressTrustProfileResolver, portalEndpoint, WebSocketRelayStage.RelayObserver.NO_OP);
+    }
+
+    /**
+     * <strong>Test-only.</strong> Assembles the edge exactly as the CDI constructor does, but hands
+     * the WebSocket relay stage the given {@link WebSocketRelayStage.RelayObserver}, so a full-edge
+     * relay test can observe the wiring time and the first relayed frame per direction of every relay
+     * this edge builds. Its only callers are the full-edge relay tests in {@code WebSocketRelayStageTest}.
+     * <p>
+     * Not a CDI entry point: CDI resolves only the {@link Inject @Inject} constructor, which delegates
+     * here with {@link WebSocketRelayStage.RelayObserver#NO_OP}, so production behaviour is unchanged.
+     * The observer type is package-private, and no configuration key or system property selects it.
+     *
+     * @param routeTable                 as for the CDI constructor
+     * @param gatewayConfig             as for the CDI constructor
+     * @param tokenValidator             as for the CDI constructor
+     * @param vertx                      as for the CDI constructor
+     * @param virtualThreadExecutor      as for the CDI constructor
+     * @param hardening                  as for the CDI constructor
+     * @param sheriffMetrics             as for the CDI constructor
+     * @param bffRuntime                 as for the CDI constructor
+     * @param egressTrustProfileResolver as for the CDI constructor
+     * @param portalEndpoint             as for the CDI constructor
+     * @param relayObserver              the observer every WebSocket relay this edge builds reports to
+     */
+    // The parameter list mirrors the CDI constructor's by construction, plus the observer; a parameter
+    // object would exist only to satisfy the count and would diverge from the CDI signature it mirrors.
+    @SuppressWarnings("java:S107") // test-only overload of the @Inject constructor
+    GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig, Instance<TokenValidator> tokenValidator,
+            Vertx vertx, ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
+            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
+            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
+            WebSocketRelayStage.RelayObserver relayObserver) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
@@ -456,7 +497,7 @@ public class GatewayEdgeRoute {
             webSocketClientOptions.setTrustOptions(upstreamTrustOptions);
         }
         this.webSocketRelayStage = new WebSocketRelayStage(vertx.createWebSocketClient(webSocketClientOptions),
-                upstreamFailureMapper, gatewayEventCounter);
+                upstreamFailureMapper, gatewayEventCounter, relayObserver);
         this.grpcStatusMapper = new GrpcStatusMapper();
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
@@ -512,6 +553,10 @@ public class GatewayEdgeRoute {
         // under ADMISSION_GUARD_KEY because the virtual-thread hop carries only the RoutingContext.
         AtomicBoolean admissionReleased = new AtomicBoolean();
         ctx.put(ADMISSION_GUARD_KEY, admissionReleased);
+        // This handler runs on the client connection's event loop, so the current context IS that
+        // connection's context. It is captured here, before the virtual-thread hop, because a WebSocket
+        // relay must run its upstream dial and client upgrade on it (see dispatchWebSocket).
+        ctx.put(CLIENT_CONTEXT_KEY, Vertx.currentContext());
         ctx.addEndHandler(result -> {
             releaseAdmission(ctx, admissionReleased);
             recordRequestMetrics(ctx, startNanos);
@@ -1218,6 +1263,12 @@ public class GatewayEdgeRoute {
      * the general one, so long-lived relays cannot squeeze ordinary HTTP traffic out of the admission
      * pool. An upgrade beyond that cap is refused {@code 503}, releasing the general permit through
      * the shared guard on the way out so a refusal strands nothing.
+     * <p>
+     * <strong>Client connection context.</strong> This method runs on a virtual thread, whose Vert.x
+     * context is whatever the executor bound to it — the client connection's own context only when the
+     * executor propagates it. The relay is therefore handed the context {@link #handle} captured on the
+     * connection's event loop under {@link #CLIENT_CONTEXT_KEY}, so the upstream dial, the client upgrade
+     * and every relay callback run on the client connection's context regardless of the executor.
      */
     private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
@@ -1231,6 +1282,8 @@ public class GatewayEdgeRoute {
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
         AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(ADMISSION_GUARD_KEY),
                 "admission guard missing — handle() must stash it before dispatch");
+        Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
+                "client connection context missing — handle() must capture it before dispatch");
         if (!webSocketRelayAdmission.tryAcquire()) {
             // The relay sub-budget is exhausted. The general admission permit is still held and this
             // request will never reach the relay teardown that would return it, so release it here —
@@ -1247,8 +1300,8 @@ public class GatewayEdgeRoute {
         applyStageSetCookies(ctx.response(), request.responseSetCookies());
         // A handshake-failure response is gateway-authored — there is no origin header to defer to — so
         // the relay receives both header maps merged.
-        webSocketRelayStage.relay(ctx, route, forward.headers(), request.gatewayAuthoredResponseHeaders(), uri,
-                () -> releaseAdmission(ctx, admissionGuard));
+        webSocketRelayStage.relay(ctx, clientContext, route, forward.headers(),
+                request.gatewayAuthoredResponseHeaders(), uri, () -> releaseAdmission(ctx, admissionGuard));
     }
 
     /**

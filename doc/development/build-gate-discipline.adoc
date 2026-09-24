@@ -271,6 +271,18 @@ Unlike the `stabilize-edge-suite-awaits` figures, its artifacts still exist, so 
 by someone who goes and looks. It is not, however, an independent rate estimate; the reporter was
 explicit that the run was a finalize gate rather than a designed soak.
 
+*Amendment 2026-09-23 -- a fourth class.* <<linux-relay-race-occurrence>> adds a fourth provenance
+class, *reported by the plan spec*. It covers CI run 35802987168 and every claim that depends on
+it: a report that the CI abstraction could not re-check. The rest of that section is labelled
+individually:
+
+* Its unit-lane reproductions are *MEASURED*.
+* The integration lane's early-frame result is *MEASURED*, carrying its `N`.
+* The production reading is *INFERRED*.
+
+Its heading carries its date, so its labels inherit it. The figures under *The condition is
+macOS-local* are unchanged by it, and so is that heading's scope: the wildcard-bind occurrences.
+
 === What the parallel form cost (MEASURED-but-second-hand)
 
 The reactor has six modules and *one* dependency edge (`api-sheriff -> integration-tests`), so five
@@ -325,6 +337,13 @@ A `4/4` green run under `-T1` was once read that way, and the 2026-08-31 recurre
 reading cost.
 
 === The condition is macOS-local: a wildcard ephemeral bind collides with a foreign loopback listener
+
+*Amendment 2026-09-23 -- what "macOS-local" covers.* The heading describes the wildcard-bind
+mechanism and its own occurrences, and for those it stands. It does not describe the 30-second
+stall *symptom*. That symptom has since been reported on the Linux lane, from a different
+mechanism: the WebSocket relay's pre-wiring frame window. That occurrence is recorded in
+<<linux-relay-race-occurrence>>. Nothing in this section is withdrawn by it. Every claim below is
+about the wildcard bind, and every claim below still holds.
 
 Two investigations feed this section and they are not interchangeable. The *2026-09-01* budget
 measured the population -- how often the stall strikes, which methods, how long. The *2026-09-03*
@@ -569,6 +588,13 @@ nowhere near the ceiling -- and it is listed so the four that *are* at the ceili
 five. Alongside this, `gh run list --workflow=maven.yml --branch=main --limit=20` returned *20
 successes out of 20*. The Linux lane still does not reproduce the condition.
 
+*Amendment 2026-09-23.* That sentence holds for the condition this section measures, the
+wildcard-bind collision. It no longer holds for the 30-second stall *symptom*. Run 35802987168,
+on the Linux lane at `c1b09c7`, is *reported by the plan spec* to have failed on a
+`WebSocketRelayStageTest` relay await timeout. It carried the same stall shape from a different
+mechanism. The contrast above therefore separates the platforms for the wildcard bind only, not
+for the symptom. See <<linux-relay-race-occurrence>>.
+
 *A trap worth its own warning: `Tests run: 0` in the CI log does not mean "skipped in CI".* The CI
 log reports `Tests run: 0` for `WebSocketRelayStageTest` and `GrpcStatusMapperTest`. Taken at face
 value that *inverts* the contrast above -- it reads as "these classes are not covered in CI at all",
@@ -583,6 +609,65 @@ read the surefire XML.
 count, and it is all that is being claimed: whether the method is genuinely over-represented or
 merely the most-sampled one is *not* established -- no per-method sampling denominator was ever
 recorded, so the two cannot be told apart from these counts.
+
+[[linux-relay-race-occurrence]]
+=== The same symptom on Linux, from a different mechanism (2026-09-23)
+
+This section adds a second mechanism to the page. Nothing above is withdrawn by it. What it does
+is limit "macOS-local" to the wildcard-bind occurrences, as the dated amendments above state at each
+site that made the broader claim.
+
+*The occurrence -- reported by the plan spec, not re-checked here.* Run 35802987168, on the Linux
+lane at `c1b09c7`, is reported to have failed on a `WebSocketRelayStageTest` relay await timeout.
+That is the 30-second stall shape this page records on macOS. The report comes from the plan spec
+that opened the investigation, and that is its provenance class. The CI abstraction could not
+re-check it: the failed-job log came back empty. The run is also not among the runs attached to PR
+#345, whose merge commit is `c1b09c7`. That fits a main-branch push run, but proves nothing further.
+Everything below that depends on this run inherits its provenance.
+
+*It is not the wildcard-bind condition -- INFERRED.* By `c1b09c7`, `LoopbackEphemeralBindArchTest`
+already failed the build on a bare wildcard bind anywhere outside its four named
+`TlsEdgeProducerTest` sites. The relay test's fixtures therefore bound through
+`LoopbackHost.ADDRESS`, and the E2 control above shows that a loopback-specific bind
+*collides* with a foreign listener rather than silently coexisting with it. The measured mechanism
+therefore has no way in. The inference is sound for the bind. It is not a capture of that run's
+socket state, and none exists.
+
+*The mechanism -- MEASURED in the unit lane.* Vert.x delivers a WebSocket's inbound frames from the
+moment the socket exists. `WebSocketRelayStage` installed its frame handlers only when the relay's
+wiring ran, so a frame that reached either leg in between went to no handler and was lost. A lost
+frame is never echoed, so the test's await runs to its 30-second ceiling and makes no progress at
+all. That is the stall shape again, from an unrelated cause. Two deterministic reproductions in
+`WebSocketRelayStageTest` pin the window, each with the relay's wiring deferred by a fixed 500 ms:
+
+* On the client leg, the client writes its first frame inside its own upgrade callback.
+* On the upstream leg, an upstream writes a greeting the instant it accepts.
+
+Both were RED in 5 of 5 runs before the fix and GREEN in 5 of 5 after it, with the delay still in
+place.
+
+*The fix.* The relay now hops onto the client connection's own context, which
+`GatewayEdgeRoute.handle()` captures on the connection's event loop. It also pauses each leg the
+instant that leg is acquired, and resumes both only after every handler is installed. An early
+frame waits in Vert.x's own inbound buffer, and nothing is dropped.
+
+*Production impact -- MEASURED for the unit lane, INFERRED for production
+(`d3-production-verdict: GREEN`).* Attributing run 35802987168 to the window is itself *INFERRED*,
+because that run recorded nothing about when the relay was wired relative to its first frame. Read
+as the window, the run was a *unit-fixture executor divergence*. The fixture dispatches the relay
+from a plain virtual-thread executor that binds no Vert.x context, and that is where the client-leg
+loss reproduced. In production, Quarkus's context-preserving virtual-thread executor binds the
+client connection's context before the relay runs. That is read from the executor bytecode, not
+observed. Against the *unfixed* native gateway, the early-frame integration test lost no first frame
+in *N = 50* upgrades. The client-leg production consequence is therefore refuted *as far as
+measured*: zero losses in 50 upgrades bounds the per-upgrade loss rate below about 6% at 95%
+confidence, and a lower rate could go unseen. That is inconclusive with stated power, not an
+all-clear.
+
+*The upstream leg is a separate question.* An upstream that writes before the client's upgrade
+completes hits the window whatever executor calls the relay. That leg is reproduced only in the
+unit lane. The integration lane cannot observe it, because its echo upstream never speaks first, so
+no production measurement exists for it in either direction. The same pause closes it.
 
 === State the limit of the finding precisely
 
@@ -612,6 +697,12 @@ every other candidate; it says nothing about that one.
 * *Why CI is clean.* The reading is that Linux runners hold no such `127.0.0.1`-specific listeners in
   the ephemeral range. That is *INFERRED*, and it is directly testable -- run the population probe on
   a runner and count what it finds. Nobody has.
++
+*Amendment 2026-09-23.* "Clean" means clean of the wildcard-bind collision, and the bullet explains
+only that. CI has not been clean of the 30-second stall symptom: run 35802987168 (*reported by the
+plan spec*) carried it on the Linux lane at `c1b09c7`, caused by the relay's pre-wiring frame
+window rather than by any listener. The reading above is unaffected, and so is its status: it is
+still *INFERRED* and still untested. See <<linux-relay-race-occurrence>>.
 * *Whether the mechanism accounts for every historical occurrence*, including the
   possibly-contaminated second-hand `p = 0.50` full-suite tally. The originating artifacts are
   destroyed, so that question is not merely unanswered; it is unanswerable from the record that
@@ -693,6 +784,14 @@ unstated `N`, never as an all-clear.
   so a red there is a real defect rather than this condition. It is *not* the authority for macOS
   behaviour in general -- this very section argues the condition under study is macOS-local, and a
   genuine macOS-only regression is exactly the case a green Linux lane cannot clear.
++
+*Amendment 2026-09-23.* "It has never reproduced that signature" no longer holds. Run 35802987168
+(*reported by the plan spec*) carried the 30-second stall on the Linux lane at `c1b09c7`. The rule
+itself survives, because that red was a real defect and not this condition. It was the relay's
+pre-wiring frame window, now closed (see <<linux-relay-race-occurrence>>). Read the rule
+accordingly: a Linux-lane stall is not the wildcard-bind condition, and it is a defect to find. The
+"macOS-local" in the clause above is scoped the same way as the section heading: to the wildcard-bind
+mechanism, not to the stall symptom.
 * *Do not widen the `Awaits` ceilings and do not retry-wrap or quarantine the affected fixtures.*
   The 30-second ceiling is what makes the condition visible and measurable; raising it would hide
   the phenomenon rather than address it. It is now also the *capture* point -- widening it delays
