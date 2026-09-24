@@ -10,6 +10,10 @@ track: **POST-0.1.0**
 > 2026-07-25 and several were already refuted by PLAN-06 and PLAN-23 (see
 > `../../api-sheriff-roadmap/archive.md` § 6).
 
+> **SUPERSEDED 2026-09-24 — folded INTO `PLAN-V03-02-api-inventory-endpoint.md`** (cleanup A5, executing
+> the 2026-07-27 merge decision below). Queue row status: `superseded`. This file is retained unchanged
+> otherwise as the audit record. **Never launch it.**
+
 > Staged plan spec — ready for `/plan-marshall` hand-off. NEW 2026-07-25 (operator chose the FULL format
 > scope). Builds on PLAN-21's inventory read model + endpoint.
 >
@@ -64,25 +68,30 @@ Corroborated against HEAD 3f60d49, 2026-07-25 + the format research.
   nested services) but lacks per-route method + path-pattern + route-id; RFC 9727 (Standards Track, Jun
   2025) is a discovery pointer (`application/linkset+json`), not an inventory schema. (Sourced in the
   requirements-intake decision log.)
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: External-standards research claim, no repo artifact to check -- not falsifiable against main, nothing in-repo contradicts it either.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: external standards-research claim, no repo artifact to check
 - HYPOTHESIS: PLAN-21's read model exposes enough structure to map onto SaaSBOM `service` without
   re-deriving from `RouteTable`. Confirm/refute at what PLAN-21 ships § its inventory read-model type
   (verify-at-outline) — reuse it; do not re-read `RouteTable` in a second path.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: ResolvedRoute.java:102-121 (drifted from :79-84) still carries all named fields, substrate plausible -- but explicitly gated on what PLAN-V03-02 ships, which is unstarted (unset Status Trail, zero inventory-endpoint code in main). Deferral stays open.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: gated on PLAN-V03-02 which is unstarted; PortalCatalog is not an inventory read model (CatalogConfig only, no RouteTable fields)
 - Verify-first clause: validate the CycloneDX output against the actual published SaaSBOM/service schema
   and the well-known document against RFC 9727's `linkset+json` media type — against the specs, not this
   spec's prose.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Procedural directive, not a factual claim -- no CycloneDX serializer or /.well-known/api-catalog code exists anywhere in main to validate against yet.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: procedural directive; grep cyclonedx|api-catalog|well-known across src still zero hits
 
 ## Expected Surface
 
-- OBSERVED: PLAN-21's inventory read model + endpoint scaffolding — reused
-- OBSERVED absence → NEW: a CycloneDX SaaSBOM serializer + the `/.well-known/api-catalog` resource
-- OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`; `api-sheriff/src/test/**`
-- ADDED 2026-09-22 (understated — Deliverable 4 names both explicitly but Expected Surface omitted
-  them): `doc/architecture.adoc` (no management-plane/introspection/inventory section exists yet —
-  confirmed empty by grep) and `doc/adr/00NN-*.adoc` (the ADR this deliverable's decision record
-  requires; corpus is contiguous 0001-0049 on main, so the next free number is 0050)
+- CORRECTED 2026-09-24 (cleanup): the 2026-09-22 additions sat on bullet continuation lines, which the
+  surface parser does not read, so they never reached the gate; the URL path was parsed as an
+  unresolved file path. Rewritten one repo path per bullet, path on the bullet's first line.
+- OBSERVED: `doc/architecture.adoc` — no inventory section exists yet (Deliverable 4)
+- OBSERVED absence → NEW: `doc/adr/00NN-*.adoc` — number allocated at write time (next free on main)
+- OBSERVED: `doc/configuration.adoc`
+- OBSERVED: `doc/user/`
+- OBSERVED: `doc/development/`
+- OBSERVED: `api-sheriff/src/test/**`
+- Narrative (unchanged): reuses PLAN-V03-02's inventory read model + endpoint scaffolding; adds NEW a
+  CycloneDX SaaSBOM serializer and the RFC 9727 well-known api-catalog resource, packages chosen at
+  outline alongside V03-02's.
 
 ## Dependencies and Sequencing
 
@@ -97,12 +106,12 @@ Three-layer docs, Sonar zero-findings, named line items, integration tests in th
 ## Hand-Off Command
 
 ```text
-/plan-marshall task="implement .plan/local/orchestrator/api-sheriff-0-3-0/plans/PLAN-V03-03-inventory-interop-formats.md" plan_id=plan-v03-03-inventory-interop-formats
+/plan-marshall task="implement .plan/orchestrator/api-sheriff-0-3-0/plans/PLAN-V03-03-inventory-interop-formats.md" plan_id=plan-v03-03-inventory-interop-formats
 ```
 
 ## Write-Boundary
 
-Touches only its own repository source and tests; creates/edits NO file under `.plan/local/orchestrator/`.
+Touches only its own repository source and tests; creates/edits NO file under `.plan/orchestrator/`.
 
 ## Status Trail
 

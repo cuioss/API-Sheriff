@@ -23,91 +23,15 @@ would otherwise force a retrofit.
 
 ## START HERE
 
-<!-- GENERATED BLOCK — never hand-write or hand-edit this section.
-     Regenerate after every queue-touching state change via:
-     python3 .plan/execute-script.py plan-marshall:marshall-orchestrator:orchestrator resume-summary --slug api-sheriff-0-2-0
-     Paste the returned block verbatim between the markers. -->
-
-<!-- BEGIN GENERATED: resume-summary -->
-**Resume anchor**: === RESTART-READY. Full cleanup pass 2026-09-22, ORIGINALLY GROUNDED at af63895 (117 commits / 253 files since 95dd566) -- HEAD THEN ADVANCED MID-PASS to 69b322b (PR #343, portal/HTML-error-pages; see the HEAD-ADVANCED paragraph below for the consequences already reconciled). CURRENT HEAD IS 69b322b, NOT af63895. NEXT ACTION: emit. ===
-
-STATE: 4 shipped (V02-02 #198, V02-03 #197, V02-16 #199, V02-17 #200) / 0 running / 0 launched / 14 staged. All three parallel slots free. Inbox empty, 25 archived. Tree clean. EPIC MIGRATED to the git-tracked .plan/orchestrator/api-sheriff-0-2-0/ address (was .plan/local/orchestrator/, PR pending). The project's plan-marshall executor was found badly stale (embedded version 0.1.1292, ~450 releases behind) and a full /marshall-steward upgrade landed (PR #339, merged) before any of this pass could run.
-
-=== 2026-09-22, SAME DAY, POST-CLEANUP ADDITIONS === Operator asked whether doc/plan/ could be absorbed. Finding: 01-base-implementation.adoc is pure historical record; 09-release-readiness.adoc's six items are mostly delivered/superseded elsewhere (operator guide -> doc/user/ 13 pages; ADR-0005 checkpoint -> superseded by V02-01's stronger reversal decision; benchmark consolidation -> delivered, 12-execution CI lane + APISIX comparison lane; native/container hardening -> delivered, SBOM/Trivy/Cosign in release.yml), except three doc/security-threat-model.adoc GAP rows (gw-02, gw-08, gw-09) untracked anywhere, and the 1.0.0-cut/pre-1.0-rule-flip milestone itself, not yet done. GW-02 and gw-09 folded into PLAN-V02-13 as new D6/D7 (clean fit: V02-13 already owns the taxonomy+render contract both need). gw-08 folded into PLAN-V02-06 as new D8 over operator objection-noted weak fit (re-scope escape hatch recorded in the spec); V02-06 is now 8 deliverables, past the ~6 guard a second time, rationale recorded. PLAN-V02-18 (retire-doc-plan-survivors, WS-02) staged: deletes the three doc/plan/ survivors, repairs the sole outside reference (doc/quality-report/documentation.adoc), and requires preserving the 1.0-cut milestone fact somewhere durable in doc/ or CLAUDE.md before deletion. This explicitly reverses PLAN-V02-03's landing ruling that kept both files open (01 as the only published record of its work, 09 until the actual 1.0 cut) -- operator reviewed both reasons and instructed retirement anyway. Verbatim content archived by the orchestrator at archive/doc-plan-{01-base-implementation,09-release-readiness,README}.adoc before staging, so nothing is lost even though the repository copies are slated for deletion.
-
-=== HEAD ADVANCED MID-SESSION, SAME DAY: af63895 -> 69b322b via PR #343 ("feat(portal): application catalog, overview page, HTML error pages", 148 files) === Caught by a pre-commit contradiction check before landing this session's edits, not by a routine re-grounding pass. Consequences for PLAN-V02-13, all recorded in its own Re-Grounded (3): D2/D3 (content-negotiated terminal rejections) are SUBSTANTIALLY DISCHARGED by a new, independent portal.ErrorPageClassifier/GatewayEdgeRoute.answeredWithErrorPage() mechanism -- NO_ROUTE_MATCHED (the plan's own flagship misdiagnosis story) is already HTML-negotiated; D2 is narrowed to a one-line reclassification decision for METHOD_NOT_ALLOWED/PASSTHROUGH_HOST_SMUGGLED, not a build. D1's taxonomy work stands independent of that narrative and is unaffected. D7 (this same day's GW-09 fold) was WRONG AS AUTHORED -- a fold-time miss, not caused by this PR: pipeline/OriginValidationStage already implements GW-09 generically and predates af63895; corrected to the real, narrower gap (ConfigValidator's allowlist requirement is bearer-only, should extend to Require.SESSION). D6 (GW-02) and PLAN-V02-06's D8 (GW-08) are unaffected by this PR (D8 only provisionally, time-boxed check). ADR corpus is now 50 (was 49) -- PR #343 landed escape-bypass_constructs_are_refused_at_boot. Lesson for future folds: verify threat-model-derived deliverables against the actual pipeline/config code before staging, not against the threat-model prose alone -- D7's error and this PR's discovery are two independent instances of the same failure mode landing in one session.
-
-=== ALL 13 STAGED SPECS RE-GROUNDED AGAINST af63895, EVERY CLAIM VERDICT PERSISTED. 46 claims scanned, 0 blocking. Read each spec's own Re-Grounded/Claim-Labels sections for full detail; this is the headline-only index. ===
-
-=== TWO PREMISE INVERSIONS — READ BEFORE TOUCHING V02-08 OR V02-09 === token-sheriff is now pinned 0.9.6 (was 0.9.4). (1) V02-08 (fapi-2-0-conformance): the route calculus FLIPPED. mTLS client-auth is now FORECLOSED (TokenSheriff PR #731 made MtlsClientAuth throw unconditionally at construction — "alpha", not selectable); DPoP is now FULLY OPEN (PR #640 fix for #618 is released in 0.9.5/0.9.6 — RS256/384/512, PS256/384, ES256, EdDSA all admitted). D1/D3/D4/Split-Guard all assumed the OLD calculus and need re-derivation, not re-verification. (2) V02-09 (token-sheriff-integration-fidelity): BOTH named upstream blockers are closed-and-released (#641 via PR#645, #617 via PR#642). D6 (moved in from V02-10) is ALREADY LANDED — BffRuntimeProducer.java:522 already wires the egress SSLContext (PR #306, unrelated). D3's readiness half is ALREADY LANDED (GatewayReadinessCheck reads live IssuerKeySetStatus, PR #334). Open Defect (13) applyJwks is GONE (method removed by PR #334's rewrite). Re-scope D1-D5 against "adopt upstream fix, delete exclusion" as the live default, not a contingency. V02-10's own re-grounding independently confirmed the same D6 finding.
-
-=== V02-15 (bff-compose-sample): compose-sample/ file count corrected to 14 (was 10, then 12) — scripts/wait-for-ready.sh no longer exists (#230 folded it into start-sample.sh). D1 may already be partially satisfied — sample-realm.json already ships a fully-formed confidential client. ===
-
-=== ADR CORPUS GREW AGAIN: 49 records / 10,543 lines (was 37/6,905), 29 Proposed (was 21). Next free number is 0050, not 0038. V02-04's audit scope is bigger than its own text says — re-derive at outline, do not trust any number in any spec literally (this hit V02-04, V02-08, V02-09, V02-11, V02-12 alike). ===
-
-=== LINE-NUMBER DRIFT IS PERVASIVE AND EXPECTED — every spec's re-grounding found call-site/anchor line numbers drifted (files grew from six weeks of shipped work: BFF, WebSocket, gRPC, asset routes, CORS, per-route anchor wholesale-replace). Re-anchor by content, not by line, at outline — this is now the norm, not the exception, across all 13 specs. doc/user/ has grown from "ten pages" to 13; three plans (V02-08, V02-12, V02-14, V02-15) cite the stale count. ===
-
-=== SURFACE-COMPLETENESS FINDINGS (Expected Surface understated) — TWO ALREADY APPLIED, REST NOTED HERE FOR OUTLINE TO PICK UP === Applied: V02-09 gained BffRuntimeProducer.java/SheriffMetrics.java; V02-05 gained http/ConnectionHeaders.java (the actual shared RESPONSE_STRIP policy site) and doc/architecture.adoc. NOT yet applied, verify at outline: V02-06 — a fifth pre-auth 404 event (PASSTHROUGH_HOST_SMUGGLED) the uniform-404 scope should probably fold in alongside NO_ROUTE_MATCHED. V02-07 — GatewayEdgeRoute.java itself (the WARN dispatch site) plus a second WARN case (PASSTHROUGH_HOST_SMUGGLED) alongside SECURITY_FILTER_VIOLATION. V02-10 — the compose tree's 13th override site at NoCertificatePlainHttpOptInIT.java:745-747, outside docker-compose.yml entirely (already documented in V02-10's own Re-Grounded (3)). V02-12 — doc/user/anchors.adoc, doc/user/endpoint-routes.adoc, and re-count of gateway.yaml overlay directories (now 9, not 5). V02-13 — the two existing test files (GatewayEdgeRouteTest.java, EventTypeTest.java) that D5's test obligation should target.
-
-=== REFUTATIONS THAT REMOVE WORK — CONFIRMED AGAIN, STILL DO NOT RE-ATTEMPT === V02-12's topology-SVG obligation is STILL discharged (now "variant instances (11)", explicitly "closed, not deferred" in the topology doc — gap widened from (6) since 2026-08-08, never re-opens). V02-11's benchmark-lane-not-gating hypothesis reconfirmed (pull_request types:[closed], merged==true guard). V02-01's synchronized-HashMap premise stays refuted (PLAN-49).
-
-=== STILL OPEN, NOT PLAN WORK === Open Defect (8) needs an operator live-gate check. Issue #174 (GatewayReadinessCheck false issuer_reachability) has its underlying bug fixed (PR #334) but the GitHub issue itself is still OPEN — no active discovery probe was added, only the false claim stopped; V02-09 should close the loop or say why not. ADR-0027 still carries no reference to #641/#617 — the "#641 goes in ADR-0027" obligation from the 2026-08-08 pass is recorded as an instruction in V02-09, not yet enacted.
-
-=== WHAT next MUST HONOUR — SEQUENCING UNCHANGED FROM 2026-08-09, RE-VERIFIED === Seven chains hold: oidc/BffRuntimeProducer (V02-08 -> V02-12 -> V02-09), rejection taxonomy (V02-13 -> V02-06 -> V02-07, both still unstarted, V02-13's ROUTING category does not exist yet on main), V02-01 RUNS ALONE. FREEST CANDIDATES: V02-16/-17 (shipped, ignore), V02-14, V02-05, V02-10 (now genuinely single-deliverable). V02-04's scope grew (bigger corpus) but is still unblocked. Prefer a doc-only or build-light plan for slots 2/3 alongside a Docker-IT-heavy one — contention-driven IT flakes are still a live, documented repo property.
-
-*** THIS ANCHOR IS DENSE BY DESIGN, NOTHING WAS DISCARDED. *** Every finding above has its full evidence trail in the owning spec's own Re-Grounded/Claim-Labels section (verdict field, `corpus verdicts --slug api-sheriff-0-2-0`) or in epic.md's own sections below. Read epic.md, THEN the spec. Do not re-inflate this field further without a reason.
-**Phase**: orchestrating
-**Inbox (derived)**: 0 queued, 25 archived
-**Queue** (staged, in order):
-1. PLAN-V02-01 (WS-01)
-2. PLAN-V02-04 (WS-02)
-3. PLAN-V02-05 (WS-03)
-4. PLAN-V02-06 (WS-03)
-5. PLAN-V02-07 (WS-03)
-6. PLAN-V02-08 (WS-04)
-7. PLAN-V02-09 (WS-05)
-8. PLAN-V02-10 (WS-05)
-9. PLAN-V02-11 (WS-05)
-10. PLAN-V02-12 (WS-04)
-11. PLAN-V02-13 (WS-03)
-12. PLAN-V02-14 (WS-01)
-13. PLAN-V02-15 (WS-02)
-14. PLAN-V02-18 (WS-02)
-- PLAN-V02-02 (WS-01) — plan=plan-v02-02-java-idiom-sweep — PR 198 — landing=landings/PLAN-V02-02.md — status: shipped
-- PLAN-V02-03 (WS-02) — plan=plan-v02-03-documentation-restructure — PR 197 — landing=landings/PLAN-V02-03.md — status: shipped
-- PLAN-V02-16 (WS-01) — plan=plan-v02-16-image-metadata-fidelity — PR 199 — landing=landings/PLAN-V02-16.md — status: shipped
-- PLAN-V02-17 (WS-02) — plan=plan-v02-17-lessons-into-source — PR 200 — landing=landings/PLAN-V02-17.md — status: shipped
-<!-- END GENERATED: resume-summary -->
-
 ## Ordered Queue
-
-<!-- GENERATED BLOCK — never hand-write or hand-edit this section.
-     Regenerate after every queue-touching state change via:
-     python3 .plan/execute-script.py plan-marshall:plan-orchestrator:orchestrator resume-summary --slug api-sheriff-0-2-0
-     Paste the returned ordered_queue block verbatim between the markers. -->
-
-<!-- BEGIN GENERATED: ordered-queue -->
-| # | Plan | Workstream | Status | Surface (expected) |
-|---|------|------------|--------|--------------------|
-| 1 | PLAN-V02-01 | WS-01 | staged | api-sheriff/pom.xml; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/JsonWriter.java; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/arch/FrameworkAgnosticArchTest.java; doc/adr/; doc/architecture.adoc |
-| 2 | PLAN-V02-04 | WS-02 | staged | api-sheriff/src/**; benchmarks/**; doc/; doc/adr/**; integration-tests/**; pom.xml |
-| 3 | PLAN-V02-05 | WS-03 | staged | api-sheriff/src/main/resources/application.properties; api-sheriff/src/test/**; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ |
-| 4 | PLAN-V02-06 | WS-03 | staged | api-sheriff/src/test/**; doc/configuration.adoc; doc/development/; doc/security-threat-model.adoc; doc/user/ |
-| 5 | PLAN-V02-07 | WS-03 | staged | doc/LogMessages.adoc |
-| 6 | PLAN-V02-08 | WS-04 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/JwksTrustProfileResolver.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/config/load/ConfigLoader.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigModelReflection.java; doc/configuration.adoc; doc/fapi_next_steps.adoc; doc/fapi_status.adoc; doc/features-analysis.adoc; doc/user/; integration-tests/ |
-| 7 | PLAN-V02-09 | WS-05 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/GatewayReadinessCheck.java; api-sheriff/src/main/resources/application.properties; doc/ |
-| 8 | PLAN-V02-10 | WS-05 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java; doc/user/; integration-tests/docker-compose.yml |
-| 9 | PLAN-V02-11 | WS-05 | staged | .github/workflows/benchmark.yml; benchmarks/**; doc/adr/; doc/development/; integration-tests/** |
-| 10 | PLAN-V02-12 | WS-04 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java; demo-client/README.adoc; demo-client/doc/integration-sample.adoc; demo-client/doc/playwright-suite.adoc; demo-client/playwright.config.js; demo-client/src/main/resources/spa/app.js; demo-client/tests/*.spec.js; demo-client/utils/constants.js; demo-client/utils/keycloak-login.js; deployment/compose-sample/**; deployment/compose-sample/docker/keycloak/sample-realm.json; doc/adr/; doc/configuration.adoc; doc/development/integration-test-topology.adoc; doc/user/bff-cookie.adoc; doc/user/bff-session.adoc; doc/variants/02-bff-session.adoc; doc/variants/03-bff-cookie.adoc; integration-tests/docker-compose.yml; integration-tests/src/main/docker/keycloak/*.json; integration-tests/src/main/docker/sheriff-config*/gateway.yaml |
-| 11 | PLAN-V02-13 | WS-03 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/OriginValidationStage.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/ErrorPageClassifier.java; doc/adr/00NN-*.adoc; doc/architecture.adoc; doc/security-threat-model.adoc |
-| 12 | PLAN-V02-14 | WS-01 | staged | .github/workflows/**; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/**; doc/user/** |
-| 13 | PLAN-V02-15 | WS-02 | staged | .github/workflows/**; deployment/compose-sample/docker-compose.yml; deployment/compose-sample/docker/keycloak/sample-realm.json; deployment/compose-sample/docker/sheriff-config/endpoints/**; deployment/compose-sample/docker/sheriff-config/gateway.yaml; doc/user/compose-sample.adoc |
-| 14 | PLAN-V02-18 | WS-02 | staged | CLAUDE.md; doc/plan/01-base-implementation.adoc; doc/plan/09-release-readiness.adoc; doc/plan/README.adoc; doc/quality-report/documentation.adoc |
-<!-- END GENERATED: ordered-queue -->
 
 ### Queue annotations
 
-_None yet — per-row narrative that the generator cannot derive goes here, keyed by plan id._
+- **PLAN-V02-19** (staged 2026-09-24, inbox drain): **land before `PLAN-V02-04`.** V02-04 audits
+  and renumbers `doc/adr/**`, so it must start from a corpus with unique ordinals, and V02-19's
+  ordinal-uniqueness test then guards V02-04's own merges. Sequence it against `PLAN-V02-18` as well:
+  V02-18 edits `CLAUDE.md`, and V02-19's module-list test reads it. Otherwise small and build-light,
+  so it is a good fit for a second or third slot.
 
 ## Workstreams
 
@@ -182,39 +106,7 @@ PLAN-41 → PLAN-V03-04.
 - **2026-08-08 — the epic is re-grounded at `963e422`**, discharging obligation (1). All 17 specs
   carry a `## Re-Grounded` section that outranks their stale bodies. Per-plan carries now live in the
   specs, per the decompose contract, rather than being duplicated in the resume anchor.
-- **2026-08-08 — the lessons corpus was audited and `PLAN-V02-17` re-clustered.** Operator-requested
-  read-only audit of all 25 archived lessons (the live `manage-lessons` store is empty — the
-  close-out drained it). Six defects found and all six resolved **directly in the spec**, not
-  deferred:
-  - **A contradiction between two active lessons is resolved toward REVERT.** `2026-07-27-09-001`
-    said *keep the formatter's output, commit it as-is*; `2026-08-02-17-001` said *revert the
-    unrelated churn wholesale*. Same situation, opposite prescriptions, and the original clustering
-    put them in different groups so nobody would have seen the conflict at landing. Resolved toward
-    revert on the operator's standing note and `2026-08-08-11-001`'s corroborating aside; `09-001`'s
-    counter-argument (the diff reappears) is true and is recorded as the cost of `main` not being at
-    the formatter's fixed point.
-  - **`2026-08-02-15-003`'s prescription is refuted by shipped code** and is re-scoped to its
-    diagnosis. *"Never bind teardown to `post-integration-test`"* is contradicted by
-    `demo-client/pom.xml`:144–159 plus a 15-line rationale, the `if: always()` CI teardown at
-    `demo-client-e2e.yml`:83, and `playwright-suite.adoc`:269–276. **This is the second refuted
-    prescription in the corpus; the plan previously knew about only one.**
-  - **`2026-08-02-15-004` is already in repository source** (`start-dev-environment.sh`:31–37, :221)
-    → disposition changed to already-covered.
-  - **`2026-08-05-10-001` is settled as a discard with evidence** — the unqualified-refspec construct
-    it prescribes a fix for no longer exists in the release skill.
-  - **`2026-08-02-15-002` was double-dispositioned** (successor ledger *and* named by V02-17).
-    Adopted into V02-17 **deliberately**, with the reason recorded: the ledger copy is
-    orchestrator-facing, the `CLAUDE.md` copy is implementer-facing and is the parent of D3's
-    specific case.
-  - **Three lessons (`2026-08-07-18-001/-002/-003`) have no body** while claiming one. All are
-    correct discards, so no work is owed; recorded in V02-17's Appendix because the reasoning behind
-    two durable release-lane rules is now unrecoverable, and the files are in a closed epic's frozen
-    tree that no write boundary permits editing.
-
-  **The central re-clustering**: `2026-08-02-17-001` was filed as a false-green lesson and is not one
-  — the gate *passes*, it just mutates the tree while exiting 0. Its real siblings are
-  `2026-07-27-09-001` and standing rule (4) below. One mechanism, three faces, and the most
-  enforceable group in the corpus: a post-gate `git status --porcelain` assertion covers all three.
+- **2026-08-08 — the lessons corpus was audited and `PLAN-V02-17` re-clustered.** > ↪ Relocated to `settled.md` § "Decision 2026-08-08 — lessons corpus audit and PLAN-V02-17 re-clustering" — V02-17 shipped (PR #200); `logs/decision.log` remains authoritative
 
 ## Sequencing Constraints
 
@@ -316,23 +208,7 @@ doc-only or build-light plan for the second and third slots.
 4. **LOW, not release-gating** — the test-corpus integrity backlog PLAN-43 left as a countable
    residual: 43 files / 140 marker occurrences, enumerated in
    `doc/development/test-corpus-integrity.adoc`. Reported as a count rather than as prose.
-5. ~~**MEDIUM, documentation — the BFF secrets missing from the env-var page.**~~ **CLOSED 2026-08-09
-   by `PLAN-V02-03` D2 (PR #197, `89a3cfe`).** Verified first-party: `environment-variable-overrides.adoc`
-   now carries `SHERIFF_CLIENT_SECRET` and `SHERIFF_SESSION_KEY`, against a previous count of zero
-   with a passing control. 0.1.0 and 0.1.1 both shipped with the gap; it is closed for 0.2.0. The
-   original entry follows for the audit record.
-   <details><summary>original entry</summary>
-
-   **MEDIUM, documentation — RE-VERIFIED LIVE 2026-08-08, DO NOT STRIKE.**
-   `doc/user/environment-variable-overrides.adoc` omits `SHERIFF_CLIENT_SECRET` and
-   `SHERIFF_SESSION_KEY` although `doc/user/README.adoc` tells operators to read that page before
-   assuming an env var exists. The ledger made striking this conditional on PLAN-08B D1 closing it;
-   **it did not** — the page carries 18 `SHERIFF_`/`QUARKUS_` entries and neither of those two, with
-   a passing control query, while both names appear in five other files. OWNER: `PLAN-V02-03`.
-   Preserve the distinction the fix must not lose: fixed runtime keys (`QUARKUS_*`) versus
-   author-chosen placeholders — `SHERIFF_CLIENT_SECRET` is a convention shown in examples, not a
-   fixed name. Do **not** "fix" the page's deliberate exclusion of issuer identity, audience and
-   JWKS location; that is policy, not a deployment-bound value.
+5. > ↪ Relocated to `settled.md` § "Open Defect 5 — BFF secrets missing from the env-var page (closed 2026-08-09)" — closed by `PLAN-V02-03` D2 (PR #197, `89a3cfe`)
 6. **STRUCTURAL** — the IT suite cannot detect resource-lifecycle or layer-boundary defect classes.
    Its stated owner was roadmap PLAN-34, **which shipped**, so it arrived here orphaned rather than
    fixed. Not strikeable on sight: it carries independently CI-observed defects and a deferral
@@ -383,7 +259,12 @@ doc-only or build-light plan for the second and third slots.
     standards, no verification recipes — and nothing reports it.
   - **(30)**: the deep-lane component-assessment sink is empty (a two-plan recurrence), so section
     2.2 assessment-coverage is unevaluable on any deep-lane plan; an empty sink is indistinguishable
-    from "the pass ran and matched nothing".
+    from "the pass ran and matched nothing". **Third recurrence, 2026-09-24** (inbox
+    `deployment-configurability-007.md`, from sibling PLAN-28 / PR #341): `assessment list` again
+    returned `total_count: 0` on a deep-lane run, so the Q-Gate evaluated 35 declared paths over an
+    empty population. The same run hit two more instances of the same shape:
+    `derive_gate_bundles` left 19/37/52/56 footprint paths unbundled, and no module-tests canonical
+    resolved. Folded here as a recurrence, not as a new entry, and still owned upstream.
   - **(16)+(20) — PARTLY DISCHARGED 2026-08-09, and the correction matters.** The *mechanism* half is
     confirmed by exhausting the surface: `ci checks status` accepts only `--pr-number` / `--head`,
     `--head` resolves as a **branch name** rather than a SHA, `checks wait` takes only
@@ -476,39 +357,51 @@ doc-only or build-light plan for the second and third slots.
   different mechanism from the other two (shell expansion, not tool behaviour), so knowing the first
   two does not predict it. **Run a control query before trusting any asserted absence.**
 
+## Inbox Drain — 2026-09-24 (sender `deployment-configurability`, closing hand-off)
+
+20 messages, all from the sibling epic `deployment-configurability` as it closed: 2 findings and 18
+candidate lessons. Each one was verified against `origin/main` at `05f6ee3` before being
+dispositioned, and each has a matching `decision.log` line.
+
+**The headline finding was already stale, and in a worse way than it said.** Message `-001` reported
+a duplicate ADR ordinal `0050`. PR #348 (the sibling's PLAN-29) did clear it, by renaming the portal
+ADR to `0053`. But PR #346 claimed `0053` for the header-matcher ADR concurrently and merged
+**afterwards**, so `main`, and released `0.2.3`, carry a new duplicate, `0053`. The ordinal space has
+now collided twice in one week, across two epics, with nothing to catch it. That is why
+`PLAN-V02-19` adds a uniqueness contract test as well as the renumber.
+
+| Message | Kind | Disposition | Where it went |
+|---|---|---|---|
+| `-001` | finding | staged | `PLAN-V02-19` D1+D2. The 0050 claim is refuted as stale; the live 0053 duplicate is fixed and guarded. |
+| `-002` | candidate-lesson | promoted | `2026-09-24-15-001`. The stale-image half is fixed (#341); the open half is the local `revision=dev` label, which cannot discriminate images. |
+| `-003` | candidate-lesson | folded | `PLAN-V02-19` D3, the module-list contract test. This is open, unowned work rather than a lesson. |
+| `-004` | candidate-lesson | discarded | Fixed in PR #314 and mechanically guarded by `TokenClientDslJsonReflectionTest.shouldRegisterEveryEngineDslJsonConverter` (verified on `main`). |
+| `-005` | candidate-lesson | promoted | `2026-09-24-15-002` |
+| `-006` | candidate-lesson | promoted | `2026-09-24-15-003` |
+| `-007` | candidate-lesson | folded | Watch (30), recorded as its third recurrence (tooling, owned upstream). |
+| `-008` | candidate-lesson | promoted | `2026-09-24-15-004`, the closed-set-restated-at-N-sites lesson. It also carries `-013` and `-016`. |
+| `-009` | candidate-lesson | promoted | `2026-09-24-15-005` |
+| `-010` | candidate-lesson | promoted | `2026-09-24-15-006` |
+| `-011` | candidate-lesson | promoted | `2026-09-24-15-007` |
+| `-012` | candidate-lesson | promoted | `2026-09-24-15-008` |
+| `-013` | candidate-lesson | folded | Into `2026-09-24-15-004`, as a recurrence of the same shape in the same plan. |
+| `-014` | candidate-lesson | promoted | `2026-09-24-15-009` |
+| `-015` | candidate-lesson | promoted | `2026-09-24-15-010` |
+| `-016` | candidate-lesson | folded | Into `2026-09-24-15-004`. Its `review_body` half is already binding via `CLAUDE.md` Git Workflow steps 6 and 8. |
+| `-017` | candidate-lesson | promoted | `2026-09-24-15-011` |
+| `-018` | candidate-lesson | promoted | `2026-09-24-15-012` |
+| `-019` | candidate-lesson | promoted | `2026-09-24-15-013`, quantified evidence for any revisit of `re_review_on_loopback: false`. |
+| `-020` | finding | folded | `PLAN-V02-19` D4 (Sonar `java:S3398`). The claim is verified: the method is called only from nested `HttpUpstreamFetcher`. |
+
+All 13 promotions were filed with `--allow-foreign-store`. The store's bundle-ownership guard does
+not recognise project-local component names (`api-sheriff`, `project:…`, `integration-tests`) as
+belonging to this repo, but these lessons are about this repository and lived in this same store
+before the sibling epic closed. Bodies are carried verbatim from the payloads, each with a
+provenance section.
+
 ## Post-Merge Verification — `deploy-snapshot`
 
-**Performed 2026-08-09 on operator instruction. All four merge commits are GREEN.**
-
-| Merge commit | Plan | Maven Build run | `build / deploy-snapshot` |
-|---|---|---|---|
-| `89a3cfe` | PLAN-V02-03 (#197) | 31289270907 | **success** |
-| `e343404` | PLAN-V02-02 (#198) | 31294044453 | **success** |
-| `aeb80c5` | PLAN-V02-16 (#199) | 31327146763 | **success** |
-| `95dd566` | PLAN-V02-17 (#200) | 31330642464 | **success** |
-
-Every other job in each run is `success` too, including `build (25)`, `build (26)`, `sonar-build`
-and `conclusion`.
-
-**Where the job actually lives, because this is what made it look unreachable.** `deploy-snapshot`
-is **not defined in this repository**. `.github/workflows/maven.yml` declares only `build`,
-`supply-chain-scan` and `rewrite-report`; its `build` job delegates to the organisation's reusable
-workflow (`cuioss/cuioss-organization/.github/workflows/reusable-maven-build.yml@v0.18.0`), and
-`deploy-snapshot` is a job *inside* that. It surfaces as **`build / deploy-snapshot`** within the
-**Maven Build** run — so grepping this repo for the job name returns nothing, which is why the axis
-read as structurally unreachable rather than merely awkward.
-
-**Method, and the false negative it survived.** `gh run list --commit <sha>` returns an **empty
-array for an ABBREVIATED sha** and the correct runs for the full 40-character one. The first pass
-returned `[]` for all four commits and looked like proof that no runs existed. **A control query —
-`gh run list` with no `--commit` — reached the repo and returned a run whose `headSha` was the full
-form of one of those very commits**, which is what exposed the truncation. **Fifth member of this
-project's clean-looking-zero family, and the second caught by control-query discipline in two days.**
-
-**Standing method for the next landing:** `git rev-parse <sha>` for the full form → `gh run list
---repo cuioss/API-Sheriff --commit <full-sha>` → take the **Maven Build** run whose `event` is
-`push` → `gh run view <id> --json jobs` and read `build / deploy-snapshot`. The `issue_comment` runs
-share the commit and crowd the default `--limit`, so filter by event.
+> ↪ Relocated to `settled.md` § "Post-Merge Verification — `deploy-snapshot` (four V02 landings, 2026-08-09)" — all four merge commits verified green; the standing gh-run method for the next landing is carried there verbatim
 
 ## Release Pre-Flight Knowledge for the 0.2.0 Cut
 

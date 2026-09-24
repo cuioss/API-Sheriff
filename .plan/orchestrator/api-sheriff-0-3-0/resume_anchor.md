@@ -1,0 +1,9 @@
+=== NOT EMITTABLE — gated on api-sheriff-0-2-0's PLAN-V02-06. Cleanup pass 2026-09-24 at 05f6ee3 complete. NEXT ACTION: commit this cleanup, then wait; re-run `next` only after PLAN-V02-06 ships. ===
+
+STATE: 0 shipped / 0 running / 3 staged (PLAN-V03-01, -02, -04) / 1 superseded (PLAN-V03-03, folded into V03-02). Ledger migrated to the per-concern layout 2026-09-24 (queue/, resume_anchor.md, queue-view.md).
+
+GATES: (1) api-sheriff-roadmap closed — MET per the last recorded evidence (phase:closed, 2026-08-08); that tree is no longer present in this checkout, so it was not re-observed. (2) api-sheriff-0-2-0's PLAN-V02-06 (per-client detection substrate) shipped — STILL CLOSED: V02-06 and V02-07 both `staged` (re-read 2026-09-24). When V02-06 ships, re-ground PLAN-V03-01 a SECOND time against what actually landed, not against V02-06's spec.
+
+CLEANUP 2026-09-24: all 25 claims re-grounded at 05f6ee3 (0 blocking, 0 stale). Expected Surface fixed in V03-01/02/03 — package-relative main-source paths and continuation-line entries never reached the disjointness gate (22 -> 36 claimed, 9 -> 0 unresolved). Hand-Off Commands repointed from .plan/local/orchestrator/ to .plan/orchestrator/. V03-03 merged into V03-02 per the 2026-07-27 decision: 8 deliverables, two PRs, unsplit with the rationale recorded. The portal app catalog (69b322b5) was checked: not an inventory substrate, so no overlap.
+
+STANDING ITEMS: PLAN-V03-04 DO-NOT-LAUNCH (plan-marshall classifier still has no helm glob). ADR allocation: doc/adr has a DUPLICATE 0053 and runs to 0054 — resolve the duplicate before any plan allocates; next free is re-derived at write time, never assumed. Tooling defect (plan-marshall): `corpus cross-check` counts the .plan/local/plans/NO_PLAN scratch bucket as an indeterminate live plan, so candidate_comparison_determinate is false and `next` would refuse EVERY candidate — fix upstream or expect that refusal.

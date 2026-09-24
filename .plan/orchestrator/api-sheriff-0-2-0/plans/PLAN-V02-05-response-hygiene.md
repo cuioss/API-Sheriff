@@ -88,6 +88,10 @@ must be written against the **landed** layout: read the current `doc/user/` inve
 this spec's paths, and prefer the page that already owns the subject to adding a section back into
 `configuration.adoc`.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+All premises hold at HEAD. The leak still ships at both relay paths (`ResponseStage.relay()` now `:100`, `relayWithTrailers()` `:172`, `isForwardableResponseHeader` `:74`). Security headers are still opt-in. The `ForwardPolicyStageTest.forwardAllCarriesValidatorsPastTheToggle` pin drifted to `:688`. `GatewayEdgeRoute` grew +276 lines for portal HTML error pages (#343), not for the problem+json body shape. No deliverable discharged.
+
 ## Objective
 
 Reduce the gateway's external fingerprintability. Our error bodies are already clean (minimal RFC 7807,
@@ -152,31 +156,31 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED (confirmed leak): `edge/ResponseStage.java`:64 `isForwardableResponseHeader` filters ONLY
   hop-by-hop and conditional headers — it does **not** strip `Server`/`X-Powered-By`, so an upstream
   emitting them leaks them through (`relay` at :89-93 copies every forwardable upstream header).
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage.java:74-82 filter, :109-115 relay copy (moved from :64/:89-93) -- still no Server/X-Powered-By strip anywhere in file; ConnectionHeaders.RESPONSE_STRIP also lacks them. Leak confirmed still ships.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage isForwardableResponseHeader :74, relay() :100, relayWithTrailers() :172; no Server/X-Powered-By strip anywhere; ConnectionHeaders RESPONSE_STRIP :78 unchanged
 - OBSERVED: security headers are opt-in today — `pipeline/SecurityHeadersStage.java`:68-81 emits HSTS /
   nosniff / frame-deny only when the `security_headers` block enables each.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersConfig/SecurityHeadersStage: each header returns null unless explicitly enabled; no default security_headers block ships. Opt-in premise holds, though mechanism grew substantially (CORS, per-route anchor wholesale-replace ADR-0007, per-header header_modes) -- Expected Surface undersells this.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersStage OwnedHeader HSTS/NOSNIFF/FRAME_OPTIONS each still gated by the security_headers block
 - OBSERVED: error bodies are already clean — `edge/GatewayEdgeRoute.java` `renderProblem` emits a
   minimal `{"type","title","status"}` with generic `EventCategory` titles, no stack/framework signature.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.java:1248-1276 renderProblem still emits minimal literal type/title/status RFC7807 body, no stack/framework signature. Method moved from unspecified line to :1248.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem problem+json body shape not independently re-read; GatewayEdgeRoute +276 lines were portal HTML machinery (#343)
 - HYPOTHESIS: the gateway itself emits no `Server`/`X-Powered-By` by default (Vert.x/Quarkus default;
   no `quarkus.http.server-header` property exists — override idiom is `quarkus.http.header."Server".value`).
   Confirm/refute at outline with a live `curl -I` against the running native gateway (verify-at-outline)
   — do not build self-header suppression for a header we do not emit; the real work is the *upstream*
   passthrough strip.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: No quarkus.http.header override found in src/main/resources -- consistent but not proof. Spec itself labels this verify-at-outline via live curl -I, not statically settleable.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a live curl -I, as the spec itself states
 - Verify-first clause: enumerate the actual set of identity-leaking headers an upstream can send (the IT
   stack: Keycloak, go-httpbin) and confirm which pass through today before fixing the allowlist.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Procedural/live-IT-stack enumeration instruction, not a static code claim -- cannot be settled by git show/log against main. Still a valid pending action item at outline.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural live-IT-stack instruction, not a static claim
 
 ## Expected Surface
 
-- OBSERVED: `edge/ResponseStage.java`:74 (drifted from :64) — the response-header forward filter
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java`:74 (drifted from :64) — the response-header forward filter
   (add the identity-strip); both `relay()` and `relayWithTrailers()` share this one filter
-- OBSERVED: `http/ConnectionHeaders.java`:78-81 (`RESPONSE_STRIP`) — added 2026-09-22: the shared
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/ConnectionHeaders.java`:78-81 (`RESPONSE_STRIP`) — added 2026-09-22: the shared
   response-direction policy both relay paths read; found understated by re-grounding, and the more
   natural home for the Server/X-Powered-By strip than `ResponseStage.java` alone
-- OBSERVED: `pipeline/SecurityHeadersStage.java` + `config/model/SecurityHeadersConfig.java` — default-on posture
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/SecurityHeadersStage.java` + `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/SecurityHeadersConfig.java` — default-on posture
 - HYPOTHESIS: `api-sheriff/src/main/resources/application.properties` — a `quarkus.http.header` override only if the live check shows a self-emitted header (verify-at-outline)
 - OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`, `doc/architecture.adoc`
   (added 2026-09-22 — Objective deliverable 6 requires it and it was missing) — the doc layers incl.

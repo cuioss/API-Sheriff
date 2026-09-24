@@ -104,6 +104,12 @@ relocated from the retired `.plan/local/orchestrator/api-sheriff-0-2-0/` address
 model). Both the `## Hand-Off Command` and `## Write-Boundary` sections below are updated to the new
 path.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+The corpus grew to **55 records / ~11,809 lines**. 35/55 read `Proposed` (control-queried; was 29/49). **A live duplicate ordinal `0053` exists** — the same defect class as the historic `0026`/`0027` pair, and D1's audit meets it at once. `PLAN-V02-19` owns the renumber plus a uniqueness guard and should land FIRST (see `epic.md` § Queue annotations), so this audit starts from unique ordinals. The `0005`/`0027` pre-emption guards hold: V02-01 and V02-09 have not landed. `doc/development/build-gate-discipline.adoc` exists as a relocation destination. A `## Claim Labels` section was added 2026-09-24 (cleanup A3); this spec had none. No deliverable discharged.
+
+**ADR numbering, corrected across the corpus:** `doc/adr/` now holds 55 records. `0053` is DUPLICATED (#348 renamed the portal ADR `0050`→`0053` while #346 claimed `0053` concurrently), and the next free ordinal is `0055`. Every earlier "next free is 0038/0050" line in this spec is stale. Re-derive the ordinal at write time, and prefer landing after `PLAN-V02-19`, which fixes the duplicate and adds an ordinal-uniqueness test.
+
 ## Objective
 
 `doc/adr/` has grown to 33 records and 5,620 lines without anyone ever reading it as a whole. This
@@ -179,6 +185,21 @@ Read first-party at `0e7c8d3`:
   already have renamed them to `0032`/`0033`; check, and let any merge or deletion here settle the
   rest as a side effect.
 - Several records still report status `Proposed` for shipped work (`0010`, `0012` observed).
+
+## Claim Labels
+
+Added 2026-09-24 by the cleanup pass (A3 ambiguity: the spec had no claim section). Each claim was corroborated at `05f6ee3`.
+
+- OBSERVED: `doc/adr/` holds 55 records (~11,809 lines) at `05f6ee3`, not the 49 / 10,543 an earlier section states — `git ls-tree --name-only HEAD doc/adr/`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 55 .adoc under doc/adr at 05f6ee3, ~11,809 lines
+- OBSERVED: 35 of 55 records read status `Proposed` — `^== Status` block per record, control-queried
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 35/55 Proposed, ^== Status block count, control-queried
+- OBSERVED: ordinal `0053` is carried by two records (header-matcher and portal-templates ADRs); the next free ordinal is `0055` — `doc/adr/` basenames `uniq -d`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: uniq -d over ordinals returns 0053 (two records); highest 0054
+- OBSERVED: the historic `0026`/`0027` duplicate is resolved (renamed `0032`/`0033`) and is not this plan's subject — `doc/adr/0032-*`, `0033-*`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032/0033 artifact-purity/nullable correctly named
+- OBSERVED: `0005-module-structure.adoc` is still `Accepted` and `0027` is not re-opened, so V02-01 and V02-09 have not pre-empted this audit — confirm again at outline (verify-at-outline)
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0005 still Accepted, 0027 not re-opened; V02-01/V02-09 not landed
 
 ## Expected Surface
 

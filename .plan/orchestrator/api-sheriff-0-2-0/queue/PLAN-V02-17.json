@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-V02-17",
+  "slug": "lessons-into-source",
+  "workstream": "WS-02",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-v02-17-lessons-into-source",
+  "pr": "200",
+  "landing": "landings/PLAN-V02-17.md",
+  "seq": 17
+}

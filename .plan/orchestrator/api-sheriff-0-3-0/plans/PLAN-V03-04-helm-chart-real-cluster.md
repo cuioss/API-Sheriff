@@ -102,18 +102,18 @@ Claims inherited from PLAN-27 were read at `5298237`; claims added by the split 
 
 - **OBSERVED (`818d964`) — no Helm chart or any helm-shaped file exists anywhere.** A repo find for
   `*chart*` / `Chart.yaml` / `*helm*` returns nothing. Genuinely new infrastructure.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: git ls-tree -r main for chart/helm returns nothing; deployment/ still contains only compose-sample/ + pom.xml.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: no chart/helm under deployment/; only compose-sample/ + pom.xml
 - **OBSERVED (`818d964`) — the classifier blocker above**, verified by executing the predicate.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: plan-marshall's _manifest_core.py _INFRA_CONFIG_DIR_TREES/_INFRA_CONFIG_BASENAME_GLOBS still have no helm/chart entry at current HEAD -- classifier blocker confirmed still accurate, no fix landed.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: plan-marshall _manifest_core.py (9913740d9, 2026-09-09) INFRA_CONFIG globs still carry no helm/Chart.yaml entry -- blocker stands
 - **OBSERVED (`5298237`) — management is HTTPS-only on port 9000** since PLAN-23. Every consumer of
   9000 must speak TLS; chart probes inherit this.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: application.properties:143-171 -- management is still HTTPS-only on port 9000, no simultaneous plain-HTTP listener.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: application.properties:125-193 mgmt still port 9000 HTTPS-only, no plain-HTTP fallback
 - **OBSERVED (`818d964`) — the neutral TLS/management key surface has LANDED.** PLAN-31B (`#138`,
   merge `ffa8cef`) single-sourced the TLS surface in `gateway.yaml` bound by `tls/TlsServerCustomizer`,
   **deleted** the raw `quarkus.*` TLS duplicates rather than leaving them as dormant overrides, and
   added a first-class `management:` block with `management.tls.enabled`. **The chart must template the
   NEW neutral keys — the `quarkus.*` env vars it would otherwise have templated no longer exist.**
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Merge ffa8cef confirmed: 'single-source and activate neutral TLS + management surface (#138)'. NeutralTlsConfigSource.java:91,130,196,220 defines management.tls.enabled; raw quarkus.tls.* keys retired in favor of gateway.yaml.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: config/NeutralTlsConfigSource.java still projects management.tls.enabled; no raw quarkus.management.ssl.* duplicate
 - **HYPOTHESIS — the gateway's config model maps cleanly onto Helm values + Secrets.** ADR-0025
   (corrected 2026-09-22, was miscited as ADR-0011) makes `gateway.yaml` carry neutral logical names
   with the deployment binding concrete material, which is *structurally* what a chart wants. Confirm/refute at
@@ -121,17 +121,17 @@ Claims inherited from PLAN-27 were read at `5298237`; claims added by the split 
   surface (verify-at-outline). **If the binding needs env vars the chart cannot express cleanly,
   report it as a finding about the config model — do not invent a chart-only config path that diverges
   from the documented one.**
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Structurally still plausible but the spec MISCITES the ADR: ADR-0011 covers JWKS/egress only, not TLS/keystores. The correct citation is ADR-0025 (whole-server-TLS neutral naming). Cannot settle the design-fit hypothesis without the outline-time trace the spec itself defers to.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: ADR-0025 present matching corrected citation; design-fit still needs outline-time trace
 - **HYPOTHESIS — `deployment/` exists with a `compose-sample/` subtree and is registered in the root
   reactor.** PLAN-27 owns that; this plan adds `helm/` beside it. Confirm at
   `deployment/pom.xml` § the packaging declaration and root `pom.xml` § `<modules>`
   (verify-at-outline). **If PLAN-27 did not ship, this plan creates the module itself and its
   deliverable count grows — re-scope rather than assuming.**
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: Root pom.xml <modules> lists deployment; deployment/pom.xml packaging=pom, carries compose-sample only.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: root pom.xml:36 module deployment; deployment/pom.xml:12 packaging=pom, compose-sample only
 - **Verify-first clause**: re-verify the management-port scheme and the neutral TLS key names against
   the merged tree before templating anything. PLAN-23, PLAN-31B, PLAN-31C and PLAN-36 all move this
   surface, and PLAN-36 reshapes the config record family outright.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: PLAN-36 (nullable-type-model) landed at 675b3ff5 (#143), retiring Optional from every stored position in the production type model -- confirms the record family did move.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-3-0/cleanup | rescoped: n/a | evidence: ADR-0033 confirms PLAN-36 landed; mgmt-port scheme and neutral TLS keys unchanged
 
 ## Expected Surface
 
@@ -188,7 +188,7 @@ merge and stop.
 ## Hand-Off Command
 
 ```text
-/plan-marshall task="implement .plan/local/orchestrator/api-sheriff-0-3-0/plans/PLAN-V03-04-helm-chart-real-cluster.md" plan_id=plan-v03-04-helm-chart-real-cluster
+/plan-marshall task="implement .plan/orchestrator/api-sheriff-0-3-0/plans/PLAN-V03-04-helm-chart-real-cluster.md" plan_id=plan-v03-04-helm-chart-real-cluster
 ```
 
 **The explicit `plan_id` is load-bearing — do not drop it.** Without it, phase-1-init derives the id
@@ -197,4 +197,4 @@ from the task description, which is an LLM judgement and has silently dropped th
 ## Write-Boundary
 
 The plan touches only its own repository source and tests. It creates and edits NO file under
-`.plan/local/orchestrator/` other than its own `inbox/{sender}-{seq}` message.
+`.plan/orchestrator/` other than its own `inbox/{sender}-{seq}` message.

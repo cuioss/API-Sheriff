@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-V02-02",
+  "slug": "java-idiom-sweep",
+  "workstream": "WS-01",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-v02-02-java-idiom-sweep",
+  "pr": "198",
+  "landing": "landings/PLAN-V02-02.md",
+  "seq": 2
+}

@@ -126,6 +126,10 @@ touch the category assignment, and does not alter the content negotiation V02-13
 uniform-404 must work through that negotiation, not around it. **Sequence V02-13 first** so the
 branch is built once against the final shape.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+D1–D7 premises hold (no per-source counter, the route-miss throw and `renderProblem` signature are unchanged). **Sequencing premise changed:** `renderProblem` is ALREADY content-negotiating via `portal/ErrorPageClassifier` (#343, independent of V02-13), and `NO_ROUTE_MATCHED`/`PATH_NOT_ALLOWED`/`METHOD_NOT_ALLOWED`/`TOKEN_MISSING` are already `HTML_ELIGIBLE`. The V02-13 dependency therefore now reduces to D1's taxonomy change alone. D1's uniform-404 must be designed against a negotiating renderer, and must not reintroduce a status or shape oracle through the HTML branch. **D8 partially discharged:** `edge/EdgeHardeningOptions` already bounds header size, initial-line length, chunk size and idle timeout on every listener. It does NOT set `maxConcurrentStreams`, does not rate-bound stream resets, and does not strip h2c `Upgrade` — that is D8's remaining scope. `GrpcDispatchStage`'s Javadoc overclaims gw-08 coverage while the threat model says `GAP`. Both files are now named in the Expected Surface.
+
 ## Objective
 
 Close the endpoint-existence oracle and detect enumeration scanning. Today deny-by-default routing means
@@ -211,36 +215,37 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED (the oracle): the differentiated codes are real — `events/EventType.java`: `NO_ROUTE_MATCHED`
   (404), `TOKEN_MISSING` (401), `PATH_NOT_ALLOWED` (400); rendered by `edge/GatewayEdgeRoute.java`
   `renderProblem` per the event's HTTP mapping.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType.java:58 PATH_NOT_ALLOWED(400), :62 NO_ROUTE_MATCHED(404), :101 TOKEN_MISSING(401) all hold. renderProblem (GatewayEdgeRoute.java:1248-1261) still maps status per event's HTTP mapping, unchanged mechanism.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType PATH_NOT_ALLOWED:58(400) NO_ROUTE_MATCHED:62(404) TOKEN_MISSING:101(401) unchanged
 - OBSERVED: deny-by-default routing (no listing) — `pipeline/RouteSelectionStage.java`:34-35
   (`NO_ROUTE_MATCHED`, "the gateway never forwards an unmatched request").
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: RouteSelectionStage.java:37-38 (drifted from :34-35) still: 'gateway never forwards an unmatched request'; process():64-73 throws GatewayException(NO_ROUTE_MATCHED) on exhausted loop, no listing endpoint.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: RouteSelectionStage:38 comment intact; process():74 still throws NO_ROUTE_MATCHED
 - OBSERVED: no per-client recon detection exists — `events/GatewayEventCounter.java` counts events
   globally (Micrometer), not per-source; a grep for a per-client/leaky-bucket construct returns nothing.
   Confirm/refute at `events/` § its counter set (verify-at-outline).
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter.java: plain ConcurrentHashMap<EventType,AtomicLong>, no per-source keying, no bucket/window construct (the '(Micrometer)' detail is stale -- class javadoc explicitly avoids Micrometer per ADR-0005). Repo search for bucket/throttle/recon/sliding/ban: only RateLimitConfig.java, a reserved-and-ignored block -- D3 genuinely net-new.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter still flat ConcurrentHashMap<EventType,AtomicLong>; no sliding-window construct in main (control: 14 EventCounter refs)
 - HYPOTHESIS: the "trusted / authenticated caller" signal needed for the trust-boundary branch is
   available at the render point (the request carries its auth outcome). Confirm/refute at
   `edge/GatewayEdgeRoute.java` § where `renderProblem` is called and what auth state is in scope
   (verify-at-outline) — if the reject path cannot see auth state, the branch needs the pipeline to
   thread it, which widens the deliverable.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: process():754-846 -- PATH_NOT_ALLOWED/NO_ROUTE_MATCHED fire before authenticationStage.process(); TOKEN_MISSING fires inside it. The eventType param renderProblem already receives is itself sufficient signal to branch pre/post-trust-boundary -- no new PipelineRequest field needed (grep found none).
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem(ctx, request, eventType) signature unchanged at GatewayEdgeRoute:1500
 - Verify-first clause: confirm that collapsing to 404 does not break the shipped BFF/XHR contracts
   (PLAN-06's info endpoint deliberately returns 401-not-redirect for XHR) — the uniform-404 must NOT
   apply to those authenticated-session flows; scope the "untrusted" predicate against the landed auth
   model, not this spec's prose.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: UserInfoEndpoint.java javadoc still: no-session yields 401 problem+json, never a redirect -- a genuine currently-untrusted-by-naive-predicate 401 the uniform-404 predicate must still carve out. Risk unresolved, unchanged.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: UserInfoEndpoint javadoc :64-66 still 401 problem+json never redirect; now references content negotiation (ErrorPageClassifier, #343)
 
 ## Expected Surface
 
-- OBSERVED: `edge/GatewayEdgeRoute.java` `renderProblem` — the trust-boundary-aware uniform-404 branch
-- OBSERVED: `pipeline/RouteSelectionStage.java` — the route-miss origin of `NO_ROUTE_MATCHED`
-- OBSERVED absence → NEW: a per-client recon-detection component under `events/` or a new package
-- OBSERVED: `events/EventType.java` / `GatewayEventCounter.java` — a new trip event + counter
-- OBSERVED: `config/model/**` — config for the threshold / trusted-source predicate / response action
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` `renderProblem` — the trust-boundary-aware uniform-404 branch
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/RouteSelectionStage.java` — the route-miss origin of `NO_ROUTE_MATCHED`
+- OBSERVED absence → NEW: a per-client recon-detection component under `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/` or a new package
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java` / `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/GatewayEventCounter.java` — a new trip event + counter
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**` — config for the threshold / trusted-source predicate / response action
 - OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`; `api-sheriff/src/test/**`
 - `doc/security-threat-model.adoc` — flip `gw-08` from `GAP` to `COVERED` once D8 lands — D8
-- HTTP/2 termination site (ALPN, the h2/gRPC frame-handling layer) — D8, to locate at outline
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EdgeHardeningOptions.java` — D8 (located 2026-09-24): the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcDispatchStage.java` — D8: its Javadoc (`:42-45`) claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
 
 ## Dependencies and Sequencing
 

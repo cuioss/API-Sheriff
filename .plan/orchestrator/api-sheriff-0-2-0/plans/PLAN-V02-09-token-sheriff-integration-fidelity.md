@@ -186,6 +186,10 @@ citation should read ~§§ 260-337 (block grew/shifted); the "0.9.3 artifact" re
 spec's own instruction to update it there has not yet been paid, consistent with this plan being
 unexecuted.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+Pin is `0.9.6` (`api-sheriff/pom.xml:63`). The `quarkus.arc.exclude-types` exclusion is unchanged (`application.properties:345`). **D3 half discharged:** readiness reads live `IssuerKeySetStatus` via `RetryingJwksLoader` (`GatewayReadinessCheck`). The metrics half is still open: `SheriffMetrics` binds only cui-http's `SecurityEventCounter`. **D4 half discharged:** the `application.properties` rationale block is already current and names the metrics gap. `ADR-0027` still lacks the `#641`/`#617` references. **D5:** the `0.9.6` `token-sheriff-validation` jar now SHIPS `META-INF/native-image/.../reflect-config.json` (verified by `unzip -l`). This confirms the `#617` fix recorded above and widens D2's options to "map + drop the extension". The Observed Facts line saying the plain library "ships NO native-image metadata" is STALE and is outranked by this section. `applyJwks` no longer exists (Open Defect 13 is moot). A `## Claim Labels` section was added 2026-09-24 (cleanup A3).
+
 ## Objective
 
 API Sheriff runs **two parallel token-validation mechanisms**. The request path builds a
@@ -432,6 +436,23 @@ Read first-party at `36508b2` (API Sheriff `main`) and from the resolved
   it establishes that the gateway's own metric surface is route-shaped and carries no
   token-validation dimension at all.
 
+## Claim Labels
+
+Added 2026-09-24 by the cleanup pass (A3 ambiguity: the spec had no claim section). Each claim was corroborated at `05f6ee3`.
+
+- OBSERVED: token-sheriff is pinned at `0.9.6` — `api-sheriff/pom.xml:63`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: api-sheriff/pom.xml:63 version.token-sheriff 0.9.6
+- OBSERVED: the `quarkus.arc.exclude-types` exclusion of token-sheriff health/metrics beans is unconditional — `application.properties:345`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties:345 exclusion unconditional, no profile scoping
+- OBSERVED: readiness already reads live `IssuerKeySetStatus` — `GatewayReadinessCheck` `:19`, `:141`, `:153`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayReadinessCheck imports IssuerKeySetStatus :19, fields :141/:153
+- OBSERVED: the token validator's `SecurityEventCounter` is bound to no meter; `SheriffMetrics` binds only cui-http's counter — D3's open half
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics binds only de.cuioss.http SecurityEventCounter; validator counter feeds SignatureOnlyTokenVerifier only
+- OBSERVED: `ADR-0027` carries no `#641`/`#617` reference — `doc/adr/0027-*.adoc`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: grep #641|#617 in doc/adr/0027-*.adoc: no match
+- OBSERVED: `token-sheriff-validation-0.9.6.jar` ships `META-INF/native-image/.../reflect-config.json` — `unzip -l` of the resolved artifact
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: unzip -l token-sheriff-validation-0.9.6.jar lists META-INF/native-image/.../reflect-config.json
+
 ## Expected Surface
 
 - `api-sheriff/src/main/resources/application.properties` §§ 260-337 (drifted from §§ 150-203)
@@ -441,7 +462,7 @@ Read first-party at `36508b2` (API Sheriff `main`) and from the resolved
 - `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java`,
   `SheriffMetrics.java` — added 2026-09-22: the D6 (already-landed) and D3-metrics write sites,
   found understated by re-grounding
-- Possibly new: a `ConfigSource` under `gateway/config/`, if deliverable 2 selects the mapping
+- Possibly new: a `ConfigSource` under `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/`, if deliverable 2 selects the mapping
 - `doc/` — the three-layer documentation, and an ADR if the verdict changes the architecture
 - Read-only: the `token-sheriff-validation-quarkus` 0.9.6 artifact (was 0.9.3/0.9.4)
 

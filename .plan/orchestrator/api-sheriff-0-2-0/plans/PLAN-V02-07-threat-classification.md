@@ -99,6 +99,10 @@ this plan**. V02-13 re-cuts the taxonomy this plan weights; V02-06 D7 ships the 
 this plan consumes. Neither has run, so nothing here can be scoped yet — **this is the most
 downstream plan in the epic and should be emitted last among WS-03**.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+All premises hold. `EventCategory` still has 5 values (V02-13's `ROUTING` split has not landed). The `SECURITY_FILTER_VIOLATION` warn site drifted a fourth time, to `GatewayEdgeRoute.java:1092` — re-anchor by content. Still hard-blocked on V02-06 and V02-13, neither of which has started.
+
 ## Objective
 
 Separate a genuine attack campaign from benign-but-malformed traffic, and surface a loud, SIEM-ready
@@ -140,28 +144,28 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
   INPUT_VALIDATION / AUTHENTICATION / AUTHORIZATION / UPSTREAM / CONFIGURATION), surfaced via
   `events/GatewayEventCounter.java` → `quarkus/SheriffMetrics.java` (Micrometer) and WARN logging at
   `edge/GatewayEdgeRoute.java`:408-411 (`SECURITY_FILTER_VIOLATION`, payload-safe).
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory/EventType/GatewayEventCounter/SheriffMetrics all present. WARN site content-confirmed but line drifted for a THIRD time: :408-411 -> :791-794 (2026-08-08) -> now GatewayEdgeRoute.java:888. Re-anchor by content (SECURITY_FILTER_VIOLATION), not line, as spec already instructs.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory still 5 values, no ROUTING; SECURITY_FILTER_VIOLATION warn site drifted to GatewayEdgeRoute:1092
 - OBSERVED absence: no cross-request scoring / campaign notion exists — the counter is global-per-event,
   not per-client-windowed. (CRS itself scores per-request only; the cross-request accumulation is the
   net-new value here.)
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Repo-wide search for window/sliding/campaign/anomaly/perclient: zero hits. GatewayEventCounter.java:35-45 is a flat ConcurrentHashMap<EventType,AtomicLong>, no client key, no time dimension.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no window/sliding/campaign/anomaly/ecs/ocsf under api-sheriff/src/main/java; counter flat
 - HYPOTHESIS: PLAN-18's per-client substrate is reusable as the accumulation window for the score rather
   than a second parallel per-client store. Confirm/refute at the substrate PLAN-18 actually ships §
   its per-client state API (verify-at-outline) — **central risk**: if PLAN-18's substrate is
   bucket-only (recon codes) and not general-purpose, this plan must generalize it, not duplicate it.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06 has not landed (landings/ has only V02-02/-03/-16/-17); its per-client substrate does not exist on main yet, so the hypothesis correctly remains open. Spec's own verify-at-outline framing still accurate.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06 not landed, substrate absent -- hypothesis remains open as framed
 - Verify-first clause: scope the ECS/OCSF field set against the actual schema (Elastic Common Schema /
   OCSF event classes), not against this spec's field list, before emitting — the shape must validate
   against a real consumer.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Procedural instruction, not a codebase fact; repo-wide search for ecs/ocsf returns zero hits -- nothing exists yet to corroborate/contradict. Remains a valid forward instruction.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural; nothing ECS/OCSF exists yet
 
 ## Expected Surface
 
-- OBSERVED: `events/EventType.java` — severity weights per category
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java` — severity weights per category
 - OBSERVED absence → NEW: an anomaly-score / campaign-classifier component (consumes PLAN-18 substrate)
-- OBSERVED: `events/GatewayEventCounter.java` / `quarkus/SheriffMetrics.java` — the two-tier signal wiring
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/GatewayEventCounter.java` / `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java` — the two-tier signal wiring
 - OBSERVED absence → NEW: an ECS/OCSF structured-emit formatter + a new `LogRecord` ALERT constant (`doc/LogMessages.adoc`)
-- OBSERVED: `config/model/**` — weights / window / threshold config; `doc/**`; `api-sheriff/src/test/**`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**` — weights / window / threshold config; `doc/**`; `api-sheriff/src/test/**`
 
 ## Dependencies and Sequencing
 

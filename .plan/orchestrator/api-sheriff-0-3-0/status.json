@@ -19,46 +19,6 @@
       "title": "Deployment and Distribution"
     }
   ],
-  "plans": [
-    {
-      "id": "PLAN-V03-01",
-      "slug": "honeypot-deception",
-      "workstream": "WS-01",
-      "status": "staged",
-      "plan_marshall_plan_id": "",
-      "pr": "",
-      "landing": ""
-    },
-    {
-      "id": "PLAN-V03-02",
-      "slug": "api-inventory-endpoint",
-      "workstream": "WS-02",
-      "status": "staged",
-      "plan_marshall_plan_id": "",
-      "pr": "",
-      "landing": ""
-    },
-    {
-      "id": "PLAN-V03-03",
-      "slug": "inventory-interop-formats",
-      "workstream": "WS-02",
-      "status": "staged",
-      "plan_marshall_plan_id": "",
-      "pr": "",
-      "landing": ""
-    },
-    {
-      "id": "PLAN-V03-04",
-      "slug": "helm-chart-real-cluster",
-      "workstream": "WS-03",
-      "status": "staged",
-      "plan_marshall_plan_id": "",
-      "pr": "",
-      "landing": ""
-    }
-  ],
-  "resume_anchor": "=== NOT READY TO EMIT \u2014 DOUBLE-GATED. Full first-ever cleanup pass 2026-09-22 at af63895. NEXT ACTION: wait on the gate, do not emit. ===\n\nSTATE: 0 shipped / 0 running / 0 launched / 4 staged (PLAN-V03-01, -02, -03, -04). Migrated to the git-tracked .plan/orchestrator/api-sheriff-0-3-0/ address (was .plan/local/orchestrator/, same PR as api-sheriff-0-2-0's migration+cleanup, #340). None of these 4 specs had EVER been re-grounded before this pass \u2014 their baseline was still 3f60d49/818d964/5298237 (late July 2026).\n\n=== THE DOUBLE-GATE, RE-VERIFIED === Gate 1 \u2014 the api-sheriff-roadmap epic reaches 'closed': OPEN. Confirmed via .plan/local/archived-orchestrators/api-sheriff-roadmap/status.json, phase:closed, updated 2026-08-08. (Note: that epic's own tree is still at the OLD .plan/local/archived-orchestrators/ address \u2014 out of scope for this migration, flagged here only because this pass's dispatch found it while checking the gate.) Gate 2 \u2014 api-sheriff-0-2-0 delivers PLAN-V02-06's per-client detection substrate: STILL CLOSED. PLAN-V02-06 is still `staged` in api-sheriff-0-2-0/status.json (confirmed again in that epic's own same-day cleanup pass). PLAN-V02-07 (the ECS/OCSF emit-formatter dependency PLAN-V03-01 also needs) is likewise still staged. NOTHING in this epic is emittable until PLAN-V02-06 ships and PLAN-V03-01 is re-grounded a SECOND time against what actually landed (not against V02-06's staged spec \u2014 that instruction, already in this epic's Cross-Epic Dependency section, still stands).\n\n=== ALL 4 STAGED SPECS RE-GROUNDED FOR THE FIRST TIME EVER. 21 claims scanned, 0 blocking. ===\n\n=== PLAN-V03-01 (honeypot-deception): genuinely nothing to re-scope \u2014 every checkable claim held (no deception layer exists yet, Vert.x timer primitive is available and unused). The three claims gated on PLAN-V02-06/-07 correctly stay unverifiable/open; they cannot resolve until those plans land. Expected Surface was PROSE-ONLY (the disjointness gate could not read it at all \u2014 0 resolved paths) and has been reformatted into one-path-per-bullet, now declarative with 5 resolved entries. ===\n\n=== PLAN-V03-02 (api-inventory-endpoint): all 4 checkable claims corroborated (management HTTPS-only+unauthenticated still holds; RouteTable/ResolvedRoute inventory substrate still ready to serialize, fields grew further; per-route metrics still cardinality-safe; bearer-validation infra still exists). Two Expected Surface additions applied: config/model/ManagementConfig.java and its schema entry (the natural home for a management-auth policy knob, currently missing from the list entirely). MAJOR STANDING ITEM (not new, but re-confirmed live): this epic's own \u00a7 below already records a taken-but-unexecuted decision that PLAN-V03-03 MERGES INTO this plan, instructed \"RE-GROUND FIRST, THEN MERGE\" \u2014 both specs are now freshly re-grounded, so that merge is UNBLOCKED and is the epic's own next authoring action once launch time comes (not before Gate 2 opens). ===\n\n=== PLAN-V03-03 (inventory-interop-formats): all 3 claims stay open exactly as the spec's own framing expects (external-standards research, a hypothesis gated on V03-02 shipping, a procedural verify-first directive) \u2014 none contradicted, none settleable yet since no inventory/CycloneDX/api-catalog code exists anywhere in main. Expected Surface gained doc/architecture.adoc and doc/adr/00NN-*.adoc (Deliverable 4 named both explicitly; the list had omitted them). Confirms the merge-with-V03-02 plan is still the right call. ===\n\n=== PLAN-V03-04 (helm-chart-real-cluster): 6/7 claims corroborated, the DO-NOT-LAUNCH blocker reconfirmed still fully accurate \u2014 plan-marshall's execution-manifest classifier still has no helm/chart-shaped glob, so any Helm YAML this plan would add still classifies `unknown` and parks phase-4 at the Q-Gate. Management-HTTPS-only and the neutral-TLS-surface landings (PR #138) both hold. ONE CORRECTION APPLIED: Deliverable 1 miscited ADR-0011 (JWKS/egress-scoped) for the whole-server-TLS-neutral-naming invariant this deliverable actually needs \u2014 corrected in place to ADR-0025, the two live citations fixed. ===\n\n=== ADR CORPUS (cross-checked against api-sheriff-0-2-0's same-day count): 49 records / 10,543 lines, contiguous 0001-0049. Next free number is 0050. Both PLAN-V03-01's config-model ADR and PLAN-V03-03's decision-record ADR will need to claim from there \u2014 re-verify against main AND every open branch at write time, per the standing rule. ===\n\n*** THIS ANCHOR IS THE EPIC'S FIRST EVER RESUME-SUMMARY REGENERATION \u2014 the Ordered Queue section did not exist before this pass (the epic predates that marker convention) and has been created alongside this anchor. Nothing prior was discarded; this is a from-scratch synthesis of the epic's existing sections plus this pass's findings. ***",
   "metadata": {},
-  "created": "2026-08-04T09:49:01Z",
-  "updated": "2026-09-22T09:46:31Z"
+  "created": "2026-08-04T09:49:01Z"
 }

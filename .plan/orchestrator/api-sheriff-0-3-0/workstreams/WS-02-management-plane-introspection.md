@@ -16,5 +16,5 @@ Give operators a first-class, authenticated read model of what this gateway expo
 
 ## Plans
 
-- **PLAN-V03-02** — API inventory endpoint. *Builds the read model.*
-- **PLAN-V03-03** — Inventory interop formats. *Decided to merge INTO PLAN-V03-02 — see the epic ledger; the merged spec is deliberately not yet authored.*
+- **PLAN-V03-02** — API inventory endpoint + interop formats. *Builds the read model and all four representations (native schema, OpenAPI, CycloneDX SaaSBOM, RFC 9727 api-catalog). Carries the whole workstream since the 2026-09-24 merge.*
+- **PLAN-V03-03** — Inventory interop formats. *SUPERSEDED 2026-09-24 — folded INTO PLAN-V03-02 per the 2026-07-27 decision; spec retained as the audit record.*

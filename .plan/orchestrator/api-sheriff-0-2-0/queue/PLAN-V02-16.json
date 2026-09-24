@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-V02-16",
+  "slug": "image-metadata-fidelity",
+  "workstream": "WS-01",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-v02-16-image-metadata-fidelity",
+  "pr": "199",
+  "landing": "landings/PLAN-V02-16.md",
+  "seq": 16
+}
