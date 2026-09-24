@@ -221,8 +221,8 @@ architecture makes it uniquely able to close all three.
   `realip` / Kong issues cited in ADR-0003's references) and "Forwarded header sabotage".
   See link:adr/0003-forwarded-headers.adoc[ADR-0003].
 
-| *PAR-driven, FAPI-2.0-aligned confidential-client flow* -- *TARGET, NOT SHIPPED IN 0.2.2*
-| A *major* differentiator -- and, as of the 0.2.2 alpha, an *unrealised* one. The intended posture
+| *PAR-driven, FAPI-2.0-aligned confidential-client flow* -- *TARGET, NOT SHIPPED IN 0.2.3*
+| A *major* differentiator -- and, as of the 0.2.3 alpha, an *unrealised* one. The intended posture
   drives the authorization-code flow through *Pushed Authorization Requests* (PAR, RFC 9126) --
   pushing the authorization parameters over the back channel and redirecting with the returned
   `request_uri`, so parameters are never exposed or tamperable in the browser -- as part of a
@@ -231,7 +231,7 @@ architecture makes it uniquely able to close all three.
 +
 [IMPORTANT]
 ====
-*0.2.2 ships none of the PAR or sender-constrained-token half of this claim.* PKCE `S256` and the
+*0.2.3 ships none of the PAR or sender-constrained-token half of this claim.* PKCE `S256` and the
 `iss` mix-up defence are delivered; PAR, sender-constrained tokens, and a FAPI-permitted client
 authentication method are not. The capabilities exist in the `token-sheriff-client` engine
 (`CLIENT-10` PAR, `CLIENT-11` sender-constraint) but are *not wired* by the gateway -- a capability
@@ -261,7 +261,7 @@ be claimed for this release.*
   re-drive the browser through the authorization-code flow with the elevated parameters, returning
   it to the URL of the request that was challenged (`StepUpCoordinator`). The coordinator has a
   silent-satisfaction seam that would first try to elevate without a redirect, but
-  `BffRuntimeProducer` binds it to a no-op at the 0.2.2 cut, so every challenge re-drives.
+  `BffRuntimeProducer` binds it to a no-op at the 0.2.3 cut, so every challenge re-drives.
   Structurally impossible for validation-only gateways.
 
 | *Datastore-free distributed configuration* (deferred)
@@ -291,7 +291,7 @@ Secondary differentiators worth claiming:
 | Immutable static config | Yes | Standalone mode | file provider | Yes (native)
 | OIDC RP + cookie mediation | Yes | Yes | EE only | No
 | Transparent token refresh | Yes | Yes | EE only | M2M only
-| PAR-initiating FAPI 2.0 RP | Planned (not in 0.2.2) | No | No | No
+| PAR-initiating FAPI 2.0 RP | Planned (not in 0.2.3) | No | No | No
 | Offline JWT validation | Yes | Yes | Partial | Yes
 | Per-route forward filtering (allow / deny / forward-all) | Yes (three modes) | No | No | Allow-list only
 | Path allowlist + param limits | Yes | Partial | No | Partial
