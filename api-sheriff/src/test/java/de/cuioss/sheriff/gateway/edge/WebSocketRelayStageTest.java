@@ -718,6 +718,71 @@ class WebSocketRelayStageTest {
     }
 
     /**
+     * A forwarded control frame is held to the same write-queue bound as a data frame. Vert.x's
+     * {@code writeQueueFull()} is a flow-control signal, not a limit — {@code writeFrame} keeps queueing
+     * — so a relay that checked it only after data frames would let a peer throttled on data switch to
+     * pings or unsolicited pongs and grow the other leg's write queue without bound.
+     * <p>
+     * The relay dials through a {@link WebSocketRelayStageTest#queueFullDialer dialer} whose upstream leg reports a full write
+     * queue and records every frame the relay writes to it. A relay that applies backpressure after a
+     * control frame installs its drain handler on that leg right after writing the frame; one that does
+     * not never installs it, so the await on the drain handler times out. The client's frame is the only
+     * frame the relay writes to the upstream leg, so the recorded writes name the frame the backpressure
+     * followed.
+     */
+    @Nested
+    @DisplayName("control-frame backpressure — a relayed ping or pong pauses the source while the target's write queue is full")
+    class ControlFrameBackpressure {
+
+        @Test
+        @DisplayName("applies write-queue backpressure after relaying a client ping to the upstream")
+        void appliesBackpressureAfterRelayingPing() throws Exception {
+            assertEquals(List.of(WebSocketFrameType.PING),
+                    backpressuredWritesAfter(WebSocketFrame.pingFrame(Buffer.buffer(
+                            Generators.letterStrings(1, 32).next()))),
+                    "the relay waits for the upstream leg to drain right after forwarding the ping");
+        }
+
+        @Test
+        @DisplayName("applies write-queue backpressure after relaying an unsolicited client pong to the upstream")
+        void appliesBackpressureAfterRelayingPong() throws Exception {
+            assertEquals(List.of(WebSocketFrameType.PONG),
+                    backpressuredWritesAfter(WebSocketFrame.pongFrame(Buffer.buffer(
+                            Generators.letterStrings(1, 32).next()))),
+                    "the relay waits for the upstream leg to drain right after forwarding the pong");
+        }
+
+        /**
+         * Sends {@code controlFrame} from the client through a relay whose upstream leg reports a full
+         * write queue, and returns the frame types the relay had written to that leg when it installed
+         * its drain handler there.
+         */
+        private List<WebSocketFrameType> backpressuredWritesAfter(WebSocketFrame controlFrame) throws Exception {
+            // Arrange — a relay over the setUp echo upstream whose upstream leg reports a full write queue
+            CompletableFuture<List<WebSocketFrameType>> drainAwaited = new CompletableFuture<>();
+            HttpServer relayServer = startHoppingRelayServer(upstreamPort,
+                    queueFullDialer(relayUpstreamClient, drainAwaited), RelayObserver.NO_OP, thread -> {
+                        // this fixture observes the upstream leg, not threads
+                    });
+            try {
+                relayTimeline.startUpgrade();
+                WebSocket socket = Awaits.connect(wsClient.connect(relayOnlyOptions(relayServer.actualPort())),
+                        "the WebSocket upgrade against the queue-full relay server");
+
+                // Act
+                relayTimeline.recordClientWrite();
+                socket.writeFrame(controlFrame);
+
+                // Assert — handed back to the caller
+                return awaitRelayed(drainAwaited,
+                        "the relay to install a drain handler on the full upstream leg after the control frame");
+            } finally {
+                Awaits.teardown(relayServer.close(), "the queue-full relay server to close");
+            }
+        }
+    }
+
+    /**
      * Pins the threading {@link WebSocketRelayStage}'s Javadoc claims: the relay's wiring and the
      * upstream leg's frame handling run on the client connection's context — the event-loop thread the
      * router handler ran on — whatever thread called {@link WebSocketRelayStage#relay}.
@@ -841,6 +906,47 @@ class WebSocketRelayStageTest {
             }
             handler.handle(event);
         };
+    }
+
+    /**
+     * Wraps the stage's upstream dialer so that every upstream leg it dials reports a full write queue
+     * and records the type of every frame the relay writes to it. When the relay installs a drain
+     * handler on such a leg, {@code drainAwaited} completes with the frame types written to it so far.
+     * Every other call is forwarded to the real dialer and the real leg unchanged, and the drain handler
+     * itself is installed on the real leg as well.
+     *
+     * @param delegate     the real dialer
+     * @param drainAwaited completed with the frame types written before the first drain handler was installed
+     * @return a dialer handing the relay upstream legs that report a full write queue
+     */
+    private static WebSocketClient queueFullDialer(WebSocketClient delegate,
+            CompletableFuture<List<WebSocketFrameType>> drainAwaited) {
+        return WebSocketClient.class.cast(Proxy.newProxyInstance(WebSocketClient.class.getClassLoader(),
+                new Class<?>[]{WebSocketClient.class}, (proxy, method, args) -> {
+                    Object result = invokeOn(delegate, method, args);
+                    if ("connect".equals(method.getName()) && result instanceof Future<?> dialed) {
+                        return dialed.map(upstreamWs -> queueFullLeg(WebSocket.class.cast(upstreamWs), drainAwaited));
+                    }
+                    return result;
+                }));
+    }
+
+    private static WebSocket queueFullLeg(WebSocket delegate,
+            CompletableFuture<List<WebSocketFrameType>> drainAwaited) {
+        List<WebSocketFrameType> written = new CopyOnWriteArrayList<>();
+        return WebSocket.class.cast(Proxy.newProxyInstance(WebSocket.class.getClassLoader(),
+                new Class<?>[]{WebSocket.class}, (proxy, method, args) -> {
+                    if (args == null || args.length == 0) {
+                        return "writeQueueFull".equals(method.getName()) ? Boolean.TRUE
+                                : invokeOn(delegate, method, args);
+                    }
+                    if ("writeFrame".equals(method.getName()) && args[0] instanceof WebSocketFrame frame) {
+                        written.add(frame.type());
+                    } else if ("drainHandler".equals(method.getName()) && args[0] instanceof Handler<?>) {
+                        drainAwaited.complete(List.copyOf(written));
+                    }
+                    return invokeOn(delegate, method, args);
+                }));
     }
 
     private static @Nullable Object invokeOn(Object delegate, Method method, @Nullable Object @Nullable [] args)

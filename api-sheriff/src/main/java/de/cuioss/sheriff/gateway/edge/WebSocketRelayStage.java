@@ -59,8 +59,9 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Opaque bidirectional relay.</strong> Every frame — text, binary, continuation, ping,
  * pong — is forwarded to the other leg with fragmentation preserved and no per-frame filtering;
- * close is relayed transparently and a half-close on either leg closes both. Data-frame relay
- * applies Vert.x write-queue backpressure (pause the busy source until the target drains). An
+ * close is relayed transparently and a half-close on either leg closes both. Every forwarded
+ * frame — data, ping and pong alike — applies Vert.x write-queue backpressure (pause the busy source
+ * until the target drains), so control frames cannot bypass the bound the data path is held to. An
  * established relay is bounded by the route's per-route {@code idle_timeout_seconds}: a timer,
  * reset by any frame in either direction (ping/pong counting as activity), closes both legs with
  * WebSocket close code {@code 1001} (Going Away) on expiry and meters
@@ -425,14 +426,19 @@ public final class WebSocketRelayStage {
                 // The close is surfaced separately via closeHandler, which closes both legs.
                 return;
             }
+            // Control frames are held to the same write-queue bound as data frames: without it a peer
+            // throttled on data could switch to pings or unsolicited pongs and grow the other leg's
+            // write queue without limit.
             if (frame.isPing()) {
                 target.writeFrame(WebSocketFrame.pingFrame(frame.binaryData()));
+                applyBackpressure(source, target);
                 return;
             }
             if (frame.type() == WebSocketFrameType.PONG) {
                 // A pong is control traffic: forwarded as a pong, never converted into a data frame by
                 // dataFrame() and never taking the direction's first-data-frame report below.
                 target.writeFrame(WebSocketFrame.pongFrame(frame.binaryData()));
+                applyBackpressure(source, target);
                 return;
             }
             // Only text, binary and continuation frames get here. Reported before the write, so the report is on record before the frame can reach the other end.
