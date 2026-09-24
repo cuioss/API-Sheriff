@@ -113,6 +113,15 @@ import org.jspecify.annotations.Nullable;
  * effective-auth completeness check — all collect into the same shared
  * {@code errors} list with file/pointer context and never fail fast.
  * <p>
+ * The session-fallback refusal adds one more: every declared {@code auth} block — anchor, endpoint
+ * or route — that sets {@code session_fallback: true} must declare {@code require: bearer}, since the
+ * key only splits a bearer posture into a bearer and a session branch, and the gateway must declare an
+ * {@code oidc} block, since the session branch needs the BFF runtime exactly as a
+ * {@code require: session} route does. The two refusals are independent and carry fixed detail
+ * texts. The anchor floor comparison is untouched by the key — it compares {@code require} only —
+ * and the effective-auth completeness check keeps demanding {@code token_validation} issuers for a
+ * session-fallback route's bearer posture, so such a route is held to both backing blocks.
+ * <p>
  * The fail-closed access→auth matrix (ADR-0013) adds per-anchor checks: a
  * {@code type: bff} anchor requires {@code access: authenticated}; an
  * {@code access: authenticated} anchor requires a non-{@code none} auth floor whose
@@ -174,6 +183,7 @@ public final class ConfigValidator {
     private static final String PASSTHROUGH_SNI_POINTER = "/tls/passthrough_sni";
     private static final String ANCHORS_POINTER = "/anchors";
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
+    private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
     private static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
     private static final String FORWARDED_TRUSTED_POINTER = "/forwarded/trusted_proxies";
     private static final String EDGE_HARDENING_ADMISSION_POINTER = "/edge_hardening/admission_cap";
@@ -197,6 +207,24 @@ public final class ConfigValidator {
 
     /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
+
+    /**
+     * The fixed detail of the refusal of {@code session_fallback: true} on a posture other than
+     * {@code require: bearer}. Fixed text, so the boot log never echoes a configured scalar.
+     */
+    private static final String SESSION_FALLBACK_NOT_BEARER_DETAIL =
+            "declares auth.session_fallback: true on a posture other than require: bearer; session_fallback only "
+                    + "adds a session branch to a bearer posture for requests without an Authorization header — "
+                    + "declare require: bearer, or drop session_fallback";
+
+    /**
+     * The fixed detail of the refusal of {@code session_fallback: true} when the gateway declares no
+     * {@code oidc} block. Fixed text, so the boot log never echoes a configured scalar.
+     */
+    private static final String SESSION_FALLBACK_NO_OIDC_DETAIL =
+            "declares auth.session_fallback: true but the gateway declares no oidc block; the session branch "
+                    + "authenticates through the BFF runtime exactly as a require: session route does — declare "
+                    + "an oidc block, or drop session_fallback";
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
@@ -295,6 +323,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateRouteAuthResolvable(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateSessionFallback(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSecurityProfileMinimal(gateway, endpoints, errors),
             ConfigValidator::validateTerminalAction,
@@ -1351,6 +1380,57 @@ public final class ConfigValidator {
         }
         if (requires.contains(Require.SESSION) && gateway.oidc() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc", "effective auth 'session' requires an oidc block"));
+        }
+    }
+
+    /**
+     * Rule: every declared {@code auth} block that sets {@code session_fallback: true} — on an anchor,
+     * on an enabled endpoint, or on a route of an enabled endpoint — must declare
+     * {@code require: bearer}, and the gateway must declare an {@code oidc} block.
+     * <p>
+     * The key splits a bearer posture into two branches selected by {@code Authorization}-header
+     * presence; on {@code require: none} or {@code require: session} there is no bearer branch to
+     * split, so it would parse and act nowhere. Its session branch authenticates through the BFF
+     * runtime, which exists only when {@code oidc} is declared. The two refusals are independent — a
+     * block violating both yields both — and each names the owning anchor, endpoint or route with
+     * its JSON pointer and a fixed detail text, never a configured scalar value.
+     * <p>
+     * Each declared block is judged where it is declared rather than through the effective-auth
+     * cascade, so an anchor default that no route inherits is still refused. The anchor floor
+     * ({@link #validateAnchorAuthFloor}) compares {@code require} only and is not consulted here.
+     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateSessionFallback(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        boolean oidcDeclared = gateway.oidc() != null;
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            checkSessionFallbackBlock(anchor.auth(), oidcDeclared, GATEWAY_FILE,
+                    ANCHORS_POINTER + "/" + anchor.name() + "/auth", "anchor '%s'".formatted(anchor.name()), errors);
+        }
+        for (EndpointConfig endpoint : endpoints) {
+            checkSessionFallbackBlock(endpoint.auth(), oidcDeclared, endpointFile(endpoint), ENDPOINT_AUTH_POINTER,
+                    "endpoint '%s'".formatted(endpoint.id()), errors);
+            for (RouteConfig route : endpoint.routes()) {
+                checkSessionFallbackBlock(route.auth(), oidcDeclared, endpointFile(endpoint),
+                        ENDPOINT_ROUTES_POINTER, "route '%s'".formatted(route.id()), errors);
+            }
+        }
+    }
+
+    /**
+     * Judges one declared {@code auth} block for {@link #validateSessionFallback}: a no-op when the
+     * block is absent or does not set {@code session_fallback: true}.
+     */
+    private static void checkSessionFallbackBlock(@Nullable AuthConfig auth, boolean oidcDeclared, String file,
+            String pointer, String owner, List<ConfigError> errors) {
+        if (auth == null || !auth.effectiveSessionFallback()) {
+            return;
+        }
+        if (auth.require() != Require.BEARER) {
+            errors.add(new ConfigError(file, pointer, owner + " " + SESSION_FALLBACK_NOT_BEARER_DETAIL));
+        }
+        if (!oidcDeclared) {
+            errors.add(new ConfigError(file, pointer, owner + " " + SESSION_FALLBACK_NO_OIDC_DETAIL));
         }
     }
 
