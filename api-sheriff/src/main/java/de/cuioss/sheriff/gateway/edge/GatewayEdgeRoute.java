@@ -44,6 +44,7 @@ import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
+import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -53,6 +54,7 @@ import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -60,7 +62,6 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -155,7 +156,12 @@ import org.jspecify.annotations.Nullable;
  *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
  *       then the per-route verb gate;</li>
  *   <li>stage 3 — per-route thorough checks ({@code allowed_paths}, body cap, divergent pipeline);</li>
- *   <li>stage 4 — offline bearer-token validation;</li>
+ *   <li>stage 4 — authentication on the {@link AuthBranch} resolved once for the request: offline
+ *       bearer-token validation on the bearer branch, the server-session runtime on the session
+ *       branch. The session branch — a {@code require: session} route, or the
+ *       {@code Authorization}-less request on a {@code session_fallback} route — first passes the
+ *       fixed CSRF defence; the bearer branch does not. A {@code session_fallback} route counts the
+ *       selected branch against {@link SheriffMetrics#AUTH_BRANCH_TOTAL};</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
  *       {@link RouteRuntime#getEffectiveForward() effectiveForward} and the global forwarded block;</li>
  *   <li>stage 6 / 7 — the route's terminal action: streamed upstream dispatch (byte-capped) and the
@@ -501,8 +507,10 @@ public class GatewayEdgeRoute {
         this.grpcStatusMapper = new GrpcStatusMapper();
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
-        // security-filter counts surface as sheriff_security_events_total, completing the fixed
-        // five-meter contract alongside the request/duration/error/upstream meters recorded above.
+        // security-filter counts surface as sheriff_security_events_total. It is the one meter of the
+        // SheriffMetrics contract bound at boot rather than recorded per request: the request,
+        // duration, error, upstream-duration, session-event and auth-branch meters are recorded as
+        // the traffic that moves them is served.
         sheriffMetrics.bindSecurityEventCounter(securityEventCounter);
     }
 
@@ -871,10 +879,21 @@ public class GatewayEdgeRoute {
                     route.getMatcher().matchHeaderNames());
             verbGateStage.process(request);
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
-            // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin
-            // provenance before the session runtime resolves it. A bearer-only gateway has no session
-            // routes and never reaches this guard.
-            if (bffRuntime.isActive() && route.getEffectiveAuth().require() == Require.SESSION) {
+            // Resolve the authentication branch ONCE, through the same resolver stage 4 dispatches on,
+            // so the CSRF gate below and the authentication stage cannot disagree on it. Only a
+            // session_fallback route meters its branch — a plain route's branch is its posture and
+            // carries no signal, so it never touches sheriff_auth_branch_total.
+            AuthConfig effectiveAuth = route.getEffectiveAuth();
+            AuthBranch branch = AuthBranch.resolve(effectiveAuth, request);
+            if (effectiveAuth.effectiveSessionFallback()) {
+                sheriffMetrics.recordAuthBranch(route.getId(), branch);
+            }
+            // Fixed CSRF defence (D7): every unsafe-method request resolved onto the SESSION branch must
+            // prove same-origin provenance before the session runtime resolves it — a require:session
+            // route exactly as before, and the Authorization-less branch of a session_fallback route.
+            // The BEARER branch carries no ambient credential, so it is not a CSRF surface and skips the
+            // guard. A bearer-only gateway has no session branch and never reaches this guard.
+            if (bffRuntime.isActive() && branch == AuthBranch.SESSION) {
                 bffRuntime.csrfDefence().enforce(request);
             }
             authenticationStage.process(request);
