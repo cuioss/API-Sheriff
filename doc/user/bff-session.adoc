@@ -160,7 +160,11 @@ endpoint:
   rescue it -- the bearer branch was chosen the moment the header was sent.
 | No `Authorization`, live session
 | Served exactly as on a `require: session` route: the session's token is relayed upstream (unless
-  `token_relay: false`), refreshed near expiry, and the session cookie is stripped.
+  `token_relay: false`), refreshed near expiry, and the session cookie is stripped. As on every
+  session route, *no scope check runs*: any live session is admitted, even one whose login never
+  requested the route's scopes. The `403 insufficient_scope` row above applies to bearer clients
+  only, so a route whose `scopes` are its authorization boundary is not a `session_fallback`
+  candidate.
 | No `Authorization`, no session, navigation
 | `302` into the login. The login requests the route's scope set, `oidc.scopes` plus the endpoint's
   `scopes`.

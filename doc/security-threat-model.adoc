@@ -1958,7 +1958,12 @@ the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
 * *Nothing new is accepted.* The BEARER branch is exactly a `require: bearer` route, including the
   `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The SESSION branch is
   exactly a `require: session` route. A request is admitted on a `session_fallback` route only if one
-  of those two routes would admit it.
+  of those two routes would admit it. The consequence for scopes is deliberate and must be read as
+  such: the SESSION branch runs no scope check (ADR-0049), so any live session is admitted to a
+  `session_fallback` route whatever scopes its token carries. Enabling the key on a bearer route
+  therefore widens that route's authorization for browser users from "token carries
+  `neededScopes`" to "holds a gateway session"; the operator documentation says so, and a route
+  whose scopes are its authorization boundary must stay a plain `require: bearer` route.
 * *Discoverable and refused when meaningless.* The key is refused at boot on a posture other than
   `require: bearer` and on a gateway without an `oidc` block. The per-route boot posture line
   (`ApiSheriff-3`) reports `auth.session_fallback` for every route, and
