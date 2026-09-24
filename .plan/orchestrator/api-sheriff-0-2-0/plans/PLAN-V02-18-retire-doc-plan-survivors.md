@@ -19,6 +19,10 @@ workstream: WS-02
 > reviewed both reasons and instructed retirement anyway, ahead of the 1.0 cut** — this plan
 > executes that instruction; it does not re-litigate it.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+All claims hold. `doc/plan/` still holds exactly 3 files. `doc/quality-report/documentation.adoc` is still the sole outside reference. The Pre-1.0 Rules section (`CLAUDE.md:145`) carries no flip condition yet (D2 is open). Sequence against `PLAN-V02-19`, whose module-list test reads `CLAUDE.md`.
+
 ## Objective
 
 Delete `doc/plan/01-base-implementation.adoc`, `doc/plan/09-release-readiness.adoc` and
@@ -75,20 +79,25 @@ side only — deletion and reference repair — plus the one new-tracking obliga
 
 - OBSERVED: `doc/plan/` holds exactly three files — `01-base-implementation.adoc`,
   `09-release-readiness.adoc`, `README.adoc` — confirmed via `git ls-files doc/plan/`, 2026-09-22.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/plan/ holds exactly 01-base-implementation, 09-release-readiness, README
 - OBSERVED: the only repository-source references to these files outside `.plan/` are in
   `doc/quality-report/documentation.adoc` (path+line citations at lines 116 and 140, plus general
   mentions at lines 6 and 228); `doc/README.adoc` carries none. Confirmed via
   `grep -rln "fapi_next_steps\|doc/plan\|plan/README" --include="*.adoc" --include="*.md"
   --include="*.yml" --include="*.yaml" --include="*.js" .` excluding `.plan/` and `.git/`,
   2026-09-22.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/quality-report/documentation.adoc sole outside reference (:5-6,:116,:140,:226-232)
 - OBSERVED: no site-navigation or build-config file (`*.yml`/`*.yaml`/`*.json`) references
   `doc/plan/`. Confirmed via the same grep restricted to those extensions, 2026-09-22.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no yml/yaml/js site-nav or build config references doc/plan/
 - HYPOTHESIS: `CLAUDE.md`'s Pre-1.0 Rules section is the best-fit home for the 1.0-cut milestone
   note (Deliverable 2). Confirm/refute at outline — an ADR, a GitHub issue, or `doc/README.adoc`'s
   own index are also plausible and were not ruled out, only not chosen here (verify-at-outline).
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CLAUDE.md-as-home is a placement choice; Pre-1.0 Rules :145 carries no flip condition
 - Verify-first clause: re-run the outside-reference grep at outline, not only at staging — a file
   added between now and launch that references `doc/plan/` would not appear in the OBSERVED grep
   above.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: outside-reference grep re-run at 05f6ee3, same result set
 
 ## Expected Surface
 

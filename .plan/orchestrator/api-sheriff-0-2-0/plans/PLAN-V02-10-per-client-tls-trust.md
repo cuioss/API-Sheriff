@@ -172,6 +172,10 @@ the spec's current under-specific "the private-CA authorization-server documenta
 no 0.9.6 jar is cached locally, so the prior discharge is stale to the version bump and needs
 re-verification at outline against the artifact actually resolved then — not load-bearing for D2.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+D1 is confirmed discharged (`BffRuntimeProducer.java:539` wires the egress `SSLContext`, carried by V02-09's D6), so this plan remains D2 only. D2 is open: 37 trustStore-family arguments across 12 `integration-tests/docker-compose.yml` services, plus a 13th site in `NoCertificatePlainHttpOptInIT.java`, which D2 must also retire. `doc/user/tls-scenarios.adoc` exists as a reconciliation target. A `## Claim Labels` section was added 2026-09-24 (cleanup A3).
+
 ## Objective
 
 The gateway's JWKS trust is already neutral and fail-closed: `gateway.yaml` names a logical
@@ -224,6 +228,19 @@ other carry. It is **not orphaned**: roadmap PLAN-43 names it explicitly and mak
 - The validation-side trust path is already correct at `TokenValidatorProducer`:187.
 - `JwksTrustProfileResolver`:78 refuses a `trust-all` bucket ahead of the anchor-free check
   (PLAN-31C).
+
+## Claim Labels
+
+Added 2026-09-24 by the cleanup pass (A3 ambiguity: the spec had no claim section). Each claim was corroborated at `05f6ee3`.
+
+- OBSERVED: D1's client `SSLContext` wiring has landed — `BffRuntimeProducer.java:539` `resolveEgressProfile(OIDC_TLS_PROFILE_KEY, …)`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.java:539 .sslContext(trustProfileResolver.resolveEgressProfile(...))
+- OBSERVED: the process-global truststore override spans 12 services in `integration-tests/docker-compose.yml` (37 trustStore-family arguments)
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration-tests/docker-compose.yml: 12 services, 37 trustStore-family args
+- OBSERVED: a 13th override site exists in `NoCertificatePlainHttpOptInIT.java` — HYPOTHESIS that it must be retired with D2 (verify-at-outline)
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: NoCertificatePlainHttpOptInIT.java constructs the identical trustStore triplet
+- OBSERVED: `doc/user/tls-scenarios.adoc` exists and carries worked trustStore examples — D2's documentation target
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/user/tls-scenarios.adoc present with worked trustStore examples
 
 ## Expected Surface
 

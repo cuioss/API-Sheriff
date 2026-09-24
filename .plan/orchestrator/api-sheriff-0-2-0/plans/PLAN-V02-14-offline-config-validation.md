@@ -65,6 +65,10 @@ restructure, with `anchors.adoc` and `endpoint-routes.adoc` new. Write D5 agains
 not started, so if it is still unstarted at this plan's outline, record that the Quarkus-command-mode
 option could not be read rather than assuming either answer.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+All claims hold. No validate-and-exit entry point exists (control query hits 32 `ConfigValidator` files). The named `ConfigValidator` checks are still present (file now 2,586 lines). D1–D5 are open. D3's cross-check still waits on V02-01.
+
 ## Objective
 
 Let a `gateway.yaml` / `endpoints/` / `topology.properties` set be checked **without a running
@@ -148,12 +152,12 @@ reading a boot log.** That is the cost being removed.
   `--validate` returns **zero** hits outside `.plan/`. The feature does not exist in any form.
   (The search was re-run without a pathspec after an earlier `**`-globbed pathspec returned a false
   zero on every query — see the note in Dependencies.)
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: git grep for validateConfig/validate-config/--validate outside .plan/ still returns zero hits on main; control query 'ConfigValidator' returns 63 files confirming the search reaches the source tree. No offline-validation entry point exists.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no validate-config/--validate entry point outside .plan/ (control: ConfigValidator hits 32 files)
 - ASSERTED BY THE ISSUE, NOT RE-VERIFIED: the five cross-document rule names attributed to
   `ConfigValidator`. Read the class and enumerate its actual rules; the list is a lead and may be
   incomplete — `ConfigValidator` gained at least one rule in 0.1.1 (the forward `*_allow`/`*_deny`
   mutual exclusion, `checkForwardDimension`) that postdates the issue.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ConfigValidator.java (2363 lines) still carries all five named rules plus checkForwardDimension and >=15 further validate*/check* rules the issue never named -- confirms the five-name list is a lead, not the full rule set, exactly as claimed.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ConfigValidator (2586 lines) checkForwardDimension:603 checkRouteInsideDeclaredAnchorNamespace:1167 checkRouteDeclaresContainingAnchor:1181 checkFamilyTrust:1867 checkCors:2031
 
 ## Expected Surface
 

@@ -144,6 +144,12 @@ outline rather than trusting this note.
 **ADR corpus is now 50, not 49** — PR #343 landed `escape-bypass_constructs_are_refused_at_boot` as
 part of the same change. Re-check against `main` and every open branch at write time, as always.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+**D6's build premise is REFUTED at HEAD, and D6 is re-scoped in place.** `pipeline/FramingGate` (predates the epic; relocated by #92) already rejects CL+TE, multiple or comma-listed `Content-Length`, a body on a bodyless method (with the exact `allow_get_with_content_length_body` opt-in), and a `Connection`-header strip of framing or trust headers. The gw-02 `GAP` row at `doc/security-threat-model.adoc:2127` is stale documentation, not a code gap. D6 is now an audit plus a residual build: the bare-LF chunk terminator and pooled-connection re-validation, both unverified. `FramingGate.java` is added to the Expected Surface. D2/D3 are re-confirmed partially discharged by `ErrorPageClassifier` (#343); `METHOD_NOT_ALLOWED`/`PASSTHROUGH_HOST_SMUGGLED` are still `KEEP_SHAPE` (`:132`). D1, D5 and D7 are open (`validateWebSocketRoute` `:2404` is still bearer-only). The `renderProblem` sites drifted to `:709/:837/:916/:941/:1489` (def `:1500`).
+
+**ADR numbering, corrected across the corpus:** `doc/adr/` now holds 55 records. `0053` is DUPLICATED (#348 renamed the portal ADR `0050`→`0053` while #346 claimed `0053` concurrently), and the next free ordinal is `0055`. Every earlier "next free is 0038/0050" line in this spec is stale. Re-derive the ordinal at write time, and prefer landing after `PLAN-V02-19`, which fixes the duplicate and adds an ordinal-uniqueness test.
+
 ## Objective
 
 Make a terminal rejection say what actually happened, to whoever is actually reading it. **This
@@ -264,8 +270,19 @@ from it.** That is a real diagnosis cost, not a style objection.
    > reference is discharged rather than edited — check before editing, and do not resurrect the
    > directory.
 
-6. **Folded in 2026-09-22 from `doc/security-threat-model.adoc` GAP row `gw-02` — reject ambiguous
-   HTTP framing (request smuggling/desync) at the earliest pipeline stage.**
+6. **Folded in 2026-09-22 from `doc/security-threat-model.adoc` GAP row `gw-02`. RE-SCOPED
+   2026-09-24 per Re-Grounded (4) below: this is now an audit that closes a residual, not a
+   build.** `pipeline/FramingGate` already rejects CL+TE, multiple or comma-listed
+   `Content-Length`, a body on a bodyless method (with the existing
+   `allow_get_with_content_length_body` opt-in), and a `Connection`-header strip of a framing or
+   trust header. It predates this epic. So D6 is: (a) confirm `FramingGate`'s coverage against
+   the gw-02 control, case by case; (b) build ONLY the residual that the confirmation shows is
+   absent. The two candidates, both unverified, are a bare-LF / non-RFC-9112 chunk terminator and
+   never pooling an upstream connection whose framing was not validated. (c) Flip the stale gw-02
+   `GAP` row to `COVERED`, or to `PARTIAL` with the named residual. (d) Re-categorise
+   `FramingGate`'s rejection (today `SECURITY_FILTER_VIOLATION`) only if D1's taxonomy calls for
+   it. The original text follows. Read it as the gw-02 control's full statement, not as a list
+   of things to build.
 
    Reject a request bearing both `Content-Length` and `Transfer-Encoding`; a body on a bodyless
    method (HEAD/GET, unless `security_defaults.allow_get_with_content_length_body` is explicitly
@@ -318,16 +335,16 @@ other.
 
 - OBSERVED (2026-08-07, `b8dde22`): `EventType.java`:62/:69/:71 carry the three members against
   `EventCategory.INPUT_VALIDATION`.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType.java:62,69,71 on main still carry NO_ROUTE_MATCHED/PASSTHROUGH_HOST_SMUGGLED/METHOD_NOT_ALLOWED against EventCategory.INPUT_VALIDATION -- lines and category match exactly.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType :62/:69/:71 NO_ROUTE_MATCHED/PASSTHROUGH_HOST_SMUGGLED/METHOD_NOT_ALLOWED still INPUT_VALIDATION
 - OBSERVED (2026-08-07, `b8dde22`): `renderProblem` call sites at `GatewayEdgeRoute.java`:566, :694,
   :750, :775, :1093, defined at :1096; `acceptsHtml` exists only at
   `SessionAuthenticationStage.java`:181 and is used only at :168.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Substance unchanged -- same 5 renderProblem call sites, same event mapping/order, method still defined once. Only line numbers drifted (file grew): call sites now :640/:768/:844/:869/:1245, def :1248 (was :566/:694/:750/:775/:1093, def :1096); acceptsHtml now defined :220, used :205 (was :181/:168). Re-anchor by content at outline.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem sites :709/:837/:916/:941/:1489 def :1500; acceptsHtml SessionAuthenticationStage def :220 use :205
 - ASSERTED BY THE ISSUE, NOT RE-VERIFIED: the three-row behaviour table in #189 (auth failure → 302
   on `text/html`; `/auth/userinfo` → 401 both ways; no route → 404 `problem+json` both ways) was
   measured against a running gateway by the reporter. **Re-measure before building on it** — a
   measured table from outside is a lead, and row 1 is what the whole design reuses.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Runtime Accept-negotiation behavior cannot be settled by a static read -- requires a running gateway. Spec already flags this as not-re-verified; nothing in current main statically confirms or contradicts it.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: runtime Accept-negotiation table needs a running gateway
 
 ## Expected Surface
 
@@ -337,8 +354,9 @@ other.
 - `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D7 (extend `validateWebSocketRoute`'s bearer-only allowlist requirement to `Require.SESSION`)
 - `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/OriginValidationStage.java` — read-only reference for D7; OBSERVED, this plan does NOT edit it — the enforcement mechanism already exists
 - `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java` — read-only reference for D1/D2 boundary reasoning only, per D4
-- `doc/security-threat-model.adoc` — flip `gw-02` (D6) and `gw-09` (D7) from `GAP` to `COVERED` on landing; `gw-02` is the only one this plan still builds new enforcement for
-- `doc/architecture.adoc`, `doc/adr/00NN-*.adoc` (new, next free is 0050 not 0038 as of 2026-09-22) — D5, D6, D7
+- `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/FramingGate.java` — D6: the existing gw-02 enforcement site (OBSERVED 2026-09-24). It is edited only if D6(b) finds a residual to build.
+- `doc/security-threat-model.adoc` — flip `gw-02` (D6) and `gw-09` (D7) from `GAP` on landing. gw-02's enforcement largely already exists (see D6).
+- `doc/architecture.adoc`, `doc/adr/00NN-*.adoc` (new; re-derive the next free ordinal at write time — `0055` at `05f6ee3`, where `0053` is duplicated until PLAN-V02-19 lands) — D5, D6, D7
 - OBSERVED (absence, asserted): `/auth/userinfo` and the reserved-path registry are **NOT** edited.
 
 ## Dependencies and Sequencing

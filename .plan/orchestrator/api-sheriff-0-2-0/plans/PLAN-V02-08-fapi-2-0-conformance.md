@@ -166,6 +166,12 @@ evaluation all assumed the OLD calculus and must be re-derived, not re-verified,
 - ADR numbering: corpus is now contiguous `0001`–`0049`; next free is `0050`, not `0038`.
 - Expected Surface's 8 entries all still resolve correctly at their stated paths — no path staleness.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+Premises hold. Upstream facts re-checked against the pinned `token-sheriff-client-0.9.6` jar (javap): **mTLS is FORECLOSED** (`MtlsClientAuth` ctor throws unconditionally) and **DPoP is OPEN** (`DpopProofGenerator` handles RSA/EC/EdEC). This matches the operator's standing mTLS-alpha / DPoP-direction ruling. The BFF still authenticates with `CLIENT_SECRET_BASIC` (`BffRuntimeProducer.java:329,:533`). No `ParClient` reference exists in production source. The `RefreshFlow` construction site is `ScopedEngineFlows.java:142` (4-arg, no sender constraint), not `BffRuntimeProducer`, so D4's anchor moves there. `doc/fapi_status.adoc` still has three `UNMET` rows. D5 is partially discharged: the egress `SSLContext` is wired (`BffRuntimeProducer.java:539`), and client-certificate presentation is moot while mTLS is foreclosed. A `## Claim Labels` section was added 2026-09-24 (cleanup A3).
+
+**ADR numbering, corrected across the corpus:** `doc/adr/` now holds 55 records. `0053` is DUPLICATED (#348 renamed the portal ADR `0050`→`0053` while #346 claimed `0053` concurrently), and the next free ordinal is `0055`. Every earlier "next free is 0038/0050" line in this spec is stale. Re-derive the ordinal at write time, and prefer landing after `PLAN-V02-19`, which fixes the duplicate and adds an ordinal-uniqueness test.
+
 ## Objective
 
 Make API Sheriff's BFF a conformant **FAPI 2.0 Security Profile** relying party. Three of the
@@ -322,6 +328,23 @@ repositories. Cited by class and method rather than line number, which decays.
 - **HYPOTHESIS**, verify at outline — Keycloak's support for `tls_client_auth` and
   certificate-bound tokens in the deployed realm configuration. The route decision in D1 depends on
   it, and an asserted presence needs the same verification as an asserted absence.
+
+## Claim Labels
+
+Added 2026-09-24 by the cleanup pass (A3 ambiguity: the spec had no claim section). Each claim was corroborated at `05f6ee3`.
+
+- OBSERVED: mTLS client auth is foreclosed at the pinned engine — `token-sheriff-client-0.9.6` `MtlsClientAuth` constructor throws `UnsupportedOperationException` unconditionally
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: javap MtlsClientAuth ctor unconditionally throws UnsupportedOperationException (token-sheriff-client-0.9.6)
+- OBSERVED: DPoP is available at the pinned engine — `DpopProofGenerator` supports RSA/EC/EdEC keys (RS256/PS256/ES256/EdDSA)
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: javap DpopProofGenerator RSA/EC/EdEC -> RS256/PS256/ES256/EDDSA
+- OBSERVED: the BFF still authenticates with `CLIENT_SECRET_BASIC` — `BffRuntimeProducer.java:329` `ClientSecretBasicAuth`, `:533`
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.java:329 ClientSecretBasicAuth, :533 CLIENT_SECRET_BASIC
+- OBSERVED: no production reference to `ParClient` — whole-tree search over `api-sheriff/src/main/java`, control-queried
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: grep ParClient over api-sheriff/src/main/java: zero hits
+- OBSERVED: `RefreshFlow` is constructed at `ScopedEngineFlows.java:142` with 4 args and no sender constraint — D4's anchor
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ScopedEngineFlows.java:142-143 4-arg RefreshFlow, no SenderConstraint
+- OBSERVED: `doc/fapi_status.adoc` carries three `UNMET` rows (`:43`, `:50`, `:58`)
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/fapi_status.adoc :43/:50/:58 UNMET; :63/:69 MET
 
 ## Expected Surface
 

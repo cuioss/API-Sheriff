@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-V02-03",
+  "slug": "documentation-restructure",
+  "workstream": "WS-02",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-v02-03-documentation-restructure",
+  "pr": "197",
+  "landing": "landings/PLAN-V02-03.md",
+  "seq": 3
+}

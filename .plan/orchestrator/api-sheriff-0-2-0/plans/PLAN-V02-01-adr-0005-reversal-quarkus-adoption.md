@@ -90,6 +90,12 @@ touches that assembler anyway; otherwise report that it remains unowned rather t
 V02-16 and V02-17 ran, and that carve-out (a plan shipping no Java is unaffected by the arch gate)
 is now proven rather than theorised.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+Every claim was re-checked. Premises hold with line drift (`BffRuntime` sole `JsonWriter` call site now `:279`). **Two new D5 facts, both added to the Expected Surface:** `bff/logout/BackchannelLogoutReceiver` (+46 lines, with new `LogoutRejection`/`LogoutRejectionLog` per ADR-0051) is now the live caller of `SessionBinding#destroyBySid`/`#destroyBySub`, so any session-store replacement must keep O(1) destroy for it. `bff/runtime/SessionIdentity` (#343) is a new session-derived portal DTO outside `bff/session/**`. CDI footprint re-measured: 16 files carry `@ApplicationScoped`, ~59 CDI annotation occurrences (was 11/45 at `af63895`). `ConfigLoader` grew +110 lines (#341, ADR-0052) — D4's SmallRye mapping must cover the new env-coercion arm. No deliverable discharged.
+
+**ADR numbering, corrected across the corpus:** `doc/adr/` now holds 55 records. `0053` is DUPLICATED (#348 renamed the portal ADR `0050`→`0053` while #346 claimed `0053` concurrently), and the next free ordinal is `0055`. Every earlier "next free is 0038/0050" line in this spec is stale. Re-derive the ordinal at write time, and prefer landing after `PLAN-V02-19`, which fixes the duplicate and adds an ordinal-uniqueness test.
+
 ## Objective
 
 Four of the operator's review findings — a hand-rolled JSON writer, a hand-rolled environment-variable
@@ -192,32 +198,34 @@ unblocks everything else and they must land together.
   `JsonWriter` is 126 lines and package-private; `InMemorySessionStore` is a `final class` with three
   `HashMap`s and no CDI annotation; corpus-wide CDI annotation count is 33 across 9
   `@ApplicationScoped` files; `ClientHelloSniParser` hand-parses ClientHello.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0005 Accepted, arch-test noClasses guard intact (168 lines); EnvSecretResolver javadoc unchanged; JsonWriter 127 lines pkg-private final; InMemorySessionStore final w/ 3 HashMaps, now all methods synchronized (PLAN-49 landed); ClientHelloSniParser hand-parses RFC6066 ClientHello, 423 lines. CDI count STALE (claim says 33/9; main now 49/15) -- already flagged stale in spec, re-count at outline as instructed.
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0005 Accepted; FrameworkAgnosticArchTest present; JsonWriter pkg-private; config/load/ 5 files; InMemorySessionStore 7 synchronized methods; CDI now 16 files / ~59 annotations (was 11/45)
 - **HYPOTHESIS (verify-at-outline)**: that a Quarkus-supplied JSON serializer covers `JsonWriter`'s
   payload shapes. **Confirm/refute artifact**: `JsonWriter`'s call sites and the actual payloads.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: BffRuntime.java:259 still JsonWriter.toJson(outcome.body()) sole call site, unchanged. Whether Quarkus serializer covers the payload shape is a design determination outside repo content -- this is the outline-time task the spec names.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: BffRuntime.java:279 still sole JsonWriter.toJson call site; whether the Quarkus serializer covers the payload shape is a design question
 - **HYPOTHESIS (verify-at-outline)**: that SmallRye expression expansion matches `EnvSecretResolver`'s
   semantics. **Confirm/refute artifact**: the resolver's tests plus the YAML-load call path.
   **Explicitly refutable — and a refutation is a valid, expected outcome.**
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: config/load/ package unchanged (ConfigError, ConfigLoadException, ConfigLoader, EnvSecretResolver, package-info.java). SmallRye-vs-YAML-load semantics match is a design question the repo alone doesn't settle; spec itself labels this explicitly refutable.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: config/load/ unchanged structurally but ConfigLoader +110 lines (#341, ADR-0052 env coercion); SmallRye-vs-YAML semantics is a design question
 - **HYPOTHESIS (verify-at-outline)**: that a Quarkus session mechanism satisfies O(1) destroy-by-`sub`
   and destroy-by-`sid`. **Confirm/refute artifact**: `SessionStore`'s interface and the back-channel
   logout call path. **Likely to be refuted; that is fine and must be reported, not worked around.**
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SessionStore.java interface javadoc unchanged, still states O(1) destroy-by-sub/sid via secondary index as the binding requirement. Whether a Quarkus/Vert.x mechanism meets it is a design comparison outside repo content; matches spec's own likely-to-be-refuted framing.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SessionStore O(1) destroy-by-sub/sid still binding; NEW live consumer BackchannelLogoutReceiver:130/:132 (+LogoutRejection/Log, ADR-0051) added to surface
 - **OBSERVED (absence)**: the orchestrator did **not** verify which serializer the Quarkus BOM
   supplies here, did **not** read `ServerSessionBinding` or `SessionCookieCodec` beyond their
   existence, did **not** read the `tls/` package beyond `ClientHelloSniParser`'s role, and did
   **not** establish whether retiring the arch-gate breaks any other test.
-  - verdict: unverifiable | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Claim is about the PRIOR reviewer's own investigation scope, not repo content -- cannot be settled by reading main. FrameworkAgnosticArchTest.java still present/unretired on main, so whether retiring it breaks another test remains genuinely untested.
+  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: about a prior reviewer's investigation scope; FrameworkAgnosticArchTest still unretired, so retirement impact untested
 
 ## Expected Surface
 
 - OBSERVED: `doc/adr/` — one NEW superseding ADR; `0005-module-structure.adoc` marked superseded
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/arch/FrameworkAgnosticArchTest.java` — D2
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/JsonWriter.java` — D3
-- OBSERVED: `.../config/load/**` — D4, whole package
-- OBSERVED: `.../bff/session/**` — D5, all six types
-- OBSERVED: `.../tls/**` — D6, review only
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/load/**` — D4, whole package
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/**` — D5, all six types
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/logout/BackchannelLogoutReceiver.java` — D5 (added 2026-09-24): the live caller of `SessionBinding#destroyBySid` / `#destroyBySub`, which relies on the O(1) guarantee D5 must preserve
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionIdentity.java` — D5 (added 2026-09-24): a session-derived portal DTO (PR #343) outside the `bff/session/**` glob
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/**` — D6, review only
 - HYPOTHESIS: `api-sheriff/pom.xml` — **only if** a dependency change is approved; otherwise untouched
 - OBSERVED: `doc/architecture.adoc` and the three-layer docs for every converted component
 - OBSERVED (absence, deliberate): **no gateway behaviour change.** This is an infrastructure

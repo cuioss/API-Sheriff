@@ -100,6 +100,10 @@ plan cannot complete D5. **It is emittable only if D5 is explicitly deferred**, 
 means deferring the one deliverable that keeps the sample from becoming the de-facto addressing
 specification. Prefer sequencing after V02-12 over emitting a partial.
 
+## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
+
+Claim 0 is still refuted-and-absorbed (14 tracked files). **Expected Surface corrected:** `docker-compose.plain-http.yml` and `docker/nginx/tls-terminator.conf` were claimed as corrected by Re-Grounded (3) but were never added to the list; they are now. D1 is partially discharged (confidential `sample-client` already ships in `sample-realm.json:28-36`). The `oidc` block, the `require: session` route and the `final_redirect` page are still absent. D5 is blocked on V02-12.
+
 ## Objective
 
 Make the BFF — the feature most adopters take this gateway for — runnable from the sample, so nobody
@@ -182,17 +186,19 @@ sample exists to save.**
   A search for an `oidc` block or a `session` key returns nothing; `gateway.yaml`:11 names BFF
   sessions among the deliberate omissions and :44 documents the public anchor's absent auth block;
   `endpoints/demo-api.yaml`:21 is `require: none`.
-  - verdict: contradicted | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: File count now 14, not 10/12: docker-compose.plain-http.yml, docker/certificates/sample-idp-trust.properties, docker/nginx/tls-terminator.conf are new; scripts/wait-for-ready.sh was deleted (#230), folded into start-sample.sh. Absorbed into spec as new Re-Grounded (3) section.
+  - verdict: contradicted | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 14 tracked files, not ten -- refutation already absorbed by Re-Grounded (3); no oidc:/session: key in gateway.yaml; demo-api.yaml:21 require: none
 - OBSERVED (2026-08-07): a Keycloak realm import already ships at
   `deployment/compose-sample/docker/keycloak/sample-realm.json`, so D1's confidential client is an
   edit rather than new infrastructure.
-  - verdict: corroborated | checked_at: af638952bc02aadda158c78668ccf0960fa379ba | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json:26-49 still ships a fully-formed confidential client (sample-client, publicClient:false, client-secret auth). D1's confidential client premise holds and may already be partially satisfied -- noted in Re-Grounded (3).
+  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json:28-36 sample-client confidential, client-secret, standard flow
 
 ## Expected Surface
 
 - `deployment/compose-sample/docker/sheriff-config/gateway.yaml`, `endpoints/**` — D1
 - `deployment/compose-sample/docker/keycloak/sample-realm.json` — D1
 - `deployment/compose-sample/docker-compose.yml`, `.env` — D1, D2
+- `deployment/compose-sample/docker-compose.plain-http.yml` — D1 (added 2026-09-24): the plain-HTTP / TLS-terminator variant, which the oidc overlay must also reach. Re-Grounded (3) said this was corrected, but the list never carried it.
+- `deployment/compose-sample/docker/nginx/tls-terminator.conf` — D1 (added 2026-09-24): same reason
 - `doc/user/compose-sample.adoc`, `bff-session.adoc`, `bff-cookie.adoc` — D3
 - `.github/workflows/**` — D4
 
