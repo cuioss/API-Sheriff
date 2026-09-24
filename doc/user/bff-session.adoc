@@ -58,7 +58,8 @@ oidc:
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
 ----
 
-The gateway drives no login unless a route's effective auth is `require: session`. One part of the
+The gateway drives no login unless a route's effective auth is `require: session` or a
+`require: bearer` route declares `session_fallback: true` (see <<session-fallback>>). One part of the
 block does reach bearer routes, though: `oidc.scopes` joins the scope set every bearer route checks
 (see <<bearer-oidc-scopes>>), so adding an `oidc` block to a gateway that also
 serves bearer routes tightens those routes.
@@ -108,13 +109,85 @@ endpoint:
 
 The session is still resolved, refreshed and required exactly as before: a navigation without a
 session is redirected to login, an XHR gets `401`, and an ended session still clears the cookie. The
-only difference is that the upstream receives no `Authorization` header at all. `token_relay` acts
-only on `require: session`; on a bearer route the client's own header is forwarded as usual.
+only difference is that the upstream receives no `Authorization` header at all. `token_relay` acts on
+`require: session` routes and on the session branch of a <<session-fallback,`session_fallback`>>
+route. It has no effect on a plain `require: bearer` route, where the client's own `Authorization`
+crosses only when `forward.headers_allow` names it, nor on the bearer branch of a `session_fallback`
+route, which always forwards the validated client token.
 
 Because the point of `token_relay: false` is that no access token reaches the origin, the gateway
 refuses at boot a route that sets it while its effective `forward.headers_allow` names
 `Authorization` (in any letter case) -- that would let the browser's own `Authorization` header back
 in. Remove `Authorization` from `headers_allow`, or drop `token_relay: false`.
+
+[[session-fallback]]
+== Serving API clients and browsers on one route
+
+A backend path that serves both API clients presenting their own bearer token and browsers logged in
+through the gateway would otherwise need two routes on one prefix, told apart by an
+`Authorization` header matcher. `session_fallback: true` on a `require: bearer` route folds the pair
+into one route with two authentication branches:
+
+[source,yaml]
+----
+# endpoints/orders.yaml
+endpoint:
+  id: orders
+  base_url: ORDERS
+  auth:
+    require: bearer
+    session_fallback: true          # a request without Authorization takes the session branch
+  scopes: [orders.read]
+  routes:
+    - id: orders-api
+      match: { path_prefix: /api/orders }
+----
+
+*The branch is picked from one thing only: whether the request carries an `Authorization` header.*
+
+[cols="2,3"]
+|===
+| Request | What happens
+
+| Valid bearer token, with or without a session cookie
+| Admitted when the token carries every scope the route needs; the upstream receives exactly that
+  token as `Authorization: Bearer`. No session is looked up, no CSRF check runs, no cookie is set, and
+  the session cookie is not forwarded. `headers_allow` does not need to name `Authorization`.
+| Bearer token lacking a needed scope
+| `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`.
+| Invalid token, a `Basic` credential or an empty `Authorization`, with or without a session cookie
+| `401` with `WWW-Authenticate: Bearer`. Never a login redirect, and a valid session cookie does not
+  rescue it -- the bearer branch was chosen the moment the header was sent.
+| No `Authorization`, live session
+| Served exactly as on a `require: session` route: the session's token is relayed upstream (unless
+  `token_relay: false`), refreshed near expiry, and the session cookie is stripped.
+| No `Authorization`, no session, navigation
+| `302` into the login. The login requests the route's scope set, `oidc.scopes` plus the endpoint's
+  `scopes`.
+| No `Authorization`, no session, XHR or API call
+| `401` `application/problem+json`.
+|===
+
+*CSRF.* The fixed CSRF defence runs on the session branch only: an unsafe method without
+`Authorization` needs a trusted `Origin` (or `Sec-Fetch-Site: same-origin`) exactly as on a session
+route (see <<csrf>>). The bearer branch skips it, because a browser never attaches `Authorization`
+by itself and a cross-origin script cannot send one without a CORS preflight.
+
+*What the gateway needs.* The route is held to both backing blocks: a `token_validation` block with
+at least one issuer for the bearer branch, and an `oidc` block for the session branch. Setting
+`session_fallback: true` on a `require: none` or `require: session` posture, or on a gateway with no
+`oidc` block, is refused at boot with a fixed `ApiSheriff-200` message. The boot log's per-route
+posture line reports `auth.require='bearer', auth.session_fallback=true` for such a route.
+
+*What to watch.* `sheriff_auth_branch_total{route,branch}` counts every request on a
+`session_fallback` route by the branch it took, `bearer` or `session`. Routes without the key record
+no series. A route expected to serve mostly API clients whose `session` series climbs is receiving
+requests without `Authorization` -- typically a client that dropped its header.
+
+The full key contract is in
+link:../configuration.adoc#_auth_session_fallback[Configuration Reference -- `auth.session_fallback`]
+and the design rationale in
+link:../adr/0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055].
 
 [[return-url]]
 == Where the browser lands after login
@@ -248,10 +321,11 @@ never returned, and explicitly requesting one is refused `403`. With
 }
 ----
 
+[[csrf]]
 == CSRF for a cross-origin SPA
 
-Every `require: session` route enforces origin verification on unsafe methods (non-GET/HEAD/OPTIONS)
--- this is fixed, not a knob. If your SPA is served from a different origin than the gateway, list
+Every `require: session` route, and the session branch of every `session_fallback` route, enforces
+origin verification on unsafe methods (non-GET/HEAD/OPTIONS) -- this is fixed, not a knob. If your SPA is served from a different origin than the gateway, list
 its origin in `oidc.session.csrf.trusted_origins` *and* enable `security_headers.cors` with
 `allow_credentials: true`. This works only for *same-site* origins (same registrable domain); a
 truly cross-site SPA never gets the `SameSite=Lax` cookie attached -- host it under the gateway's
