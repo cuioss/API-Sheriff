@@ -114,8 +114,15 @@ route) and nothing after it runs:
 | The post-route per-route stage: body cap, `allowed_paths`, and the profile-gated validation half.
 
 | 4
-| `AuthenticationStage`
-| Bearer validation or session resolution for the route's effective auth.
+| `AuthBranch`, `CsrfDefence`, `AuthenticationStage`
+| Bearer validation or session resolution for the route's effective auth. The branch comes from one
+  pure resolver, `AuthBranch.resolve`: `none`, `bearer` and `session` postures map to themselves, and
+  a `require: bearer` route with `session_fallback: true` takes the BEARER branch when the request
+  carries an `Authorization` header (any scheme or value) and the SESSION branch otherwise. Both the
+  edge CSRF gate and `AuthenticationStage` call that resolver: the CSRF defence runs for the SESSION
+  branch only, then authentication dispatches on the branch it resolves. Because the resolver is a
+  pure function of the route's effective auth and the header's presence, the two cannot disagree
+  (link:adr/0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]).
 
 | 5 -- 7
 | terminal action
@@ -1080,6 +1087,17 @@ The manifest requires *paths, errors, and average timing*. These map to:
 
 | `sheriff_upstream_duration_seconds{route}`
 | Time spent in the downstream call specifically, to separate gateway overhead from upstream cost.
+
+| `sheriff_session_events_total{event}`
+| Counter of BFF session lifecycle events (session create/destroy, transparent refresh, CSRF and
+  logout events), keyed by the `EventType` name.
+
+| `sheriff_auth_branch_total{route,branch}`
+| Counter of the authentication branch a link:configuration.adoc#_auth_session_fallback[`session_fallback`]
+  route selected, recorded once per request at branch resolution (directly after the thorough
+  checks, before CSRF and authentication), so a request later rejected is still counted. `branch` has
+  exactly two values, `bearer` and `session`; `route` is the config-fixed route id. Only
+  `session_fallback` routes record it -- a route without the key never produces a series.
 |===
 
 OpenTelemetry tracing is a planned (post-MVP) hook per the manifest and is not part of the

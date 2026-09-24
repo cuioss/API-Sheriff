@@ -18,6 +18,9 @@ package de.cuioss.sheriff.gateway.integration;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Arrays;
+import java.util.List;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +35,10 @@ import org.junit.jupiter.api.Test;
  * meters. Because Micrometer only exposes a meter once it has been recorded, the presence of a
  * {@code sheriff_*} series after proxy traffic is proof the edge records it end-to-end. The
  * management port carries no authentication of its own, so the scrape needs no credentials.
+ * <p>
+ * {@code sheriff_auth_branch_total{route,branch}} is recorded only on {@code session_fallback}
+ * routes, once per request at branch resolution, so it is driven on the {@code bff-session-fallback}
+ * route (see {@link BffSessionFallbackIT}) and asserted absent for every other route.
  */
 class MetricsIT extends BaseIntegrationTest {
 
@@ -39,6 +46,16 @@ class MetricsIT extends BaseIntegrationTest {
     private static final String HTTPBIN_ROUTE_LABEL = "route=\"httpbin-proxy\"";
     private static final String SECURITY_EVENTS_TOTAL = "sheriff_security_events_total";
     private static final String FAILURE_TYPE_LABEL = "failure_type=";
+    private static final String AUTH_BRANCH_TOTAL = "sheriff_auth_branch_total";
+    private static final String FALLBACK_ROUTE_LABEL = "route=\"" + BffSessionFallbackIT.FALLBACK_ROUTE_ID + "\"";
+    private static final String BEARER_BRANCH_LABEL = "branch=\"bearer\"";
+    private static final String SESSION_BRANCH_LABEL = "branch=\"session\"";
+
+    /** A path on the plain {@code require: session} route {@code bff-session-mediated}. */
+    private static final String SESSION_ROUTE_PATH = "/bff-session/get";
+
+    /** A path on the plain {@code require: bearer} route of the {@code secure} anchor. */
+    private static final String BEARER_ROUTE_PATH = "/secure/get";
 
     @Test
     @DisplayName("the management metrics endpoint serves the Prometheus exposition format")
@@ -134,23 +151,88 @@ class MetricsIT extends BaseIntegrationTest {
                 "a security-filter rejection must move sheriff_security_events_total on the metrics endpoint");
     }
 
+    @Test
+    @DisplayName("sheriff_auth_branch_total counts both branches on the session_fallback route and no other route")
+    void authBranchMeterCountsBothBranchesOnTheFallbackRouteOnly() {
+        // Arrange — capture both branch series of the fallback route before the act; Micrometer emits a
+        // series only once it has been recorded, so an absent series sums to 0.0.
+        String before = scrapeMetrics();
+        double bearerBaseline = meterSum(before, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, BEARER_BRANCH_LABEL);
+        double sessionBaseline = meterSum(before, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, SESSION_BRANCH_LABEL);
+        String token = BffSessionFallbackIT.mintFallbackRouteToken();
+
+        // Act — one BEARER and one SESSION request on the fallback route. The SESSION request is an XHR
+        // with neither Authorization nor a session, so it is challenged 401, but the branch is resolved
+        // and counted before authentication runs. Then one request on a plain require: session route and
+        // one on a plain require: bearer route: both resolve a branch as well, and must record none.
+        given()
+                .header("Authorization", "Bearer " + token)
+                .when()
+                .get(BffSessionFallbackIT.FALLBACK_PATH)
+                .then()
+                .statusCode(200);
+        given()
+                .header("Accept", "application/json")
+                .when()
+                .get(BffSessionFallbackIT.FALLBACK_PATH)
+                .then()
+                .statusCode(401);
+        given()
+                .header("Accept", "application/json")
+                .when()
+                .get(SESSION_ROUTE_PATH)
+                .then()
+                .statusCode(401);
+        given()
+                .header("Authorization", "Bearer " + token)
+                .when()
+                .get(BEARER_ROUTE_PATH)
+                .then()
+                .statusCode(200);
+
+        String after = scrapeMetrics();
+
+        // Assert — each branch series of the fallback route MOVED, which presence alone cannot prove.
+        double bearerAfter = meterSum(after, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, BEARER_BRANCH_LABEL);
+        double sessionAfter = meterSum(after, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, SESSION_BRANCH_LABEL);
+        assertTrue(bearerAfter > bearerBaseline,
+                "a request with Authorization on the session_fallback route must move the branch=\"bearer\" "
+                        + "series: before=" + bearerBaseline + ", after=" + bearerAfter);
+        assertTrue(sessionAfter > sessionBaseline,
+                "a request without Authorization on the session_fallback route must move the "
+                        + "branch=\"session\" series: before=" + sessionBaseline + ", after=" + sessionAfter);
+
+        // Assert — the meter is scoped to session_fallback routes and its branch label is bounded: every
+        // exposed series names the fallback route and one of the two branch values.
+        List<String> samples = samples(after, AUTH_BRANCH_TOTAL);
+        List<String> foreignRoute = samples.stream().filter(line -> !line.contains(FALLBACK_ROUTE_LABEL)).toList();
+        assertTrue(foreignRoute.isEmpty(),
+                "sheriff_auth_branch_total must be recorded only on session_fallback routes, but exposes "
+                        + foreignRoute);
+        List<String> foreignBranch = samples.stream()
+                .filter(line -> !line.contains(BEARER_BRANCH_LABEL) && !line.contains(SESSION_BRANCH_LABEL))
+                .toList();
+        assertTrue(foreignBranch.isEmpty(),
+                "sheriff_auth_branch_total must carry only branch=\"bearer\" or branch=\"session\", but exposes "
+                        + foreignBranch);
+    }
+
     /**
      * Sums every sample of one meter in a Prometheus exposition body across the labelled series that
-     * carry {@code requiredLabel}. A sample line starts with the meter name followed directly by its
-     * label set, so {@code # HELP} / {@code # TYPE} comment lines (which begin with {@code #}) and
-     * meters that merely share the name as a prefix are never counted. A meter with no matching series
-     * — for example one not yet recorded — sums to {@code 0.0}.
+     * carry every one of {@code requiredLabels}. Only sample lines are considered (see
+     * {@link #samples(String, String)}). A meter with no matching series — for example one not yet
+     * recorded — sums to {@code 0.0}.
      *
      * @param body the scraped exposition body
      * @param meterName the exposed meter name, including any {@code _total} suffix Micrometer appends
-     * @param requiredLabel a label fragment every counted series must contain, such as
+     * @param requiredLabels label fragments every counted series must contain, such as
      *            {@code route="httpbin-proxy"}
      * @return the summed sample value of the matching series
      */
-    private static double meterSum(String body, String meterName, String requiredLabel) {
+    private static double meterSum(String body, String meterName, String... requiredLabels) {
         double sum = 0.0;
-        for (String line : body.split("\n")) {
-            if (line.startsWith(meterName + "{") && line.contains(requiredLabel)) {
+        for (String line : samples(body, meterName)) {
+            if (Arrays.stream(requiredLabels).allMatch(line::contains)) {
                 int lastSpace = line.lastIndexOf(' ');
                 if (lastSpace >= 0) {
                     sum += Double.parseDouble(line.substring(lastSpace + 1).strip());
@@ -158,6 +240,20 @@ class MetricsIT extends BaseIntegrationTest {
             }
         }
         return sum;
+    }
+
+    /**
+     * Returns every labelled sample line of one meter in a Prometheus exposition body. A sample line
+     * starts with the meter name followed directly by its label set, so {@code # HELP} /
+     * {@code # TYPE} comment lines (which begin with {@code #}) and meters that merely share the name
+     * as a prefix are never returned.
+     *
+     * @param body the scraped exposition body
+     * @param meterName the exposed meter name, including any {@code _total} suffix Micrometer appends
+     * @return the meter's sample lines, in exposition order
+     */
+    private static List<String> samples(String body, String meterName) {
+        return body.lines().filter(line -> line.startsWith(meterName + "{")).toList();
     }
 
     private static String scrapeMetrics() {

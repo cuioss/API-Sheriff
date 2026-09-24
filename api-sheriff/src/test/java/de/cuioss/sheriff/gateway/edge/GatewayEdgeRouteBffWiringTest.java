@@ -15,7 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
@@ -30,8 +32,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
+import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
@@ -83,8 +87,10 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -96,6 +102,7 @@ import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -677,6 +684,204 @@ class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * The edge half of {@code session_fallback}, driven over a live Vert.x server against a stub
+     * upstream: the fixed CSRF defence and the {@code sheriff_auth_branch_total} meter both key off the
+     * {@link AuthBranch} resolved once per request, never off the route's declared {@code require}
+     * posture. A {@code session_fallback} route therefore runs the CSRF defence on its
+     * {@code Authorization}-less session branch only — the bearer branch carries no ambient credential
+     * and is not a CSRF surface — and meters every branch it selects, while a plain
+     * {@code require: bearer} route beside it never produces a series.
+     * <p>
+     * The CSRF assertions are a matched pair: the same live-session unsafe request is rejected
+     * {@code 403} under a foreign {@code Origin} and forwarded under the trusted one, so the rejection is
+     * attributable to the CSRF defence rather than to anything else on the session branch.
+     */
+    @Nested
+    @DisplayName("session_fallback: CSRF gates the session branch only, and the branch is metered")
+    class SessionFallbackBranching {
+
+        private static final String FALLBACK_ROUTE = "fallback";
+        private static final String PLAIN_BEARER_ROUTE = "plain-bearer";
+        private static final String FOREIGN_ORIGIN = "https://evil.example.com";
+        private static final String ROUTE_TAG = "route";
+        private static final String BRANCH_TAG = "branch";
+        private static final int CSRF_REJECTED = 403;
+
+        /** Counts the requests that actually reached the stub upstream. */
+        private final AtomicInteger upstreamHits = new AtomicInteger();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private SimpleMeterRegistry meterRegistry;
+        private HttpServer upstream;
+        private HttpServer front;
+        private HttpClient client;
+        /** A bearer token the edge's validator accepts — issued by the holder whose issuer config it trusts. */
+        private String validBearerToken;
+        private String sessionCookie;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            meterRegistry = new SimpleMeterRegistry();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
+                    request.body().onComplete(body -> {
+                        upstreamHits.incrementAndGet();
+                        request.response().end("upstream");
+                    })).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+
+            TestTokenHolder tokenHolder = TestTokenGenerators.accessTokens().next();
+            validBearerToken = tokenHolder.getRawToken();
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(tokenHolder.getIssuerConfig()).build();
+
+            SessionStore store = new InMemorySessionStore(16);
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), Instant.now());
+            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+
+            int upstreamPort = upstream.actualPort();
+            RouteTable table = new RouteTable(List.of(
+                    bearerRoute(FALLBACK_ROUTE, "/fallback", Boolean.TRUE, upstreamPort),
+                    bearerRoute(PLAIN_BEARER_ROUTE, "/plain", null, upstreamPort)));
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(table,
+                    GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry),
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("an unsafe request with a valid bearer and a foreign Origin takes the bearer branch and is not CSRF-rejected")
+        void bearerBranchSkipsCsrfDefence() throws Exception {
+            HttpClientResponse response = send(io.vertx.core.http.HttpMethod.POST, "/fallback/orders",
+                    Map.of("Authorization", "Bearer " + validBearerToken, "Origin", FOREIGN_ORIGIN));
+
+            assertAll(
+                    () -> assertEquals(200, response.statusCode(),
+                            "the bearer branch carries no ambient credential, so the CSRF defence does not run"),
+                    () -> assertEquals(1, upstreamHits.get(), "the validated request is forwarded upstream"),
+                    () -> assertEquals(1.0, branchCount(FALLBACK_ROUTE, AuthBranch.BEARER),
+                            "the selected bearer branch is metered once"));
+        }
+
+        @Test
+        @DisplayName("an unsafe request without Authorization, with a live session and a foreign Origin is CSRF-rejected")
+        void sessionBranchEnforcesCsrfDefence() throws Exception {
+            HttpClientResponse response = send(io.vertx.core.http.HttpMethod.POST, "/fallback/orders",
+                    Map.of("Cookie", sessionCookie, "Origin", FOREIGN_ORIGIN));
+
+            assertAll(
+                    () -> assertEquals(CSRF_REJECTED, response.statusCode(),
+                            "the session branch carries an ambient credential, so the CSRF defence runs"),
+                    () -> assertEquals(0, upstreamHits.get(), "a CSRF rejection never reaches the upstream"),
+                    () -> assertEquals(1.0, branchCount(FALLBACK_ROUTE, AuthBranch.SESSION),
+                            "the branch is metered before the CSRF defence decides, so a rejection is counted too"));
+        }
+
+        @Test
+        @DisplayName("control: the same live-session unsafe request under the trusted Origin is forwarded")
+        void sessionBranchWithTrustedOriginPasses() throws Exception {
+            HttpClientResponse response = send(io.vertx.core.http.HttpMethod.POST, "/fallback/orders",
+                    Map.of("Cookie", sessionCookie, "Origin", ORIGIN));
+
+            assertAll(
+                    () -> assertEquals(200, response.statusCode(),
+                            "the session branch serves the request, so the 403 above is the CSRF defence's own"),
+                    () -> assertEquals(1, upstreamHits.get(), "the session-authenticated request is forwarded"));
+        }
+
+        @Test
+        @DisplayName("a navigation without Authorization and without a session is redirected into the login")
+        void sessionBranchChallengesUnauthenticatedNavigation() throws Exception {
+            HttpClientResponse response = send(io.vertx.core.http.HttpMethod.GET, "/fallback/page",
+                    Map.of("Accept", "text/html"));
+
+            assertAll(
+                    () -> assertEquals(302, response.statusCode(),
+                            "an Authorization-less request takes the session branch, whose challenge is a redirect"),
+                    () -> assertEquals("/login", response.getHeader("Location"),
+                            "the target is the session stage's own login challenge, not a bearer 401"),
+                    () -> assertEquals(0, upstreamHits.get(), "an unauthenticated request never reaches the upstream"));
+        }
+
+        @Test
+        @DisplayName("sheriff_auth_branch_total carries both branches of the session_fallback route and no plain bearer series")
+        void metersBothBranchesAndNothingForPlainBearerRoute() throws Exception {
+            Map<String, String> bearer = Map.of("Authorization", "Bearer " + validBearerToken);
+
+            int fallbackBearer = send(io.vertx.core.http.HttpMethod.GET, "/fallback/a", bearer).statusCode();
+            int fallbackSession = send(io.vertx.core.http.HttpMethod.GET, "/fallback/b",
+                    Map.of("Cookie", sessionCookie)).statusCode();
+            int plainBearer = send(io.vertx.core.http.HttpMethod.GET, "/plain/c", bearer).statusCode();
+
+            assertAll(
+                    () -> assertEquals(List.of(200, 200, 200), List.of(fallbackBearer, fallbackSession, plainBearer),
+                            "every request is served, so each one reached the metering point"),
+                    () -> assertEquals(1.0, branchCount(FALLBACK_ROUTE, AuthBranch.BEARER),
+                            "the bearer branch of the session_fallback route is metered"),
+                    () -> assertEquals(1.0, branchCount(FALLBACK_ROUTE, AuthBranch.SESSION),
+                            "the session branch of the session_fallback route is metered"),
+                    () -> assertTrue(meterRegistry.find(SheriffMetrics.AUTH_BRANCH_TOTAL)
+                                    .tag(ROUTE_TAG, PLAIN_BEARER_ROUTE).counters().isEmpty(),
+                            "a route without session_fallback never produces an auth-branch series"));
+        }
+
+        /**
+         * The count of the {@code sheriff_auth_branch_total} series for the route and branch, failing
+         * the test when the series was never registered — an absent series is not a zero count.
+         */
+        private double branchCount(String route, AuthBranch branch) {
+            Counter counter = meterRegistry.find(SheriffMetrics.AUTH_BRANCH_TOTAL)
+                    .tags(ROUTE_TAG, route, BRANCH_TAG, branch.label()).counter();
+            assertNotNull(counter, "no " + SheriffMetrics.AUTH_BRANCH_TOTAL + " series for route=" + route
+                    + ", branch=" + branch.label());
+            return counter.count();
+        }
+
+        private HttpClientResponse send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> headers)
+                throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(method).setURI(uri);
+            return Awaits.connect(client.request(options).compose(request -> {
+                headers.forEach(request::putHeader);
+                return request.send();
+            }), "the edge response to " + method + " " + uri);
+        }
+
+        private static ResolvedRoute bearerRoute(String id, String pathPrefix, @Nullable Boolean sessionFallback,
+                int upstreamPort) {
+            return ResolvedRoute.builder()
+                    .id(id)
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.BEARER).sessionFallback(sessionFallback).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                    .build();
+        }
+    }
+
     private static OidcConfig fullOidc() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
                 .path(LOGOUT_PATH)
@@ -786,9 +991,10 @@ class GatewayEdgeRouteBffWiringTest {
     }
 
     /**
-     * Minimal {@link Instance} test double resolving to a single supplied bean. The assembly tests
-     * exercise only construction; no require:session route validates a bearer token, so
-     * {@link #get()} is never called and the remaining accessors throw.
+     * Minimal {@link Instance} test double resolving to a single supplied bean. {@link #get()} is
+     * reached only by a request that validates a bearer token (the {@code session_fallback} bearer
+     * branch and the plain {@code require: bearer} route); the remaining accessors are never used by
+     * the edge and throw.
      */
     private static final class SingletonInstance<T> implements Instance<T> {
 

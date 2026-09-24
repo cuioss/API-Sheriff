@@ -113,7 +113,7 @@ class ConfigValidatorRouteDisjointnessTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("ORDERS")
-                .auth(new AuthConfig(Require.NONE, null))
+                .auth(new AuthConfig(Require.NONE, null, null))
                 .routes(List.of(route("first", first), route("second", second)))
                 .build();
 
@@ -129,7 +129,7 @@ class ConfigValidatorRouteDisjointnessTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("ORDERS")
-                .auth(new AuthConfig(Require.NONE, null))
+                .auth(new AuthConfig(Require.NONE, null, null))
                 .routes(List.of(routes))
                 .build();
         return validator.validate(GatewayConfig.builder().version(1).build(), List.of(endpoint),

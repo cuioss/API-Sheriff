@@ -78,11 +78,18 @@ endpoint:
       auth:                        # route-level override of endpoint.auth (whole block
         require: bearer            #   replaces, no merge); scopes are NOT part of auth, so
                                    #   overriding auth never drops endpoint.scopes
-        token_relay: true          # default true; acts only on require: session. false keeps
-                                   #   the session's access token away from this upstream
-                                   #   (no Authorization header is relayed) while still
-                                   #   requiring the login. Refused at boot together with
-                                   #   forward.headers_allow naming Authorization
+        token_relay: true          # default true; governs the SESSION branch -- a require:
+                                   #   session route, including the session branch of a
+                                   #   session_fallback route. false keeps the session's
+                                   #   access token away from this upstream (no Authorization
+                                   #   header is relayed) while still requiring the login.
+                                   #   Refused at boot together with forward.headers_allow
+                                   #   naming Authorization
+        # session_fallback: false  # default false; valid only with require: bearer and a
+                                   #   gateway oidc block. true adds a session branch: a
+                                   #   request WITHOUT Authorization takes the SESSION branch
+                                   #   (login, CSRF, mediated token), one WITH it the BEARER
+                                   #   branch. See "auth" in ../configuration.adoc
       security_filter:             # "basic filtering -- NOT a WAF"; the field-level contract is
                                    #   "security_filter" in ../configuration.adoc
         profile: strict
@@ -102,9 +109,14 @@ endpoint:
                                    #   listed -- do not enumerate HTTP mechanics here
         query_deny: [debug]        # negative-list on the OTHER dimension: every other client
                                    #   parameter crosses. The two dimensions are independent
-        set_headers:               # additional STATIC gateway-set headers only; the mediated
-          x-gateway: api-sheriff   #   Authorization (session routes) and the forwarding-
-                                   #   header set are injected automatically, never configured.
+        set_headers:               # additional STATIC gateway-set headers only. Injected
+          x-gateway: api-sheriff   #   automatically, never configured: the regenerated
+                                   #   forwarding-header set (always) and the mediated
+                                   #   Authorization: Bearer -- on a session route and the
+                                   #   session branch of a session_fallback route only when
+                                   #   the effective token_relay is true; on the bearer branch
+                                   #   of a session_fallback route always (the validated client
+                                   #   token); never on a plain require: bearer route.
                                    #   set_headers WINS over a client header of the same name
                                    #   (case-insensitively) -- operator config beats client input
       upstream:
@@ -662,11 +674,17 @@ auth:
   `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the
   missing scopes (sorted), and the upstream is never contacted. Because the set includes
   `oidc.scopes`, a gateway that also runs the BFF rejects a bearer token lacking them -- a
-  `client_credentials` token among them. An empty set skips the check.
+  `client_credentials` token among them. An empty set skips the check. On a route with
+  `session_fallback: true` this enforcement holds on the *bearer branch* only (requests carrying
+  `Authorization`); its session branch behaves as `require: session` below.
 * *`require: session`* -- the set is what a login started on the route *requests* from the IdP. A
   live session is never checked against it; see
   link:bff-session.adoc#scopes[Server-Session BFF -- Scopes] for session-wide scope growth and the
-  refresh behaviour.
+  refresh behaviour. The same applies to the *session branch* of a `session_fallback` route
+  (requests without `Authorization`): the set is requested at login and never enforced, so any live
+  gateway session is admitted. Do not rely on the set as the browser-facing authorization boundary
+  of such a route -- see the security caveat in
+  link:../configuration.adoc#_auth_session_fallback[`auth.session_fallback`].
 * *`require: none`* -- the set has no effect. An endpoint declaring `scopes` whose every route
   resolves `require: none` is refused at boot.
 
@@ -695,9 +713,18 @@ and is explained in its own cell:
   `auth` block fails the boot.
 
 | `auth.token_relay`
-| `true`: a `require: session` route relays the session's access token upstream as
-  `Authorization: Bearer`. The key travels with its `auth` block, so it cascades route -> endpoint
-  -> anchor with the block, never on its own. It has no effect on `bearer` or `none` routes.
+| `true`: a `require: session` route -- and the session branch of a `session_fallback` route --
+  relays the session's access token upstream as `Authorization: Bearer`. The key travels with its
+  `auth` block, so it cascades route -> endpoint -> anchor with the block, never on its own. On the
+  bearer branch of a `session_fallback` route the validated client token is forwarded through the
+  mediated-bearer seam independent of `token_relay`. It has no effect on plain `require: bearer`
+  routes or on `none` routes.
+
+| `auth.session_fallback`
+| `false`: a `require: bearer` route has one authentication branch and is a plain bearer route. The
+  key travels with its `auth` block exactly as `token_relay` does, so a route-level block that omits it
+  resolves to `false` whatever the endpoint or anchor declares. See
+  link:../configuration.adoc#_auth_session_fallback[`auth.session_fallback`].
 
 | `scopes` (endpoint level)
 | Empty: the endpoint's routes need `oidc.scopes` alone (nothing at all when the gateway has no
@@ -730,8 +757,11 @@ and is explained in its own cell:
   minus the gateway-owned request-direction never-forward set (`Authorization`, `Cookie`, the
   hop-by-hop and connection-specific names, `Content-Length`, `Host`, `Origin`, `Referer`,
   `Date`), which no configuration can re-admit apart from the single `Authorization` carve-out.
-  The *automatic* injections apply as always: the mediated `Authorization: Bearer` on session
-  routes and the regenerated forwarding-header set. A route that wants a stricter posture
+  The *automatic* injections apply as always. The regenerated forwarding-header set is always
+  injected. The mediated `Authorization: Bearer` is injected on a session route and on the
+  session branch of a `session_fallback` route only when the effective `token_relay` is `true`,
+  and on the bearer branch of a `session_fallback` route always (the validated client token,
+  independent of `token_relay`); a plain `require: bearer` route never receives one. A route that wants a stricter posture
   declares it -- see link:../configuration.adoc#_forward[`forward`]. Note this is the one
   omitted-block default that
   is *permissive*: it filters within a route the request is already authorised for, so the

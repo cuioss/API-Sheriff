@@ -20,7 +20,12 @@
         "token_relay": {
           "type": "boolean",
           "default": true,
-          "description": "Whether a require: session route relays the session's access token to the upstream as Authorization: Bearer. Defaults to true. With false the session is still resolved, refreshed and required, but no Authorization header is sent upstream. Acts only on require: session; it has no effect on bearer or none routes. Combining false with a forward.headers_allow that names Authorization is refused at boot (enforced in code). The auth block is replaced wholesale through the route -> endpoint -> anchor cascade, so the key is inherited only together with the rest of the block."
+          "description": "Whether the session branch relays the session's access token to the upstream as Authorization: Bearer. Defaults to true. With false the session is still resolved, refreshed and required, but no Authorization header is sent upstream. Acts on require: session routes and on the SESSION branch of a session_fallback route; it has no effect on plain bearer or none routes, nor on the BEARER branch of a session_fallback route. Combining false with a forward.headers_allow that names Authorization is refused at boot (enforced in code). The auth block is replaced wholesale through the route -> endpoint -> anchor cascade, so the key is inherited only together with the rest of the block."
+        },
+        "session_fallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether a require: bearer route also serves requests without an Authorization header through the session branch. Defaults to false. When true, the branch is selected per request from one input only - whether an Authorization header is present: a request carrying the header (any scheme, any value, empty included) takes the BEARER branch and is authenticated exactly like a plain bearer route; a request without it takes the SESSION branch and is authenticated exactly like a require: session route. Valid only with require: bearer and a gateway oidc block; both preconditions are refused at boot otherwise (enforced in code). The auth block is replaced wholesale through the route -> endpoint -> anchor cascade, so the key is inherited only together with the rest of the block."
         }
       }
     },

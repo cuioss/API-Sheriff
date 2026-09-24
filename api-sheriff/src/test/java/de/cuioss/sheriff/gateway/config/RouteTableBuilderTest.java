@@ -157,7 +157,7 @@ class RouteTableBuilderTest {
 
     private static EndpointConfig.EndpointConfigBuilder endpoint(String id, String alias) {
         return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias)
-                .auth(new AuthConfig(Require.NONE, null));
+                .auth(new AuthConfig(Require.NONE, null, null));
     }
 
     private static EndpointConfig.EndpointConfigBuilder anchoredEndpoint(String id, String alias, String anchorName) {
@@ -522,7 +522,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should apply a route-level auth override wholesale")
         void shouldApplyRouteAuthOverride() {
             RouteConfig secured = RouteConfig.builder().id("secured").match(match("/secured", HttpMethod.GET))
-                    .auth(new AuthConfig(Require.BEARER, null)).build();
+                    .auth(new AuthConfig(Require.BEARER, null, null)).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(secured)).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -534,12 +534,79 @@ class RouteTableBuilderTest {
         @DisplayName("Should inherit the endpoint default auth when the route omits it")
         void shouldInheritEndpointAuth() {
             EndpointConfig endpoint = EndpointConfig.builder().id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig(Require.SESSION, null))
+                    .auth(new AuthConfig(Require.SESSION, null, null))
                     .routes(List.of(route("r", HttpMethod.GET))).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
 
             assertEquals(Require.SESSION, find(table, "r").effectiveAuth().require());
+        }
+    }
+
+    @Nested
+    @DisplayName("session_fallback rides the wholesale auth cascade")
+    class SessionFallbackCascade {
+
+        private static final AuthConfig FALLBACK_AUTH = new AuthConfig(Require.BEARER, null, true);
+
+        @Test
+        @DisplayName("Should materialize session_fallback declared on a route-level auth block")
+        void shouldMaterializeRouteLevelSessionFallback() {
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .auth(FALLBACK_AUTH).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(find(table, "r").effectiveAuth().effectiveSessionFallback(),
+                    "a route-level session_fallback must reach the resolved route");
+        }
+
+        @Test
+        @DisplayName("Should materialize session_fallback declared on the endpoint default auth block")
+        void shouldMaterializeEndpointLevelSessionFallback() {
+            EndpointConfig endpoint = EndpointConfig.builder().id("orders").enabled(true).baseUrl("ORDERS")
+                    .auth(FALLBACK_AUTH)
+                    .routes(List.of(route("r", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(find(table, "r").effectiveAuth().effectiveSessionFallback(),
+                    "an endpoint-level session_fallback must reach a route that declares no auth block");
+        }
+
+        @Test
+        @DisplayName("Should materialize session_fallback declared on the anchor auth floor")
+        void shouldMaterializeAnchorLevelSessionFallback() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", FALLBACK_AUTH, null, null, null)))
+                    .build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(find(table, "r").effectiveAuth().effectiveSessionFallback(),
+                    "an anchor-level session_fallback must reach a route when neither endpoint nor route declares auth");
+        }
+
+        @Test
+        @DisplayName("Should drop session_fallback when a route-level block omits it under an anchor that declares it")
+        void shouldDropSessionFallbackOnWholesaleRouteOverride() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", FALLBACK_AUTH, null, null, null)))
+                    .build();
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
+                    .auth(new AuthConfig(Require.BEARER, null, null)).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            AuthConfig effective = find(table, "r").effectiveAuth();
+            assertAll("the route-level block replaces the anchor block wholesale",
+                    () -> assertNull(effective.sessionFallback(), "the key is not inherited from the anchor"),
+                    () -> assertFalse(effective.effectiveSessionFallback(),
+                            "an omitted key resolves to false, not to the anchor's declared true"));
         }
     }
 
@@ -676,7 +743,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should materialize the anchor auth floor when endpoint and route both omit auth")
         void shouldMaterializeAnchorAuthFloor() {
             GatewayConfig config = gateway()
-                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null), null, null, null)))
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), null, null, null)))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
@@ -692,10 +759,10 @@ class RouteTableBuilderTest {
         @DisplayName("Should let a route auth override replace the anchor floor wholesale between non-none postures")
         void shouldLetRouteAuthReplaceAnchorFloor() {
             GatewayConfig config = gateway()
-                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null), null, null, null)))
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), null, null, null)))
                     .build();
             RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
-                    .auth(new AuthConfig(Require.SESSION, null)).build();
+                    .auth(new AuthConfig(Require.SESSION, null, null)).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
@@ -721,7 +788,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should materialize the anchor security_filter when the route omits it")
         void shouldMaterializeAnchorSecurityFilter() {
             GatewayConfig config = gateway().anchors(Map.of("api",
-                    anchor("api", "/api", new AuthConfig(Require.BEARER, null), filter("strict"), null, null))).build();
+                    anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), filter("strict"), null, null))).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
 
@@ -735,7 +802,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should let the route security_filter replace the anchor block wholesale")
         void shouldLetRouteSecurityFilterReplaceAnchor() {
             GatewayConfig config = gateway().anchors(Map.of("api",
-                    anchor("api", "/api", new AuthConfig(Require.BEARER, null), filter("strict"), null, null))).build();
+                    anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), filter("strict"), null, null))).build();
             RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
                     .securityFilter(filter("lenient")).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
@@ -751,7 +818,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should materialize the anchor allowed_methods when the endpoint declares none")
         void shouldMaterializeAnchorAllowedMethods() {
             GatewayConfig config = gateway().anchors(Map.of("api", anchor("api", "/api",
-                    new AuthConfig(Require.BEARER, null), null, List.of(HttpMethod.GET), null))).build();
+                    new AuthConfig(Require.BEARER, null, null), null, List.of(HttpMethod.GET), null))).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
 
@@ -765,7 +832,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should let the endpoint allowed_methods replace the anchor list wholesale")
         void shouldLetEndpointReplaceAnchorAllowedMethods() {
             GatewayConfig config = gateway().anchors(Map.of("api", anchor("api", "/api",
-                    new AuthConfig(Require.BEARER, null), null, List.of(HttpMethod.GET), null))).build();
+                    new AuthConfig(Require.BEARER, null, null), null, List.of(HttpMethod.GET), null))).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
                     .allowedMethods(List.of(HttpMethod.POST))
                     .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.POST))).build();
@@ -782,7 +849,7 @@ class RouteTableBuilderTest {
             SecurityHeadersConfig gatewayHeaders = SecurityHeadersConfig.builder()
                     .contentTypeNosniff(true).build();
             GatewayConfig config = gateway().securityHeaders(gatewayHeaders).anchors(Map.of("api",
-                    anchor("api", "/api", new AuthConfig(Require.BEARER, null), null, null, anchorHeaders))).build();
+                    anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), null, null, anchorHeaders))).build();
             EndpointConfig anchored = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(routeWithPrefix("anchored", "/api/orders", HttpMethod.GET))).build();
             EndpointConfig plain = endpoint("public", "PUBLIC")
@@ -805,9 +872,9 @@ class RouteTableBuilderTest {
             GatewayConfig config = gateway()
                     .securityHeaders(SecurityHeadersConfig.builder().contentSecurityPolicy(gatewayPolicy).build())
                     .anchors(Map.of(
-                            "api", anchor("api", "/api", new AuthConfig(Require.BEARER, null), null, null,
+                            "api", anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), null, null,
                             SecurityHeadersConfig.builder().contentSecurityPolicy(anchorPolicy).build()),
-                            "bff", anchor("bff", "/bff", new AuthConfig(Require.BEARER, null), null, null,
+                            "bff", anchor("bff", "/bff", new AuthConfig(Require.BEARER, null, null), null, null,
                             headers())))
                     .build();
             EndpointConfig withPolicy = anchoredEndpoint("orders", "ORDERS", "api")
@@ -835,8 +902,8 @@ class RouteTableBuilderTest {
         @DisplayName("Should let a per-route anchor override the endpoint default membership")
         void shouldLetRouteAnchorOverrideEndpointAnchor() {
             GatewayConfig config = gateway().anchors(Map.of(
-                    "api", anchor("api", "/api", new AuthConfig(Require.BEARER, null), null, null, null),
-                    "bff", anchor("bff", "/bff", new AuthConfig(Require.SESSION, null), null, null, null))).build();
+                    "api", anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), null, null, null),
+                    "bff", anchor("bff", "/bff", new AuthConfig(Require.SESSION, null, null), null, null, null))).build();
             RouteConfig routeOnBff = RouteConfig.builder().id("r").anchor("bff")
                     .match(match("/bff/home", HttpMethod.GET)).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(routeOnBff)).build();
@@ -870,7 +937,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should emit a per-route effective-posture INFO line during assembly")
         void shouldEmitEffectivePostureInfo() {
             GatewayConfig config = gateway()
-                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null), filter("strict"),
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), filter("strict"),
                             null, null)))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
@@ -881,6 +948,33 @@ class RouteTableBuilderTest {
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "effective posture");
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "orders-read");
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "anchor='api'");
+        }
+
+        @Test
+        @DisplayName("Should report auth.session_fallback=true on the posture line of a session_fallback route")
+        void shouldReportSessionFallbackOnPostureLine() {
+            RouteConfig route = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
+                    .auth(new AuthConfig(Require.BEARER, null, true)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
+
+            builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            // Require renders its lowercase configuration spelling, so the line reads 'bearer'.
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO,
+                    "auth.require='bearer', auth.session_fallback=true");
+        }
+
+        @Test
+        @DisplayName("Should report auth.session_fallback=false on the posture line of a plain bearer route")
+        void shouldReportSessionFallbackFalseOnPlainBearerRoute() {
+            RouteConfig route = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
+                    .auth(new AuthConfig(Require.BEARER, null, null)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
+
+            builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO,
+                    "auth.require='bearer', auth.session_fallback=false");
         }
 
         @Test
@@ -937,7 +1031,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should WARN when a route replaces an anchor-provided security_filter wholesale")
         void shouldWarnOnWeakeningSecurityFilterOverride() {
             GatewayConfig config = gateway()
-                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null), filter("strict"),
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig(Require.BEARER, null, null), filter("strict"),
                             null, null)))
                     .build();
             RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
@@ -1098,7 +1192,7 @@ class RouteTableBuilderTest {
                     .pathPrefix(prefix)
                     .type(AnchorType.ASSET)
                     .access(access)
-                    .auth(require == null ? null : new AuthConfig(require, null))
+                    .auth(require == null ? null : new AuthConfig(require, null, null))
                     .build();
         }
 
@@ -1119,7 +1213,7 @@ class RouteTableBuilderTest {
             AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
                     .directory("/srv/assets").build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
-                    .anchor("assets").auth(new AuthConfig(Require.NONE, null))
+                    .anchor("assets").auth(new AuthConfig(Require.NONE, null, null))
                     .routes(List.of(assetRoute("bundle", "/assets", "assets", asset))).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB"));
@@ -1145,7 +1239,7 @@ class RouteTableBuilderTest {
             AssetConfig plain = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
                     .directory("/srv/plain").build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
-                    .anchor("assets").auth(new AuthConfig(Require.NONE, null))
+                    .anchor("assets").auth(new AuthConfig(Require.NONE, null, null))
                     .routes(List.of(assetRoute("spa", "/assets/spa", "assets", spa),
                             assetRoute("plain", "/assets/plain", "assets", plain)))
                     .build();
@@ -1194,7 +1288,7 @@ class RouteTableBuilderTest {
                     .directory("/srv/assets").build();
             RouteConfig route = RouteConfig.builder().id("bundle").anchor("assets")
                     .match(match("/assets", HttpMethod.GET))
-                    .auth(new AuthConfig(Require.BEARER, null))
+                    .auth(new AuthConfig(Require.BEARER, null, null))
                     .asset(asset).build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
                     .anchor("assets").auth(null).routes(List.of(route)).build();
@@ -1217,7 +1311,7 @@ class RouteTableBuilderTest {
             AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
                     .upstream("MISSING").build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
-                    .anchor("assets").auth(new AuthConfig(Require.NONE, null))
+                    .anchor("assets").auth(new AuthConfig(Require.NONE, null, null))
                     .routes(List.of(assetRoute("cdn", "/assets", "assets", asset))).build();
             ResolvedTopology topology = topologyWith("WEB");
             List<EndpointConfig> endpoints = List.of(endpoint);
@@ -1509,7 +1603,7 @@ class RouteTableBuilderTest {
             // The strengthened-floor case: the anchor stays access: public, but the route's own floor
             // must still govern the surface as authenticated (ADR-0007 permits strengthening).
             AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
-                    accessAnchor(AccessLevel.PUBLIC), new AuthConfig(require, null));
+                    accessAnchor(AccessLevel.PUBLIC), new AuthConfig(require, null, null));
 
             assertEquals(AccessLevel.AUTHENTICATED, access);
         }
@@ -1519,7 +1613,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should fall back to the anchor's declared access for an effectively-unauthenticated route")
         void shouldFallBackToAnchorAccessWhenUnauthenticated(AccessLevel declared) {
             AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
-                    accessAnchor(declared), new AuthConfig(Require.NONE, null));
+                    accessAnchor(declared), new AuthConfig(Require.NONE, null, null));
 
             assertEquals(declared, access);
         }
@@ -1528,7 +1622,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should default to PUBLIC for an unanchored, effectively-unauthenticated route")
         void shouldDefaultToPublicWhenUnanchoredAndUnauthenticated() {
             AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
-                    null, new AuthConfig(Require.NONE, null));
+                    null, new AuthConfig(Require.NONE, null, null));
 
             assertEquals(AccessLevel.PUBLIC, access);
         }

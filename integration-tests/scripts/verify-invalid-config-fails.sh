@@ -4,7 +4,7 @@
 #
 # ConfigProducer validates the mounted gateway configuration at boot
 # (StartupEvent). On any violation it logs structured ERROR records and throws, so
-# Quarkus exits non-zero. This script exercises eight independent invalid
+# Quarkus exits non-zero. This script exercises ten independent invalid
 # configurations and asserts a fail-fast non-zero exit for each:
 #   1. a schema-invalid gateway.yaml (non-integer version + an unknown top-level key,
 #      both rejected by the D2 schema);
@@ -22,7 +22,15 @@
 #      path that does not exist), which aborts boot from the ADR-0027 eager-assembly seam
 #      (a boot refusal — distinct from readiness DOWN, which a merely late IdP produces);
 #   8. an open redirect (a redirect route whose location is an external absolute URI while
-#      allow_external is off), refused by the ADR-0014 Amendment A1 open-redirect review.
+#      allow_external is off), refused by the ADR-0014 Amendment A1 open-redirect review;
+#   9. auth.session_fallback: true on a require: session route, refused by the ConfigValidator
+#      session_fallback rule because the key only splits a bearer posture;
+#  10. require: bearer + auth.session_fallback: true on a gateway that declares token_validation but
+#      no oidc block, refused by the same rule because the session branch needs the BFF runtime.
+#
+# Cases 9-10 split the session_fallback rule's two refusals the same way cases 4-6 split the
+# ADR-0024 gates: each fixture violates exactly one of them, so a regression in either refusal
+# fails a distinct case rather than being masked by the other.
 #
 # Cases 4-6 split the two ADR-0024 gates deliberately: the schema owns the profile
 # value range (case 4) and ConfigValidator owns the posture refusal (cases 5-6), so a
@@ -109,6 +117,13 @@ assert_fails_to_boot() {
         -e SHERIFF_CONFIG_DIR=/app/sheriff-config
         -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
         -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+        # The oidc client_secret is a secret-classified field, so ConfigLoader accepts it only as a
+        # bare ${VAR} reference, and an unset variable aborts the load before ConfigValidator ever
+        # runs. A fixture that needs an oidc block to be otherwise valid (case 9) therefore needs the
+        # variable bound, or the case would pass on the missing-variable refusal instead of the one it
+        # exists to prove. The value is a fixture placeholder that never reaches an IdP, and supplying
+        # it to the fixtures that declare no oidc block is inert: no reference, no lookup.
+        -e OIDC_CLIENT_SECRET=invalid-config-fixture-secret
         -v "${PROJECT_DIR}/src/main/docker/certificates:/app/certificates:ro"
         -v "${config_dir}:/app/sheriff-config:ro"
     )
@@ -555,5 +570,122 @@ chmod 644 "${OPEN_REDIRECT_DIR}/gateway.yaml" "${OPEN_REDIRECT_DIR}/endpoints/mo
 # rejected location VALUE, per the same redaction discipline every other case follows.
 assert_fails_to_boot "${OPEN_REDIRECT_DIR}" "an external redirect location without allow_external" \
     "route 'external-redirect' redirect location"
+
+# Case 9: auth.session_fallback: true on a require: session route. The key splits a BEARER posture
+# into two branches selected by Authorization-header presence; on a session posture there is no
+# bearer branch to split, so it would parse and act nowhere — the ConfigValidator session_fallback
+# rule refuses it at boot rather than letting an operator believe a fallback is in force. The fixture
+# is otherwise complete and valid: a type: bff anchor with a session floor, the oidc block that backs
+# that floor (its bare ${OIDC_CLIENT_SECRET} reference is bound by assert_fails_to_boot), a topology
+# alias and an endpoint — so the not-bearer refusal is the ONLY violation, and in particular the
+# rule's second refusal (no oidc block) cannot fire and satisfy the case in its place.
+FALLBACK_ON_SESSION_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${FALLBACK_ON_SESSION_DIR}")
+mkdir -p "${FALLBACK_ON_SESSION_DIR}/endpoints"
+cat > "${FALLBACK_ON_SESSION_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "session-fallback-on-session"
+anchors:
+  app:
+    path_prefix: /app
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  scopes: ["openid", "profile", "email"]
+  redirect_uri: https://localhost:10443/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    final_redirect: /
+    backchannel_path: /auth/backchannel
+  session:
+    mode: server
+    store: memory
+    ttl_seconds: 3600
+    csrf:
+      trusted_origins: ["https://localhost:10443"]
+  login:
+    path: /auth/login
+YAML
+cat > "${FALLBACK_ON_SESSION_DIR}/topology.properties" <<'PROPS'
+APP_UPSTREAM=http://go-httpbin:8080/anything
+PROPS
+cat > "${FALLBACK_ON_SESSION_DIR}/endpoints/app.yaml" <<'YAML'
+endpoint:
+  id: app
+  base_url: APP_UPSTREAM
+  anchor: app
+  routes:
+    - id: app-fallback-on-session
+      match:
+        path_prefix: /app/view
+      auth:
+        require: session
+        session_fallback: true
+YAML
+chmod 755 "${FALLBACK_ON_SESSION_DIR}" "${FALLBACK_ON_SESSION_DIR}/endpoints"
+chmod 644 "${FALLBACK_ON_SESSION_DIR}/gateway.yaml" "${FALLBACK_ON_SESSION_DIR}/topology.properties" \
+    "${FALLBACK_ON_SESSION_DIR}/endpoints/app.yaml"
+# Marker: the fixed refusal fragment of the not-bearer detail — fixed text, never a configured scalar.
+assert_fails_to_boot "${FALLBACK_ON_SESSION_DIR}" "auth.session_fallback on a require: session route" \
+    "declares auth.session_fallback: true on a posture other than require: bearer"
+
+# Case 10: require: bearer + auth.session_fallback: true on a gateway with no oidc block. The bearer
+# branch is backed — token_validation declares an issuer, so the effective-auth rule is satisfied —
+# but the SESSION branch authenticates through the BFF runtime exactly as a require: session route
+# does, and that runtime exists only when an oidc block is declared. The fixture is otherwise complete
+# and valid (a bearer-floor anchor, a file-sourced issuer, a topology alias and an endpoint), and the
+# route declares require: bearer, so the no-oidc refusal is the ONLY violation and the rule's
+# not-bearer refusal cannot satisfy the case in its place.
+FALLBACK_NO_OIDC_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${FALLBACK_NO_OIDC_DIR}")
+mkdir -p "${FALLBACK_NO_OIDC_DIR}/endpoints"
+cat > "${FALLBACK_NO_OIDC_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "session-fallback-no-oidc"
+anchors:
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+YAML
+cat > "${FALLBACK_NO_OIDC_DIR}/topology.properties" <<'PROPS'
+SECURE_UPSTREAM=http://go-httpbin:8080/anything
+PROPS
+cat > "${FALLBACK_NO_OIDC_DIR}/endpoints/secure.yaml" <<'YAML'
+endpoint:
+  id: secure
+  base_url: SECURE_UPSTREAM
+  anchor: secure
+  routes:
+    - id: secure-fallback-no-oidc
+      match:
+        path_prefix: /secure/fallback
+      auth:
+        require: bearer
+        session_fallback: true
+YAML
+chmod 755 "${FALLBACK_NO_OIDC_DIR}" "${FALLBACK_NO_OIDC_DIR}/endpoints"
+chmod 644 "${FALLBACK_NO_OIDC_DIR}/gateway.yaml" "${FALLBACK_NO_OIDC_DIR}/topology.properties" \
+    "${FALLBACK_NO_OIDC_DIR}/endpoints/secure.yaml"
+# Marker: the fixed refusal fragment of the no-oidc detail — fixed text, never a configured scalar.
+assert_fails_to_boot "${FALLBACK_NO_OIDC_DIR}" "auth.session_fallback without an oidc block" \
+    "declares auth.session_fallback: true but the gateway declares no oidc block"
 
 echo "✅ All invalid configurations correctly caused fail-fast non-zero exits."

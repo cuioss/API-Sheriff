@@ -59,11 +59,18 @@ public final class ConfigLogMessages {
          * The materialized effective posture of a single route, printed once per
          * route during route-table assembly (the ADR-0007 discoverability answer:
          * anchors vanish at runtime, so the boot log reports the resolved posture).
+         * <p>
+         * The {@code auth.session_fallback} field is printed for every route — {@code true} marks a
+         * {@code require: bearer} route that also serves requests without an {@code Authorization}
+         * header through the session branch, {@code false} every other route — rather than only
+         * where it is set: a {@link LogRecord} template has no optional segment, and a composed
+         * fragment would make the line shape depend on configuration. The value is the resolved
+         * boolean, never a configured scalar.
          */
         public static final LogRecord ROUTE_POSTURE = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(3)
-                .template("Route '%s' effective posture: anchor='%s', auth.require='%s', filter='%s'")
+                .template("Route '%s' effective posture: anchor='%s', auth.require='%s', auth.session_fallback=%s, filter='%s'")
                 .build();
 
         /**

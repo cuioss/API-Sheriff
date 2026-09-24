@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.auth;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -30,6 +31,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -51,8 +53,15 @@ import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import jakarta.inject.Provider;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @EnableGeneratorController
 @DisplayName("AuthenticationStage — stage 4 auth dispatch (offline bearer validation and session dispatch)")
@@ -237,9 +246,149 @@ class AuthenticationStageTest {
                 "the unwired session route is a boot-configuration error, not a served request");
     }
 
+    @Test
+    @DisplayName("records no mediated bearer for a valid token on a plain require:bearer route")
+    void plainBearerRouteRecordsNoMediatedBearer() {
+        // Arrange
+        TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+        AuthenticationStage stage = stageFor(holder);
+        PipelineRequest request = bearerRequest(holder.getRawToken(), Set.of());
+
+        // Act
+        stage.process(request);
+
+        // Assert
+        assertTrue(request.mediatedBearer().isEmpty(),
+                "only the bearer branch of a session_fallback route forwards the client token");
+    }
+
+    @Nested
+    @DisplayName("require:bearer with session_fallback — dispatch by Authorization presence")
+    class SessionFallbackRoute {
+
+        @ParameterizedTest(name = "token_relay={0}")
+        @NullSource
+        @ValueSource(booleans = {true, false})
+        @DisplayName("a valid bearer is recorded as the mediated bearer, independent of token_relay")
+        void validBearerIsRecordedAsMediatedBearer(@Nullable Boolean tokenRelay) {
+            // Arrange
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            AuthenticationStage stage = stageFor(holder, sessionStage());
+            PipelineRequest request = fallbackRequest(tokenRelay, Set.of(),
+                    withSessionCookie("Bearer " + holder.getRawToken()));
+
+            // Act
+            stage.process(request);
+
+            // Assert
+            assertAll("bearer branch forwards the validated client token",
+                    () -> assertEquals(holder.getRawToken(), request.mediatedBearer().orElseThrow(),
+                            "the validated client token, never the session's token, is mediated"),
+                    () -> assertNull(request.responseHeaders().get(WWW_AUTHENTICATE)));
+        }
+
+        @Test
+        @DisplayName("a valid bearer lacking a needed scope still answers 403 insufficient_scope")
+        void missingScopeBearerAnswersInsufficientScope() {
+            // Arrange
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            AuthenticationStage stage = stageFor(holder, sessionStage());
+            PipelineRequest request = fallbackRequest(null, Set.of(ABSENT_ENDPOINT_SCOPE),
+                    withSessionCookie("Bearer " + holder.getRawToken()));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            // Assert
+            assertAll("scope rejection on the bearer branch",
+                    () -> assertEquals(EventType.SCOPE_MISSING, thrown.getEventType()),
+                    () -> assertEquals("Bearer error=\"insufficient_scope\", scope=\"" + ABSENT_ENDPOINT_SCOPE
+                            + "\"", request.responseHeaders().get(WWW_AUTHENTICATE)),
+                    () -> assertTrue(request.mediatedBearer().isEmpty(),
+                            "a rejected token is never mediated and the session is never consulted"));
+        }
+
+        static Stream<Arguments> rejectedAuthorizationRows() {
+            return Stream.of(
+                    Arguments.of("a Basic header", "Basic dXNlcjpwYXNzd29yZA==", EventType.TOKEN_MISSING),
+                    Arguments.of("an empty-value header", "", EventType.TOKEN_MISSING),
+                    Arguments.of("an invalid bearer token", "Bearer not.a.valid.jwt", EventType.TOKEN_INVALID));
+        }
+
+        @ParameterizedTest(name = "{0} -> 401 {2}")
+        @MethodSource("rejectedAuthorizationRows")
+        @DisplayName("a non-validating Authorization answers 401 and never falls through to the session")
+        void rejectedAuthorizationNeverReachesSession(String description, String authorization,
+                EventType expectedEvent) {
+            // Arrange — the request also carries a live session cookie: were it dispatched to the
+            // session stage, that stage would accept it and mediate the session's token.
+            AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next(), sessionStage());
+            PipelineRequest request = fallbackRequest(null, Set.of(), withSessionCookie(authorization));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request),
+                    description);
+
+            // Assert
+            assertAll(description,
+                    () -> assertEquals(expectedEvent, thrown.getEventType()),
+                    () -> assertEquals("Bearer", request.responseHeaders().get(WWW_AUTHENTICATE)),
+                    () -> assertTrue(request.mediatedBearer().isEmpty(), "the session stage was never reached"),
+                    () -> assertTrue(request.shortCircuitStatus().isEmpty(), "no short-circuit is set"));
+        }
+
+        @Test
+        @DisplayName("a request without Authorization is dispatched to the session stage")
+        void noAuthorizationIsDispatchedToSessionStage() {
+            // Arrange — a failing validator proves the bearer branch is never entered
+            AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
+            PipelineRequest request = fallbackRequest(null, Set.of(ABSENT_ENDPOINT_SCOPE),
+                    Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
+                            "accept", List.of("application/json")));
+
+            // Act
+            stage.process(request);
+
+            // Assert
+            assertEquals(MEDIATED_TOKEN, request.mediatedBearer().orElseThrow(),
+                    "the session stage mediated the session's bearer, with no scope check");
+        }
+
+        @Test
+        @DisplayName("the session branch without a wired session runtime is a boot-configuration error")
+        void sessionBranchWithoutWiredRuntimeIsRejected() {
+            // Arrange
+            AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
+            PipelineRequest request = fallbackRequest(null, Set.of(), Map.of());
+
+            // Act
+            IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> stage.process(request));
+
+            // Assert
+            assertTrue(thrown.getMessage().contains("no session runtime is wired"));
+        }
+
+        private static Map<String, List<String>> withSessionCookie(String authorization) {
+            return Map.of("authorization", List.of(authorization),
+                    "cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
+                    "accept", List.of("application/json"));
+        }
+
+        private static PipelineRequest fallbackRequest(@Nullable Boolean tokenRelay, Set<String> neededScopes,
+                Map<String, List<String>> headers) {
+            return request(AuthConfig.builder().require(Require.BEARER).tokenRelay(tokenRelay)
+                    .sessionFallback(Boolean.TRUE).build(), neededScopes, headers);
+        }
+    }
+
     private static AuthenticationStage stageFor(TestTokenHolder holder) {
         TokenValidator validator = TokenValidator.builder().issuerConfig(holder.getIssuerConfig()).build();
         return new AuthenticationStage(() -> validator);
+    }
+
+    private static AuthenticationStage stageFor(TestTokenHolder holder, SessionAuthenticationStage sessionStage) {
+        TokenValidator validator = TokenValidator.builder().issuerConfig(holder.getIssuerConfig()).build();
+        return new AuthenticationStage(() -> validator, sessionStage);
     }
 
     private static Provider<TokenValidator> failingValidatorProvider() {
@@ -280,8 +429,12 @@ class AuthenticationStageTest {
     }
 
     private static RouteRuntime route(Require require, Set<String> neededScopes) {
+        return route(AuthConfig.builder().require(require).build(), neededScopes);
+    }
+
+    private static RouteRuntime route(AuthConfig auth, Set<String> neededScopes) {
         return RouteRuntime.builder().id("orders")
-                .effectiveAuth(AuthConfig.builder().require(require).build())
+                .effectiveAuth(auth)
                 .neededScopes(neededScopes)
                 .build();
     }
@@ -292,6 +445,11 @@ class AuthenticationStageTest {
 
     private static PipelineRequest request(Require require, Set<String> neededScopes,
             Map<String, List<String>> headers) {
+        return request(AuthConfig.builder().require(require).build(), neededScopes, headers);
+    }
+
+    private static PipelineRequest request(AuthConfig auth, Set<String> neededScopes,
+            Map<String, List<String>> headers) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
@@ -299,7 +457,7 @@ class AuthenticationStageTest {
                 .headers(headers)
                 .build();
         request.canonicalPath("/api/orders");
-        request.selectedRoute(route(require, neededScopes));
+        request.selectedRoute(route(auth, neededScopes));
         return request;
     }
 }

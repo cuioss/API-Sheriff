@@ -15,11 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Duration;
@@ -27,10 +29,13 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -41,6 +46,7 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -54,7 +60,8 @@ import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
- * names named in {@code architecture.adoc} § Metrics (including the BFF session-lifecycle counter),
+ * names named in {@code architecture.adoc} § Metrics (including the BFF session-lifecycle counter and
+ * the bounded {@code session_fallback} authentication-branch counter),
  * and {@link GatewayReadinessCheck} reflects configuration, JWKS status, and — for a BFF
  * {@code mode: server} deployment — an {@code issuer_reachability} datum that is always
  * {@code unverified}, because cached key-set state is not a reachability signal.
@@ -77,6 +84,71 @@ class SheriffMetricsTest {
             assertEquals("sheriff_security_events_total", SheriffMetrics.SECURITY_EVENTS_TOTAL);
             assertEquals("sheriff_upstream_duration_seconds", SheriffMetrics.UPSTREAM_DURATION_SECONDS);
             assertEquals("sheriff_session_events_total", SheriffMetrics.SESSION_EVENTS_TOTAL);
+            assertEquals("sheriff_auth_branch_total", SheriffMetrics.AUTH_BRANCH_TOTAL);
+        }
+
+        @Test
+        @DisplayName("recordAuthBranch counts under sheriff_auth_branch_total{route,branch} per (route, branch) pair")
+        void recordAuthBranchCountsPerRouteAndBranch() {
+            metrics.recordAuthBranch("fallback", AuthBranch.BEARER);
+            metrics.recordAuthBranch("fallback", AuthBranch.BEARER);
+            metrics.recordAuthBranch("fallback", AuthBranch.SESSION);
+            metrics.recordAuthBranch("other-fallback", AuthBranch.BEARER);
+
+            var fallbackBearer = registry.find("sheriff_auth_branch_total")
+                    .tags("route", "fallback", "branch", "bearer").counter();
+            var fallbackSession = registry.find("sheriff_auth_branch_total")
+                    .tags("route", "fallback", "branch", "session").counter();
+            var otherBearer = registry.find("sheriff_auth_branch_total")
+                    .tags("route", "other-fallback", "branch", "bearer").counter();
+            assertAll("one series per (route, branch) pair",
+                    () -> assertNotNull(fallbackBearer, "the bearer branch must be tagged with the label 'bearer'"),
+                    () -> assertNotNull(fallbackSession, "the session branch must be tagged with the label 'session'"),
+                    () -> assertNotNull(otherBearer, "each route carries its own series"));
+            assertAll("each call increments exactly its own series",
+                    () -> assertEquals(2.0, fallbackBearer.count()),
+                    () -> assertEquals(1.0, fallbackSession.count()),
+                    () -> assertEquals(1.0, otherBearer.count()),
+                    () -> assertEquals(3, registry.find("sheriff_auth_branch_total").counters().size()));
+        }
+
+        @Test
+        @DisplayName("recordAuthBranch tags exactly route and branch, with branch values bearer / session only")
+        void recordAuthBranchTagsExactlyRouteAndBranch() {
+            metrics.recordAuthBranch("fallback", AuthBranch.BEARER);
+            metrics.recordAuthBranch("fallback", AuthBranch.SESSION);
+
+            var counters = registry.find("sheriff_auth_branch_total").counters();
+            assertEquals(2, counters.size());
+            for (var counter : counters) {
+                var tagKeys = counter.getId().getTags().stream().map(Tag::getKey).collect(Collectors.toSet());
+                assertEquals(Set.of("route", "branch"), tagKeys,
+                        "sheriff_auth_branch_total must carry exactly the route and branch tags");
+            }
+            var branchValues = counters.stream().map(counter -> counter.getId().getTag("branch"))
+                    .collect(Collectors.toSet());
+            assertEquals(Set.of("bearer", "session"), branchValues,
+                    "the branch label is bounded to the two session_fallback branches");
+        }
+
+        @Test
+        @DisplayName("recordAuthBranch rejects AuthBranch.NONE and registers no series for it")
+        void recordAuthBranchRejectsNone() {
+            assertThrows(IllegalArgumentException.class, () -> metrics.recordAuthBranch("fallback", AuthBranch.NONE));
+
+            assertTrue(registry.find("sheriff_auth_branch_total").counters().isEmpty(),
+                    "a rejected NONE must not leave a 'none' series behind");
+        }
+
+        @Test
+        @DisplayName("recordAuthBranch rejects a null route or branch fail-closed")
+        void recordAuthBranchRejectsNull() {
+            assertAll(
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordAuthBranch(null, AuthBranch.BEARER)),
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordAuthBranch("fallback", null)));
+            assertTrue(registry.find("sheriff_auth_branch_total").counters().isEmpty());
         }
 
         @Test

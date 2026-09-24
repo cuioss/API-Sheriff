@@ -96,7 +96,7 @@ class ConfigValidatorPortalTest {
         return EndpointConfig.builder()
                 .id(endpointId())
                 .enabled(enabled)
-                .auth(new AuthConfig(Require.NONE, null))
+                .auth(new AuthConfig(Require.NONE, null, null))
                 .routes(List.of(route))
                 .catalog(catalog)
                 .build();

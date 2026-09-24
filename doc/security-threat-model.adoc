@@ -258,7 +258,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 | B2 edge->pipeline
 | *Elevation* via path-confusion auth bypass -> <<gw-01>>. *Tampering* via header injection
   / hop-by-hop abuse -> <<gw-03>>. *Repudiation* if the effective posture isn't logged
-  (boot posture log -> <<gw-01>>). *Spoofing* the gateway's own origin through a gateway-answered
+  (boot posture log, which also reports each route's `auth.session_fallback` -> <<gw-01>>,
+  <<bff-16>>). *Spoofing* the gateway's own origin through a gateway-answered
   redirect (open redirect) -> <<gw-13>>.
 
 | B3 pipeline->upstream
@@ -274,7 +275,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
   disclosure* of secrets in error paths -> <<gw-12>>.
 
 | B5 browser<->BFF
-| *Spoofing* via CSRF on the cookie-authed API -> <<bff-11>>. *Tampering*/theft of the
+| *Spoofing* via CSRF on the cookie-authed API -> <<bff-11>>. *Elevation* by steering a request
+  onto the session branch of a dual-posture route -> <<bff-16>>. *Tampering*/theft of the
   cookie -> <<bff-10>>, <<bff-12>>. *Elevation* via `state`/code injection on the callback
   -> <<bff-02>>, <<bff-03>>, <<bff-13>>. *Repudiation*/replay via missing `nonce` ->
   <<bff-04>>; logout flaws -> <<bff-09>>.
@@ -1920,6 +1922,66 @@ scope is `403 insufficient_scope` with no upstream contact while one covering it
 (`BearerScopeIT`, `AuthenticationStageTest`); a refresh after a scoped login keeps the endpoint scope
 in the refreshed token (`BffTokenRefreshIT`, `TokenRefreshCoordinatorTest`).
 
+[#bff-16]
+=== BFF-16 -- Authentication-branch downgrade on a dual-posture route (`session_fallback`)
+
+A `require: bearer` route with `auth.session_fallback: true` carries two authentication branches:
+BEARER for API clients and SESSION for BFF browsers. Whenever one route accepts two credentials, the
+rule that picks the branch is itself an attack surface. If an attacker can steer a request onto the
+weaker or more ambient branch, they can reach it with a credential the stronger branch refuses: an
+invalid token "falling back" to a session cookie, or a cross-site request riding the cookie past a
+CSRF check that only one branch performs.
+
+*Evidence.* Authentication-downgrade and "fallback on failure" defects recur wherever a server
+accepts more than one credential type. RFC 6750 §3.1 defines a failed bearer as a terminal `401`,
+not a cue to try another mechanism. The OAuth 2.0 for Browser-Based Apps BCP treats the cookie as
+the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
+
+*Control.* Branch selection is keyed on one input only: whether the request carries an
+`Authorization` header. What the header contains is not consulted
+(link:adr/0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]):
+
+* *No downgrade.* Any `Authorization` header, whatever its scheme or value, an empty one included,
+  selects BEARER. A malformed, foreign-scheme (`Basic`) or empty credential is therefore a `401` with
+  `WWW-Authenticate: Bearer`, never a login redirect, and a valid session cookie sent alongside it
+  never rescues it. The only way onto the session branch is to send no `Authorization` at all, which
+  gains an attacker nothing a `require: session` route does not already offer.
+* *CSRF where the credential is ambient.* The fixed CSRF defence (<<bff-11>>) runs on the SESSION
+  branch only. The BEARER branch carries no ambient credential: a browser never attaches
+  `Authorization` by itself, and a cross-origin script cannot set it without a CORS preflight. One
+  resolver (`AuthBranch.resolve`) serves both the CSRF gate and the authentication stage, so the two
+  cannot disagree about which branch a request is on.
+* *No session on the bearer branch.* The BEARER branch looks up no session and writes no
+  `Set-Cookie`, and the browser `Cookie` is withheld upstream by the gateway-owned never-forward set,
+  as on every route. The upstream receives exactly the validated client token through the
+  mediated-bearer seam, not a re-admitted inbound header (ADR-0037).
+* *Nothing new is accepted.* The BEARER branch is exactly a `require: bearer` route, including the
+  `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The SESSION branch is
+  exactly a `require: session` route. A request is admitted on a `session_fallback` route only if one
+  of those two routes would admit it. The consequence for scopes is deliberate and must be read as
+  such: the SESSION branch runs no scope check (ADR-0049), so any live session is admitted to a
+  `session_fallback` route whatever scopes its token carries. Enabling the key on a bearer route
+  therefore widens that route's authorization for browser users from "token carries
+  `neededScopes`" to "holds a gateway session"; the operator documentation says so, and a route
+  whose scopes are its authorization boundary must stay a plain `require: bearer` route.
+* *Discoverable and refused when meaningless.* The key is refused at boot on a posture other than
+  `require: bearer` and on a gateway without an `oidc` block. The per-route boot posture line
+  (`ApiSheriff-3`) reports `auth.session_fallback` for every route, and
+  `sheriff_auth_branch_total{route,branch}` counts the branch each request took, on such routes only.
+
+*Status:* COVERED.
+
+*Assertion.* On a `session_fallback` route, with and without a live session cookie: a valid bearer is
+`200` with exactly the client's token upstream, no upstream `Cookie` and no `Set-Cookie`; a token
+lacking a needed scope is `403 insufficient_scope`; an invalid, `Basic` or empty `Authorization` is
+`401 WWW-Authenticate: Bearer` with no `Location`, even for a navigation. Without `Authorization`, a
+live session is served with its mediated token, a navigation is redirected into the IdP, an XHR is
+`401`, and an unsafe method under a foreign `Origin` is CSRF-rejected while a bearer unsafe method
+without any `Origin` is admitted (`BffSessionFallbackIT`, `AuthBranchTest`, `AuthenticationStageTest`,
+`GatewayEdgeRouteBffWiringTest`). Both boot refusals are asserted (`ConfigValidatorSessionFallbackTest`,
+`verify-invalid-config-fails.sh`), and the meter records only on `session_fallback` routes
+(`MetricsIT`, `SheriffMetricsTest`).
+
 [[_html_surface_failure_catalogue]]
 == HTML surface failure catalogue
 
@@ -2152,6 +2214,7 @@ outstanding hardening work (next section).
 | <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- gateway usage rule | COVERED
 | <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) | PARTIAL
 | <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048 | PARTIAL (session-wide scope growth accepted)
+| <<bff-16>> | `session_fallback` branch chosen from `Authorization` presence only; no session fallback on a failed bearer; CSRF on the session branch only; one resolver for CSRF and authentication | Gateway (`AuthBranch`, `AuthenticationStage`, `GatewayEdgeRoute`) + configuration validator -- ADR-0055 | COVERED
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED

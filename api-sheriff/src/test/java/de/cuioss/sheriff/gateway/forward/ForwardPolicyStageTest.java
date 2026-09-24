@@ -522,6 +522,37 @@ class ForwardPolicyStageTest {
                     "the deny entry withholds the client's value; the operator's static value is merged"
                             + " afterwards and is not client input");
         }
+
+        @Test
+        @DisplayName("a static set_headers Authorization yields to a recorded mediated bearer and never rides alongside it")
+        void staticAuthorizationYieldsToTheMediatedBearer() {
+            // Arrange — stage 4 records a mediated bearer on a session path with token_relay: true and
+            // on the bearer branch of a session_fallback route, and none on a session path with
+            // token_relay: false. The operator spells the field lower-case while the mediated bearer is
+            // written as Authorization, so only a case-insensitive merge keeps it to ONE header.
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            ForwardConfig forward = ForwardConfig.builder()
+                    .setHeaders(Map.of("authorization", "Bearer static-operator-value"))
+                    .build();
+            PipelineRequest mediated = request(UNTRUSTED_PEER, Map.of());
+            mediated.mediatedBearer("mediated-abc");
+            PipelineRequest unmediated = request(UNTRUSTED_PEER, Map.of());
+
+            // Act
+            ForwardPolicyStage.Result withBearer = stage.process(mediated, forward, false);
+            ForwardPolicyStage.Result withoutBearer = stage.process(unmediated, forward, false);
+
+            // Assert
+            assertAll("gateway-owned credential beats operator configuration; operator configuration is not filtered",
+                    () -> assertEquals(List.of("Bearer mediated-abc"),
+                            valuesNamed(withBearer.headers(), "Authorization"),
+                            "the mediated bearer replaces the static value — the upstream never receives two"
+                                    + " Authorization headers to choose between"),
+                    () -> assertEquals(List.of("Bearer static-operator-value"),
+                            valuesNamed(withoutBearer.headers(), "Authorization"),
+                            "with no mediated bearer recorded the operator's static Authorization crosses,"
+                                    + " as documented for token_relay: false"));
+        }
     }
 
     @Nested
