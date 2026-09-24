@@ -91,7 +91,7 @@ jobs:
       && (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
     permissions:
       contents: write
-    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@2fa5476de3435e7fc3705646c3f1f3c99be95e71 # v0.30.0
+    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@2a2fa2e4ab28e13772cae2a2cfbb2b8bfb85a286 # v0.31.0
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -172,7 +172,7 @@ jobs:
 
       - name: Read the released version
         id: config
-        uses: cuioss/cuioss-organization/.github/actions/read-project-config@2fa5476de3435e7fc3705646c3f1f3c99be95e71 # v0.30.0
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@2a2fa2e4ab28e13772cae2a2cfbb2b8bfb85a286 # v0.31.0
         with:
           config-path: .release-config/.github/project.yml
 
