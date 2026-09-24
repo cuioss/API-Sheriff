@@ -71,7 +71,7 @@ A security-focused API Gateway with a lightweight approach, built with Quarkus.
 
 [IMPORTANT]
 ====
-*0.2.2 is an ALPHA release.* The configuration surface and the APIs *may change without a
+*0.2.3 is an ALPHA release.* The configuration surface and the APIs *may change without a
 migration path*. Per this project's pre-1.0 rules, breaking changes are made freely: keys are
 renamed or removed, values change meaning, and no deprecation shim, compatibility alias or
 upgrade tooling is provided. A `gateway.yaml` that boots today may fail to boot on the next
@@ -165,7 +165,7 @@ link:doc/user/context-path.adoc[The Context Path].
 [[_known_limitations]]
 == Known Limitations
 
-Verified as still open at the 0.2.2 cut. Each is a deliberate boundary or a known gap, not a
+Verified as still open at the 0.2.3 cut. Each is a deliberate boundary or a known gap, not a
 surprise waiting to be discovered.
 
 A route with no `forward` block now forwards everything (behaviour change on upgrade)::
@@ -233,18 +233,6 @@ storage threshold has been recorded. See
 link:doc/development/bff-cookie.adoc#_route_4_package_and_compress_settled_and_built[Route 4 --
 package and compress] and
 link:doc/adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043].
-
-`tls.passthrough_sni` cannot be supplied whole from one environment variable::
-`ConfigLoader.coerce` re-types a substituted `${VAR}` by the type the schema declares at its pointer
-and has no arm for an object, while `gateway.schema.json` declares `tls.passthrough_sni` as
-`type: object`. A `passthrough_sni: "${VAR}"` therefore stays a text node, and the boot is refused
-with `ApiSheriff-200` at `/tls/passthrough_sni`, followed by `ApiSheriff-201`. Each per-host value is
-a string, so the alias for one hostname can come from an in-file `${VAR}` placeholder, and each
-alias's location moves through
-link:doc/user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[`topology.properties`];
-the hostnames themselves stay written in the file. See the
-link:doc/configuration.adoc#_tls[`passthrough_sni` field] and
-link:doc/user/tls-scenarios.adoc#_scenario_passthrough[TLS Scenarios].
 
 Integration-test coverage has recorded gaps::
 Three contributor documents enumerate them rather than leaving them implicit:
