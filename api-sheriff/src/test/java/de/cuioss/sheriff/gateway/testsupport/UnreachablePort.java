@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.testsupport;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -114,13 +115,31 @@ public final class UnreachablePort {
     /**
      * @return the lowest port the running kernel hands out for an ephemeral bind
      * @throws IOException if the Linux port range file exists but cannot be read
+     * @throws IllegalStateException if the Linux port range file does not hold a well-formed
+     *         unprivileged range
      */
     public static int ephemeralFloor() throws IOException {
         if (!Files.isReadable(LINUX_PORT_RANGE)) {
             return IANA_EPHEMERAL_FLOOR;
         }
-        String range = Files.readString(LINUX_PORT_RANGE, StandardCharsets.US_ASCII).strip();
-        return Integer.parseInt(range.split("\\s+")[0]);
+        // One buffered read from offset 0. Files.readString must not be used here: procfs reports a
+        // size of 0, so it reads a single byte first and then reads on from offset 1, where the
+        // kernel's sysctl handler answers EOF — leaving "3" of "32768 60999".
+        String range;
+        try (BufferedReader reader = Files.newBufferedReader(LINUX_PORT_RANGE, StandardCharsets.US_ASCII)) {
+            range = String.valueOf(reader.readLine()).strip();
+        }
+        String[] bounds = range.split("\\s+");
+        if (bounds.length != 2 || !bounds[0].matches("\\d+") || !bounds[1].matches("\\d+")) {
+            throw new IllegalStateException("Malformed " + LINUX_PORT_RANGE + ": '" + range + "'");
+        }
+        int first = Integer.parseInt(bounds[0]);
+        int last = Integer.parseInt(bounds[1]);
+        if (first <= LOWEST_UNPRIVILEGED_PORT || first > last) {
+            throw new IllegalStateException("Implausible ephemeral range in " + LINUX_PORT_RANGE + ": '" + range
+                    + "'");
+        }
+        return first;
     }
 
     /** Binds {@code port} on loopback without {@code SO_REUSEADDR}, never listening, then releases it. */
