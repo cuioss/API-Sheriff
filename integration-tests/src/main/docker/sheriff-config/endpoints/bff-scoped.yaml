@@ -1,20 +1,22 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
-# The session route that needs a scope BEYOND the gateway's oidc.scopes (ADR-0048).
+# The routes that need a scope BEYOND the gateway's oidc.scopes (ADR-0048).
 # Anchored to the 'bff-session' anchor (type: bff, access: authenticated, auth: require:
-# session) declared in gateway.yaml, so its route inherits the session floor, and routed to
-# the same go-httpbin echo backend (the UPSTREAM topology alias) as endpoints/bff-session.yaml
-# so the mediated bearer the gateway forwards is observable.
+# session) declared in gateway.yaml, and routed to the same go-httpbin echo backend (the
+# UPSTREAM topology alias) as endpoints/bff-session.yaml so what the gateway forwards is
+# observable. Two routes live here: bff-scoped (the session floor as inherited) and
+# bff-session-fallback (a require: bearer route with auth.session_fallback: true, serving bearer
+# clients and BFF browsers on one path).
 #
-# `scopes` is ADDITIVE: the scope set this route needs is oidc.scopes united with this list,
+# `scopes` is ADDITIVE: the scope set both routes need is oidc.scopes united with this list,
 # i.e. exactly "openid profile email sheriff_it_endpoint". That one boot-time value is what a
-# navigation login started on this route requests from Keycloak, and what the refresh leg keeps
+# navigation login started on either route requests from Keycloak, and what the refresh leg keeps
 # asking for afterwards. BffEndpointScopesIT captures the authorization redirect and asserts the
 # requested `scope` byte for byte; BffTokenRefreshIT asserts a refreshed token still carries the
 # extra scope. sheriff_it_endpoint is an OPTIONAL client scope in integration-realm.json, so
 # Keycloak issues it only when it is requested — its presence in a token is therefore proof the
 # gateway asked for it, not an artefact of the realm's defaults.
 #
-# The prefix nests under /bff-session and is statically disjoint from bff-session-mediated by
+# Both prefixes nest under /bff-session and are statically disjoint from bff-session-mediated by
 # specificity, exactly as /secure/filtered coexists with /secure in endpoints/secure.yaml.
 # No forward block: the mediated bearer is merged by ForwardPolicyStage regardless of any
 # forward list, and nothing here needs a client header to reach the echo.
@@ -28,3 +30,36 @@ endpoint:
     - id: bff-scoped
       match:
         path_prefix: /bff-session/scoped
+    # session_fallback (auth.session_fallback: true) — ONE require: bearer route that also serves the
+    # BFF browser. The branch is chosen per request from a single input: whether the request carries an
+    # Authorization header. With the header (any scheme, any value, empty included) the route behaves
+    # exactly like a plain bearer route — the token is validated, a Basic or empty value is a 401, a
+    # token lacking a needed scope is a 403 insufficient_scope, and a live session cookie never rescues
+    # a failed bearer. Without it the route behaves exactly like a require: session route — CSRF, login
+    # redirect for a navigation or 401 for an XHR, and the mediated session bearer upstream.
+    # BffSessionFallbackIT asserts every row of that branch table against this route, and MetricsIT
+    # asserts the sheriff_auth_branch_total{route,branch} series it alone emits.
+    #
+    # It lives in THIS descriptor for the endpoint's `scopes`: every token the integration realm mints
+    # carries openid, profile and email as default client scopes, so a route needing only oidc.scopes
+    # could never be shown refusing a token with 403 insufficient_scope. The endpoint scope is optional
+    # in the realm, so a token minted without requesting it is the missing-scope case, and a navigation
+    # login on this route requests it — the SESSION branch honouring endpoint.scopes.
+    #
+    # The route-level auth block REPLACES the anchor's wholesale, so it declares require: bearer in place
+    # of the anchor's session floor — admitted, because the anchor floor rule compares require only and a
+    # bearer posture is not weaker than the session floor it replaces. session_fallback is backed by the
+    # global oidc block (ConfigValidator refuses it without one) and the bearer branch by the
+    # token_validation issuers, so this route is held to both backing blocks.
+    #
+    # No forward block, so the inbound Authorization is withheld by the gateway-owned never-forward set
+    # (ADR-0037) — the BEARER branch forwards the validated client token through the same
+    # mediated-bearer seam the session branch uses, which ForwardPolicyStage merges last and
+    # independently of any forward list. The echo of the client's own token upstream therefore proves
+    # the seam, not a re-admission of the inbound header. Cookie is withheld by the same set.
+    - id: bff-session-fallback
+      match:
+        path_prefix: /bff-session/fallback
+      auth:
+        require: bearer
+        session_fallback: true
