@@ -897,8 +897,21 @@ Step 10 must wait for the image to be public — so bundling this bump into Step
 Step 10 PR, and the first unrelated PR to build in the gap (#353, a test fix) failed
 `BuildParentContractTest` on a base it had not touched and had to carry the bump itself.
 
-You may prepare the branch while the run is still going, but **enqueue it only after Step 7 reports
-the run complete** — the Step 6 merge hold still applies.
+You may prepare the branch while the run is still going — but only once the `release` job has
+pushed its `prepare for next development iteration` commit, since that commit is what the branch
+must be based on. **Enqueue it only after Step 7 reports the run complete** — the Step 6 merge hold
+still applies.
+
+**On a partial release, classify first.** If `publish-image` failed, Step 7's classification comes
+before this step, not after it. The bump itself is needed on every branch of that classification —
+the trunk moved to the next SNAPSHOT when the `release` job succeeded, whatever happened to the
+image, and a follow-up patch cut needs a green `main` — so classification changes *when* you get
+here, never *whether*.
+
+**Enqueued is not landed.** `gh pr merge` only enqueues. Step 8 checks the published artifacts and
+does not depend on `main`, so it may proceed while this PR is queued. **Step 10 may not:** before
+starting it, confirm the PR is `MERGED` and re-run the parity check below against a freshly pulled
+`main` — Step 10 deliberately does not re-bump these files, so it relies on this having landed.
 
 **Not optional, and not part of Step 10.** Every Step 10 file names the version just *released*;
 this one must name the trunk's new *SNAPSHOT*, because it is a `<parent>` pin on this repository's
@@ -1302,9 +1315,10 @@ the counts from both 10a passes, so a zero states which zero it is.
 #### `build-parent/example/pom.xml` — NOT here
 
 The example POM's `<parent><version>` and its `doc/user/downstream-parent.adoc` mirrors move to the
-trunk's new SNAPSHOT in **Step 7a**, right after the run completes, not in this step. By the time
-Step 10 runs they should already be correct; re-run the Step 7a parity check and report its
-`reactor=… example=…` line, but do not re-bump them here.
+trunk's new SNAPSHOT in **Step 7a**, right after the run completes, not in this step. **Do not start
+Step 10 until the Step 7a PR is `MERGED`** (enqueued is not enough); then re-run the Step 7a parity
+check on a freshly pulled `main` and report its `reactor=… example=…` line. Do not re-bump them here
+— a failing check means Step 7a has not landed, and the fix is to land it.
 
 ### Step 11 — Reformat the generated release notes
 
