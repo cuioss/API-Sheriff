@@ -22,8 +22,11 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 
 /**
- * The authentication branch a request is dispatched to at stage 4, resolved once per request
- * from the selected route's effective {@code auth} block.
+ * The authentication branch a request is dispatched to at stage 4, resolved from the selected
+ * route's effective {@code auth} block by the one pure resolver
+ * {@link #resolve(AuthConfig, PipelineRequest)}. Both the edge's CSRF gate and the authentication
+ * stage call that resolver for the same request, so the branch is derived twice but can never differ
+ * between them.
  * <p>
  * For the three plain postures the branch is the posture itself: {@code require: none} &rarr;
  * {@link #NONE}, {@code require: bearer} &rarr; {@link #BEARER}, {@code require: session} &rarr;

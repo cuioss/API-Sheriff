@@ -864,7 +864,7 @@ class GatewayEdgeRouteBffWiringTest {
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(method).setURI(uri);
             return Awaits.connect(client.request(options).compose(request -> {
-                headers.forEach((name, value) -> request.putHeader(name, value));
+                headers.forEach(request::putHeader);
                 return request.send();
             }), "the edge response to " + method + " " + uri);
         }

@@ -164,8 +164,8 @@ public class SheriffMetrics {
      *                                  {@code session_fallback} route never selects
      */
     public void recordAuthBranch(String route, AuthBranch branch) {
-        Objects.requireNonNull(route, "route");
-        Objects.requireNonNull(branch, "branch");
+        Objects.requireNonNull(route, TAG_ROUTE);
+        Objects.requireNonNull(branch, TAG_BRANCH);
         if (branch == AuthBranch.NONE) {
             throw new IllegalArgumentException("sheriff_auth_branch_total accepts only the bearer and session branches");
         }
