@@ -85,11 +85,13 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>Static set headers.</strong> {@code set_headers} are merged after the client copy
  *       and the protocol set, so an operator's explicit value is never silently overridden by the
  *       inbound request.</li>
- *   <li><strong>Mediated session bearer.</strong> A {@code require: session} route's stage-4
- *       runtime records the mediated access token on the request; it is rendered here as the
- *       outbound {@code Authorization: Bearer} <em>last</em>, so it wins over any inbound
- *       {@code Authorization} a mode happened to forward. The upstream therefore sees only the
- *       mediated bearer.</li>
+ *   <li><strong>Mediated bearer.</strong> Stage 4 records the mediated bearer on the request for a
+ *       {@code require: session} route and for either branch of a {@code session_fallback} route —
+ *       the session's access token on the session branch, the validated client token on the
+ *       bearer branch. It is rendered here as the outbound {@code Authorization: Bearer}
+ *       <em>last</em>, so it wins over any inbound {@code Authorization} a mode happened to
+ *       forward. The upstream therefore sees only the mediated bearer. A plain
+ *       {@code require: bearer} route still resolves none.</li>
  *   <li><strong>Conditional requests.</strong> The five {@link #CONDITIONAL_HEADERS} validators are
  *       the protocol set's gated tier: they cross only when the route enables {@code not_modified},
  *       which is the same flag the response direction reads before relaying {@code ETag} /
@@ -220,10 +222,11 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * Applies the {@code require: session} stage-4 mediated bearer as the outbound
-     * {@code Authorization} header, last, so it deterministically wins over any inbound
-     * {@code Authorization} an allowlist happened to forward. A pure-proxy or {@code require: bearer}
-     * route resolves no mediated bearer, so this is a no-op there.
+     * Applies the stage-4 mediated bearer — recorded for a {@code require: session} route or for
+     * either branch of a {@code session_fallback} route — as the outbound {@code Authorization}
+     * header, last, so it deterministically wins over any inbound {@code Authorization} an
+     * allowlist happened to forward. A pure-proxy or plain {@code require: bearer} route resolves no
+     * mediated bearer, so this is a no-op there.
      */
     private static void applyMediatedBearer(PipelineRequest request, Map<String, String> headers) {
         request.mediatedBearer().ifPresent(token -> headers.put("Authorization", "Bearer " + token));

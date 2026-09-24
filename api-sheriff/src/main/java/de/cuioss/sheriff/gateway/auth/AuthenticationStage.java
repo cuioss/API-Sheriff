@@ -37,7 +37,9 @@ import org.jspecify.annotations.Nullable;
 /**
  * Stage 4 — offline bearer-token validation, run after the per-route thorough checks.
  * <p>
- * The stage enforces the selected route's effective auth posture:
+ * The stage enforces the selected route's effective auth posture, dispatching on the
+ * {@link AuthBranch} that {@link AuthBranch#resolve} picks for the request — the same resolver the
+ * edge's CSRF gate calls, so the two cannot disagree:
  * <ul>
  *   <li>{@code require: none} — pass through untouched;</li>
  *   <li>{@code require: bearer} — a {@code Bearer} token is extracted from {@code Authorization} and
@@ -57,13 +59,24 @@ import org.jspecify.annotations.Nullable;
  *       {@code application/problem+json} (everything else). A session route runs <em>no</em> scope
  *       check: the scopes it needs are requested at login, not enforced against the session's token.
  *       Bearer and session stay separate mechanisms — the bearer-validation logic above is
- *       untouched.</li>
+ *       untouched;</li>
+ *   <li>{@code require: bearer} with {@code session_fallback: true} — a request carrying an
+ *       {@code Authorization} header (any scheme, any value, an empty value included) takes the
+ *       bearer branch above, with the same 401 / 403 answers and no session lookup; after a
+ *       successful validation the validated client token is recorded as the
+ *       {@link PipelineRequest#mediatedBearer(String) mediated bearer} — always, independent of
+ *       {@code token_relay}. A request without {@code Authorization} takes the session branch
+ *       above, exactly as on a {@code require: session} route. A malformed, non-{@code Bearer} or
+ *       empty {@code Authorization} therefore answers 401 and never reaches the session runtime. A
+ *       plain {@code require: bearer} route records no mediated bearer.</li>
  * </ul>
  * The upstream is never contacted on any authentication or authorization rejection.
  * <p>
  * The session runtime is an optional collaborator: it is wired only when the gateway serves a BFF
- * variant. A {@code require: session} route reaching this stage without a wired session runtime is a
- * boot-configuration error surfaced as an {@link IllegalStateException} rather than served.
+ * variant. A request resolved onto the session branch — a {@code require: session} route, or the
+ * session branch of a {@code session_fallback} route — reaching this stage without a wired session
+ * runtime is a boot-configuration error surfaced as an {@link IllegalStateException} rather than
+ * served.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -107,7 +120,7 @@ public final class AuthenticationStage {
     }
 
     /**
-     * Enforces the selected route's auth posture.
+     * Enforces the selected route's auth posture on the {@link AuthBranch} resolved for the request.
      *
      * @param request the in-flight request context; its route must be selected (stage 2)
      * @throws GatewayException on a missing / invalid token (401) or a missing scope (403)
@@ -116,20 +129,29 @@ public final class AuthenticationStage {
         Objects.requireNonNull(request, "request");
         RouteRuntime route = requireSelectedRoute(request);
         AuthConfig auth = route.getEffectiveAuth();
+        AuthBranch branch = AuthBranch.resolve(auth, request);
         // The `case null` label is load-bearing, not defensive: it makes this an ENHANCED switch,
         // which javac is required to check for exhaustiveness. Without it a constant-only switch
-        // statement is a legacy switch — a fourth Require constant would compile clean and fall
+        // statement is a legacy switch — a fourth AuthBranch constant would compile clean and fall
         // through silently, leaving the posture unenforced while the route still reports itself
-        // AUTHENTICATED. `require` is non-null by AuthConfig's canonical constructor, so this arm
-        // is unreachable; its job is to make the omission a compile error rather than a bypass.
-        switch (auth.require()) {
+        // AUTHENTICATED. AuthBranch.resolve never returns null, so this arm is unreachable; its
+        // job is to make the omission a compile error rather than a bypass.
+        switch (branch) {
             case NONE -> {
                 // Anonymous surface: nothing to enforce.
             }
-            case BEARER -> validateBearer(request, route);
+            case BEARER -> {
+                String token = validateBearer(request, route);
+                if (auth.effectiveSessionFallback()) {
+                    // The BEARER branch of a session_fallback route forwards the validated client
+                    // token through the mediated-bearer seam — always, independent of token_relay,
+                    // which governs the SESSION branch only. A plain bearer route records none.
+                    request.mediatedBearer(token);
+                }
+            }
             case SESSION -> requireSessionStage(route).process(request);
             case null -> throw new IllegalStateException(
-                    "Route " + route.getId() + " reached authentication with a null auth posture");
+                    "Route " + route.getId() + " reached authentication with a null auth branch");
         }
     }
 
@@ -141,7 +163,12 @@ public final class AuthenticationStage {
         return sessionStage;
     }
 
-    private void validateBearer(PipelineRequest request, RouteRuntime route) {
+    /**
+     * Validates the inbound bearer token offline and enforces the route's needed scopes.
+     *
+     * @return the raw token, once it has passed validation and the scope check
+     */
+    private String validateBearer(PipelineRequest request, RouteRuntime route) {
         String token = extractBearerToken(request)
                 .orElseThrow(() -> unauthorized(request, EventType.TOKEN_MISSING, "No bearer token presented"));
 
@@ -154,13 +181,13 @@ public final class AuthenticationStage {
         }
 
         Set<String> neededScopes = route.getNeededScopes();
-        if (neededScopes.isEmpty()) {
-            return;
+        if (!neededScopes.isEmpty()) {
+            Set<String> missingScopes = content.determineMissingScopes(neededScopes);
+            if (!missingScopes.isEmpty()) {
+                throw insufficientScope(request, route, missingScopes);
+            }
         }
-        Set<String> missingScopes = content.determineMissingScopes(neededScopes);
-        if (!missingScopes.isEmpty()) {
-            throw insufficientScope(request, route, missingScopes);
-        }
+        return token;
     }
 
     /**
