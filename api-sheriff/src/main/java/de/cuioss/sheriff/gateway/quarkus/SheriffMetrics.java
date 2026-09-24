@@ -21,6 +21,7 @@ import java.util.Objects;
 
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import io.micrometer.core.instrument.FunctionCounter;
@@ -45,10 +46,15 @@ import jakarta.inject.Inject;
  *       from gateway overhead;</li>
  *   <li>{@value #SESSION_EVENTS_TOTAL}{@code {event}} — the BFF {@code require: session} lifecycle
  *       counts (session create/destroy, transparent refresh, CSRF, and logout events), keyed by
- *       {@link EventType} name.</li>
+ *       {@link EventType} name;</li>
+ *   <li>{@value #AUTH_BRANCH_TOTAL}{@code {route,branch}} — the authentication branch a
+ *       {@code session_fallback} route selected per request, keyed by the {@link AuthBranch}
+ *       label ({@code bearer} or {@code session}).</li>
  * </ul>
  * Route cardinality is bounded (route id is a config-fixed label; unmatched requests share the
- * fixed {@value #NO_ROUTE} value), so every meter is safe to keep always on. Each record call
+ * fixed {@value #NO_ROUTE} value) and every other label draws from a fixed set — the
+ * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values — so every meter is
+ * safe to keep always on. Each record call
  * resolves its meter through the {@link MeterRegistry}, which caches meters by name and tag set,
  * so the recorder holds no per-meter state and is thread-safe by delegation.
  *
@@ -70,6 +76,11 @@ public class SheriffMetrics {
     public static final String UPSTREAM_DURATION_SECONDS = "sheriff_upstream_duration_seconds";
     /** Counter of BFF {@code require: session} lifecycle events, keyed by {@link EventType} name. */
     public static final String SESSION_EVENTS_TOTAL = "sheriff_session_events_total";
+    /**
+     * Counter of authentication-branch selections on {@code session_fallback} routes, keyed by route
+     * and {@link AuthBranch} label ({@code bearer} / {@code session}).
+     */
+    public static final String AUTH_BRANCH_TOTAL = "sheriff_auth_branch_total";
 
     /** The bounded label value shared by requests that matched no route. */
     public static final String NO_ROUTE = "<no-route>";
@@ -80,6 +91,7 @@ public class SheriffMetrics {
     private static final String TAG_CATEGORY = "category";
     private static final String TAG_FAILURE_TYPE = "failure_type";
     private static final String TAG_EVENT = "event";
+    private static final String TAG_BRANCH = "branch";
 
     private final MeterRegistry registry;
 
@@ -137,6 +149,27 @@ public class SheriffMetrics {
     public void recordSessionEvent(EventType eventType) {
         Objects.requireNonNull(eventType, "eventType");
         registry.counter(SESSION_EVENTS_TOTAL, TAG_EVENT, eventType.name()).increment();
+    }
+
+    /**
+     * Counts one authentication-branch selection on a {@code session_fallback} route against
+     * {@link #AUTH_BRANCH_TOTAL}, tagged with the route id and the branch's lower-case
+     * {@link AuthBranch#label() label}. Only the two branches a {@code session_fallback} route can
+     * select are accepted, so the {@code branch} label never carries a value outside
+     * {@code bearer} / {@code session}.
+     *
+     * @param route  the config-fixed route id of the {@code session_fallback} route
+     * @param branch the selected branch, {@link AuthBranch#BEARER} or {@link AuthBranch#SESSION}
+     * @throws IllegalArgumentException if {@code branch} is {@link AuthBranch#NONE}, which a
+     *                                  {@code session_fallback} route never selects
+     */
+    public void recordAuthBranch(String route, AuthBranch branch) {
+        Objects.requireNonNull(route, "route");
+        Objects.requireNonNull(branch, "branch");
+        if (branch == AuthBranch.NONE) {
+            throw new IllegalArgumentException("sheriff_auth_branch_total accepts only the bearer and session branches");
+        }
+        registry.counter(AUTH_BRANCH_TOTAL, TAG_ROUTE, route, TAG_BRANCH, branch.label()).increment();
     }
 
     /**
