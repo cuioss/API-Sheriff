@@ -879,7 +879,7 @@ public class GatewayEdgeRoute {
                     route.getMatcher().matchHeaderNames());
             verbGateStage.process(request);
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
-            // Resolve the authentication branch ONCE, through the same resolver stage 4 dispatches on,
+            // Resolve the authentication branch through the same pure resolver stage 4 calls again,
             // so the CSRF gate below and the authentication stage cannot disagree on it. Only a
             // session_fallback route meters its branch — a plain route's branch is its posture and
             // carries no signal, so it never touches sheriff_auth_branch_total.
