@@ -109,11 +109,14 @@ endpoint:
                                    #   listed -- do not enumerate HTTP mechanics here
         query_deny: [debug]        # negative-list on the OTHER dimension: every other client
                                    #   parameter crosses. The two dimensions are independent
-        set_headers:               # additional STATIC gateway-set headers only; the mediated
-          x-gateway: api-sheriff   #   Authorization (session routes and both branches of a
-                                   #   session_fallback route -- never a plain require: bearer
-                                   #   route) and the forwarding-header set are injected
-                                   #   automatically, never configured.
+        set_headers:               # additional STATIC gateway-set headers only. Injected
+          x-gateway: api-sheriff   #   automatically, never configured: the regenerated
+                                   #   forwarding-header set (always) and the mediated
+                                   #   Authorization: Bearer -- on a session route and the
+                                   #   session branch of a session_fallback route only when
+                                   #   the effective token_relay is true; on the bearer branch
+                                   #   of a session_fallback route always (the validated client
+                                   #   token); never on a plain require: bearer route.
                                    #   set_headers WINS over a client header of the same name
                                    #   (case-insensitively) -- operator config beats client input
       upstream:
@@ -671,11 +674,17 @@ auth:
   `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the
   missing scopes (sorted), and the upstream is never contacted. Because the set includes
   `oidc.scopes`, a gateway that also runs the BFF rejects a bearer token lacking them -- a
-  `client_credentials` token among them. An empty set skips the check.
+  `client_credentials` token among them. An empty set skips the check. On a route with
+  `session_fallback: true` this enforcement holds on the *bearer branch* only (requests carrying
+  `Authorization`); its session branch behaves as `require: session` below.
 * *`require: session`* -- the set is what a login started on the route *requests* from the IdP. A
   live session is never checked against it; see
   link:bff-session.adoc#scopes[Server-Session BFF -- Scopes] for session-wide scope growth and the
-  refresh behaviour.
+  refresh behaviour. The same applies to the *session branch* of a `session_fallback` route
+  (requests without `Authorization`): the set is requested at login and never enforced, so any live
+  gateway session is admitted. Do not rely on the set as the browser-facing authorization boundary
+  of such a route -- see the security caveat in
+  link:../configuration.adoc#_auth_session_fallback[`auth.session_fallback`].
 * *`require: none`* -- the set has no effect. An endpoint declaring `scopes` whose every route
   resolves `require: none` is refused at boot.
 
@@ -748,10 +757,11 @@ and is explained in its own cell:
   minus the gateway-owned request-direction never-forward set (`Authorization`, `Cookie`, the
   hop-by-hop and connection-specific names, `Content-Length`, `Host`, `Origin`, `Referer`,
   `Date`), which no configuration can re-admit apart from the single `Authorization` carve-out.
-  The *automatic* injections apply as always: the mediated `Authorization: Bearer` on session
-  routes and on both branches of a `session_fallback` route (the validated client token on the
-  bearer branch) -- never on a plain `require: bearer` route -- and the regenerated
-  forwarding-header set. A route that wants a stricter posture
+  The *automatic* injections apply as always. The regenerated forwarding-header set is always
+  injected. The mediated `Authorization: Bearer` is injected on a session route and on the
+  session branch of a `session_fallback` route only when the effective `token_relay` is `true`,
+  and on the bearer branch of a `session_fallback` route always (the validated client token,
+  independent of `token_relay`); a plain `require: bearer` route never receives one. A route that wants a stricter posture
   declares it -- see link:../configuration.adoc#_forward[`forward`]. Note this is the one
   omitted-block default that
   is *permissive*: it filters within a route the request is already authorised for, so the

@@ -115,12 +115,13 @@ route) and nothing after it runs:
 
 | 4
 | `AuthBranch`, `CsrfDefence`, `AuthenticationStage`
-| Bearer validation or session resolution for the route's effective auth. The branch is resolved
-  once per request by `AuthBranch.resolve`: `none`, `bearer` and `session` postures map to
-  themselves, and a `require: bearer` route with `session_fallback: true` takes the BEARER branch
-  when the request carries an `Authorization` header (any scheme or value) and the SESSION branch
-  otherwise. The CSRF defence runs for the SESSION branch only, then authentication dispatches on the
-  same branch, so the two cannot disagree
+| Bearer validation or session resolution for the route's effective auth. The branch comes from one
+  pure resolver, `AuthBranch.resolve`: `none`, `bearer` and `session` postures map to themselves, and
+  a `require: bearer` route with `session_fallback: true` takes the BEARER branch when the request
+  carries an `Authorization` header (any scheme or value) and the SESSION branch otherwise. Both the
+  edge CSRF gate and `AuthenticationStage` call that resolver: the CSRF defence runs for the SESSION
+  branch only, then authentication dispatches on the branch it resolves. Because the resolver is a
+  pure function of the route's effective auth and the header's presence, the two cannot disagree
   (link:adr/0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]).
 
 | 5 -- 7

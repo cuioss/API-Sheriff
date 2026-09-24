@@ -109,7 +109,10 @@ endpoint:
 
 The session is still resolved, refreshed and required exactly as before: a navigation without a
 session is redirected to login, an XHR gets `401`, and an ended session still clears the cookie. The
-only difference is that the upstream receives no `Authorization` header at all. `token_relay` acts on
+only difference is that the gateway mediates no `Authorization` header: the session's token never
+reaches the upstream. The only `Authorization` that could still cross is a static value the route
+itself configures in `forward.set_headers` -- operator configuration, which `token_relay` does not
+filter. `token_relay` acts on
 `require: session` routes and on the session branch of a <<session-fallback,`session_fallback`>>
 route. It has no effect on a plain `require: bearer` route, where the client's own `Authorization`
 crosses only when `forward.headers_allow` names it, nor on the bearer branch of a `session_fallback`
