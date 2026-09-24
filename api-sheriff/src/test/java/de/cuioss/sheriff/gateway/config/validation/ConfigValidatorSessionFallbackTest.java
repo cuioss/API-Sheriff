@@ -294,7 +294,7 @@ class ConfigValidatorSessionFallbackTest {
 
             assertAll(
                     () -> assertTrue(errors.stream().anyMatch(error -> "/token_validation".equals(error.pointer())
-                            && error.message().contains("effective auth 'bearer' requires token_validation")),
+                                    && error.message().contains("effective auth 'bearer' requires token_validation")),
                             errors::toString),
                     () -> assertEquals(List.of(), sessionFallbackErrors(errors)));
         }
