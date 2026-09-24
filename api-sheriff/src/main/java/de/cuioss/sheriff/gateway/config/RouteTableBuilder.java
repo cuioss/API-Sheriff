@@ -543,6 +543,10 @@ public final class RouteTableBuilder {
      * gateway-wide {@code security_defaults} fallback. It is deliberately NOT the raw declared
      * value with a {@code "none"} placeholder for unset: {@code minimal} is a real mode, so that
      * placeholder would report a partial-disable posture for every route that merely omits the knob.
+     * <p>
+     * The line also carries the resolved {@code auth.session_fallback} flag for every route, so a
+     * {@code require: bearer} route that additionally serves the session branch is visible at boot
+     * rather than reading as a plain bearer route.
      */
     private static void logPosture(ResolvedRoute route, SecurityProfile globalProfile) {
         String anchorName = route.anchor() != null ? route.anchor() : NO_ANCHOR_NAME;
@@ -550,8 +554,9 @@ public final class RouteTableBuilder {
         SecurityProfile effectiveProfile = SecurityProfile
                 .parse(securityFilter == null ? null : securityFilter.profile())
                 .orElse(globalProfile);
-        LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, route.effectiveAuth().require(),
-                effectiveProfile.name().toLowerCase(Locale.ROOT));
+        AuthConfig effectiveAuth = route.effectiveAuth();
+        LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, effectiveAuth.require(),
+                effectiveAuth.effectiveSessionFallback(), effectiveProfile.name().toLowerCase(Locale.ROOT));
     }
 
     /**

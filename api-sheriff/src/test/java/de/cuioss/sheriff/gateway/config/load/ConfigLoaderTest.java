@@ -235,6 +235,37 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void bindsDeclaredSessionFallbackAndLeavesAnOmittedKeyAbsent() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: bearer
+                    session_fallback: true
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                      auth:
+                        require: bearer
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        EndpointConfig endpoint = loaded.endpoints().getFirst();
+        RouteConfig route = endpoint.routes().getFirst();
+        assertAll("session_fallback binds through the SNAKE_CASE strategy onto the auth record",
+                () -> assertEquals(Boolean.TRUE, endpoint.auth().sessionFallback(),
+                        "a declared session_fallback: true must bind"),
+                () -> assertTrue(endpoint.auth().effectiveSessionFallback()),
+                () -> assertNull(route.auth().sessionFallback(), "an omitted session_fallback binds as absent"),
+                () -> assertFalse(route.auth().effectiveSessionFallback(),
+                        "an omitted session_fallback resolves to false"));
+    }
+
+    @Test
     void bindsOidcLoginDefaultReturnUrl() throws Exception {
         writeConfig("gateway.yaml", """
                 version: 1
@@ -313,6 +344,22 @@ class ConfigLoaderTest {
                                         path_prefix: /orders
                                 """,
                         "/endpoint/auth"),
+                // session_fallback is a boolean: a non-boolean value is refused by the schema rather
+                // than coerced, so an operator typo can never silently select a posture.
+                Arguments.of("a non-boolean session_fallback in the endpoint auth block",
+                        """
+                                endpoint:
+                                  id: orders
+                                  base_url: ORDERS
+                                  auth:
+                                    require: bearer
+                                    session_fallback: sometimes
+                                  routes:
+                                    - id: orders-read
+                                      match:
+                                        path_prefix: /orders
+                                """,
+                        "/endpoint/auth/session_fallback"),
                 // AS-3: a matcher carries exactly one path form, so declaring both is refused at load.
                 Arguments.of("a matcher declaring both path and path_prefix",
                         """

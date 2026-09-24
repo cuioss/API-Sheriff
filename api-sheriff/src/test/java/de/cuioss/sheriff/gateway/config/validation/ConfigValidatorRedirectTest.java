@@ -104,7 +104,7 @@ class ConfigValidatorRedirectTest {
                 .id("redirects")
                 .enabled(true)
                 .anchor(anchor)
-                .auth(new AuthConfig(Require.NONE, null))
+                .auth(new AuthConfig(Require.NONE, null, null))
                 .routes(List.of(route))
                 .build();
     }
@@ -405,7 +405,7 @@ class ConfigValidatorRedirectTest {
                     .pathPrefix("/site")
                     .type(type)
                     .access(authenticated ? AccessLevel.AUTHENTICATED : AccessLevel.PUBLIC)
-                    .auth(authenticated ? new AuthConfig(Require.BEARER, null) : null)
+                    .auth(authenticated ? new AuthConfig(Require.BEARER, null, null) : null)
                     .build();
             GatewayConfig gateway = GatewayConfig.builder()
                     .version(1)
@@ -417,7 +417,7 @@ class ConfigValidatorRedirectTest {
                     .id("redirects")
                     .enabled(true)
                     .anchor("site")
-                    .auth(new AuthConfig(authenticated ? Require.BEARER : Require.NONE, null))
+                    .auth(new AuthConfig(authenticated ? Require.BEARER : Require.NONE, null, null))
                     .routes(List.of(route))
                     .build();
             return validator.validate(gateway, List.of(anchoredEndpoint), new ResolvedTopology(Map.of()));

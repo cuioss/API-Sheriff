@@ -70,7 +70,7 @@ class ConfigModelContractTest {
     // --- Shared fixtures ---------------------------------------------------
 
     private static AuthConfig auth() {
-        return new AuthConfig(Require.BEARER, null);
+        return new AuthConfig(Require.BEARER, null, null);
     }
 
     private static AnchorConfig anchorConfig() {
@@ -437,9 +437,13 @@ class ConfigModelContractTest {
                             .allowedMethods(endpointConfig().allowedMethods())
                             .upstreamDefaults(endpointConfig().upstreamDefaults())
                             .routes(endpointConfig().routes()).build()),
-                    voCase("AuthConfig", auth(), auth(), new AuthConfig(Require.NONE, null)),
-                    voCase("AuthConfig.tokenRelay", new AuthConfig(Require.SESSION, false),
-                            new AuthConfig(Require.SESSION, false), new AuthConfig(Require.SESSION, true)),
+                    voCase("AuthConfig", auth(), auth(), new AuthConfig(Require.NONE, null, null)),
+                    voCase("AuthConfig.tokenRelay", new AuthConfig(Require.SESSION, false, null),
+                            new AuthConfig(Require.SESSION, false, null), new AuthConfig(Require.SESSION, true, null)),
+                    // session_fallback participates in identity: the unequal instance varies only that
+                    // component, so dropping it from equals() fails this case alone.
+                    voCase("AuthConfig.sessionFallback", new AuthConfig(Require.BEARER, null, true),
+                            new AuthConfig(Require.BEARER, null, true), new AuthConfig(Require.BEARER, null, false)),
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
                     voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
@@ -538,8 +542,9 @@ class ConfigModelContractTest {
 
         @Test
         void authConfigBuilderMatchesConstructor() {
-            AuthConfig viaCtor = new AuthConfig(Require.SESSION, false);
-            AuthConfig viaBuilder = AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build();
+            AuthConfig viaCtor = new AuthConfig(Require.BEARER, false, true);
+            AuthConfig viaBuilder = AuthConfig.builder().require(Require.BEARER).tokenRelay(false)
+                    .sessionFallback(true).build();
             assertEquals(viaCtor, viaBuilder);
         }
 
@@ -1004,7 +1009,7 @@ class ConfigModelContractTest {
         @Test
         void authConfigRequiresRequire() {
             NullPointerException ex = assertThrows(NullPointerException.class,
-                    () -> new AuthConfig(null, null));
+                    () -> new AuthConfig(null, null, null));
             assertEquals("require", ex.getMessage());
         }
 
@@ -1642,10 +1647,22 @@ class ConfigModelContractTest {
         @Test
         void authConfigResolvesAbsentTokenRelayToRelaying() {
             assertAll("token_relay: absent and true relay, only an explicit false withholds the token",
-                    () -> assertNull(new AuthConfig(Require.SESSION, null).tokenRelay()),
-                    () -> assertTrue(new AuthConfig(Require.SESSION, null).effectiveTokenRelay()),
-                    () -> assertTrue(new AuthConfig(Require.SESSION, true).effectiveTokenRelay()),
-                    () -> assertFalse(new AuthConfig(Require.SESSION, false).effectiveTokenRelay()));
+                    () -> assertNull(new AuthConfig(Require.SESSION, null, null).tokenRelay()),
+                    () -> assertTrue(new AuthConfig(Require.SESSION, null, null).effectiveTokenRelay()),
+                    () -> assertTrue(new AuthConfig(Require.SESSION, true, null).effectiveTokenRelay()),
+                    () -> assertFalse(new AuthConfig(Require.SESSION, false, null).effectiveTokenRelay()));
+        }
+
+        @Test
+        void authConfigResolvesOnlyADeclaredTrueSessionFallbackToFallingBack() {
+            assertAll("session_fallback: absent and false stay on one branch, only an explicit true falls back",
+                    () -> assertNull(new AuthConfig(Require.BEARER, null, null).sessionFallback()),
+                    () -> assertFalse(new AuthConfig(Require.BEARER, null, null).effectiveSessionFallback(),
+                            "an absent key resolves to false"),
+                    () -> assertFalse(new AuthConfig(Require.BEARER, null, false).effectiveSessionFallback(),
+                            "a declared false resolves to false"),
+                    () -> assertTrue(new AuthConfig(Require.BEARER, null, true).effectiveSessionFallback(),
+                            "a declared true resolves to true"));
         }
 
         @Test

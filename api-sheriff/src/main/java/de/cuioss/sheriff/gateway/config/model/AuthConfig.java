@@ -27,12 +27,21 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * {@code require} is a {@link Require} posture ({@code none} / {@code bearer} /
  * {@code session}); the value set is declared in the JSON schemas and refused there
- * before binding. {@code token_relay} decides whether a {@code require: session} route
- * relays the session's access token upstream as {@code Authorization: Bearer}; it acts on
- * {@code session} routes only and resolves to {@code true} when absent (see
- * {@link #effectiveTokenRelay()}). The block is replaced <em>wholesale</em> through the
- * route &rarr; endpoint &rarr; anchor cascade, so a route-level block that omits
- * {@code token_relay} resolves it to the default rather than inheriting a lower-level value.
+ * before binding. {@code token_relay} decides whether the session branch relays the
+ * session's access token upstream as {@code Authorization: Bearer}; it acts on
+ * {@code require: session} routes and on the session branch of a {@code session_fallback}
+ * route, and resolves to {@code true} when absent (see {@link #effectiveTokenRelay()}).
+ * <p>
+ * {@code session_fallback} acts on {@code require: bearer} only: when declared
+ * {@code true}, a request carrying an {@code Authorization} header takes the bearer branch
+ * and a request without one takes the session branch, authenticated exactly like a
+ * {@code require: session} route. It resolves to {@code false} when absent (see
+ * {@link #effectiveSessionFallback()}); boot validation refuses it on any other posture.
+ * <p>
+ * The block is replaced <em>wholesale</em> through the route &rarr; endpoint &rarr; anchor
+ * cascade, so a route-level block that omits {@code token_relay} or
+ * {@code session_fallback} resolves it to the default rather than inheriting a lower-level
+ * value.
  * <p>
  * The block carries no scope list: the scopes a route needs are declared additively by the
  * owning endpoint's {@code scopes} key, outside {@code auth}, and materialized once per route
@@ -41,14 +50,17 @@ import org.jspecify.annotations.Nullable;
  * <strong>Thread safety.</strong> This immutable record is thread-safe and may be shared
  * freely across request threads: {@link Require} is an enum and {@link Boolean} is immutable.
  *
- * @param require    the authentication requirement (mandatory)
- * @param tokenRelay whether a {@code require: session} route relays the session's access
- *                   token upstream, {@code null} when omitted (resolves to {@code true})
+ * @param require         the authentication requirement (mandatory)
+ * @param tokenRelay      whether the session branch relays the session's access token
+ *                        upstream, {@code null} when omitted (resolves to {@code true})
+ * @param sessionFallback whether a {@code require: bearer} route also serves requests
+ *                        without an {@code Authorization} header through the session
+ *                        branch, {@code null} when omitted (resolves to {@code false})
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record AuthConfig(Require require, @Nullable Boolean tokenRelay) {
+public record AuthConfig(Require require, @Nullable Boolean tokenRelay, @Nullable Boolean sessionFallback) {
 
     /**
      * Canonical constructor requiring {@code require}.
@@ -65,5 +77,16 @@ public record AuthConfig(Require require, @Nullable Boolean tokenRelay) {
      */
     public boolean effectiveTokenRelay() {
         return !Boolean.FALSE.equals(tokenRelay);
+    }
+
+    /**
+     * Resolves the declared {@code session_fallback} value: an omitted key keeps the route
+     * on its single declared authentication branch.
+     *
+     * @return {@code true} only when {@code session_fallback: true} is declared,
+     *         {@code false} otherwise
+     */
+    public boolean effectiveSessionFallback() {
+        return Boolean.TRUE.equals(sessionFallback);
     }
 }

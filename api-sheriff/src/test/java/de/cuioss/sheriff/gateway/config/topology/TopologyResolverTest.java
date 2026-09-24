@@ -63,7 +63,7 @@ class TopologyResolverTest {
                 .id(alias.toLowerCase(Locale.ROOT))
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig(Require.NONE, null))
+                .auth(new AuthConfig(Require.NONE, null, null))
                 .build();
     }
 
@@ -231,7 +231,7 @@ class TopologyResolverTest {
         EndpointConfig assetOnly = EndpointConfig.builder()
                 .id("site")
                 .enabled(true)
-                .auth(new AuthConfig(Require.NONE, null))
+                .auth(new AuthConfig(Require.NONE, null, null))
                 .build();
         List<EndpointConfig> endpoints = List.of(assetOnly, endpointFor("ORDERS"));
 
