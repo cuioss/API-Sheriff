@@ -59,6 +59,7 @@ import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
@@ -142,11 +143,14 @@ class GatewayEdgeErrorPageTest {
         TestTokenHolder tokenHolder = TestTokenGenerators.accessTokens().next();
         validBearerToken = tokenHolder.getRawToken();
         TokenValidator tokenValidator = TokenValidator.builder().issuerConfig(tokenHolder.getIssuerConfig()).build();
-        int deadPort = closedPort();
+        // Below the ephemeral range: a released ephemeral probe port could be handed to an edge itself,
+        // which then proxies /dead into itself and relays its own 400 instead of answering 502.
+        int[] unreachable = UnreachablePort.pick(3);
+        int deadPort = unreachable[0];
         // Each edge gets its own breaker target: the breaker name derives from the target, and a second
         // edge in the same JVM whose breaker carries an already-used name was observed never to open.
-        enabledFront = startFront(routes(deadPort, closedPort()), tokenValidator, true);
-        disabledFront = startFront(routes(deadPort, closedPort()), tokenValidator, false);
+        enabledFront = startFront(routes(deadPort, unreachable[1]), tokenValidator, true);
+        disabledFront = startFront(routes(deadPort, unreachable[2]), tokenValidator, false);
         client = vertx.createHttpClient();
     }
 
@@ -364,15 +368,6 @@ class GatewayEdgeErrorPageTest {
         edge.registerRoutes(router);
         return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the edge front server to start listening");
-    }
-
-    /** A loopback port nothing listens on: bound once, then released. */
-    private int closedPort() throws Exception {
-        HttpServer probe = Awaits.connect(vertx.createHttpServer().requestHandler(request -> request.response().end())
-                .listen(0, LoopbackHost.ADDRESS), "the port probe to start listening");
-        int port = probe.actualPort();
-        Awaits.teardown(probe.close(), "the port probe to close");
-        return port;
     }
 
     private Response send(HttpServer front, io.vertx.core.http.HttpMethod method, String uri,

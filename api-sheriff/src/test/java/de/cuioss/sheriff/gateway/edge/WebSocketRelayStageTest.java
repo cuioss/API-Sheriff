@@ -73,6 +73,7 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
@@ -186,13 +187,9 @@ class WebSocketRelayStageTest {
         upstreamPort = upstreamServer.actualPort();
         relayUpstreamClient = vertx.createWebSocketClient();
 
-        // A definitely-closed port for the unreachable-upstream case.
-        HttpServer throwaway = Awaits.connect(
-                vertx.createHttpServer().requestHandler(req -> req.response().end())
-                        .listen(0, LoopbackHost.ADDRESS),
-                "the throwaway server to start listening");
-        deadPort = throwaway.actualPort();
-        Awaits.teardown(throwaway.close(), "the throwaway server to close");
+        // A port refusing connections for the unreachable-upstream case, below the ephemeral range so
+        // neither the front server bound below nor a relay-only server can ever be handed it.
+        deadPort = UnreachablePort.pick();
 
         TokenValidator tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
