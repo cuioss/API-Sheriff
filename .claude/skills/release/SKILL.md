@@ -625,13 +625,13 @@ reason this item exists: **no version-bump tooling reaches it.** `release:prepar
 
 `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` asserts that pin *tracks* the reactor
 root version, so a missed bump is not silent — it turns `main` red on the first build after the cut.
-This item catches a drift that already exists *before* spending a release on it; **Step 10's
-`build-parent/example/pom.xml` sub-step is what stops the cut itself creating one.** Both are
+This item catches a drift that already exists *before* spending a release on it; **Step 7a is what
+stops the cut itself leaving one behind.** Both are
 required: this one looks backward, that one forward.
 
 ⛔ **NEITHER of them can see the release-tag skew, and at the 0.2.0 cut that cost a release.** The two
 checks compare the example against the reactor **as it stands on the trunk**, where the two agree by
-construction before a cut and again after Step 10. The commit the release *tags* is a third state
+construction before a cut and again after Step 7a. The commit the release *tags* is a third state
 neither one reads: `release:prepare` transitions the reactor to the released version (`0.2.0`) and
 walks past the non-reactor example, which still carries `0.2.0-SNAPSHOT`. `publish-image` checks out
 **that tag** and runs the suite there. So an assertion demanding exact equality fails every release,
@@ -882,6 +882,84 @@ Two legs, and they fail differently:
 *If the image lane fails after the Maven release* above and **classify the failure before touching
 anything** — a re-run replays the original inputs and only helps a transient failure. **Do not
 re-run the whole workflow.**
+
+### Step 7a — Re-align `build-parent/example/pom.xml` with the trunk, IMMEDIATELY
+
+⛔ **This runs as soon as Step 7 reports the run finished — before Step 8, and never deferred to
+Step 10.** The release's `release` job pushes `[maven-release-plugin] prepare for next development
+iteration` to `main`, moving the reactor to the next SNAPSHOT while this non-reactor POM stays on
+the old one. From that push onward `main` is red, and so is every PR built against it. Steps 8–10
+legitimately take an hour or more (Central propagation alone was ~38 minutes at the 0.2.0 cut), and
+Step 10 must wait for the image to be public — so bundling this bump into Step 10 guaranteed a red
+`main` for that whole window.
+
+**That is not hypothetical — it is why this is its own step.** At the 0.2.3 cut the bump sat in the
+Step 10 PR, and the first unrelated PR to build in the gap (#353, a test fix) failed
+`BuildParentContractTest` on a base it had not touched and had to carry the bump itself.
+
+You may prepare the branch while the run is still going — but only once the `release` job has
+pushed its `prepare for next development iteration` commit, since that commit is what the branch
+must be based on. **Enqueue it only after Step 7 reports the run complete** — the Step 6 merge hold
+still applies.
+
+**On a partial release, classify first.** If `publish-image` failed, Step 7's classification comes
+before this step, not after it. The bump itself is needed on every branch of that classification —
+the trunk moved to the next SNAPSHOT when the `release` job succeeded, whatever happened to the
+image, and a follow-up patch cut needs a green `main` — so classification changes *when* you get
+here, never *whether*.
+
+**Enqueued is not landed.** `gh pr merge` only enqueues. Step 8 checks the published artifacts and
+does not depend on `main`, so it may proceed while this PR is queued. **Step 10 may not:** before
+starting it, confirm the PR is `MERGED` and re-run the parity check below against a freshly pulled
+`main` — Step 10 deliberately does not re-bump these files, so it relies on this having landed.
+
+**Not optional, and not part of Step 10.** Every Step 10 file names the version just *released*;
+this one must name the trunk's new *SNAPSHOT*, because it is a `<parent>` pin on this repository's
+own build parent. Set it to whatever `pom.xml`'s `<version>` says on `main` after the release
+force-pushed its version bump:
+
+```bash
+git fetch origin main && git checkout main && git pull
+python3 -c "import xml.etree.ElementTree as ET; ns={'m':'http://maven.apache.org/POM/4.0.0'}; r=ET.parse('pom.xml').getroot().find('m:version',ns).text.strip(); e=ET.parse('build-parent/example/pom.xml').getroot().find('m:parent/m:version',ns).text.strip(); print('reactor=%s example=%s' % (r, e)); raise SystemExit(0 if r == e else 1)"
+```
+
+Non-zero means the example lags. Edit its `<parent><version>` to the reactor value, re-run the check,
+and ship it — with the `doc/user/downstream-parent.adoc` mirrors below — as **its own small PR**.
+It touches a `pom.xml`, so the full Pre-Commit Process in `CLAUDE.md` applies to it.
+
+**Why no tooling does this for you.** `build-parent/example/pom.xml` is deliberately *not* a reactor
+module — it is absent from the root `<modules>` so a native build never enters the default lane — so
+`release:prepare` inside the pinned `reusable-maven-release.yml` rewrites every reactor POM's version
+and walks straight past this one. This repository configures no `versions-maven-plugin` or
+`maven-release-plugin` of its own, so nothing else touches it either. The pin is hand-maintained, and
+this step is the hand.
+
+**What fails when it is missed.** `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump`
+asserts the example's parent version equals the reactor root version, so every build of `main` —
+and every PR built against it — is red from the moment the release pushes its
+`prepare for next development iteration` commit until this bump lands. Fix the POM; **do not widen
+that assertion to tolerate a lagging version** — its own failure message argues against exactly
+that, and the guard is the only reason a missed bump is visible at all.
+
+Do **not** solve this by adding the example to `<modules>`. Its header records why it is outside the
+reactor, and that reasoning is unchanged by the release cadence.
+
+**`doc/user/downstream-parent.adoc` mirrors this pin and must move with it, in the same commit.**
+The guide reproduces `build-parent/example/pom.xml` verbatim in three places — the embedded POM's
+`<parent><version>`, the "In the example" column of the two-line-diff table, and the "dependency
+resolves to" sentence in the bootstrap step — so all three carry the SNAPSHOT literally rather than
+by reference and none of them is caught by the Step 10a passes (they are neither an image pin, nor
+`$PREV_VERSION` prose, nor a stale-stamp phrase). Sourcery caught this miss on PR #322 at the 0.2.2
+cut: the example was bumped to `0.2.3-SNAPSHOT` and this file was left at `0.2.2-SNAPSHOT`, so
+following the guide from a fresh trunk checkout would resolve a dependency that does not exist
+locally. Re-grep for the SNAPSHOT literal directly rather than trusting the enumeration passes:
+
+```bash
+git grep -n -- '-SNAPSHOT' doc/user/downstream-parent.adoc
+```
+
+Every hit must equal the reactor version the `build-parent/example/pom.xml` check above just
+confirmed; fix any that lag and ship them in the same commit as that POM bump.
 
 ### Step 8 — Verify that EXACTLY ONE release fired
 
@@ -1234,53 +1312,13 @@ during the cycle leading up to the cut — say so explicitly in the Step 12 repo
 skipping the step. **"Checked, already correct" and "forgot to check" must not look alike.** Report
 the counts from both 10a passes, so a zero states which zero it is.
 
-#### `build-parent/example/pom.xml` — the one pin the release moves *past* rather than *to*
+#### `build-parent/example/pom.xml` — NOT here
 
-**This one is not in the table above, and it is not optional.** Every other file there names the
-version just *released*; this one must name the trunk's new *SNAPSHOT*, because it is a `<parent>`
-pin on this repository's own build parent. Set it to whatever `pom.xml`'s `<version>` says on `main`
-after the release force-pushed its version bump:
-
-```bash
-git fetch origin main && git checkout main && git pull
-python3 -c "import xml.etree.ElementTree as ET; ns={'m':'http://maven.apache.org/POM/4.0.0'}; r=ET.parse('pom.xml').getroot().find('m:version',ns).text.strip(); e=ET.parse('build-parent/example/pom.xml').getroot().find('m:parent/m:version',ns).text.strip(); print('reactor=%s example=%s' % (r, e)); raise SystemExit(0 if r == e else 1)"
-```
-
-Non-zero means the example lags. Edit its `<parent><version>` to the reactor value, re-run the check,
-and ship it in the same PR as the rest of this step.
-
-**Why no tooling does this for you.** `build-parent/example/pom.xml` is deliberately *not* a reactor
-module — it is absent from the root `<modules>` so a native build never enters the default lane — so
-`release:prepare` inside the pinned `reusable-maven-release.yml` rewrites every reactor POM's version
-and walks straight past this one. This repository configures no `versions-maven-plugin` or
-`maven-release-plugin` of its own, so nothing else touches it either. The pin is hand-maintained, and
-this step is the hand.
-
-**What fails when it is missed.** `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump`
-asserts the example's parent version equals the reactor root version, so the first build of `main`
-after the cut goes red. Fix the POM; **do not widen that assertion to tolerate a lagging version** —
-its own failure message argues against exactly that, and the guard is the only reason a missed bump
-is visible at all.
-
-Do **not** solve this by adding the example to `<modules>`. Its header records why it is outside the
-reactor, and that reasoning is unchanged by the release cadence.
-
-**`doc/user/downstream-parent.adoc` mirrors this pin and must move with it, in the same commit.**
-The guide reproduces `build-parent/example/pom.xml` verbatim in three places — the embedded POM's
-`<parent><version>`, the "In the example" column of the two-line-diff table, and the "dependency
-resolves to" sentence in the bootstrap step — so all three carry the SNAPSHOT literally rather than
-by reference and none of them is caught by the Step 10a passes (they are neither an image pin, nor
-`$PREV_VERSION` prose, nor a stale-stamp phrase). Sourcery caught this miss on PR #322 at the 0.2.2
-cut: the example was bumped to `0.2.3-SNAPSHOT` and this file was left at `0.2.2-SNAPSHOT`, so
-following the guide from a fresh trunk checkout would resolve a dependency that does not exist
-locally. Re-grep for the SNAPSHOT literal directly rather than trusting the enumeration passes:
-
-```bash
-git grep -n -- '-SNAPSHOT' doc/user/downstream-parent.adoc
-```
-
-Every hit must equal the reactor version the `build-parent/example/pom.xml` check above just
-confirmed; fix any that lag and ship them in the same commit as that POM bump.
+The example POM's `<parent><version>` and its `doc/user/downstream-parent.adoc` mirrors move to the
+trunk's new SNAPSHOT in **Step 7a**, right after the run completes, not in this step. **Do not start
+Step 10 until the Step 7a PR is `MERGED`** (enqueued is not enough); then re-run the Step 7a parity
+check on a freshly pulled `main` and report its `reactor=… example=…` line. Do not re-bump them here
+— a failing check means Step 7a has not landed, and the fix is to land it.
 
 ### Step 11 — Reformat the generated release notes
 
@@ -1397,8 +1435,8 @@ digest; confirmation that **exactly one** of each expected artifact exists; the 
 observed `visibility` value (Step 9) — report the field verbatim, `public` / `internal` / `private`,
 never a bare "done", since `internal` is exactly the outcome that reads as done and is not; which
 version-bearing examples (Step 10) were updated, or that they were **checked and already correct**;
-the `reactor=… example=…` line from the `build-parent/example/pom.xml` parity check, so the bump is
-reported as a *value*, not as a tick; and how many dependency PRs were collapsed or removed while
+the `reactor=… example=…` line from the Step 7a `build-parent/example/pom.xml` parity check and the
+PR that landed it, so the bump is reported as a *value*, not as a tick; and how many dependency PRs were collapsed or removed while
 reformatting the notes.
 
 State plainly which image checks were made **anonymously** and which were authenticated. An
@@ -1433,10 +1471,11 @@ authenticated check passes.
 - **Update the version-bearing examples (Step 10) after the image is public**, and delete any caveat
   the release has overtaken. `doc/user/container-image.adoc` is exempt — its `<version>` is a
   deliberate placeholder, not a stale pin.
-- **Bump `build-parent/example/pom.xml`'s `<parent><version>` to the trunk's new SNAPSHOT (Step 10).**
+- **Bump `build-parent/example/pom.xml`'s `<parent><version>` to the trunk's new SNAPSHOT
+  immediately after the run completes (Step 7a), in its own PR — never bundled into Step 10.**
   It is not a reactor module, so `release:prepare` walks past it and no plugin in this repository
-  updates it. `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` turns `main` red on the
-  first build after a missed bump — fix the POM, never the assertion.
+  updates it. `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` keeps `main` red from the
+  release's version-bump push until the example follows — fix the POM, never the assertion.
 - **The release is not atomic.** A green `release` job means the jars are already irrevocable. On an
   image-lane failure, never re-run the whole workflow — and re-run **`publish-image` alone** only
   for a *transient* failure. A re-run replays the original event context and checks out the release
