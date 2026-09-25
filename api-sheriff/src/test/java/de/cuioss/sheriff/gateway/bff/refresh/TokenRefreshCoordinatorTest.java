@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -1720,6 +1721,275 @@ class TokenRefreshCoordinatorTest {
         }
     }
 
+    /**
+     * The scope-driven leg: a session whose active scope set {@code A} lacks a needed scope inside the
+     * granted set {@code S} asks for exactly the requested set, whatever its access token's remaining
+     * lifetime. It shares the near-expiry leg's single-flight exclusion and refusal dispositions, and it
+     * reports a grant that is still short of the set as {@code SCOPE_REFUSED} without arming the back-off.
+     * An outright {@code invalid_scope} refusal reaches the coordinator as the bare transport failure
+     * {@code token-sheriff-client} raises for it, so it takes the pre-redemption back-off
+     * (TokenSheriff#763).
+     */
+    @Nested
+    @DisplayName("Scope-driven refresh leg")
+    class ScopeLeg {
+
+        private static final String MISSING = "orders:write";
+        /** {@code A ∪ missing} — the set a session route asks the leg for. */
+        private static final Set<String> REQUESTED = Set.of("openid", "profile", "email", "orders:read", MISSING);
+        private static final String REQUESTED_SCOPE = "openid profile email orders:read orders:write";
+        private static final String SHORT_SCOPE = "openid profile email orders:read";
+
+        @Test
+        @DisplayName("Should make exactly one exchange requesting A united with the missing scope, carry S over and persist")
+        void shouldRefreshForRequestedScopes() {
+            SessionRecord live = storedSession();
+            List<Set<String>> requested = new CopyOnWriteArrayList<>();
+            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, (_, scopes) -> {
+                requested.add(scopes);
+                return rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL);
+            });
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            SessionRecord persisted = store.resolve(SESSION_ID, NOW).orElseThrow();
+            assertAll("the leg refreshes regardless of the access token's remaining lifetime",
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
+                    () -> assertEquals(List.of(REQUESTED), requested,
+                            "exactly one exchange sends the requested set verbatim as the grant's scope"),
+                    () -> assertEquals(REQUESTED, persisted.activeScopes(), "the persisted A carries the obtained scope"),
+                    () -> assertEquals(GRANTED_SCOPES, persisted.grantedScopes(), "S is carried over unchanged"),
+                    () -> assertEquals(ROTATED_ACCESS, persisted.accessToken(),
+                            "the rotated token material is persisted"),
+                    () -> assertTrue(revoked.isEmpty(), "a successful scope refresh revokes nothing"));
+        }
+
+        @Test
+        @DisplayName("Should take the requested set as the new A when the response omits scope")
+        void shouldTakeRequestedSetWhenScopeOmitted() {
+            SessionRecord live = storedSession();
+
+            RefreshOutcome outcome = coordinator(NOT_NEAR, (_, _) -> rotation())
+                    .refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
+            assertEquals(REQUESTED, carried(outcome).activeScopes(),
+                    "an omitted scope is identical to the one requested (RFC 6749 §5.1)");
+        }
+
+        @Test
+        @DisplayName("Should return SCOPE_REFUSED carrying the persisted session when the grant still lacks a requested scope, arming no back-off")
+        void shouldRefuseShortGrantWithoutBackOff() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
+                calls.incrementAndGet();
+                return rotation(SHORT_SCOPE, RotationResult.ScopeDelta.NARROWED);
+            });
+
+            RefreshOutcome refused = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+            SessionRecord persisted = store.resolve(SESSION_ID, NOW).orElseThrow();
+            RefreshOutcome followUp = coordinator.refresh(persisted, COOKIE_HEADER, NOW);
+
+            assertAll("a narrower grant keeps the rotated session and leaves the next refresh unthrottled",
+                    () -> assertEquals(RefreshOutcome.Kind.SCOPE_REFUSED, refused.kind()),
+                    () -> assertEquals(ROTATED_ACCESS, carried(refused).accessToken(),
+                            "the refused outcome carries the rotated session"),
+                    () -> assertFalse(carried(refused).activeScopes().contains(MISSING),
+                            "the carried session is still short of the requested scope"),
+                    () -> assertEquals(ROTATED_ACCESS, persisted.accessToken(),
+                            "the redeemed grant's session is persisted, not dropped"),
+                    () -> assertEquals(GRANTED_SCOPES, persisted.grantedScopes(), "S is unchanged"),
+                    () -> assertFalse(refused.isFailure(), "the session is kept"),
+                    () -> assertFalse(refused.requestFailed(), "the kept session still has a token"),
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, followUp.kind(),
+                            "no back-off was armed: a near-expiry refresh at the same instant is admitted"),
+                    () -> assertEquals(2, calls.get(), "the follow-up refresh reached the engine"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should take the pre-redemption back-off on an invalid_scope refusal, which the engine surfaces as a bare transport failure")
+        void shouldBackOffOnInvalidScopeRefusal() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
+                calls.incrementAndGet();
+                // What token-sheriff-client raises for an OAuth invalid_scope answer: the error code is
+                // not carried, so the refusal is indistinguishable from any other 4xx (TokenSheriff#763).
+                throw new TransportException("Token endpoint returned unexpected HTTP status 400");
+            });
+
+            RefreshOutcome refused = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+            RefreshOutcome insideWindow = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED,
+                    NOW.plusSeconds(2));
+
+            assertAll("an unclassifiable scope refusal keeps the session and backs off like any pre-redemption failure",
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, refused.kind()),
+                    () -> assertEquals(live, refused.session(), "the unchanged session, still short of the scope"),
+                    () -> assertTrue(sessionResolvable(NOW), "the session is kept"),
+                    () -> assertTrue(revoked.isEmpty(), "nothing was redeemed"),
+                    () -> assertEquals(RefreshOutcome.Kind.DEFERRED, insideWindow.kind()),
+                    () -> assertEquals(1, calls.get(), "the back-off suppresses the second scope refresh"));
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should return the session unchanged with no engine call when it already carries the requested set")
+        void shouldReturnCurrentWhenAlreadyCovered() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
+                calls.incrementAndGet();
+                return rotation();
+            });
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, ACTIVE_SCOPES, NOW);
+
+            assertEquals(RefreshOutcome.Kind.CURRENT, outcome.kind());
+            assertSame(live, outcome.session());
+            assertEquals(0, calls.get(), "a satisfied set makes no engine call");
+        }
+
+        @Test
+        @DisplayName("Should make no engine call when the leader's re-resolved session already carries the requested set")
+        void shouldShareCoveringReResolvedSession() {
+            SessionRecord stale = session(CURRENT_REFRESH);
+            SessionRecord covering = SessionRecord.builder()
+                    .sessionId(SESSION_ID)
+                    .accessToken("access-covering")
+                    .refreshToken("refresh-covering")
+                    .idToken("id-covering")
+                    .sub("sub-1")
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .activeScopes(REQUESTED)
+                    .grantedScopes(GRANTED_SCOPES)
+                    .build();
+            store.create(covering, NOW);
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
+                calls.incrementAndGet();
+                return rotation();
+            });
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(stale, COOKIE_HEADER, REQUESTED, NOW);
+
+            assertAll("a concurrent refresh already obtained the set",
+                    () -> assertEquals(RefreshOutcome.Kind.CURRENT, outcome.kind()),
+                    () -> assertEquals("access-covering", carried(outcome).accessToken(),
+                            "the re-resolved session is shared, not the caller's stale one"),
+                    () -> assertEquals(0, calls.get(), "the re-check under exclusion makes no engine call"));
+        }
+
+        @Test
+        @DisplayName("Should return SCOPE_REFUSED with no engine call when the session carries no refresh token")
+        void shouldRefuseWithoutRefreshToken() {
+            SessionRecord live = session(null);
+            store.create(live, NOW);
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
+                calls.incrementAndGet();
+                return rotation();
+            });
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            assertEquals(RefreshOutcome.Kind.SCOPE_REFUSED, outcome.kind());
+            assertSame(live, outcome.session(), "the kept session is handed on to widening");
+            assertEquals(0, calls.get(), "nothing can be presented to the engine");
+        }
+
+        @Test
+        @DisplayName("Should end the session when the identity provider rejects the credential on the scope leg")
+        void shouldFailAndDestroyOnCredentialRejection() {
+            SessionRecord live = storedSession();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, throwing(credentialRejected()));
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            assertAll("CREDENTIAL_REJECTED keeps its ADR-0046 disposition on the scope leg",
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                    () -> assertNull(outcome.session()),
+                    () -> assertFalse(sessionResolvable(NOW), "the session is destroyed"),
+                    () -> assertTrue(revoked.isEmpty(), "nothing was redeemed, so nothing is revoked"));
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_CREDENTIAL_REJECTED);
+        }
+
+        @Test
+        @DisplayName("Should hand a coalesced scope request the leader's scope refresh with one engine call")
+        void shouldCoalesceConcurrentScopeRefreshes() throws Exception {
+            CoalescedRun run = coalesce(true, rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL));
+
+            assertAll("two scope requests on one session share one exchange",
+                    () -> assertEquals(1, run.calls()),
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, run.leader().kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, run.follower().kind()),
+                    () -> assertTrue(carried(run.follower()).activeScopes().containsAll(REQUESTED),
+                            "the shared session carries the requested set"));
+        }
+
+        @Test
+        @DisplayName("Should hand a scope request that coalesced with a near-expiry refresh SCOPE_REFUSED rather than a second exchange")
+        void shouldRefuseScopeRequestSharingNearExpiryRefresh() throws Exception {
+            CoalescedRun run = coalesce(false, rotation());
+
+            assertAll("the shared near-expiry refresh requested A, which still lacks the missing scope",
+                    () -> assertEquals(1, run.calls(), "the scope request never presents the rotated-away token"),
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, run.leader().kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.SCOPE_REFUSED, run.follower().kind()),
+                    () -> assertEquals(ROTATED_ACCESS, carried(run.follower()).accessToken(),
+                            "the scope request carries the shared rotated session on to widening"));
+        }
+
+        /**
+         * Runs a leader — a scope refresh or a near-expiry refresh — and a coalesced scope-refresh follower
+         * on the stored session. The leader enters the exchange and blocks there until the follower has been
+         * submitted, then returns {@code rotation}.
+         */
+        private CoalescedRun coalesce(boolean scopeLeader, RotationResult rotation) throws Exception {
+            SessionRecord live = storedSession();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch proceed = new CountDownLatch(1);
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
+                calls.incrementAndGet();
+                entered.countDown();
+                awaitRelease(proceed);
+                return rotation;
+            });
+            Callable<RefreshOutcome> scopeRefresh =
+                    () -> coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+            Callable<RefreshOutcome> leaderCall = scopeLeader ? scopeRefresh
+                    : () -> coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            try {
+                Future<RefreshOutcome> leader = pool.submit(leaderCall);
+                Awaits.connect(entered, "the leader entered the engine refresh");
+                Future<RefreshOutcome> follower = pool.submit(scopeRefresh);
+                // Best-effort ordering, as in SingleFlight: no observable hook for the follower reaching the join.
+                Thread.sleep(100); // NOSONAR java:S2925 - no observable hook for the follower reaching the in-flight join
+                proceed.countDown();
+
+                RefreshOutcome leaderOutcome = Awaits.connect(leader, "the leader refresh to complete");
+                RefreshOutcome followerOutcome = Awaits.connect(follower,
+                        "the coalesced scope refresh to complete");
+                return new CoalescedRun(leaderOutcome, followerOutcome, calls.get());
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+
+        private static SessionRecord carried(RefreshOutcome outcome) {
+            SessionRecord carried = outcome.session();
+            assertNotNull(carried, "a session-carrying outcome carries the session");
+            return carried;
+        }
+    }
+
     @Nested
     @DisplayName("Argument and outcome contracts")
     class Contracts {
@@ -1732,6 +2002,12 @@ class TokenRefreshCoordinatorTest {
             var session = session(CURRENT_REFRESH);
             assertThrows(NullPointerException.class, () -> coordinator.refresh(null, COOKIE_HEADER, NOW));
             assertThrows(NullPointerException.class, () -> coordinator.refresh(session, COOKIE_HEADER, null));
+            assertThrows(NullPointerException.class,
+                    () -> coordinator.refreshForScopes(null, COOKIE_HEADER, ACTIVE_SCOPES, NOW));
+            assertThrows(NullPointerException.class,
+                    () -> coordinator.refreshForScopes(session, COOKIE_HEADER, null, NOW));
+            assertThrows(NullPointerException.class,
+                    () -> coordinator.refreshForScopes(session, COOKIE_HEADER, ACTIVE_SCOPES, null));
         }
 
         @Test
@@ -1756,6 +2032,8 @@ class TokenRefreshCoordinatorTest {
                     () -> new RefreshOutcome(RefreshOutcome.Kind.CURRENT, null, List.of()));
             assertThrows(IllegalArgumentException.class,
                     () -> new RefreshOutcome(RefreshOutcome.Kind.DEFERRED, null, List.of()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new RefreshOutcome(RefreshOutcome.Kind.SCOPE_REFUSED, null, List.of()));
         }
 
         @Test

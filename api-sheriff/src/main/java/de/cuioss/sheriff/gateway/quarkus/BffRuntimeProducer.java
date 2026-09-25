@@ -616,11 +616,18 @@ public class BffRuntimeProducer {
 
     /**
      * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
-     * seam. {@code CURRENT}, {@code REFRESHED} and {@code DEFERRED} carry a session and are mediated
-     * with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} — the session was destroyed
-     * — ends the session so the stage clears the cookie; {@code UNAVAILABLE} — the session was kept
-     * but its access token has expired — fails only this request, so the cookie survives for the next
-     * attempt.
+     * seam. {@code CURRENT}, {@code REFRESHED}, {@code DEFERRED} and {@code SCOPE_REFUSED} carry a
+     * session and are mediated with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} —
+     * the session was destroyed — ends the session so the stage clears the cookie; {@code UNAVAILABLE} —
+     * the session was kept but its access token has expired — fails only this request, so the cookie
+     * survives for the next attempt.
+     * <p>
+     * {@code SCOPE_REFUSED} reaches this leg only when the near-expiry request coalesced with a concurrent
+     * scope-driven refresh of the same session; it always carries the kept session and any cookie the
+     * shared re-bind produced, so mediating it is the only consistent mapping. It is safe because the
+     * stage's scope comparison runs after mediation, so a mediated session is never relayed short of a
+     * needed scope. The switch has no {@code default} arm on purpose: a later outcome kind fails
+     * compilation here instead of being mediated silently.
      * <p>
      * Extracted so the enabled and disabled bindings of the seam read as the two alternatives they
      * are, rather than one of them being a multi-statement lambda inline in the assembly.
@@ -632,7 +639,7 @@ public class BffRuntimeProducer {
         return (sessionRecord, cookieHeader, now) -> {
             TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
             return switch (outcome.kind()) {
-                case CURRENT, REFRESHED, DEFERRED -> SessionAuthenticationStage.RefreshResult.mediate(
+                case CURRENT, REFRESHED, DEFERRED, SCOPE_REFUSED -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(Objects.requireNonNull(outcome.session(), "session"),
                                 outcome.setCookieHeaders()));
                 case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
