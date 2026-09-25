@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -370,6 +371,14 @@ public class BffRuntimeProducer {
         LoginFlow loginFlow = new LoginFlow(scopes -> scopedFlows.authorize(metadata.get(), scopes),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
 
+        // Session widening — the live-session sibling of the login flow, on the same pending store,
+        // binding cookie and callback landing. Its authorization leg is built per call on
+        // ScopedEngineFlows because the widened set S ∪ needed is IdP-derived. Exactly one instance
+        // exists per runtime: the callback's interactive re-drive goes through it.
+        SessionWidening sessionWidening = new SessionWidening(
+                (scopes, silent) -> scopedFlows.widen(metadata.get(), scopes, silent),
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
+
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
         // then hands the result to the refresh policy, which is where the exchange's refresh token is
         // retained or dropped. See applyRefreshPolicy for why the drop happens at login rather than
@@ -378,7 +387,7 @@ public class BffRuntimeProducer {
                 authorizationCodeFlow.exchange(metadata.get(), context, params, clientAuthentication),
                 refreshEnabled);
         CallbackEndpoint callbackEndpoint = new CallbackEndpoint(codeExchange, pendingStore, bindingCookieCodec,
-                sessionBinding, sessionTtl);
+                sessionBinding, sessionTtl, sessionWidening);
 
         // D7/D9 transparent refresh — near-expiry decision + engine RefreshFlow, session persistence.
         // Assembled ONLY when refresh.enabled: with the switch off no coordinator exists and the

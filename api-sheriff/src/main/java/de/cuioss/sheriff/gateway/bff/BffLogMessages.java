@@ -46,7 +46,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-16).
+     * Info-level messages (INFO range 1-99; this catalogue owns 10-16 and 20).
      */
     @UtilityClass
     public static final class INFO {
@@ -118,10 +118,22 @@ public final class BffLogMessages {
                 .identifier(16)
                 .template("Cookie-mode sealing key generated at startup (%s) — sessions do not survive a restart")
                 .build();
+
+        /**
+         * A live session was widened: the identity provider granted the scopes a route needed, and
+         * the grant was merged into the same session (same identity, same absolute expiry). The
+         * template carries only the sorted names of the scopes the widening added to the session's
+         * granted set — never a token, the session id or the subject.
+         */
+        public static final LogRecord SESSION_WIDENED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(20)
+                .template("Live session widened for a require:session route — scopes added: %s")
+                .build();
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114 and 127).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127 and 130-131).
      */
     @UtilityClass
     public static final class WARN {
@@ -221,6 +233,32 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(127)
                 .template("Token refresh failed before the identity provider processed it — session kept, next attempt in %s seconds")
+                .build();
+
+        /**
+         * A session widening was refused because the identity the widening grant names differs from
+         * the live session's (or from the one the widening was issued for). The session is left
+         * unchanged and is never swapped to another identity. The template carries no value at all —
+         * never a token, the session id or either subject.
+         */
+        public static final LogRecord SESSION_WIDENING_IDENTITY_MISMATCH = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(130)
+                .template("Session widening refused — the granted identity differs from the live session; session unchanged")
+                .build();
+
+        /**
+         * A session widening was refused by the identity provider, or its grant did not carry the
+         * scopes the widening asked for; the refusal is terminal and the session is left unchanged.
+         * The template carries only a bounded reason token: a known OAuth / OIDC {@code error} code
+         * ({@code invalid_scope}, {@code access_denied}, {@code login_required}, …), {@code other} for
+         * any code outside that closed set, or {@code scope-not-granted}. Never the raw IdP error
+         * description, a token, the session id or the subject.
+         */
+        public static final LogRecord SESSION_WIDENING_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(131)
+                .template("Session widening refused by the identity provider (%s) — session unchanged")
                 .build();
     }
 }

@@ -39,6 +39,7 @@ import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -650,7 +651,8 @@ class GatewayEdgeRouteBffWiringTest {
                 // path, so the exchange grants no refresh token — the shape an authorization server
                 // that issues none produces, and the one that keeps this runtime's session inert.
                 return new AuthorizationCodeFlow.AuthenticationResult(access, id, null);
-            }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1));
+            }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1),
+                    engineFreeSessionWidening(pendingStore, bindingCodec));
 
             SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                     (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
@@ -943,7 +945,7 @@ class GatewayEdgeRouteBffWiringTest {
 
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
             throw new AssertionError("engine exchange must not be reached");
-        }, pendingStore, bindingCodec, binding, ttl);
+        }, pendingStore, bindingCodec, binding, ttl, engineFreeSessionWidening(pendingStore, bindingCodec));
 
         BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
                 rawToken -> {
@@ -969,6 +971,18 @@ class GatewayEdgeRouteBffWiringTest {
      */
     private static ReturnTargetScopes engineFreeReturnTargetScopes() {
         return new ReturnTargetScopes(new RouteTable(List.of()), ORIGIN, List.of());
+    }
+
+    /**
+     * The session widening the callback's interactive re-drive goes through, over the fixture's own
+     * pending store and binding-cookie codec. No path these fixtures drive lands on a widening pending
+     * record, so its authorization seam must never be reached.
+     */
+    private static SessionWidening engineFreeSessionWidening(PendingAuthorizationStore pendingStore,
+            BindingCookieCodec bindingCodec) {
+        return new SessionWidening((scopes, silent) -> {
+            throw new AssertionError("engine widening authorize must not be reached");
+        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
     }
 
     private static LogoutEndpoint logoutEndpoint(SessionBinding binding) {

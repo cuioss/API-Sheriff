@@ -26,9 +26,13 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
+import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
@@ -123,6 +127,38 @@ import org.jspecify.annotations.Nullable;
  * {@link SessionRecord#toString()} redacts it, so it cannot reach a log line or a stack trace.
  * Whether it is retained at all is the operator's {@code oidc.session.refresh.enabled} switch,
  * applied one layer out where the {@link CodeExchange} seam is bound.
+ * <p>
+ * <strong>IdP error responses are answered after the binding check.</strong> An error response is
+ * honoured only once the binding cookie has resolved the pending record and the returned
+ * {@code state} has matched it (constant time), so a forged error from another browser can never
+ * drive a widening re-drive. For a plain login the error is answered {@code 400}.
+ * <p>
+ * <strong>Widening callbacks.</strong> A pending record created by {@link SessionWidening} belongs to
+ * a live session widening its scopes, and its callback is answered differently from a login:
+ * <ul>
+ *   <li><strong>Error, silent attempt.</strong> {@code login_required}, {@code interaction_required}
+ *       or {@code consent_required} re-drives exactly one interactive attempt through
+ *       {@link SessionWidening#redriveInteractive}, with the same return URL and scopes, answered as a
+ *       {@code 302} carrying a new binding cookie.</li>
+ *   <li><strong>Any other error, or any error on the interactive attempt</strong>, is terminal:
+ *       {@code 403}, no {@code Set-Cookie}, the live session unchanged and no further redirect.</li>
+ *   <li><strong>Success.</strong> The live session is resolved from the request {@code Cookie}
+ *       ({@code 403} when there is none); the new ID token's {@code sub}, the live session's
+ *       {@code sub} and the one the widening was issued for must all agree ({@code 403} otherwise —
+ *       a session is never swapped to another identity); and the grant must carry every scope the
+ *       widening sought beyond the session's granted set ({@code 403} otherwise, so a narrower grant
+ *       can never send the browser round the widening again). The grant is then merged into the
+ *       <em>live</em> session, which keeps its {@code sessionId}, {@code sessionNonce},
+ *       {@code expiresAt}, {@code sid} and {@code authTime}, takes the new access, refresh and ID
+ *       tokens and the new {@code acr}, sets {@code A} to the granted scope and {@code S} to
+ *       {@code S ∪ granted}. It is re-bound through {@link SessionBinding#persist} — never a new
+ *       session — and the browser is redirected to the recorded return URL. A persist failure
+ *       answers {@code 500}, like a bind failure on login.</li>
+ * </ul>
+ * The merge is a check-then-act on the live session: a concurrent refresh may rotate its tokens
+ * between the resolve and the persist. The last writer wins over two IdP-fresh token sets of the same
+ * identity; the identity is re-checked on the resolved record, never taken from the pending record
+ * alone.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -142,11 +178,28 @@ public final class CallbackEndpoint {
     private static final String CLAIM_SCOPE = "scope";
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
+    /** The IdP errors on a silent widening attempt that owe exactly one interactive re-drive. */
+    private static final Set<String> INTERACTION_NEEDED = Set.of("login_required", "interaction_required",
+            "consent_required");
+
+    /**
+     * The closed set of OAuth 2.0 / OIDC authorization-error codes a widening refusal may name in its
+     * log line. Any other value is IdP- or attacker-supplied free text and is logged as
+     * {@link #REASON_OTHER}.
+     */
+    private static final Set<String> KNOWN_AUTHORIZATION_ERRORS = Set.of("invalid_scope", "access_denied",
+            "login_required", "interaction_required", "consent_required", "account_selection_required",
+            "invalid_request", "unauthorized_client", "unsupported_response_type", "server_error",
+            "temporarily_unavailable");
+    private static final String REASON_OTHER = "other";
+    private static final String REASON_SCOPE_NOT_GRANTED = "scope-not-granted";
+
     private final CodeExchange codeExchange;
     private final PendingAuthorizationStore pendingStore;
     private final BindingCookieCodec bindingCookieCodec;
     private final SessionBinding sessionBinding;
     private final Duration sessionTtl;
+    private final SessionWidening sessionWidening;
 
     /**
      * Assembles the callback endpoint with the exchange seam and the gateway-side collaborators it drives.
@@ -156,27 +209,34 @@ public final class CallbackEndpoint {
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param sessionBinding     the mode-neutral session binding the new session is bound through
      * @param sessionTtl         the absolute session lifetime from login
+     * @param sessionWidening    the widening coordinator the single interactive re-drive of a silent
+     *                           widening goes through; required, because a widening pending record
+     *                           can only exist once it has run
      */
     public CallbackEndpoint(CodeExchange codeExchange, PendingAuthorizationStore pendingStore,
-            BindingCookieCodec bindingCookieCodec, SessionBinding sessionBinding, Duration sessionTtl) {
+            BindingCookieCodec bindingCookieCodec, SessionBinding sessionBinding, Duration sessionTtl,
+            SessionWidening sessionWidening) {
         this.codeExchange = Objects.requireNonNull(codeExchange, "codeExchange");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.sessionTtl = Objects.requireNonNull(sessionTtl, "sessionTtl");
+        this.sessionWidening = Objects.requireNonNull(sessionWidening, "sessionWidening");
     }
 
     /**
-     * Handles one OIDC callback: validates the binding, drives the engine exchange, creates the
-     * session, and returns the browser response.
+     * Handles one OIDC callback: validates the binding, then either answers an IdP error response or
+     * drives the engine exchange and creates the session (login) or merges into the live session
+     * (widening), and returns the browser response.
      *
      * @param rawParameters the raw callback parameter string — the untouched query string of the
      *                      {@code response_mode=query} GET callback, never map-collapsed (BFF-13)
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
      * @param now         the reference instant (TTL anchor for pending resolution and session expiry)
-     * @return the redirect outcome on success, a {@code 400}/{@code 403} error outcome when the
-     *         callback is rejected, or a {@code 500} error outcome when the validated session could
-     *         not be bound (e.g. the sealed cookie-mode value exceeds the cookie-size budget)
+     * @return the redirect outcome on success or on the interactive re-drive of a silent widening, a
+     *         {@code 400}/{@code 403} error outcome when the callback is rejected or a widening is
+     *         refused, or a {@code 500} error outcome when the validated session could not be bound
+     *         or persisted (e.g. the sealed cookie-mode value exceeds the cookie-size budget)
      */
     public CallbackOutcome handle(String rawParameters, @Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(rawParameters, "rawParameters");
@@ -189,10 +249,6 @@ public final class CallbackEndpoint {
             // BFF-13: parse() rejects a duplicated code/state (RFC 9700 §4.7.3 parameter injection —
             // the Keycloak CVE-2026-9689 class). Only the raw parse can detect this; of(Map) cannot.
             LOGGER.debug(duplicateInjection, "OIDC callback rejected — duplicate query parameter (BFF-13)");
-            return CallbackOutcome.error(BAD_REQUEST);
-        }
-        if (params.hasError()) {
-            LOGGER.debug("OIDC callback carried an IdP error response: %s", params.error());
             return CallbackOutcome.error(BAD_REQUEST);
         }
         if (isBlank(params.state())) {
@@ -218,13 +274,116 @@ public final class CallbackEndpoint {
             return CallbackOutcome.error(FORBIDDEN);
         }
 
+        // Only now — the binding cookie resolved the record and the state matched — is an IdP error
+        // response honoured, so a forged error from another browser can never drive a re-drive.
+        if (params.hasError()) {
+            return answerError(params, pending, now);
+        }
+
+        AuthorizationCodeFlow.AuthenticationResult result;
         try {
-            AuthorizationCodeFlow.AuthenticationResult result = codeExchange.exchange(pending.flowContext(), params);
-            return completeLogin(result, pending, now);
+            result = codeExchange.exchange(pending.flowContext(), params);
         } catch (TokenSheriffException engineFailure) {
             LOGGER.debug(engineFailure, "OIDC callback code exchange / token validation failed");
             return CallbackOutcome.error(BAD_REQUEST);
         }
+        PendingAuthorizationRecord.Widening widening = pending.widening();
+        return widening == null ? completeLogin(result, pending, now)
+                : completeWidening(result, pending, widening, cookieHeader, now);
+    }
+
+    /**
+     * Answers an IdP error response on an already-bound callback: {@code 400} for a login; for a
+     * widening, exactly one interactive re-drive when a silent attempt needs interaction, otherwise a
+     * terminal {@code 403} leaving the live session unchanged.
+     */
+    private CallbackOutcome answerError(CallbackParameters params, PendingAuthorizationRecord pending, Instant now) {
+        String error = params.error();
+        String reason = error != null && KNOWN_AUTHORIZATION_ERRORS.contains(error) ? error : REASON_OTHER;
+        PendingAuthorizationRecord.Widening widening = pending.widening();
+        if (widening == null) {
+            LOGGER.debug("OIDC callback carried an IdP error response for a login (%s)", reason);
+            return CallbackOutcome.error(BAD_REQUEST);
+        }
+        if (widening.attempt() == PendingAuthorizationRecord.Widening.Attempt.SILENT
+                && INTERACTION_NEEDED.contains(reason)) {
+            LoginRedirect redrive = sessionWidening.redriveInteractive(pending, now);
+            LOGGER.debug("Silent session widening needs interaction (%s) — re-driving one interactive attempt",
+                    reason);
+            return CallbackOutcome.redirect(redrive.authorizationUrl(), redrive.setCookieHeaders());
+        }
+        LOGGER.warn(BffLogMessages.WARN.SESSION_WIDENING_REFUSED, reason);
+        return CallbackOutcome.error(FORBIDDEN);
+    }
+
+    /**
+     * Merges a successful widening grant into the live session the request carries, after checking
+     * that it is the same identity and that the grant carries the scopes the widening sought.
+     */
+    private CallbackOutcome completeWidening(AuthorizationCodeFlow.AuthenticationResult result,
+            PendingAuthorizationRecord pending, PendingAuthorizationRecord.Widening widening,
+            @Nullable String cookieHeader, Instant now) {
+        AccessTokenContent accessToken = result.accessToken();
+        IdTokenContent idToken = result.idToken();
+        Optional<String> subject = idToken.getSubject().or(accessToken::getSubject);
+        if (subject.isEmpty()) {
+            LOGGER.debug("OIDC widening callback validated tokens carried no subject — rejected");
+            return CallbackOutcome.error(BAD_REQUEST);
+        }
+        Optional<SessionRecord> resolvedLive = sessionBinding.resolve(cookieHeader, now);
+        if (resolvedLive.isEmpty()) {
+            LOGGER.debug("OIDC widening callback carried no live session — rejected");
+            return CallbackOutcome.error(FORBIDDEN);
+        }
+        SessionRecord live = resolvedLive.get();
+        // The identity is re-checked on the resolved record, never taken from the pending record alone.
+        if (!live.sub().equals(subject.get()) || !live.sub().equals(widening.sub())) {
+            LOGGER.warn(BffLogMessages.WARN.SESSION_WIDENING_IDENTITY_MISMATCH);
+            return CallbackOutcome.error(FORBIDDEN);
+        }
+
+        Set<String> granted = activeScopes(accessToken, pending);
+        Set<String> sought = new TreeSet<>(pending.requestedScopes());
+        sought.removeAll(live.grantedScopes());
+        if (!granted.containsAll(sought)) {
+            // A narrower grant merged into the session would leave the route's scope missing and send
+            // the browser round the widening again — refuse instead, the session unchanged.
+            LOGGER.warn(BffLogMessages.WARN.SESSION_WIDENING_REFUSED, REASON_SCOPE_NOT_GRANTED);
+            return CallbackOutcome.error(FORBIDDEN);
+        }
+        Set<String> widenedGrant = new TreeSet<>(live.grantedScopes());
+        widenedGrant.addAll(granted);
+        SessionRecord merged = SessionRecord.builder()
+                .sessionId(live.sessionId())
+                .accessToken(accessToken.getRawToken())
+                .refreshToken(result.refreshToken())
+                .idToken(idToken.getRawToken())
+                .sub(live.sub())
+                .sid(live.sid())
+                .expiresAt(live.expiresAt())
+                .acr(claim(idToken, CLAIM_ACR))
+                .authTime(live.authTime())
+                .sessionNonce(live.sessionNonce())
+                .activeScopes(granted)
+                .grantedScopes(widenedGrant)
+                .build();
+        SessionBinding.BoundSession bound;
+        try {
+            bound = sessionBinding.persist(merged, now);
+        } catch (IllegalStateException persistFailure) {
+            // As on login: the grant was valid, but the binding cannot hold the merged session (for
+            // example the sealed cookie-mode value outgrew the cookie-size budget). The live session
+            // is left as it was; only the binding's own bounded reason is logged.
+            LOGGER.debug(persistFailure, "OIDC widening callback could not persist the widened session");
+            return CallbackOutcome.error(INTERNAL_ERROR);
+        }
+
+        Set<String> added = new TreeSet<>(granted);
+        added.removeAll(live.grantedScopes());
+        LOGGER.info(BffLogMessages.INFO.SESSION_WIDENED, String.join(" ", added));
+        List<String> setCookies = new ArrayList<>(bound.setCookieHeaders());
+        setCookies.add(bindingCookieCodec.toClearingSetCookieHeader());
+        return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }
 
     private CallbackOutcome completeLogin(AuthorizationCodeFlow.AuthenticationResult result,

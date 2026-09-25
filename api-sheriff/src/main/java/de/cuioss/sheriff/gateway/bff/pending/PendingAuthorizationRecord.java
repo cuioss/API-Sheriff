@@ -50,6 +50,12 @@ import org.jspecify.annotations.Nullable;
  * The record also carries the scope set the authorization request asked for. The callback uses it as
  * the session's active scope set when the issued access token carries no {@code scope} claim, so a
  * session always knows which scope set to refresh with.
+ * <p>
+ * <strong>Login versus widening.</strong> A record created by {@link #create} is a plain login: its
+ * {@link #widening()} is {@code null} and its callback mints a new session. A record created by
+ * {@link #createWidening} belongs to a live session widening its scopes: it carries the live
+ * session's {@code sub} and the {@linkplain Widening.Attempt attempt} it was issued for, and its
+ * callback merges into that live session instead of minting one.
  *
  * @param id              the unguessable record id (store key and binding-cookie value)
  * @param flowContext     the engine transaction DTO owning {@code state}/{@code nonce}/PKCE
@@ -58,6 +64,7 @@ import org.jspecify.annotations.Nullable;
  *                        parameter
  * @param createdAt       the instant the record was created (TTL anchor)
  * @param ttl             the short fixed lifetime before the record expires
+ * @param widening        the widening marker, or {@code null} for a plain login
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -69,7 +76,8 @@ FlowContext flowContext,
 String returnUrl,
 Set<String> requestedScopes,
 Instant createdAt,
-Duration ttl) {
+Duration ttl,
+@Nullable Widening widening) {
 
     /**
      * The short fixed lifetime a pending-authorization record lives before it expires. Fixed
@@ -82,11 +90,12 @@ Duration ttl) {
     private static final int ID_BYTES = 32;
 
     /**
-     * Canonical constructor rejecting any absent component — every field is mandatory — and
-     * defensively copying {@code requestedScopes} into an immutable set.
+     * Canonical constructor rejecting any absent mandatory component — every field except
+     * {@code widening} is mandatory — and defensively copying {@code requestedScopes} into an
+     * immutable set.
      *
-     * @throws NullPointerException when a component is {@code null}, or {@code requestedScopes}
-     *                              contains a {@code null} element
+     * @throws NullPointerException when a mandatory component is {@code null}, or
+     *                              {@code requestedScopes} contains a {@code null} element
      */
     public PendingAuthorizationRecord {
         Objects.requireNonNull(id, "id");
@@ -104,13 +113,33 @@ Duration ttl) {
      * @param returnUrl       the already same-origin-validated post-login redirect target
      * @param requestedScopes the scope set the authorization request carried; duplicates collapse
      * @param createdAt       the creation instant (TTL anchor)
-     * @return a new pending-authorization record
+     * @return a new plain-login pending-authorization record ({@link #widening()} is {@code null})
      */
     public static PendingAuthorizationRecord create(FlowContext flowContext, String returnUrl,
             Collection<String> requestedScopes, Instant createdAt) {
         Objects.requireNonNull(requestedScopes, "requestedScopes");
         return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, Set.copyOf(requestedScopes),
-                createdAt, FIXED_TTL);
+                createdAt, FIXED_TTL, null);
+    }
+
+    /**
+     * Creates a widening record for a live session, with a freshly generated unguessable id and the
+     * {@link #FIXED_TTL}.
+     *
+     * @param flowContext     the engine transaction DTO
+     * @param returnUrl       the already same-origin-validated redirect target after the widening
+     * @param requestedScopes the scope set the widening authorization request carried; duplicates
+     *                        collapse
+     * @param sub             the live session's subject, the identity the callback must land on
+     * @param attempt         the attempt this authorization request was issued for
+     * @param createdAt       the creation instant (TTL anchor)
+     * @return a new widening pending-authorization record
+     */
+    public static PendingAuthorizationRecord createWidening(FlowContext flowContext, String returnUrl,
+            Collection<String> requestedScopes, String sub, Widening.Attempt attempt, Instant createdAt) {
+        Objects.requireNonNull(requestedScopes, "requestedScopes");
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, Set.copyOf(requestedScopes),
+                createdAt, FIXED_TTL, new Widening(sub, attempt));
     }
 
     /**
@@ -204,5 +233,44 @@ Duration ttl) {
             return 80;
         }
         return -1;
+    }
+
+    /**
+     * The marker that turns a pending record into a live-session widening: the identity the callback
+     * must merge into and the attempt the authorization request was issued for.
+     *
+     * @param sub     the live session's subject; the callback refuses a grant for any other subject
+     * @param attempt the attempt this authorization request was issued for
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public record Widening(String sub, Attempt attempt) {
+
+        /**
+         * Canonical constructor rejecting an absent component.
+         *
+         * @throws NullPointerException when a component is {@code null}
+         */
+        public Widening {
+            Objects.requireNonNull(sub, "sub");
+            Objects.requireNonNull(attempt, "attempt");
+        }
+
+        /**
+         * The attempt a widening authorization request was issued for. A widening starts
+         * {@link #SILENT}; an IdP answer that needs interaction re-drives exactly one
+         * {@link #INTERACTIVE} attempt, and any refusal of that attempt is terminal.
+         *
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        public enum Attempt {
+
+            /** The {@code prompt=none} attempt: the IdP may answer only from its own SSO session. */
+            SILENT,
+
+            /** The single interactive attempt that follows a silent attempt needing interaction. */
+            INTERACTIVE
+        }
     }
 }

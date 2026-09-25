@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.reserved;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -25,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
@@ -35,8 +37,10 @@ import java.util.Set;
 import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
@@ -54,11 +58,16 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link CallbackEndpoint}: the OIDC auth-code callback orchestration — the BFF-13
@@ -76,7 +85,12 @@ import org.junit.jupiter.api.Test;
  * The engine exchange is driven through the {@link CodeExchange} seam, so the success and
  * exchange-failure paths are exercised with a hand-built {@link AuthorizationCodeFlow.AuthenticationResult}
  * — no live token endpoint, no signed tokens, no test double framework.
+ * <p>
+ * The widening cases drive a real {@link SessionWidening} whose authorization seam records each
+ * attempt it is asked for, so the single interactive re-drive and the absence of a second one are
+ * observable, and they run the merge against both session bindings.
  */
+@EnableTestLogger
 class CallbackEndpointTest {
 
     private static final Instant T0 = Instant.parse("2026-07-23T10:00:00Z");
@@ -89,11 +103,21 @@ class CallbackEndpointTest {
     private static final String IDP_SID = "idp-sid-9";
     private static final List<String> REQUESTED_SCOPES = List.of("openid", "profile", "email", "orders:read");
 
+    private static final String GATEWAY_ORIGIN = "https://gw.example.com";
+    private static final String CALLBACK_URI = GATEWAY_ORIGIN + "/auth/callback";
+    private static final String WIDENING_AUTHORIZATION_URL = "https://idp.example.com/authorize?client_id=widen";
+
+    /** One call of the widening authorization seam: the set it asked for, whether silent, its context. */
+    private record WideningCall(Set<String> scopes, boolean silent, FlowContext context) {
+    }
+
     private PendingAuthorizationStore.InMemory pendingStore;
     private BindingCookieCodec bindingCodec;
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
     private SessionBinding sessionBinding;
+    private List<WideningCall> wideningCalls;
+    private SessionWidening sessionWidening;
     private CallbackEndpoint endpoint;
 
     private String state;
@@ -107,14 +131,30 @@ class CallbackEndpointTest {
         sessionStore = new InMemorySessionStore(16);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
-        endpoint = new CallbackEndpoint(successfulExchange(), pendingStore, bindingCodec, sessionBinding, SESSION_TTL);
+        wideningCalls = new ArrayList<>();
+        sessionWidening = new SessionWidening((scopes, silent) -> {
+            FlowContext context = FlowContext.create(CALLBACK_URI);
+            wideningCalls.add(new WideningCall(Set.copyOf(scopes), silent, context));
+            return new AuthorizationCodeFlow.AuthorizationRedirect(WIDENING_AUTHORIZATION_URL, context);
+        }, pendingStore, bindingCodec, GATEWAY_ORIGIN, RETURN_URL);
+        endpoint = endpoint(successfulExchange(), sessionBinding);
 
-        FlowContext flow = FlowContext.create("https://gw.example.com/auth/callback");
+        FlowContext flow = FlowContext.create(CALLBACK_URI);
         state = flow.state();
         PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, REQUESTED_SCOPES, T0);
         pendingStore.store(pending);
         recordId = pending.id();
-        bindingCookieHeader = bindingCodec.toSetCookieHeader(recordId).split(";", 2)[0];
+        bindingCookieHeader = cookiePair(bindingCodec.toSetCookieHeader(recordId));
+    }
+
+    /** The callback endpoint over {@code exchange} and {@code binding}, sharing the fixture's widening. */
+    private CallbackEndpoint endpoint(CodeExchange exchange, SessionBinding binding) {
+        return new CallbackEndpoint(exchange, pendingStore, bindingCodec, binding, SESSION_TTL, sessionWidening);
+    }
+
+    /** The {@code name=value} request-cookie pair of a {@code Set-Cookie} header value. */
+    private static String cookiePair(String setCookieHeader) {
+        return setCookieHeader.split(";", 2)[0];
     }
 
     private static CodeExchange successfulExchange() {
@@ -281,12 +321,32 @@ class CallbackEndpointTest {
     class FailurePaths {
 
         @Test
-        @DisplayName("Should reject an IdP error response 400")
+        @DisplayName("Should answer a bound IdP error response for a plain login 400")
         void shouldRejectIdpError() {
             CallbackOutcome outcome = endpoint.handle("error=access_denied&error_description=nope&state=" + state,
                     bindingCookieHeader, T0);
 
             assertEquals(400, outcome.status());
+            assertTrue(outcome.setCookieHeaders().isEmpty());
+            assertTrue(wideningCalls.isEmpty(), "a login error never drives a widening re-drive");
+        }
+
+        @Test
+        @DisplayName("Should reject an IdP error response without a binding cookie 403 — the binding check runs first")
+        void shouldRejectIdpErrorWithoutBindingCookie() {
+            CallbackOutcome outcome = endpoint.handle("error=access_denied&state=" + state, null, T0);
+
+            assertEquals(403, outcome.status(), "an unbound error is a forgery candidate, not an IdP answer");
+            assertTrue(pendingStore.consume(recordId, T0).isPresent(), "the record was never resolved");
+        }
+
+        @Test
+        @DisplayName("Should reject an IdP error response whose state does not match the bound record 403")
+        void shouldRejectIdpErrorWithStateMismatch() {
+            CallbackOutcome outcome = endpoint.handle("error=access_denied&state=not-the-bound-state",
+                    bindingCookieHeader, T0);
+
+            assertEquals(403, outcome.status());
         }
 
         @Test
@@ -303,8 +363,7 @@ class CallbackEndpointTest {
             CodeExchange failing = (context, params) -> {
                 throw new ClientProtocolException("token endpoint rejected the code");
             };
-            CallbackEndpoint failingEndpoint = new CallbackEndpoint(failing, pendingStore, bindingCodec, sessionBinding,
-                    SESSION_TTL);
+            CallbackEndpoint failingEndpoint = endpoint(failing, sessionBinding);
 
             CallbackOutcome outcome = failingEndpoint.handle("code=abc&state=" + state, bindingCookieHeader, T0);
 
@@ -314,8 +373,7 @@ class CallbackEndpointTest {
         @Test
         @DisplayName("Should map a binding failure to 500 rather than letting IllegalStateException escape handle()")
         void shouldMapBindFailureTo500() {
-            CallbackEndpoint bindFailingEndpoint = new CallbackEndpoint(oversizedExchange(), pendingStore, bindingCodec,
-                    cookieBinding(), SESSION_TTL);
+            CallbackEndpoint bindFailingEndpoint = endpoint(oversizedExchange(), cookieBinding());
 
             CallbackOutcome outcome = assertDoesNotThrow(
                     () -> bindFailingEndpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0),
@@ -395,8 +453,7 @@ class CallbackEndpointTest {
         @Test
         @DisplayName("Should complete the login with a null refresh token when the IdP granted none")
         void shouldCompleteLoginWithoutRefreshToken() {
-            CallbackEndpoint noRefreshToken = new CallbackEndpoint(exchangeReturning(null), pendingStore,
-                    bindingCodec, sessionBinding, SESSION_TTL);
+            CallbackEndpoint noRefreshToken = endpoint(exchangeReturning(null), sessionBinding);
 
             CallbackOutcome outcome = noRefreshToken.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
 
@@ -424,8 +481,7 @@ class CallbackEndpointTest {
     class ActiveScopeSet {
 
         private SessionRecord loginWith(@Nullable ClaimValue scopeClaim) {
-            CallbackEndpoint scoped = new CallbackEndpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim),
-                    pendingStore, bindingCodec, sessionBinding, SESSION_TTL);
+            CallbackEndpoint scoped = endpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim), sessionBinding);
             CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
             assertTrue(outcome.isRedirect(), "the login completes");
             String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
@@ -473,8 +529,7 @@ class CallbackEndpointTest {
     class GrantedScopeSetAtLogin {
 
         private SessionRecord loginWith(@Nullable ClaimValue scopeClaim) {
-            CallbackEndpoint scoped = new CallbackEndpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim),
-                    pendingStore, bindingCodec, sessionBinding, SESSION_TTL);
+            CallbackEndpoint scoped = endpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim), sessionBinding);
             CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
             assertTrue(outcome.isRedirect(), "the login completes");
             String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
@@ -504,9 +559,8 @@ class CallbackEndpointTest {
         @DisplayName("Should set S equal to A in cookie mode too, surviving the sealed round trip")
         void shouldSetGrantedToActiveInCookieMode() {
             SessionBinding cookieBinding = cookieBinding();
-            CallbackEndpoint cookieEndpoint = new CallbackEndpoint(
-                    exchangeReturning(RAW_REFRESH_TOKEN, ClaimValue.forPlainString("openid orders:read")),
-                    pendingStore, bindingCodec, cookieBinding, SESSION_TTL);
+            CallbackEndpoint cookieEndpoint = endpoint(
+                    exchangeReturning(RAW_REFRESH_TOKEN, ClaimValue.forPlainString("openid orders:read")), cookieBinding);
 
             CallbackOutcome outcome = cookieEndpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
             String sessionSetCookie = outcome.setCookieHeaders().getFirst();
@@ -516,6 +570,396 @@ class CallbackEndpointTest {
             assertEquals(Set.of("openid", "orders:read"), resolved.activeScopes());
             assertEquals(Set.of("openid", "orders:read"), resolved.grantedScopes(),
                     "the sealed cookie carries S alongside A, so a stateless gateway sees S = A after login");
+        }
+    }
+
+    /**
+     * A callback landing on a widening pending record: it answers the IdP's error or grant for a live
+     * session widening its scopes, never minting a session of its own.
+     */
+    @Nested
+    @DisplayName("Widening callback")
+    class WideningCallback {
+
+        private static final String WIDEN_RETURN_URL = "/orders/42";
+        private static final Set<String> LIVE_SCOPES = Set.of("openid", "profile");
+        private static final Set<String> WIDENING_REQUEST = Set.of("openid", "profile", "orders:read");
+        private static final String LIVE_ACR = "urn:acr:live";
+        private static final Instant LIVE_AUTH_TIME = T0.minusSeconds(60);
+        private static final String WIDENED_ACCESS_TOKEN = "widened-access-token";
+        private static final String WIDENED_ID_TOKEN = "widened-id-token";
+        private static final String WIDENED_REFRESH_TOKEN = "widened-refresh-token";
+        private static final String WIDENED_ACR = "urn:acr:widened";
+        private static final String OTHER_SUBJECT = "user-sub-2";
+        private static final Instant CALLBACK_AT = T0.plusSeconds(30);
+
+        /** The live session as the binding holds it. */
+        private SessionRecord live;
+        /** The live session's {@code name=value} request-cookie pair. */
+        private String sessionCookie;
+        private String wideningState;
+        private String wideningBindingCookie;
+
+        /** Binds a live session for {@link #SUBJECT} through {@code binding} and remembers its cookie. */
+        private void bindLive(SessionBinding binding) {
+            SessionRecord login = SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(RAW_ACCESS_TOKEN)
+                    .refreshToken(RAW_REFRESH_TOKEN)
+                    .idToken(RAW_ID_TOKEN)
+                    .sub(SUBJECT)
+                    .sid(IDP_SID)
+                    .expiresAt(T0.plus(SESSION_TTL))
+                    .acr(LIVE_ACR)
+                    .authTime(LIVE_AUTH_TIME)
+                    .activeScopes(LIVE_SCOPES)
+                    .grantedScopes(LIVE_SCOPES)
+                    .build();
+            SessionBinding.BoundSession bound = binding.bind(login, T0);
+            live = bound.session();
+            sessionCookie = cookiePair(bound.setCookieHeaders().getFirst());
+        }
+
+        /** Stores a widening pending record for {@code sub} and remembers its binding cookie and state. */
+        private void pendWidening(String sub, PendingAuthorizationRecord.Widening.Attempt attempt) {
+            FlowContext flow = FlowContext.create(CALLBACK_URI);
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.createWidening(flow, WIDEN_RETURN_URL,
+                    WIDENING_REQUEST, sub, attempt, T0);
+            pendingStore.store(pending);
+            wideningState = flow.state();
+            wideningBindingCookie = cookiePair(bindingCodec.toSetCookieHeader(pending.id()));
+        }
+
+        private String requestCookies() {
+            return wideningBindingCookie + "; " + sessionCookie;
+        }
+
+        /**
+         * A successful widening grant for {@code subject} whose access token carries {@code scopeClaim}, or
+         * no {@code scope} claim when {@code null}. The ID token names a different {@code sid} and
+         * {@code auth_time} than the live session, so the merge's keep-vs-take split is observable.
+         */
+        private static CodeExchange grant(String subject, @Nullable ClaimValue scopeClaim) {
+            Map<String, ClaimValue> accessClaims = new HashMap<>();
+            accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(subject));
+            if (scopeClaim != null) {
+                accessClaims.put(ClaimName.SCOPE.getName(), scopeClaim);
+            }
+            AccessTokenContent access = new AccessTokenContent(accessClaims, WIDENED_ACCESS_TOKEN);
+            Map<String, ClaimValue> idClaims = new HashMap<>(Map.of(
+                    ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(subject),
+                    "sid", ClaimValue.forPlainString("idp-sid-other"),
+                    "acr", ClaimValue.forPlainString(WIDENED_ACR),
+                    "auth_time", ClaimValue.forPlainString("1790000000")));
+            IdTokenContent id = new IdTokenContent(idClaims, WIDENED_ID_TOKEN);
+            AuthorizationCodeFlow.AuthenticationResult result =
+                    new AuthorizationCodeFlow.AuthenticationResult(access, id, WIDENED_REFRESH_TOKEN);
+            return (context, params) -> result;
+        }
+
+        private static CodeExchange fullGrant() {
+            return grant(SUBJECT, ClaimValue.forPlainString("openid profile orders:read"));
+        }
+
+        private CallbackOutcome error(String error) {
+            return endpoint.handle("error=" + error + "&state=" + wideningState, requestCookies(), CALLBACK_AT);
+        }
+
+        private SessionRecord resolveServerSession() {
+            return sessionBinding.resolve(sessionCookie, CALLBACK_AT).orElseThrow();
+        }
+
+        private static void assertRefused(CallbackOutcome outcome) {
+            assertEquals(403, outcome.status());
+            assertNull(outcome.location(), "a refusal never redirects the browser round the widening again");
+            assertTrue(outcome.setCookieHeaders().isEmpty(), "a refusal touches no cookie, the session's least");
+        }
+
+        @Nested
+        @DisplayName("IdP error on the silent attempt")
+        class SilentError {
+
+            @BeforeEach
+            void setUpLiveSilentWidening() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+            }
+
+            @ParameterizedTest(name = "{0} re-drives exactly one interactive attempt")
+            @ValueSource(strings = {"login_required", "interaction_required", "consent_required"})
+            @DisplayName("Should re-drive exactly one interactive attempt when the silent attempt needs interaction")
+            void shouldRedriveOneInteractiveAttempt(String interactionNeeded) {
+                CallbackOutcome outcome = error(interactionNeeded);
+
+                assertEquals(302, outcome.status());
+                assertEquals(WIDENING_AUTHORIZATION_URL, outcome.location(), "the browser goes back to the IdP");
+                assertEquals(1, outcome.setCookieHeaders().size(), "only a new binding cookie, no session cookie");
+                assertEquals(1, wideningCalls.size(), "exactly one re-drive");
+                assertFalse(wideningCalls.getFirst().silent(), "the re-drive is the interactive attempt");
+                assertEquals(WIDENING_REQUEST, wideningCalls.getFirst().scopes(), "the same scopes as the silent one");
+                PendingAuthorizationRecord interactive = pendingStore.consume(
+                        bindingCodec.readRecordId(cookiePair(outcome.setCookieHeaders().getFirst())).orElseThrow(),
+                        CALLBACK_AT).orElseThrow();
+                assertEquals(PendingAuthorizationRecord.Widening.Attempt.INTERACTIVE, interactive.widening().attempt());
+                assertEquals(SUBJECT, interactive.widening().sub());
+                assertEquals(WIDEN_RETURN_URL, interactive.returnUrl(), "the same return URL as the silent one");
+                assertEquals(live, resolveServerSession(), "the re-drive leaves the live session unchanged");
+            }
+
+            @Test
+            @DisplayName("Should refuse a second login_required terminally: 403, no further redirect, session unchanged")
+            void shouldRefuseSecondLoginRequired() {
+                CallbackOutcome redrive = error("login_required");
+                String interactiveBinding = cookiePair(redrive.setCookieHeaders().getFirst());
+                String interactiveState = wideningCalls.getFirst().context().state();
+
+                CallbackOutcome second = endpoint.handle("error=login_required&state=" + interactiveState,
+                        interactiveBinding + "; " + sessionCookie, CALLBACK_AT);
+
+                assertRefused(second);
+                assertEquals(1, wideningCalls.size(), "the interactive attempt is never re-driven — no loop");
+                assertEquals(live, resolveServerSession());
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("login_required"));
+            }
+
+            @ParameterizedTest(name = "{0} is terminal")
+            @ValueSource(strings = {"invalid_scope", "access_denied"})
+            @DisplayName("Should refuse invalid_scope and access_denied 403 with the session unchanged")
+            void shouldRefuseTerminalErrors(String refusal) {
+                CallbackOutcome outcome = error(refusal);
+
+                assertRefused(outcome);
+                assertTrue(wideningCalls.isEmpty(), "a refusal is never re-driven");
+                assertEquals(live, resolveServerSession(), "the live session keeps its tokens and scopes");
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format(refusal));
+            }
+
+            @Test
+            @DisplayName("Should log an unknown error code as 'other', never the IdP-supplied value")
+            void shouldBoundUnknownErrorReason() {
+                CallbackOutcome outcome = error("attacker_chosen_text");
+
+                assertRefused(outcome);
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("other"));
+                LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, "attacker_chosen_text");
+            }
+        }
+
+        @Nested
+        @DisplayName("Forged or unbound error")
+        class ForgedError {
+
+            @BeforeEach
+            void setUpLiveSilentWidening() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+            }
+
+            @Test
+            @DisplayName("Should reject a login_required without the binding cookie 403 and never re-drive")
+            void shouldRejectErrorWithoutBindingCookie() {
+                CallbackOutcome outcome = endpoint.handle("error=login_required&state=" + wideningState, sessionCookie,
+                        CALLBACK_AT);
+
+                assertRefused(outcome);
+                assertTrue(wideningCalls.isEmpty(), "a forged error can never trigger a re-drive");
+            }
+
+            @Test
+            @DisplayName("Should reject a login_required with a foreign state 403 and never re-drive")
+            void shouldRejectErrorWithForeignState() {
+                CallbackOutcome outcome = endpoint.handle("error=login_required&state=forged-state", requestCookies(),
+                        CALLBACK_AT);
+
+                assertRefused(outcome);
+                assertTrue(wideningCalls.isEmpty(), "a forged error can never trigger a re-drive");
+            }
+        }
+
+        @Nested
+        @DisplayName("Successful grant")
+        class SuccessfulGrant {
+
+            @Test
+            @DisplayName("Should merge into the same server-mode session with A and S widened")
+            void shouldMergeIntoServerSession() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = endpoint(fullGrant(), sessionBinding).handle(
+                        "code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertEquals(302, outcome.status());
+                assertEquals(WIDEN_RETURN_URL, outcome.location());
+                assertEquals(List.of(bindingCodec.toClearingSetCookieHeader()), outcome.setCookieHeaders(),
+                        "the server-mode handle is unchanged, so only the binding cookie is cleared");
+                SessionRecord merged = resolveServerSession();
+                assertAll("merged into the live session",
+                        () -> assertEquals(live.sessionId(), merged.sessionId(), "the same session, never a new one"),
+                        () -> assertEquals(WIDENED_ACCESS_TOKEN, merged.accessToken()),
+                        () -> assertEquals(WIDENED_REFRESH_TOKEN, merged.refreshToken()),
+                        () -> assertEquals(WIDENED_ID_TOKEN, merged.idToken()),
+                        () -> assertEquals(WIDENED_ACR, merged.acr()),
+                        () -> assertEquals(SUBJECT, merged.sub()),
+                        () -> assertEquals(IDP_SID, merged.sid(), "the session keeps its sid"),
+                        () -> assertEquals(LIVE_AUTH_TIME, merged.authTime(), "the session keeps its auth_time"),
+                        () -> assertEquals(live.expiresAt(), merged.expiresAt(), "the absolute expiry is unchanged"),
+                        () -> assertEquals(WIDENING_REQUEST, merged.activeScopes(), "A is the granted scope"),
+                        () -> assertEquals(WIDENING_REQUEST, merged.grantedScopes(), "S is S united with the grant"));
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.INFO,
+                        BffLogMessages.INFO.SESSION_WIDENED.format("orders:read"));
+            }
+
+            @Test
+            @DisplayName("Should set A to the grant and S to S united with the grant when the grant narrows A")
+            void shouldKeepGrantedScopesWhenGrantNarrows() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                endpoint(grant(SUBJECT, ClaimValue.forPlainString("openid orders:read")), sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                SessionRecord merged = resolveServerSession();
+                assertEquals(Set.of("openid", "orders:read"), merged.activeScopes(), "A is what the token carries");
+                assertEquals(WIDENING_REQUEST, merged.grantedScopes(), "S never loses a scope granted earlier");
+            }
+
+            @Test
+            @DisplayName("Should fall back to the requested set when the widened token carries no scope claim")
+            void shouldFallBackToRequestedSet() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = endpoint(grant(SUBJECT, null), sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertTrue(outcome.isRedirect());
+                SessionRecord merged = resolveServerSession();
+                assertEquals(WIDENING_REQUEST, merged.activeScopes());
+                assertEquals(WIDENING_REQUEST, merged.grantedScopes());
+            }
+
+            @Test
+            @DisplayName("Should merge an interactive attempt's grant exactly like a silent one")
+            void shouldMergeInteractiveGrant() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.INTERACTIVE);
+
+                CallbackOutcome outcome = endpoint(fullGrant(), sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertTrue(outcome.isRedirect());
+                assertEquals(live.sessionId(), resolveServerSession().sessionId());
+                assertEquals(WIDENING_REQUEST, resolveServerSession().activeScopes());
+            }
+
+            @Test
+            @DisplayName("Should merge into the same cookie-mode session identity with A and S widened")
+            void shouldMergeIntoCookieSession() {
+                SessionBinding cookieBinding = cookieBinding();
+                bindLive(cookieBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = endpoint(fullGrant(), cookieBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertEquals(302, outcome.status());
+                assertEquals(2, outcome.setCookieHeaders().size(), "the re-sealed session + the binding clear");
+                assertEquals(bindingCodec.toClearingSetCookieHeader(), outcome.setCookieHeaders().get(1));
+                SessionRecord merged = cookieBinding
+                        .resolve(cookiePair(outcome.setCookieHeaders().getFirst()), CALLBACK_AT).orElseThrow();
+                assertAll("merged into the live cookie-mode session",
+                        () -> assertEquals(live.sessionId(), merged.sessionId(),
+                                "the derived identity is unchanged — the same session, re-sealed"),
+                        () -> assertEquals(live.sessionNonce(), merged.sessionNonce()),
+                        () -> assertEquals(live.expiresAt(), merged.expiresAt()),
+                        () -> assertEquals(WIDENED_ACCESS_TOKEN, merged.accessToken()),
+                        () -> assertEquals(WIDENING_REQUEST, merged.activeScopes()),
+                        () -> assertEquals(WIDENING_REQUEST, merged.grantedScopes()));
+            }
+
+            @Test
+            @DisplayName("Should answer 500 when the binding cannot hold the widened session, leaving it unchanged")
+            void shouldMapPersistFailureTo500() {
+                SessionBinding cookieBinding = cookieBinding();
+                bindLive(cookieBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = assertDoesNotThrow(() -> endpoint(oversizedExchange(), cookieBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT));
+
+                assertEquals(500, outcome.status());
+                assertTrue(outcome.setCookieHeaders().isEmpty(), "the browser keeps its existing session cookie");
+                assertEquals(live, cookieBinding.resolve(sessionCookie, CALLBACK_AT).orElseThrow());
+                LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO,
+                        BffLogMessages.INFO.SESSION_WIDENED.resolveIdentifierString());
+            }
+        }
+
+        @Nested
+        @DisplayName("Refused grant")
+        class RefusedGrant {
+
+            @Test
+            @DisplayName("Should refuse a grant for another subject 403 and leave the session unchanged")
+            void shouldRefuseSubjectMismatch() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = endpoint(grant(OTHER_SUBJECT, ClaimValue.forPlainString(
+                        "openid profile orders:read")), sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertRefused(outcome);
+                assertEquals(live, resolveServerSession(), "a session is never swapped to another identity");
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_IDENTITY_MISMATCH.format());
+            }
+
+            @Test
+            @DisplayName("Should refuse when the widening was issued for another subject than the live session 403")
+            void shouldRefusePendingSubjectMismatch() {
+                bindLive(sessionBinding);
+                pendWidening(OTHER_SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = endpoint(fullGrant(), sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertRefused(outcome);
+                assertEquals(live, resolveServerSession());
+            }
+
+            @Test
+            @DisplayName("Should refuse a widening callback that carries no live session 403")
+            void shouldRefuseWithoutLiveSession() {
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = endpoint(fullGrant(), sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, wideningBindingCookie, CALLBACK_AT);
+
+                assertRefused(outcome);
+                LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO,
+                        BffLogMessages.INFO.SESSION_WIDENED.resolveIdentifierString());
+            }
+
+            @Test
+            @DisplayName("Should refuse a grant lacking a scope sought beyond S 403, session unchanged, no loop")
+            void shouldRefuseGrantMissingSoughtScope() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+
+                CallbackOutcome outcome = endpoint(grant(SUBJECT, ClaimValue.forPlainString("openid profile")),
+                        sessionBinding).handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertRefused(outcome);
+                assertTrue(wideningCalls.isEmpty(), "the browser is not sent round the widening again");
+                assertEquals(live, resolveServerSession(), "a narrower grant is never merged");
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("scope-not-granted"));
+            }
         }
     }
 

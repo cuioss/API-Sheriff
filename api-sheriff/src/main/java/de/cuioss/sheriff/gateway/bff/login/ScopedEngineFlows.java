@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.login;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
@@ -69,6 +70,13 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * is therefore not bounded by the configuration. Building the flow is cheap (it holds references
  * only); the network cost is the refresh grant itself.
  * <p>
+ * <strong>Widening leg — never cached.</strong> {@link #widen} builds an {@link AuthorizationCodeFlow}
+ * per call for the same reason: the set a live session widens to is its granted-scope set plus the
+ * route's needed scopes, and the granted set is IdP-derived, so caching it would break the
+ * "bounded by boot configuration" property of the login-flow cache. A silent widening additionally
+ * carries {@code prompt=none}, added by a parameter-aware rewrite of the rendered URL in the same
+ * style as {@link QueryResponseModeAuthorizationRequestBuilder#withQueryResponseMode}.
+ * <p>
  * The seam performs no I/O of its own and logs nothing — in particular no token. The authorization
  * leg is local (the engine only renders a URL); the refresh leg's network call is the engine's.
  * <p>
@@ -80,6 +88,15 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * @since 1.0
  */
 public final class ScopedEngineFlows {
+
+    /** The authorization-request parameter a silent widening sets. */
+    private static final String PARAM_PROMPT = "prompt";
+
+    /** The OIDC prompt value that forbids the IdP from showing any interaction. */
+    private static final String PROMPT_NONE_PAIR = PARAM_PROMPT + "=none";
+    private static final char QUERY_START = '?';
+    private static final String PAIR_SEPARATOR = "&";
+    private static final char NAME_VALUE_SEPARATOR = '=';
 
     private final Function<List<String>, ClientConfiguration> configurationFactory;
     private final TokenEndpointClient tokenEndpointClient;
@@ -129,6 +146,35 @@ public final class ScopedEngineFlows {
     }
 
     /**
+     * Builds the authorization URL and transaction context for widening a live session to exactly
+     * {@code scopes}, over an {@link AuthorizationCodeFlow} built for this call alone.
+     * <p>
+     * The flow is never cached: the widening set contains the session's IdP-derived granted scopes,
+     * so it is not bounded by the boot configuration the login-flow cache relies on. When
+     * {@code silent} is {@code true} the rendered URL additionally carries exactly one
+     * {@code prompt=none}; every other parameter is copied through byte for byte. The URL is never
+     * logged.
+     *
+     * @param metadata the resolved provider metadata
+     * @param scopes   the scope set the widening requests; order and duplicates are irrelevant
+     * @param silent   {@code true} for the {@code prompt=none} attempt, {@code false} for the
+     *                 interactive attempt, which carries no {@code prompt} parameter of its own
+     * @return the engine's authorization redirect, whose URL carries {@code scope} equal to the
+     *         canonical form of {@code scopes}
+     */
+    public AuthorizationCodeFlow.AuthorizationRedirect widen(ProviderMetadata metadata, Collection<String> scopes,
+            boolean silent) {
+        Objects.requireNonNull(metadata, "metadata");
+        AuthorizationCodeFlow.AuthorizationRedirect redirect = newAuthorizationFlow(canonical(scopes))
+                .authorize(metadata);
+        if (!silent) {
+            return redirect;
+        }
+        return new AuthorizationCodeFlow.AuthorizationRedirect(withPromptNone(redirect.authorizationUrl()),
+                redirect.context());
+    }
+
+    /**
      * Redeems {@code refreshToken} with a refresh grant whose {@code scope} is exactly {@code scopes}.
      *
      * @param metadata     the resolved provider metadata
@@ -152,9 +198,67 @@ public final class ScopedEngineFlows {
      * @return the flow serving that set
      */
     AuthorizationCodeFlow authorizationFlow(Collection<String> scopes) {
-        return authorizationFlows.computeIfAbsent(canonical(scopes), canonicalScopes -> new AuthorizationCodeFlow(
-                configurationFactory.apply(canonicalScopes), tokenEndpointClient, tokenBridge, idBridge,
-                new IssValidator(), authorizationRequestBuilder, new CallbackHandler(), null));
+        return authorizationFlows.computeIfAbsent(canonical(scopes), this::newAuthorizationFlow);
+    }
+
+    /**
+     * @return the number of cached login flows. Package-private so a test can observe that the
+     *         widening leg never grows the cache.
+     */
+    int cachedAuthorizationFlowCount() {
+        return authorizationFlows.size();
+    }
+
+    private AuthorizationCodeFlow newAuthorizationFlow(List<String> canonicalScopes) {
+        return new AuthorizationCodeFlow(configurationFactory.apply(canonicalScopes), tokenEndpointClient,
+                tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder, new CallbackHandler(), null);
+    }
+
+    /**
+     * Sets the {@code prompt} parameter of an authorization URL to {@code none}, leaving every other
+     * parameter untouched.
+     * <p>
+     * The rewrite is parameter-aware: it splits the query into its {@code name=value} pairs and
+     * compares the literal parameter name, never a substring. Untouched pairs are copied through
+     * exactly as the engine emitted them, so no decode/re-encode round-trip can corrupt an encoded
+     * {@code redirect_uri} or {@code scope}. An existing {@code prompt} pair is replaced in place and
+     * any further {@code prompt} pair dropped, so the result carries exactly one {@code prompt=none};
+     * a URL without one gains it at the end. The URL is never logged: it carries {@code state},
+     * {@code nonce} and the PKCE {@code code_challenge}.
+     *
+     * @param authorizationUrl the engine-built authorization URL
+     * @return the same URL carrying exactly one {@code prompt=none}
+     */
+    static String withPromptNone(String authorizationUrl) {
+        Objects.requireNonNull(authorizationUrl, "authorizationUrl");
+        int queryStart = authorizationUrl.indexOf(QUERY_START);
+        if (queryStart < 0) {
+            return authorizationUrl + QUERY_START + PROMPT_NONE_PAIR;
+        }
+        String prefix = authorizationUrl.substring(0, queryStart + 1);
+        String query = authorizationUrl.substring(queryStart + 1);
+        if (query.isEmpty()) {
+            return prefix + PROMPT_NONE_PAIR;
+        }
+        List<String> pairs = new ArrayList<>();
+        boolean written = false;
+        for (String pair : query.split(PAIR_SEPARATOR, -1)) {
+            if (!PARAM_PROMPT.equals(nameOf(pair))) {
+                pairs.add(pair);
+            } else if (!written) {
+                pairs.add(PROMPT_NONE_PAIR);
+                written = true;
+            }
+        }
+        if (!written) {
+            pairs.add(PROMPT_NONE_PAIR);
+        }
+        return prefix + String.join(PAIR_SEPARATOR, pairs);
+    }
+
+    private static String nameOf(String pair) {
+        int separator = pair.indexOf(NAME_VALUE_SEPARATOR);
+        return separator < 0 ? pair : pair.substring(0, separator);
     }
 
     /**
