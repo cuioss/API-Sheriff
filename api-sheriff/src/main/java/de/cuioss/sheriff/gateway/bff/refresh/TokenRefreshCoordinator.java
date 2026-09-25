@@ -57,7 +57,9 @@ import org.jspecify.annotations.Nullable;
  * set {@code A} ({@link SessionRecord#activeScopes()}), never the static {@code oidc.scopes}, so a
  * session that logged in on a route needing extra scopes keeps them across refreshes. The rotated
  * session's {@code A} becomes the response's {@code scope} — which may narrow it — or stays unchanged
- * when the response omits {@code scope}.
+ * when the response omits {@code scope}. The session's granted scope set {@code S}
+ * ({@link SessionRecord#grantedScopes()}) is carried over unchanged: a refresh never adds to or
+ * removes from what the user authorized.
  * <p>
  * <strong>A refused refresh is disposed by what the identity provider did to the presented refresh
  * token.</strong> Only the exchange itself is classified, through the engine's
@@ -585,7 +587,9 @@ public final class TokenRefreshCoordinator {
      * <p>
      * The active scope set is the one component the rotation may change: it becomes the refresh
      * response's {@code scope}, and stays {@code previous}'s when the response omits or blanks it
-     * (RFC 6749 §5.1 — an omitted {@code scope} is identical to the one requested).
+     * (RFC 6749 §5.1 — an omitted {@code scope} is identical to the one requested). The granted scope
+     * set {@code S} is copied verbatim: a refresh never changes it, even when the response narrows
+     * {@code A} — only a widening adds to what the user authorized.
      */
     private static SessionRecord rotate(SessionRecord previous, RotationResult rotation) {
         String rotatedIdToken = rotation.idToken();
@@ -600,7 +604,8 @@ public final class TokenRefreshCoordinator {
                 .acr(previous.acr())
                 .authTime(previous.authTime())
                 .sessionNonce(previous.sessionNonce())
-                .activeScopes(grantedScopes(rotation.grantedScope(), previous.activeScopes()))
+                .activeScopes(refreshedActiveScopes(rotation.grantedScope(), previous.activeScopes()))
+                .grantedScopes(previous.grantedScopes())
                 .build();
     }
 
@@ -608,7 +613,7 @@ public final class TokenRefreshCoordinator {
      * The active scope set after a refresh: the response's {@code scope} split on whitespace, or
      * {@code previous} when the response omitted or blanked it.
      */
-    private static Set<String> grantedScopes(@Nullable String grantedScope, Set<String> previous) {
+    private static Set<String> refreshedActiveScopes(@Nullable String grantedScope, Set<String> previous) {
         if (grantedScope == null || grantedScope.isBlank()) {
             return previous;
         }

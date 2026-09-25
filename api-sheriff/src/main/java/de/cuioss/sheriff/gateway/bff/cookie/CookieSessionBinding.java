@@ -63,10 +63,12 @@ import org.jspecify.annotations.Nullable;
  * cross-instance duplicate refresh cannot be prevented without shared state and is this variant's
  * documented, accepted trade-off.
  * <p>
- * <strong>Active scope set.</strong> The session's active scope set {@code A} is sealed alongside the
- * token material on {@link #bind}, restored on {@link #resolve}, and re-sealed from the rotated record
- * on {@link #persist}, so a refresh that changes {@code A} is carried into the next request. It is
- * not an identity input: a changed {@code A} leaves the derived session identity untouched.
+ * <strong>Active and granted scope sets.</strong> The session's active scope set {@code A} and its
+ * granted scope set {@code S} are sealed alongside the token material on {@link #bind}, restored on
+ * {@link #resolve}, and re-sealed from the rotated record on {@link #persist}, so a refresh that
+ * changes {@code A}, or a widening that extends both, is carried into the next request. The two sets
+ * are sealed as independent fields and never derived from one another. Neither is an identity input:
+ * a changed {@code A} or {@code S} leaves the derived session identity untouched.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -202,7 +204,7 @@ public final class CookieSessionBinding implements SessionBinding {
             String sessionNonce) {
         return new SealedSessionPayload(session.accessToken(), session.refreshToken(), session.idToken(),
                 session.sub(), session.sid(), session.acr(), session.authTime(), loginInstant, sessionNonce,
-                session.activeScopes());
+                session.activeScopes(), session.grantedScopes());
     }
 
     /**
@@ -228,6 +230,7 @@ public final class CookieSessionBinding implements SessionBinding {
                 .acr(payload.acr())
                 .authTime(payload.authTime())
                 .activeScopes(payload.activeScopes())
+                .grantedScopes(payload.grantedScopes())
                 .build();
     }
 

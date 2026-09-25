@@ -311,18 +311,21 @@ class InMemorySessionStoreTest {
         @DisplayName("Should accept absent nullable components and reject null mandatory components")
         void shouldAcceptAbsentAndReject() {
             SessionRecord sparse = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
-                    null);
+                    null, null);
             assertNull(sparse.refreshToken());
             assertNull(sparse.sid());
             assertNull(sparse.acr());
             assertNull(sparse.authTime());
             assertNull(sparse.sessionNonce(), "an absent session nonce stays null");
             assertTrue(sparse.activeScopes().isEmpty(), "an absent active scope set normalizes to empty");
+            assertTrue(sparse.grantedScopes().isEmpty(), "an absent granted scope set normalizes to empty");
 
             assertThrows(NullPointerException.class,
-                    () -> new SessionRecord(null, "at", null, "it", "sub", null, FUTURE, null, null, null, Set.of()));
+                    () -> new SessionRecord(null, "at", null, "it", "sub", null, FUTURE, null, null, null, Set.of(),
+                            Set.of()));
             assertThrows(NullPointerException.class,
-                    () -> new SessionRecord("s", "at", null, "it", null, null, FUTURE, null, null, null, Set.of()));
+                    () -> new SessionRecord("s", "at", null, "it", null, null, FUTURE, null, null, null, Set.of(),
+                            Set.of()));
         }
 
         @Test
@@ -330,7 +333,7 @@ class InMemorySessionStoreTest {
         void shouldCopyActiveScopes() {
             Set<String> source = new HashSet<>(Set.of("openid", "orders:read"));
             SessionRecord session = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
-                    source);
+                    source, Set.of());
             source.add("profile");
 
             assertEquals(Set.of("openid", "orders:read"), session.activeScopes());
@@ -339,13 +342,41 @@ class InMemorySessionStoreTest {
         }
 
         @Test
-        @DisplayName("Should render the active scope names in toString — they are not credentials")
-        void shouldRenderActiveScopes() {
+        @DisplayName("Should hold the granted scope set as an immutable defensive copy, independent of A")
+        void shouldCopyGrantedScopes() {
+            Set<String> source = new HashSet<>(Set.of("openid", "orders:read", "orders:write"));
+            SessionRecord session = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
+                    Set.of("openid"), source);
+            source.add("profile");
+
+            assertEquals(Set.of("openid", "orders:read", "orders:write"), session.grantedScopes());
+            assertEquals(Set.of("openid"), session.activeScopes(), "S never leaks into A");
+            Set<String> held = session.grantedScopes();
+            assertThrows(UnsupportedOperationException.class, () -> held.add("email"));
+        }
+
+        @Test
+        @DisplayName("Should reject a null element in the granted scope set")
+        void shouldRejectNullGrantedScope() {
+            Set<String> withNull = new HashSet<>();
+            withNull.add(null);
+
+            assertThrows(NullPointerException.class, () -> new SessionRecord("s", "at", null, "it", "sub", null,
+                    FUTURE, null, null, null, Set.of(), withNull));
+        }
+
+        @Test
+        @DisplayName("Should render the active and granted scope names in toString — they are not credentials")
+        void shouldRenderScopeSets() {
             SessionRecord session = SessionRecord.builder()
                     .sessionId("s").accessToken("AT-SECRET").idToken("IT-SECRET").sub("user-123")
-                    .expiresAt(FUTURE).activeScopes(Set.of("orders:read")).build();
+                    .expiresAt(FUTURE).activeScopes(Set.of("orders:read"))
+                    .grantedScopes(Set.of("orders:read", "orders:write")).build();
 
-            assertTrue(session.toString().contains("orders:read"), session.toString());
+            String rendered = session.toString();
+            assertTrue(rendered.contains("activeScopes=[orders:read]"), rendered);
+            assertTrue(rendered.contains("grantedScopes="), rendered);
+            assertTrue(rendered.contains("orders:write"), rendered);
         }
     }
 
@@ -379,6 +410,24 @@ class InMemorySessionStoreTest {
 
             assertEquals(Set.of("openid"), store.resolve("s1", T0).orElseThrow().activeScopes(),
                     "a refresh persisted through an upsert carries the narrowed set to the next request");
+        }
+
+        @Test
+        @DisplayName("Should resolve the granted scope set a stored session was created with, and its upsert")
+        void shouldKeepGrantedScopesAcrossStore() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            Set<String> granted = Set.of("openid", "orders:read");
+            Set<String> widened = Set.of("openid", "orders:read", "orders:write");
+            store.create(SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
+                    .expiresAt(FUTURE).activeScopes(granted).grantedScopes(granted).build(), T0);
+            SessionRecord created = store.resolve("s1", T0).orElseThrow();
+
+            store.create(SessionRecord.builder().sessionId("s1").accessToken("at2").idToken("it").sub("sub1")
+                    .expiresAt(FUTURE).activeScopes(widened).grantedScopes(widened).build(), T0);
+
+            assertEquals(granted, created.grantedScopes());
+            assertEquals(widened, store.resolve("s1", T0).orElseThrow().grantedScopes(),
+                    "a widening persisted through an upsert carries the widened S to the next request");
         }
     }
 }

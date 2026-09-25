@@ -40,12 +40,13 @@ import org.jspecify.annotations.Nullable;
  * extend the session: the deadline is always recomputed from the original login.
  * <p>
  * <strong>Wire format.</strong> {@link #encode()} produces a compact, explicit, dependency-free
- * encoding: the ten fields in declaration order, each written as a 2-byte big-endian unsigned
+ * encoding: the eleven fields in declaration order, each written as a 2-byte big-endian unsigned
  * length followed by its raw UTF-8 bytes ({@value #FIELD_COUNT} fields = {@value #FRAMING_BYTES}
  * bytes of framing), with a zero length standing for an absent optional. The tenth field, the active
- * scope set, is written as its scope names sorted and joined by a single space, and an empty set is
- * a zero-length field; a scope name can never contain a space (RFC 6749 §3.3 {@code scope-token}),
- * which the canonical constructor enforces, so the join is unambiguous. Length prefixes rather
+ * scope set, and the eleventh, the granted scope set, are each written as their scope names sorted
+ * and joined by a single space, and an empty set is a zero-length field; a scope name can never
+ * contain a space (RFC 6749 §3.3 {@code scope-token}), which the canonical constructor enforces for
+ * both sets, so the join is unambiguous. Length prefixes rather
  * than a separator character are what let the value bytes stay <em>raw</em>: nothing in a field can
  * be confused with a delimiter, so no per-field base64 armouring — and the 4/3 expansion it costs —
  * is needed. That expansion is the reason the format changed; the sealed value is base64url-encoded
@@ -73,6 +74,9 @@ import org.jspecify.annotations.Nullable;
  *                     stable for the life of the session
  * @param activeScopes the session's active scope set {@code A} (see {@code SessionRecord}); an absent
  *                     set normalizes to empty. Not an identity input, so a refresh may change it
+ * @param grantedScopes the session's granted scope set {@code S} (see {@code SessionRecord}); an
+ *                      absent set normalizes to empty. Not an identity input either: a widening
+ *                      extends it, and a refresh re-seals it unchanged
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -87,7 +91,8 @@ String sub,
 @Nullable Instant authTime,
 Instant loginInstant,
 String sessionNonce,
-Set<String> activeScopes) {
+Set<String> activeScopes,
+Set<String> grantedScopes) {
 
     /**
      * The largest encoded plaintext this format admits, in bytes — an <em>allocation</em> bound, not
@@ -107,7 +112,7 @@ Set<String> activeScopes) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final String SCOPE_DELIMITER = " ";
-    private static final int FIELD_COUNT = 10;
+    private static final int FIELD_COUNT = 11;
     private static final int LENGTH_PREFIX_BYTES = 2;
     private static final int FRAMING_BYTES = FIELD_COUNT * LENGTH_PREFIX_BYTES;
 
@@ -119,14 +124,16 @@ Set<String> activeScopes) {
      * pre-nonce shape instead of failing. The nonce value itself never reaches the exception
      * message.
      * <p>
-     * {@code activeScopes} is defensively copied (absent normalizes to empty), and every scope name
-     * must be non-empty and free of whitespace: the names are space-joined on the wire, so a name
-     * carrying the delimiter would decode as different scopes.
+     * {@code activeScopes} and {@code grantedScopes} are each defensively copied (absent normalizes
+     * to empty), and every scope name in either set must be non-empty and free of whitespace: the
+     * names are space-joined on the wire, so a name carrying the delimiter would decode as different
+     * scopes.
      *
      * @throws NullPointerException     when a mandatory component is {@code null}, or
-     *                                  {@code activeScopes} contains a {@code null} element
-     * @throws IllegalArgumentException when {@code sessionNonce} is blank, or a scope name is empty
-     *                                  or contains whitespace
+     *                                  {@code activeScopes} or {@code grantedScopes} contains a
+     *                                  {@code null} element
+     * @throws IllegalArgumentException when {@code sessionNonce} is blank, or a scope name in either
+     *                                  set is empty or contains whitespace
      */
     public SealedSessionPayload {
         Objects.requireNonNull(accessToken, "accessToken");
@@ -137,12 +144,8 @@ Set<String> activeScopes) {
         if (sessionNonce.isBlank()) {
             throw new IllegalArgumentException("sessionNonce must not be blank");
         }
-        activeScopes = activeScopes == null ? Set.of() : Set.copyOf(activeScopes);
-        for (String scope : activeScopes) {
-            if (scope.isEmpty() || scope.chars().anyMatch(Character::isWhitespace)) {
-                throw new IllegalArgumentException("active scope names must be non-empty and free of whitespace");
-            }
-        }
+        activeScopes = wireSafeScopes(activeScopes, "active");
+        grantedScopes = wireSafeScopes(grantedScopes, "granted");
     }
 
     /**
@@ -165,7 +168,8 @@ Set<String> activeScopes) {
                 utf8(authTime == null ? null : Long.toString(authTime.getEpochSecond())),
                 utf8(Long.toString(loginInstant.getEpochSecond())),
                 utf8(sessionNonce),
-                utf8(String.join(SCOPE_DELIMITER, new TreeSet<>(activeScopes)))
+                utf8(String.join(SCOPE_DELIMITER, new TreeSet<>(activeScopes))),
+                utf8(String.join(SCOPE_DELIMITER, new TreeSet<>(grantedScopes)))
         };
         int total = FRAMING_BYTES;
         for (byte[] field : fields) {
@@ -187,8 +191,8 @@ Set<String> activeScopes) {
      * Reads a payload back from the wire form. The input MUST already have been authenticated by the
      * codec's GCM tag — this method is not a parser for untrusted input.
      *
-     * The field-count guard is strict: only the current ten-field shape is accepted, and the buffer
-     * must be consumed exactly — trailing bytes after the tenth field are a foreign shape and are
+     * The field-count guard is strict: only the current eleven-field shape is accepted, and the buffer
+     * must be consumed exactly — trailing bytes after the eleventh field are a foreign shape and are
      * refused. There is no legacy acceptance path for any other framing: a payload of any other
      * field shape is rejected outright rather than admitted with synthesized components, and the
      * browser simply re-authenticates. A change to the field set is also a
@@ -199,7 +203,8 @@ Set<String> activeScopes) {
      * @param encoded the length-prefixed UTF-8 bytes produced by {@link #encode()}
      * @return the decoded payload; empty when the bytes do not carry the expected field shape,
      *         exceed {@link #MAX_PLAINTEXT_BYTES}, carry a blank session nonce, or carry a malformed
-     *         active scope field (a defensive guard against a key that authenticates a foreign format)
+     *         active or granted scope field (a defensive guard against a key that authenticates a
+     *         foreign format)
      */
     public static Optional<SealedSessionPayload> decode(byte[] encoded) {
         Objects.requireNonNull(encoded, "encoded");
@@ -234,7 +239,8 @@ Set<String> activeScopes) {
                     epochSecondField(fields[6]),
                     Instant.ofEpochSecond(Long.parseLong(fields[7])),
                     fields[8],
-                    scopeField(fields[9])));
+                    scopeField(fields[9]),
+                    scopeField(fields[10])));
         } catch (IllegalArgumentException | DateTimeException _) {
             // Epoch-second parse failure, an epoch second that parses as a long but lies outside
             // Instant's supported range, a blank session nonce, or a scope field with an empty or
@@ -265,15 +271,37 @@ Set<String> activeScopes) {
      * Overridden to redact every credential — the three tokens — plus the session nonce, which keys
      * the derived session identity and so is treated as secret material. The default record
      * {@code toString()} would otherwise print the raw token material into any log line, exception
-     * message, or debugger view. The active scope names are not credentials and are printed as-is.
+     * message, or debugger view. The active and granted scope names are not credentials and are
+     * printed as-is.
      *
      * @return a string representation with all credential-bearing fields redacted
      */
     @Override
     public String toString() {
-        return "SealedSessionPayload[accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, acr=%s, authTime=%s, loginInstant=%s, sessionNonce=%s, activeScopes=%s]"
+        return "SealedSessionPayload[accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, acr=%s, authTime=%s, loginInstant=%s, sessionNonce=%s, activeScopes=%s, grantedScopes=%s]"
                 .formatted(REDACTED, refreshToken == null ? "null" : REDACTED,
-                        REDACTED, sub, sid, acr, authTime, loginInstant, REDACTED, activeScopes);
+                        REDACTED, sub, sid, acr, authTime, loginInstant, REDACTED, activeScopes,
+                        grantedScopes);
+    }
+
+    /**
+     * Normalizes one scope-set component and enforces its wire-safety: an absent set becomes empty,
+     * the set is defensively copied (rejecting a {@code null} element), and every name must be
+     * non-empty and free of whitespace, because the names are space-joined on the wire.
+     *
+     * @param scopes the component value, possibly {@code null}
+     * @param role   the set's role ({@code active} / {@code granted}) for the exception message
+     * @return the immutable, validated set
+     * @throws IllegalArgumentException when a scope name is empty or contains whitespace
+     */
+    private static Set<String> wireSafeScopes(@Nullable Set<String> scopes, String role) {
+        Set<String> copy = scopes == null ? Set.of() : Set.copyOf(scopes);
+        for (String scope : copy) {
+            if (scope.isEmpty() || scope.chars().anyMatch(Character::isWhitespace)) {
+                throw new IllegalArgumentException(role + " scope names must be non-empty and free of whitespace");
+            }
+        }
+        return copy;
     }
 
     private static byte[] utf8(@Nullable String value) {
@@ -289,8 +317,9 @@ Set<String> activeScopes) {
     }
 
     /**
-     * Reads the space-joined active scope field. A zero-length field is the empty set; otherwise the
-     * field must split into distinct, non-empty names exactly as {@link #encode()} writes them.
+     * Reads a space-joined scope field (active or granted). A zero-length field is the empty set;
+     * otherwise the field must split into distinct, non-empty names exactly as {@link #encode()}
+     * writes them.
      *
      * @throws IllegalArgumentException when the field carries an empty or duplicated name
      */

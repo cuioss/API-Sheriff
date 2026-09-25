@@ -112,7 +112,9 @@ import org.jspecify.annotations.Nullable;
  * <strong>Active scope set.</strong> The new session's active scope set {@code A} — the {@code scope}
  * every later refresh grant sends — is the access token's granted {@code scope} claim, or the scope set
  * the authorization request asked for (recorded on the pending record) when the token carries no
- * {@code scope} claim.
+ * {@code scope} claim. A fresh login sets the session's granted scope set {@code S} to that same
+ * derived set ({@code S = A} at login): at this point the IdP has granted exactly what the token
+ * carries, and nothing more.
  * <p>
  * <strong>The refresh token never reaches the browser in the clear.</strong> It is a component of
  * the {@link SessionRecord}, so it lives wherever the active binding puts that record: server-side
@@ -235,6 +237,8 @@ public final class CallbackEndpoint {
             return CallbackOutcome.error(BAD_REQUEST);
         }
 
+        // A fresh login: the granted set S starts equal to the active set A.
+        Set<String> loginScopes = activeScopes(accessToken, pending);
         SessionRecord session = SessionRecord.builder()
                 .sessionId(SessionRecord.newSessionId())
                 .accessToken(accessToken.getRawToken())
@@ -253,7 +257,8 @@ public final class CallbackEndpoint {
                 .expiresAt(now.plus(sessionTtl))
                 .acr(claim(idToken, CLAIM_ACR))
                 .authTime(claimEpochSeconds(idToken, CLAIM_AUTH_TIME))
-                .activeScopes(activeScopes(accessToken, pending))
+                .activeScopes(loginScopes)
+                .grantedScopes(loginScopes)
                 .build();
         SessionBinding.BoundSession bound;
         try {

@@ -160,7 +160,7 @@ class CallbackEndpointTest {
      * realistic driver of the documented {@code bind()} failure in stateless cookie mode.
      * <p>
      * The oversized token is <em>random</em> material rendered base64url, not a repeated character.
-     * Under {@code FORMAT_VERSION} 3 the codec deflates the payload before sealing, so a run of one
+     * The codec deflates the payload before sealing, so a run of one
      * character now seals comfortably <em>inside</em> the budget: a repeated-character fixture would
      * bind successfully and this test would silently stop exercising the failure it was written for.
      * Base64 carries six bits per byte, so deflate recovers only that quarter and the value stays
@@ -465,6 +465,57 @@ class CallbackEndpointTest {
             SessionRecord session = loginWith(ClaimValue.forPlainString("   "));
 
             assertEquals(Set.copyOf(REQUESTED_SCOPES), session.activeScopes());
+        }
+    }
+
+    @Nested
+    @DisplayName("Granted scope set S at login")
+    class GrantedScopeSetAtLogin {
+
+        private SessionRecord loginWith(@Nullable ClaimValue scopeClaim) {
+            CallbackEndpoint scoped = new CallbackEndpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim),
+                    pendingStore, bindingCodec, sessionBinding, SESSION_TTL);
+            CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
+            assertTrue(outcome.isRedirect(), "the login completes");
+            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(sessionId, T0).orElseThrow();
+        }
+
+        @Test
+        @DisplayName("Should set S equal to A when A comes from the token's scope claim")
+        void shouldSetGrantedToActiveFromScopeClaim() {
+            SessionRecord session = loginWith(ClaimValue.forPlainString("openid profile orders:read"));
+
+            assertEquals(Set.of("openid", "profile", "orders:read"), session.grantedScopes(),
+                    "a fresh login has been granted exactly what the token carries");
+            assertEquals(session.activeScopes(), session.grantedScopes(), "S = A at login");
+        }
+
+        @Test
+        @DisplayName("Should set S equal to A when A falls back to the requested set")
+        void shouldSetGrantedToActiveFromRequestedFallback() {
+            SessionRecord session = loginWith(null);
+
+            assertEquals(Set.copyOf(REQUESTED_SCOPES), session.grantedScopes());
+            assertEquals(session.activeScopes(), session.grantedScopes(), "S = A at login");
+        }
+
+        @Test
+        @DisplayName("Should set S equal to A in cookie mode too, surviving the sealed round trip")
+        void shouldSetGrantedToActiveInCookieMode() {
+            SessionBinding cookieBinding = cookieBinding();
+            CallbackEndpoint cookieEndpoint = new CallbackEndpoint(
+                    exchangeReturning(RAW_REFRESH_TOKEN, ClaimValue.forPlainString("openid orders:read")),
+                    pendingStore, bindingCodec, cookieBinding, SESSION_TTL);
+
+            CallbackOutcome outcome = cookieEndpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
+            String sessionSetCookie = outcome.setCookieHeaders().getFirst();
+            SessionRecord resolved = cookieBinding
+                    .resolve(sessionSetCookie.substring(0, sessionSetCookie.indexOf(';')), T0).orElseThrow();
+
+            assertEquals(Set.of("openid", "orders:read"), resolved.activeScopes());
+            assertEquals(Set.of("openid", "orders:read"), resolved.grantedScopes(),
+                    "the sealed cookie carries S alongside A, so a stateless gateway sees S = A after login");
         }
     }
 

@@ -72,6 +72,16 @@ import org.jspecify.annotations.Nullable;
  * so a refresh never narrows the session back to the static {@code oidc.scopes} and never widens it
  * past what was granted (ADR-0048). Scope names are not credentials, so {@link #toString()} prints
  * them.
+ * <p>
+ * <strong>The granted scope set {@code S} versus the active set {@code A}.</strong>
+ * {@link #grantedScopes()} is the set of scopes the IdP has granted this session over its life — the
+ * ceiling a refresh may request back without a new authorization. It is set at login from the
+ * granted scopes (so {@code S = A} right after login), extended on every successful widening of the
+ * live session ({@code S ∪= granted}), and <strong>never changed by a refresh</strong>: a refresh may
+ * narrow or restore {@code A}, but it cannot add to what the user authorized. {@code A} stays the set
+ * the mediated token was granted and the refresh grant requests. A route whose needed scopes are
+ * missing from {@code A} but contained in {@code S} is served by a refresh; one needing a scope
+ * outside {@code S} needs a widening. Like {@code A}, the names are printed by {@link #toString()}.
  *
  * @param sessionId    the stable per-session identity (see the identity model above)
  * @param accessToken  the mediated access token injected as the upstream bearer
@@ -86,6 +96,9 @@ import org.jspecify.annotations.Nullable;
  *                     {@code null} in server mode (see the mode split above), and never blank when present
  * @param activeScopes the active scope set {@code A} the mediated access token was granted and the
  *                     refresh grant requests (see above); an absent set normalizes to empty
+ * @param grantedScopes the granted scope set {@code S} — every scope the IdP granted the session at
+ *                      login or on a widening, never changed by a refresh (see above); an absent set
+ *                      normalizes to empty
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -102,7 +115,8 @@ Instant expiresAt,
 @Nullable String acr,
 @Nullable Instant authTime,
 @Nullable String sessionNonce,
-Set<String> activeScopes) {
+Set<String> activeScopes,
+Set<String> grantedScopes) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -117,11 +131,12 @@ Set<String> activeScopes) {
      * the colliding pre-nonce shape instead of failing. The nonce value itself never reaches the
      * exception message.
      * <p>
-     * {@code activeScopes} is defensively copied into an immutable set; an absent set normalizes to
-     * empty.
+     * {@code activeScopes} and {@code grantedScopes} are each defensively copied into an immutable
+     * set; an absent set normalizes to empty.
      *
      * @throws NullPointerException     when a mandatory component is {@code null}, or
-     *                                  {@code activeScopes} contains a {@code null} element
+     *                                  {@code activeScopes} or {@code grantedScopes} contains a
+     *                                  {@code null} element
      * @throws IllegalArgumentException when {@code sessionNonce} is present but blank
      */
     public SessionRecord {
@@ -134,6 +149,7 @@ Set<String> activeScopes) {
             throw new IllegalArgumentException("sessionNonce must not be blank when present");
         }
         activeScopes = activeScopes == null ? Set.of() : Set.copyOf(activeScopes);
+        grantedScopes = grantedScopes == null ? Set.of() : Set.copyOf(grantedScopes);
     }
 
     /**
@@ -166,16 +182,16 @@ Set<String> activeScopes) {
      * Overridden to redact every credential — the session id, all three tokens, and the session
      * nonce that keys the cookie-mode derived identity. The default
      * record {@code toString()} would otherwise print the bearer session id and the raw token
-     * material into any log line, exception message, or debugger view. The active scope names are
-     * not credentials and are printed as-is.
+     * material into any log line, exception message, or debugger view. The active and granted scope
+     * names are not credentials and are printed as-is.
      *
      * @return a string representation with all credential-bearing fields redacted
      */
     @Override
     public String toString() {
-        return "SessionRecord[sessionId=%s, accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, expiresAt=%s, acr=%s, authTime=%s, sessionNonce=%s, activeScopes=%s]"
+        return "SessionRecord[sessionId=%s, accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, expiresAt=%s, acr=%s, authTime=%s, sessionNonce=%s, activeScopes=%s, grantedScopes=%s]"
                 .formatted(REDACTED, REDACTED, refreshToken == null ? "null" : REDACTED,
                         REDACTED, sub, sid, expiresAt, acr, authTime,
-                        sessionNonce == null ? "null" : REDACTED, activeScopes);
+                        sessionNonce == null ? "null" : REDACTED, activeScopes, grantedScopes);
     }
 }

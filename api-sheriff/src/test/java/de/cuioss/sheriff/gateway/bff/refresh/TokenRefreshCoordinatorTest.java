@@ -113,6 +113,9 @@ class TokenRefreshCoordinatorTest {
     private static final String ROTATED_ID = "rotated-id-token";
     /** The session's active scope set A: the static oidc.scopes united with an endpoint scope. */
     private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
+    /** The session's granted scope set S: A plus a scope a widening added and a refresh narrowed away. */
+    private static final Set<String> GRANTED_SCOPES = Set.of("openid", "profile", "email", "orders:read",
+            "orders:write");
 
     private static final String COOKIE_HEADER = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID;
 
@@ -151,6 +154,7 @@ class TokenRefreshCoordinatorTest {
                 .acr(null)
                 .authTime(null)
                 .activeScopes(ACTIVE_SCOPES)
+                .grantedScopes(GRANTED_SCOPES)
                 .build();
     }
 
@@ -378,6 +382,91 @@ class TokenRefreshCoordinatorTest {
             SessionRecord rotated = outcome.session();
             assertNotNull(rotated, "a refreshed outcome carries the rotated session");
             return rotated.activeScopes();
+        }
+    }
+
+    /**
+     * The granted scope set {@code S}: a refresh never changes it — whatever the response does to
+     * {@code A} — because only a widening adds to what the user authorized.
+     */
+    @Nested
+    @DisplayName("Granted scope set S across a refresh")
+    class GrantedScopeSet {
+
+        private SessionRecord refreshedWith(RotationResult rotation) {
+            SessionRecord live = storedSession();
+            RefreshOutcome outcome = coordinator(NEAR, (_, _) -> rotation).refresh(live, COOKIE_HEADER, NOW);
+            assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
+            SessionRecord rotated = outcome.session();
+            assertNotNull(rotated, "a refreshed outcome carries the rotated session");
+            return rotated;
+        }
+
+        @Test
+        @DisplayName("Should leave S unchanged when the response echoes the requested scope")
+        void shouldKeepGrantedScopesOnEqualResponse() {
+            SessionRecord rotated = refreshedWith(
+                    rotation("openid profile email orders:read", RotationResult.ScopeDelta.EQUAL));
+
+            assertEquals(GRANTED_SCOPES, rotated.grantedScopes());
+            assertEquals(GRANTED_SCOPES, store.resolve(SESSION_ID, NOW).orElseThrow().grantedScopes(),
+                    "the persisted session carries S unchanged to the next request");
+        }
+
+        @Test
+        @DisplayName("Should leave S unchanged when the response narrows A")
+        void shouldKeepGrantedScopesWhenActiveNarrows() {
+            SessionRecord rotated = refreshedWith(rotation("openid", RotationResult.ScopeDelta.NARROWED));
+
+            assertEquals(Set.of("openid"), rotated.activeScopes(), "A follows the narrowed response");
+            assertEquals(GRANTED_SCOPES, rotated.grantedScopes(),
+                    "a narrowing refresh cannot take back what the user granted, so S keeps every scope");
+        }
+
+        @Test
+        @DisplayName("Should leave S unchanged when the response omits scope")
+        void shouldKeepGrantedScopesWhenScopeOmitted() {
+            SessionRecord rotated = refreshedWith(rotation());
+
+            assertEquals(GRANTED_SCOPES, rotated.grantedScopes());
+        }
+
+        @Test
+        @DisplayName("Should not widen S even when the response grants more than A")
+        void shouldNotWidenGrantedScopesFromResponse() {
+            SessionRecord rotated = refreshedWith(
+                    rotation("openid profile email orders:read billing:read", RotationResult.ScopeDelta.EQUAL));
+
+            assertEquals(GRANTED_SCOPES, rotated.grantedScopes(),
+                    "only a widening extends S — a refresh copies it verbatim");
+        }
+
+        @Test
+        @DisplayName("Should leave S unchanged across a refresh in cookie mode, where persist re-seals it")
+        void shouldKeepGrantedScopesInCookieMode() {
+            byte[] keyMaterial = new byte[32];
+            Arrays.fill(keyMaterial, (byte) 0x11);
+            SecretKey key = new SecretKeySpec(keyMaterial, "AES");
+            byte[] salt = new byte[32];
+            Arrays.fill(salt, (byte) 0x22);
+            CookieSessionBinding cookieBinding = new CookieSessionBinding(new SealedSessionCookieCodec(
+                    SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                    SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, key, (byte) 1), salt);
+            String setCookie = cookieBinding.bind(session(CURRENT_REFRESH), NOW).setCookieHeaders().getFirst();
+            String cookieHeader = setCookie.substring(0, setCookie.indexOf(';'));
+            SessionRecord live = cookieBinding.resolve(cookieHeader, NOW).orElseThrow();
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    (_, _) -> rotation("openid", RotationResult.ScopeDelta.NARROWED), cookieBinding, revoked::add,
+                    DIRECT, EndedRefreshTokens.bounded());
+
+            RefreshOutcome outcome = coordinator.refresh(live, cookieHeader, NOW);
+
+            assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
+            String reSealed = outcome.setCookieHeaders().getFirst();
+            SessionRecord reResolved = cookieBinding.resolve(reSealed.substring(0, reSealed.indexOf(';')), NOW)
+                    .orElseThrow();
+            assertEquals(Set.of("openid"), reResolved.activeScopes(), "the re-sealed cookie carries the narrowed A");
+            assertEquals(GRANTED_SCOPES, reResolved.grantedScopes(), "the re-sealed cookie carries S unchanged");
         }
     }
 

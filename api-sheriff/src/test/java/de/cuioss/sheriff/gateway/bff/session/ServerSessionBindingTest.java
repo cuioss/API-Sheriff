@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
@@ -43,6 +44,7 @@ class ServerSessionBindingTest {
     private static final Duration SESSION_TTL = Duration.ofHours(8);
     private static final String SUB = "user-sub-1";
     private static final String SID = "idp-session-1";
+    private static final Set<String> GRANTED_SCOPES = Set.of("openid", "profile", "orders:read");
 
     private InMemorySessionStore store;
     private SessionCookieCodec cookieCodec;
@@ -63,6 +65,20 @@ class ServerSessionBindingTest {
                 .sub(SUB)
                 .sid(SID)
                 .expiresAt(NOW.plus(SESSION_TTL))
+                .build();
+    }
+
+    private static SessionRecord scopedSession(String sessionId, String accessToken, Set<String> activeScopes,
+            Set<String> grantedScopes) {
+        return SessionRecord.builder()
+                .sessionId(sessionId)
+                .accessToken(accessToken)
+                .idToken("raw-id-token")
+                .sub(SUB)
+                .sid(SID)
+                .expiresAt(NOW.plus(SESSION_TTL))
+                .activeScopes(activeScopes)
+                .grantedScopes(grantedScopes)
                 .build();
     }
 
@@ -154,6 +170,35 @@ class ServerSessionBindingTest {
 
         assertTrue(binding.resolve(cookieHeaderFor(session.sessionId()), NOW).isPresent(),
                 "a concurrent resolve must never miss a rotating session");
+    }
+
+    @Test
+    @DisplayName("Should carry the granted scope set S through bind and resolve")
+    void shouldKeepGrantedScopesAcrossBindAndResolve() {
+        SessionRecord session = scopedSession(SessionRecord.newSessionId(), "access-token-1",
+                Set.of("openid"), GRANTED_SCOPES);
+        binding.bind(session, NOW);
+
+        SessionRecord resolved = binding.resolve(cookieHeaderFor(session.sessionId()), NOW).orElseThrow();
+
+        assertEquals(GRANTED_SCOPES, resolved.grantedScopes(), "S is held server-side with the session");
+        assertEquals(Set.of("openid"), resolved.activeScopes(), "A and S stay independent");
+    }
+
+    @Test
+    @DisplayName("Should carry the granted scope set S through persist and resolve")
+    void shouldKeepGrantedScopesAcrossPersistAndResolve() {
+        SessionRecord session = scopedSession(SessionRecord.newSessionId(), "access-token-1",
+                GRANTED_SCOPES, GRANTED_SCOPES);
+        binding.bind(session, NOW);
+        SessionRecord refreshed = scopedSession(session.sessionId(), "access-token-2", Set.of("openid"),
+                GRANTED_SCOPES);
+
+        binding.persist(refreshed, NOW);
+        SessionRecord resolved = binding.resolve(cookieHeaderFor(session.sessionId()), NOW).orElseThrow();
+
+        assertEquals(Set.of("openid"), resolved.activeScopes(), "the persisted A reaches the next request");
+        assertEquals(GRANTED_SCOPES, resolved.grantedScopes(), "the persisted S reaches the next request");
     }
 
     @Test

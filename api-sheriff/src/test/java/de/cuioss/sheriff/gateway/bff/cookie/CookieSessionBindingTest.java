@@ -48,7 +48,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * bind/resolve/persist/destroy round trip, the server-side absolute-TTL enforcement (an expired
  * cookie the browser still holds is refused), the {@code Max-Age} reflecting the remaining rather
  * than the reset lifetime on a re-seal, the re-seal emitting exactly one hardened {@code Set-Cookie}
- * distinct from the one {@code bind} emitted and carrying the login nonce verbatim, the single-key
+ * distinct from the one {@code bind} emitted and carrying the login nonce verbatim, the active and
+ * granted scope sets surviving bind and re-seal as independent fields, the single-key
  * change semantics (a cookie sealed under a
  * withdrawn key is no session, and every fresh login seals under the one active key id), the
  * stable-but-never-emitted session identity, the {@code UNSUPPORTED} IdP-driven destruction
@@ -67,6 +68,8 @@ class CookieSessionBindingTest {
     private static final String SUB = "user-sub-1";
     private static final String SID = "idp-sid-9";
     private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
+    private static final Set<String> GRANTED_SCOPES = Set.of("openid", "profile", "email", "orders:read",
+            "orders:write");
     private static final byte CURRENT_KEY_ID = 1;
 
     /** The id a cookie sealed before a key change still carries — a generation the binding no longer holds. */
@@ -119,6 +122,7 @@ class CookieSessionBindingTest {
                 .sid(SID)
                 .expiresAt(expiresAt)
                 .activeScopes(ACTIVE_SCOPES)
+                .grantedScopes(GRANTED_SCOPES)
                 .build();
     }
 
@@ -141,6 +145,30 @@ class CookieSessionBindingTest {
                 .authTime(original.authTime())
                 .sessionNonce(original.sessionNonce())
                 .activeScopes(original.activeScopes())
+                .grantedScopes(original.grantedScopes())
+                .build();
+    }
+
+    /**
+     * Rebuilds {@code original} with the given scope sets, carrying every other component over
+     * verbatim — the shape a refresh (new {@code A}, same {@code S}) or a widening (both widened)
+     * hands to {@code persist}.
+     */
+    private static SessionRecord withScopes(SessionRecord original, Set<String> activeScopes,
+            Set<String> grantedScopes) {
+        return SessionRecord.builder()
+                .sessionId(original.sessionId())
+                .accessToken("rotated-access-token")
+                .refreshToken(original.refreshToken())
+                .idToken(original.idToken())
+                .sub(original.sub())
+                .sid(original.sid())
+                .expiresAt(original.expiresAt())
+                .acr(original.acr())
+                .authTime(original.authTime())
+                .sessionNonce(original.sessionNonce())
+                .activeScopes(activeScopes)
+                .grantedScopes(grantedScopes)
                 .build();
     }
 
@@ -400,6 +428,83 @@ class CookieSessionBindingTest {
                     .orElseThrow();
 
             assertEquals(ACTIVE_SCOPES, reResolved.activeScopes());
+        }
+    }
+
+    @Nested
+    @DisplayName("Granted scope set")
+    class GrantedScopeSet {
+
+        @Test
+        @DisplayName("Should carry the granted scope set through bind and resolve")
+        void shouldSurviveBindAndResolve() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+
+            assertEquals(GRANTED_SCOPES, bound.session().grantedScopes(), "the bound record carries S");
+            assertEquals(GRANTED_SCOPES, resolved.grantedScopes(),
+                    "S is sealed into the cookie, so a stateless gateway recovers it on the next request");
+        }
+
+        @Test
+        @DisplayName("Should carry the granted scope set through persist and resolve")
+        void shouldSurvivePersistAndResolve() {
+            BoundSession reBound = binding.persist(resealable("rotated-access-token"), LOGIN.plusSeconds(60));
+
+            SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
+                    .orElseThrow();
+
+            assertEquals(GRANTED_SCOPES, reResolved.grantedScopes(), "a re-seal carries S forward unchanged");
+        }
+
+        @Test
+        @DisplayName("Should keep S when a re-seal narrows A, since the two are independent fields")
+        void shouldKeepGrantedScopesWhenActiveNarrows() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+            Set<String> narrowed = Set.of("openid");
+
+            BoundSession reBound = binding.persist(withScopes(resolved, narrowed, resolved.grantedScopes()),
+                    LOGIN.plusSeconds(60));
+            SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
+                    .orElseThrow();
+
+            assertEquals(narrowed, reResolved.activeScopes(), "A follows the refresh");
+            assertEquals(GRANTED_SCOPES, reResolved.grantedScopes(), "S is not derived from A and stays as granted");
+        }
+
+        @Test
+        @DisplayName("Should keep A when a re-seal widens S, and keep the session identity")
+        void shouldKeepActiveScopesWhenGrantedWidens() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+            Set<String> widened = Set.of("openid", "profile", "email", "orders:read", "orders:write",
+                    "billing:read");
+
+            BoundSession reBound = binding.persist(withScopes(resolved, resolved.activeScopes(), widened),
+                    LOGIN.plusSeconds(60));
+            SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
+                    .orElseThrow();
+
+            assertEquals(ACTIVE_SCOPES, reResolved.activeScopes(), "A is not derived from S");
+            assertEquals(widened, reResolved.grantedScopes(), "a widened S reaches the next request");
+            assertEquals(resolved.sessionId(), reResolved.sessionId(),
+                    "S is not an identity input, so widening it leaves single-flight keying intact");
+        }
+
+        @Test
+        @DisplayName("Should resolve an absent granted scope set as empty")
+        void shouldSurviveEmptyGrantedScopes() {
+            SessionRecord ungranted = SessionRecord.builder()
+                    .sessionId("ignored-on-bind").accessToken(ACCESS_TOKEN).idToken(ID_TOKEN).sub(SUB)
+                    .expiresAt(LOGIN.plus(TTL)).activeScopes(ACTIVE_SCOPES).build();
+
+            BoundSession bound = binding.bind(ungranted, LOGIN);
+            SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+
+            assertTrue(resolved.grantedScopes().isEmpty());
+            assertEquals(ACTIVE_SCOPES, resolved.activeScopes());
         }
     }
 

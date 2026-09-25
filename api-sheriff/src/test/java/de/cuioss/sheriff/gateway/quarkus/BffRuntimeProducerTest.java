@@ -456,7 +456,7 @@ class BffRuntimeProducerTest {
         private static SealedSessionPayload cookieSession() {
             return new SealedSessionPayload("raw-access-token", null, "raw-id-token", "user-sub-1",
                     null, null, null, Instant.ofEpochSecond(Instant.now().getEpochSecond()),
-                    "session-nonce-material", Set.of());
+                    "session-nonce-material", Set.of(), Set.of());
         }
 
         @Test
