@@ -76,10 +76,13 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -469,6 +472,85 @@ class BffRuntimeProducerTest {
             assertThrows(IllegalStateException.class, nonBase64::bffRuntime);
             assertThrows(IllegalStateException.class, aes128::bffRuntime,
                     "an AES-128 key is refused — the codec is specified as AES-256-GCM");
+        }
+    }
+
+    /**
+     * {@code oidc.step_up.path} is proven to <em>act</em>, not just parse: the reserved-path registry
+     * the edge builds from the same {@link OidcConfig} resolves the configured path to
+     * {@link ReservedEndpoint#STEP_UP}, and the runtime the producer assembled dispatches that kind to a
+     * wired {@link StepUpEndpoint} in both session modes. Deleting the key turns
+     * {@link #shouldDispatchConfiguredPathInBothModes()} red at the registry leg; the omitted-key case
+     * is the matched control.
+     */
+    @Nested
+    @DisplayName("Step-up path (oidc.step_up.path)")
+    class StepUpPath {
+
+        private static final String OIDC_HOST = "gw.example.com";
+        private static final String STEP_UP_PATH = "/auth/step-up";
+        private static final Instant NOW = Instant.parse("2026-09-25T10:00:00Z");
+
+        private static OidcConfig withStepUpPath(OidcConfig base, @Nullable String path) {
+            return new OidcConfig(base.issuer(), base.clientId(), base.clientSecret(), base.scopes(),
+                    base.redirectUri(), base.logout(), base.session(), OidcConfig.StepUp.builder().path(path).build(),
+                    base.userInfo(), base.login());
+        }
+
+        @Test
+        @DisplayName("Should dispatch a configured step-up path to a wired endpoint in server and cookie mode")
+        void shouldDispatchConfiguredPathInBothModes() {
+            List<OidcConfig> modes = List.of(withStepUpPath(serverModeOidc(), STEP_UP_PATH),
+                    withStepUpPath(cookieModeOidc(), STEP_UP_PATH));
+
+            assertAll("every session mode registers and dispatches STEP_UP",
+                    modes.stream().map(oidc -> (Executable) () -> {
+                        assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                                ReservedPathRegistry.from(oidc).match(OIDC_HOST, STEP_UP_PATH),
+                                "the configured key reserves the step-up path on the OIDC host");
+                        BffRuntime runtime = producer(oidc).bffRuntime();
+                        BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                                new BffRuntime.ReservedHttpRequest("", null, null, "/orders", null, null, "GET"), NOW);
+                        assertEquals(401, response.status(),
+                                "a wired step-up endpoint answers a request without a session 401");
+                        assertEquals("application/problem+json", response.headers().get("Content-Type"));
+                        assertTrue(response.locationOptional().isEmpty(), "never an IdP redirect without a session");
+                        assertTrue(response.jsonBodyOptional().isPresent(), "the problem body is rendered");
+                        assertEquals(1, reachableInstancesOf(runtime, StepUpEndpoint.class).size(),
+                                "exactly one step-up endpoint is wired");
+                    }));
+        }
+
+        @Test
+        @DisplayName("Should reserve no step-up path when the key is omitted (matched control)")
+        void shouldReserveNothingWithoutKey() {
+            OidcConfig omitted = withStepUpPath(serverModeOidc(), null);
+
+            assertAll("an omitted key registers no STEP_UP endpoint",
+                    () -> assertTrue(ReservedPathRegistry.from(omitted).match(OIDC_HOST, STEP_UP_PATH).isEmpty()),
+                    () -> assertFalse(ReservedPathRegistry.reservedPaths(omitted).contains(STEP_UP_PATH)));
+        }
+
+        /**
+         * The step-up endpoint and the callback's interactive re-drive go through the same widening
+         * coordinator — one {@link SessionWidening} per runtime. A second instance would carry its own
+         * collaborators and let the two legs drift apart.
+         */
+        @Test
+        @DisplayName("Should build the step-up endpoint over the runtime's single SessionWidening")
+        void shouldShareTheSingleSessionWidening() {
+            BffRuntime runtime = producer(withStepUpPath(serverModeOidc(), STEP_UP_PATH)).bffRuntime();
+
+            List<StepUpEndpoint> endpoints = reachableInstancesOf(runtime, StepUpEndpoint.class);
+            assertEquals(1, endpoints.size(), "the walk must see the step-up endpoint, or this test is vacuous");
+            List<SessionWidening> fromRuntime = reachableInstancesOf(runtime, SessionWidening.class);
+            List<SessionWidening> fromStepUp = reachableInstancesOf(endpoints.getFirst(), SessionWidening.class);
+
+            assertAll("one widening coordinator, shared",
+                    () -> assertEquals(1, fromRuntime.size(), "exactly one SessionWidening per runtime"),
+                    () -> assertEquals(1, fromStepUp.size()),
+                    () -> assertSame(fromRuntime.getFirst(), fromStepUp.getFirst(),
+                            "the step-up endpoint holds the runtime's own instance"));
         }
     }
 

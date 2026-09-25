@@ -275,17 +275,27 @@ List<String> scopes,
     }
 
     /**
-     * RFC 9470 step-up authentication settings.
+     * Step-up settings: the RFC 9470 upstream-challenge leg and the gateway-served step-up path.
+     * <p>
+     * The two are independent. {@code enabled} and {@code honorUpstreamChallenge} govern the
+     * RFC 9470 {@code acr} leg only and do not gate {@code path}: the path's presence alone
+     * registers the reserved step-up endpoint, exactly like every other reserved path. That
+     * endpoint widens the live session so it carries the scopes the route behind a given URL
+     * needs; it is the target of the {@code step_up_url} a session route names when it refuses
+     * a non-navigation request for a missing scope.
      *
      * @param enabled                whether step-up is honored, {@code null} when omitted
      * @param honorUpstreamChallenge whether upstream challenges are honored, {@code null}
      *                               when omitted
+     * @param path                   the gateway-served step-up path ({@code oidc.step_up.path}),
+     *                               {@code null} when omitted, in which case no step-up endpoint
+     *                               is registered and no {@code step_up_url} is ever named
      * @author API Sheriff Team
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record StepUp(@Nullable Boolean enabled, @Nullable Boolean honorUpstreamChallenge) {
+    public record StepUp(@Nullable Boolean enabled, @Nullable Boolean honorUpstreamChallenge, @Nullable String path) {
     }
 
     /**

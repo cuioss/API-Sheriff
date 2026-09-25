@@ -156,6 +156,9 @@ import org.jspecify.annotations.Nullable;
  * scopes act only on authenticated routes; and a declared {@code oidc.login.default_return_url}
  * must be same-origin with {@code redirect_uri}.
  * <p>
+ * The reserved-path rules hold {@code oidc.user_info.path}, {@code oidc.login.path} and
+ * {@code oidc.step_up.path} alike to an absolute gateway path starting with a single {@code /}.
+ * <p>
  * The JWKS egress-allowlist refusal adds one more: every {@code allowed_egress_hosts} entry of an
  * {@code http}-sourced issuer must be usable as the host-exact exemption token-sheriff's SSRF egress
  * guard matches on, so a blank or whitespace-only entry and a {@code host:port} entry are refused (a
@@ -203,6 +206,9 @@ public final class ConfigValidator {
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER = "/oidc/login/default_return_url";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_STEP_UP_PATH_POINTER = "/oidc/step_up/path";
     private static final String ENDPOINT_SCOPES_POINTER = "/endpoint/scopes";
 
     /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
@@ -338,6 +344,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateSessionCookieName(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateStepUpPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
@@ -2391,6 +2398,25 @@ public final class ConfigValidator {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_PATH_POINTER,
                     "oidc login path '%s' must be an absolute gateway path starting with a single '/'"
                             .formatted(path)));
+        }
+    }
+
+    /**
+     * Rule: the step-up reserved path. When {@code oidc.step_up.path} is present it must be an
+     * absolute gateway path, validated exactly as {@link #validateLoginPath} validates
+     * {@code oidc.login.path}: a blank, relative or scheme-relative ({@code //host}) value is
+     * rejected, since the path is named verbatim in the {@code step_up_url} a session route hands to
+     * the browser. A collision with the application portal needs no rule here — the portal rules
+     * compare {@code portal.path} against every reserved path, this one included.
+     */
+    private static void validateStepUpPath(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        OidcConfig.StepUp stepUp = oidc == null ? null : oidc.stepUp();
+        String path = stepUp == null ? null : stepUp.path();
+        if (path != null && !isAbsoluteGatewayPath(path)) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_STEP_UP_PATH_POINTER,
+                    "oidc step_up path '%s' must be an absolute gateway path starting with a single '/'"
+                            .formatted(renderForMessage(path))));
         }
     }
 

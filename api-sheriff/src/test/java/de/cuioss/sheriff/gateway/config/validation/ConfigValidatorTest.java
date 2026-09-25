@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
@@ -63,6 +64,7 @@ import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -3493,6 +3495,100 @@ class ConfigValidatorTest {
                     topologyWith());
 
             assertFalse(refused(errors));
+        }
+    }
+
+    @Nested
+    @DisplayName("oidc.step_up.path must be an absolute gateway path and not collide with the portal")
+    class StepUpPath {
+
+        private static final String REDIRECT_URI = "https://gateway.example.com/callback";
+        private static final String POINTER = "/oidc/step_up/path";
+        private static final String MESSAGE = "must be an absolute gateway path starting with a single '/'";
+
+        private OidcConfig oidcWithStepUpPath(String path) {
+            return OidcConfig.builder().redirectUri(REDIRECT_URI)
+                    .stepUp(OidcConfig.StepUp.builder().path(path).build()).build();
+        }
+
+        private List<ConfigError> validateStepUpPath(String path) {
+            return validator.validate(validGateway().oidc(oidcWithStepUpPath(path)).build(), List.of(),
+                    topologyWith());
+        }
+
+        private boolean refused(List<ConfigError> errors) {
+            return errors.stream().anyMatch(error -> POINTER.equals(error.pointer()));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"/auth/step-up", "/step-up", "/"})
+        @DisplayName("Should accept an absolute gateway path")
+        void shouldAcceptAbsolutePath(String path) {
+            List<ConfigError> errors = validateStepUpPath(path);
+
+            assertFalse(refused(errors), () -> path + " is an absolute gateway path, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"auth/step-up", "step-up", "//evil.example/step-up", "", "   "})
+        @DisplayName("Should refuse a relative, scheme-relative or blank path")
+        void shouldRefuseNonAbsolutePath(String path) {
+            List<ConfigError> errors = validateStepUpPath(path);
+
+            assertHasError(errors, POINTER, MESSAGE);
+            assertTrue(errors.stream().filter(error -> POINTER.equals(error.pointer()))
+                            .allMatch(error -> "gateway.yaml".equals(error.file())),
+                    () -> "the refusal names gateway.yaml, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse a CR/LF in the path without echoing it raw into the boot log")
+        void shouldRenderControlCharactersEscaped() {
+            List<ConfigError> errors = validateStepUpPath("step-up\r\nX-Forged: 1");
+
+            assertHasError(errors, POINTER, MESSAGE);
+            assertTrue(errors.stream().filter(error -> POINTER.equals(error.pointer()))
+                            .noneMatch(error -> error.message().indexOf('\n') >= 0
+                                    || error.message().indexOf('\r') >= 0),
+                    () -> "a control character is escaped in the refusal, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should not refuse an omitted step-up path or step_up block")
+        void shouldAcceptOmittedPath() {
+            OidcConfig withoutPath = OidcConfig.builder().redirectUri(REDIRECT_URI)
+                    .stepUp(new OidcConfig.StepUp(true, true, null)).build();
+            OidcConfig withoutBlock = OidcConfig.builder().redirectUri(REDIRECT_URI).build();
+
+            assertAll(
+                    () -> assertFalse(refused(validator.validate(validGateway().oidc(withoutPath).build(),
+                            List.of(), topologyWith()))),
+                    () -> assertFalse(refused(validator.validate(validGateway().oidc(withoutBlock).build(),
+                            List.of(), topologyWith()))));
+        }
+
+        @Test
+        @DisplayName("Should refuse a portal.path equal to the step-up path")
+        void shouldRefusePortalCollision() {
+            String stepUpPath = "/auth/step-up";
+            GatewayConfig gateway = validGateway().oidc(oidcWithStepUpPath(stepUpPath))
+                    .portal(PortalConfig.builder().path(stepUpPath).title("Applications").build()).build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+        }
+
+        @Test
+        @DisplayName("Should accept a portal.path next to the step-up path")
+        void shouldAcceptPortalNextToStepUpPath() {
+            GatewayConfig gateway = validGateway().oidc(oidcWithStepUpPath("/auth/step-up"))
+                    .portal(PortalConfig.builder().path("/auth").title("Applications").build()).build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> PortalRules.PORTAL_PATH_POINTER.equals(error.pointer())),
+                    () -> "a path that is not the reserved one does not collide, got: " + errors);
         }
     }
 }

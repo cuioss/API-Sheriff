@@ -30,6 +30,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import org.jspecify.annotations.Nullable;
 
@@ -53,7 +54,7 @@ import org.jspecify.annotations.Nullable;
  *       requests;</li>
  *   <li>{@link #dispatch(ReservedEndpoint, ReservedHttpRequest, Instant)} — the framework-agnostic
  *       fan-out that routes each matched reserved kind (callback, logout, logout-return, back-channel
- *       logout, user-info, login) to its already-wired handler and normalizes the heterogeneous
+ *       logout, user-info, login, step-up) to its already-wired handler and normalizes the heterogeneous
  *       handler outcomes into one {@link ReservedHttpResponse} the edge renders verbatim. The
  *       back-channel arm stays wired in both session modes — the endpoint's own capability gate
  *       answers {@code 404} where IdP-driven destruction is unsupported, so the reserved path never
@@ -84,6 +85,7 @@ public final class BffRuntime {
     private final @Nullable BackchannelLogoutEndpoint backchannelLogoutEndpoint;
     private final @Nullable UserInfoEndpoint userInfoEndpoint;
     private final @Nullable LoginInitiationEndpoint loginInitiationEndpoint;
+    private final @Nullable StepUpEndpoint stepUpEndpoint;
 
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     private BffRuntime(boolean active, @Nullable SessionAuthenticationStage sessionStage,
@@ -91,7 +93,8 @@ public final class BffRuntime {
             @Nullable CallbackEndpoint callbackEndpoint,
             @Nullable Supplier<LogoutEndpoint> logoutEndpoint,
             @Nullable BackchannelLogoutEndpoint backchannelLogoutEndpoint,
-            @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint) {
+            @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint,
+            @Nullable StepUpEndpoint stepUpEndpoint) {
         this.active = active;
         this.sessionStage = sessionStage;
         this.csrfDefence = csrfDefence;
@@ -101,6 +104,7 @@ public final class BffRuntime {
         this.backchannelLogoutEndpoint = backchannelLogoutEndpoint;
         this.userInfoEndpoint = userInfoEndpoint;
         this.loginInitiationEndpoint = loginInitiationEndpoint;
+        this.stepUpEndpoint = stepUpEndpoint;
     }
 
     /**
@@ -117,12 +121,15 @@ public final class BffRuntime {
      * @param backchannelLogoutEndpoint the OIDC back-channel logout receiver
      * @param userInfoEndpoint          the session/user-info fold handler (D11)
      * @param loginInitiationEndpoint   the login-initiation fold handler (D12)
+     * @param stepUpEndpoint            the step-up handler that widens a live session to the scopes the
+     *                                  route behind a return URL needs ({@code oidc.step_up.path})
      */
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     public BffRuntime(SessionAuthenticationStage sessionStage, CsrfDefence csrfDefence,
             StepUpCoordinator stepUpCoordinator, CallbackEndpoint callbackEndpoint,
             Supplier<LogoutEndpoint> logoutEndpoint, BackchannelLogoutEndpoint backchannelLogoutEndpoint,
-            UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint) {
+            UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint,
+            StepUpEndpoint stepUpEndpoint) {
         this(true,
                 Objects.requireNonNull(sessionStage, "sessionStage"),
                 Objects.requireNonNull(csrfDefence, "csrfDefence"),
@@ -131,7 +138,8 @@ public final class BffRuntime {
                 Objects.requireNonNull(logoutEndpoint, "logoutEndpoint"),
                 Objects.requireNonNull(backchannelLogoutEndpoint, "backchannelLogoutEndpoint"),
                 Objects.requireNonNull(userInfoEndpoint, "userInfoEndpoint"),
-                Objects.requireNonNull(loginInitiationEndpoint, "loginInitiationEndpoint"));
+                Objects.requireNonNull(loginInitiationEndpoint, "loginInitiationEndpoint"),
+                Objects.requireNonNull(stepUpEndpoint, "stepUpEndpoint"));
     }
 
     /**
@@ -139,7 +147,7 @@ public final class BffRuntime {
      *         {@link #isActive()} {@code false}, exposes no session stage, and dispatches nothing.
      */
     public static BffRuntime inert() {
-        return new BffRuntime(false, null, null, null, null, null, null, null, null);
+        return new BffRuntime(false, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -233,6 +241,7 @@ public final class BffRuntime {
             case USER_INFO -> render(requireNonNull(userInfoEndpoint).handle(req.cookieHeader(), req.claimsParam(), now));
             case LOGIN ->
                 render(requireNonNull(loginInitiationEndpoint).initiate(req.returnUrlParam(), req.cookieHeader(), now));
+            case STEP_UP -> render(requireNonNull(stepUpEndpoint).handle(req.returnUrlParam(), req.cookieHeader(), now));
         };
     }
 
@@ -285,6 +294,13 @@ public final class BffRuntime {
                 outcome.setCookieHeaders());
     }
 
+    private static ReservedHttpResponse render(StepUpEndpoint.StepUpOutcome outcome) {
+        // A redirect carries no body; the 401 no-session answer carries the fixed problem body.
+        String jsonBody = outcome.body().isEmpty() ? null : JsonWriter.toJson(outcome.body());
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), jsonBody, outcome.headers(),
+                outcome.setCookieHeaders());
+    }
+
     private static <T> T requireNonNull(@Nullable T value) {
         return Objects.requireNonNull(value, "active BFF runtime handler must be wired");
     }
@@ -300,7 +316,8 @@ public final class BffRuntime {
      *                       duplicated {@code code}/{@code state} (BFF-13)
      * @param cookieHeader   the raw request {@code Cookie} header value, may be absent
      * @param claimsParam    the raw {@code claims} selector for the user-info fold, may be absent
-     * @param returnUrlParam the raw post-login {@code returnUrl} target for the login fold, may be absent
+     * @param returnUrlParam the raw {@code returnUrl} target for the login fold and the step-up endpoint,
+     *                       may be absent
      * @param stateParam     the {@code state} the IdP returned on a logout-return leg, may be absent
      * @param rawFormBody    the raw {@code application/x-www-form-urlencoded} body — carried for
      *                       back-channel logout, the one reserved path that still consumes a body. The
@@ -351,13 +368,15 @@ public final class BffRuntime {
     /**
      * The normalized response the edge renders for a dispatched reserved path: the HTTP status, an
      * optional redirect {@code Location}, an optional already-serialized JSON body (the user-info
-     * fold), the fixed response headers, and the {@code Set-Cookie} header values to emit. Token
+     * fold, and the step-up endpoint's no-session problem), the fixed response headers, and the
+     * {@code Set-Cookie} header values to emit. Token
      * material never appears here — only opaque cookie headers, the redirect location, and allowlisted
      * disclosure.
      *
      * @param status           the HTTP status the edge returns
      * @param location         the redirect target, present only for a redirect outcome
-     * @param jsonBody         the already-serialized JSON body, present only for the user-info fold
+     * @param jsonBody         the already-serialized JSON body, present only for the user-info fold and
+     *                         the step-up endpoint's {@code 401} problem
      * @param headers          the fixed response headers the edge emits verbatim
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit
      * @author API Sheriff Team

@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
@@ -54,6 +55,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -132,9 +134,10 @@ class GatewayEdgeRouteBffWiringTest {
     private static final String BACKCHANNEL_PATH = "/auth/backchannel";
     private static final String USER_INFO_PATH = "/auth/userinfo";
     private static final String LOGIN_PATH = "/auth/login";
+    private static final String STEP_UP_PATH = "/auth/step-up";
 
     @Nested
-    @DisplayName("ReservedPathRegistry registers the user_info and login folds (D11/D12)")
+    @DisplayName("ReservedPathRegistry registers the user_info, login and step-up folds")
     class RegistryFolds {
 
         private final ReservedPathRegistry registry = ReservedPathRegistry.from(fullOidc());
@@ -143,6 +146,12 @@ class GatewayEdgeRouteBffWiringTest {
         @DisplayName("Should register the user_info fold path as USER_INFO")
         void shouldRegisterUserInfo() {
             assertEquals(Optional.of(ReservedEndpoint.USER_INFO), registry.match(OIDC_HOST, USER_INFO_PATH));
+        }
+
+        @Test
+        @DisplayName("Should register the step-up path as STEP_UP")
+        void shouldRegisterStepUp() {
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP), registry.match(OIDC_HOST, STEP_UP_PATH));
         }
 
         @Test
@@ -455,6 +464,103 @@ class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * Drives the step-up path through a live edge: the reserved registry resolves it to
+     * {@link ReservedEndpoint#STEP_UP} ahead of route selection, and the edge hands the decoded
+     * {@code returnUrl} to the step-up endpoint exactly as it does for login initiation. With a live
+     * session the fixture's endpoint answers a direct redirect whose {@code Location} IS the extracted
+     * return URL — the observable that proves the parameter arrived — and without one it answers
+     * {@code 401}.
+     */
+    @Nested
+    @DisplayName("step-up path reaches the STEP_UP dispatch with its returnUrl")
+    class StepUpOverEdge {
+
+        private static final String RETURN_TARGET = "/dashboard";
+        private static final String ENCODED_RETURN_TARGET = "%2Fdashboard";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private HttpClient client;
+        private String sessionCookie;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+
+            SessionStore store = new InMemorySessionStore(16);
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), Instant.now());
+            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("returnUrl reaches the step-up endpoint and becomes the redirect target")
+        void shouldHandReturnUrlToStepUp() throws Exception {
+            HttpClientResponse response = stepUp("?returnUrl=" + ENCODED_RETURN_TARGET, sessionCookie);
+
+            assertEquals(302, response.statusCode(), "a live session is answered with a redirect");
+            assertEquals(RETURN_TARGET, response.getHeader("Location"),
+                    "the decoded returnUrl must reach the STEP_UP dispatch");
+        }
+
+        @Test
+        @DisplayName("a retired return_to spelling is ignored and degrades to the default return URL")
+        void shouldIgnoreRetiredSpelling() throws Exception {
+            HttpClientResponse response = stepUp("?return_to=" + ENCODED_RETURN_TARGET, sessionCookie);
+
+            assertEquals(ROOT_RETURN_TARGET, response.getHeader("Location"),
+                    "only returnUrl is the wire parameter, so the positive case above is about the name");
+        }
+
+        @Test
+        @DisplayName("without a session the step-up path answers 401 and never redirects")
+        void shouldAnswer401WithoutSession() throws Exception {
+            HttpClientResponse response = stepUp("?returnUrl=" + ENCODED_RETURN_TARGET, null);
+
+            assertEquals(401, response.statusCode());
+            assertNull(response.getHeader("Location"), "no IdP redirect without a live session");
+        }
+
+        private HttpClientResponse stepUp(String query, @Nullable String cookie) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(STEP_UP_PATH + query);
+            return Awaits.connect(client.request(options).compose(request -> {
+                if (cookie != null) {
+                    request.putHeader("Cookie", cookie);
+                }
+                return request.send();
+            }), "the step-up response for " + query);
+        }
+    }
+
     @Nested
     @DisplayName("BffRuntime.dispatch routes each reserved path to its handler (not NO_ROUTE_MATCHED)")
     class ReservedDispatch {
@@ -527,6 +633,40 @@ class GatewayEdgeRouteBffWiringTest {
                     "control: a cross-origin return URL is refused and replaced by the default, which is "
                             + "what makes the assertion above one about validation rather than about "
                             + "there being any Location header at all");
+        }
+
+        @Test
+        @DisplayName("STEP_UP without a session yields 401 problem+json and no redirect")
+        void shouldDispatchStepUpWithoutSession() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/home", null, null, "GET"), now);
+
+            assertAll(
+                    () -> assertEquals(401, response.status()),
+                    () -> assertEquals("application/problem+json", response.headers().get("Content-Type")),
+                    () -> assertTrue(response.locationOptional().isEmpty(), "no IdP redirect without a session"),
+                    () -> assertTrue(response.setCookieHeaders().isEmpty()));
+        }
+
+        @Test
+        @DisplayName("STEP_UP with a live session redirects (302) to the validated return URL")
+        void shouldDispatchStepUpWithSession() {
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(now.plus(Duration.ofHours(1))).build(), now);
+            String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
+            BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
+                            null, null, "GET"), now);
+
+            assertEquals(302, response.status());
+            assertEquals(Optional.of("/home"), response.locationOptional(),
+                    "a target whose route needs nothing outside the granted set is answered straight back");
+            assertEquals(Optional.of(ROOT_RETURN_TARGET), crossOrigin.locationOptional(),
+                    "control: a cross-origin return URL is replaced by the default, never followed");
         }
 
         private BffRuntime.ReservedHttpRequest request(String cookie, String claims) {
@@ -640,6 +780,7 @@ class GatewayEdgeRouteBffWiringTest {
         }
 
         private BffRuntime callbackRuntime() {
+            SessionWidening widening = engineFreeSessionWidening(pendingStore, bindingCodec);
             CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
                 Map<String, ClaimValue> accessClaims = new HashMap<>();
                 accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
@@ -651,8 +792,7 @@ class GatewayEdgeRouteBffWiringTest {
                 // path, so the exchange grants no refresh token — the shape an authorization server
                 // that issues none produces, and the one that keeps this runtime's session inert.
                 return new AuthorizationCodeFlow.AuthenticationResult(access, id, null);
-            }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1),
-                    engineFreeSessionWidening(pendingStore, bindingCodec));
+            }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1), widening);
 
             SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                     (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
@@ -682,7 +822,8 @@ class GatewayEdgeRouteBffWiringTest {
                     engineFreeReturnTargetScopes());
 
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
-                    () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login);
+                    () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
+                    engineFreeStepUpEndpoint(widening, sessionBinding));
         }
     }
 
@@ -895,6 +1036,7 @@ class GatewayEdgeRouteBffWiringTest {
                 .logout(logout)
                 .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
                 .login(OidcConfig.Login.builder().path(LOGIN_PATH).build())
+                .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                 .build();
     }
 
@@ -943,9 +1085,10 @@ class GatewayEdgeRouteBffWiringTest {
                 },
                 pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
 
+        SessionWidening widening = engineFreeSessionWidening(pendingStore, bindingCodec);
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
             throw new AssertionError("engine exchange must not be reached");
-        }, pendingStore, bindingCodec, binding, ttl, engineFreeSessionWidening(pendingStore, bindingCodec));
+        }, pendingStore, bindingCodec, binding, ttl, widening);
 
         BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
                 rawToken -> {
@@ -961,7 +1104,17 @@ class GatewayEdgeRouteBffWiringTest {
                 engineFreeReturnTargetScopes());
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
-                userInfo, login);
+                userInfo, login, engineFreeStepUpEndpoint(widening, binding));
+    }
+
+    /**
+     * The step-up endpoint for the engine-free fixtures, over the runtime's one {@link SessionWidening}.
+     * Its return-target resolver maps every target to the empty scope set, which every granted set
+     * covers, so a live-session request always takes the direct redirect and the widening seam — which
+     * throws — is never reached.
+     */
+    private static StepUpEndpoint engineFreeStepUpEndpoint(SessionWidening widening, SessionBinding binding) {
+        return new StepUpEndpoint(widening, binding, engineFreeReturnTargetScopes(), ORIGIN, ROOT_RETURN_TARGET);
     }
 
     /**

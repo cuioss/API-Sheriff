@@ -1199,6 +1199,11 @@ public class GatewayEdgeRoute {
      * {@code returnUrl}, {@code state}) from the transport. The pipeline query carries the raw,
      * still-encoded pair sequence (ADR-0047), which is the wrong form for these consumers: they compare or
      * redirect on the value's meaning, so they read Vert.x's decoded view instead.
+     * <p>
+     * {@code returnUrl} is read one way for every kind, so the login-initiation and the step-up
+     * endpoints receive the identical decoded target; each same-origin-validates it before it can
+     * become a redirect location, and the raw pair has already passed the stage-1 checks, which run
+     * before any reserved path is matched (ADR-0019).
      */
     private static @Nullable String firstQueryParam(RoutingContext ctx, String name) {
         return ctx.request().getParam(name);

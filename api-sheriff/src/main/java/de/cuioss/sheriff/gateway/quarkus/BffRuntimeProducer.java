@@ -54,6 +54,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ClaimAllowlistFilter;
 import de.cuioss.sheriff.gateway.bff.reserved.IdTokenClaimProjection;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -362,8 +363,9 @@ public class BffRuntimeProducer {
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
-        // Resolved once: the login flow, the login-initiation endpoint (through the flow) and the step-up
-        // re-drive all fall back to the same configured post-login target.
+        // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
+        // widening, the step-up endpoint and the step-up re-drive all fall back to the same configured
+        // post-login target.
         String defaultReturnUrl = defaultReturnUrl(oidc);
 
         // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime, requesting
@@ -453,6 +455,14 @@ public class BffRuntimeProducer {
         LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionBinding,
                 gatewayOrigin, returnTargetScopes);
 
+        // Step-up endpoint (oidc.step_up.path) — widens the live session to the scopes the route behind a
+        // return URL needs. It reuses the runtime's ONE SessionWidening (the instance the callback
+        // re-drives through), never a second, and the same return-target resolver as the login fold.
+        // It is dispatched only when the registry reserved oidc.step_up.path, so wiring it
+        // unconditionally costs nothing when the key is absent.
+        StepUpEndpoint stepUpEndpoint = new StepUpEndpoint(sessionWidening, sessionBinding, returnTargetScopes,
+                gatewayOrigin, defaultReturnUrl);
+
         // D2c back-channel logout — JWKS signature verification through the engine, then the claim residual.
         // The endpoint stays wired in both modes: it is gated on the binding's IdP-destruction
         // capability, so a stateless binding answers a deliberate 404 on the reserved path rather than
@@ -483,7 +493,7 @@ public class BffRuntimeProducer {
                 session.isCookieMode() ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER,
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
-                backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
+                backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint, stepUpEndpoint);
     }
 
     /**

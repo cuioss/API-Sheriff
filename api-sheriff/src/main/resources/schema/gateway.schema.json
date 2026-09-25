@@ -416,7 +416,11 @@
           "additionalProperties": false,
           "properties": {
             "enabled": { "type": "boolean" },
-            "honor_upstream_challenge": { "type": "boolean" }
+            "honor_upstream_challenge": { "type": "boolean" },
+            "path": {
+              "type": "string",
+              "description": "Gateway-served step-up path (reserved, like login.path). A browser holding a live session is sent here to widen that session so it carries the scopes the route behind the URL it is given needs: the returnUrl query parameter names that URL (same-origin only; anything else falls back to login.default_return_url). It is the target of the step_up_url member a session route names in its 403 problem answer when a non-navigation request lacks a needed scope. Its presence alone registers the endpoint - enabled and honor_upstream_challenge govern the RFC 9470 upstream-challenge leg and do not gate it. Omitted means no step-up endpoint and no step_up_url. Must be an absolute path (enforced in code)."
+            }
           }
         },
         "user_info": {
