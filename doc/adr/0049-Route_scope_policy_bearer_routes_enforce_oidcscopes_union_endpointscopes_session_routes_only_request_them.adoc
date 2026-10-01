@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Every route derives one scope set at boot, neededScopes = oidc.scopes ∪ endpoint.scopes, and each auth posture consumes it differently; a bearer route rejects a validated token missing any member (oidc.scopes included, so a client_credentials token lacking them is refused) with 403 insufficient_scope per RFC 6750 before upstream contact; a session route uses the set only to decide what its login requests and never pre-checks a live session, leaving insufficient scope to the upstream; a none route ignores it, and endpoint.scopes on an endpoint whose every route is none is a boot error; a bearer check on endpoint.scopes alone is rejected because request and check would read different sets, and a session pre-check with re-login is deferred until a live session can be widened.
+// summary: Every route derives one scope set at boot, neededScopes = oidc.scopes ∪ endpoint.scopes, and each auth posture consumes it differently; a bearer route rejects a validated token missing any member (oidc.scopes included, so a client_credentials token lacking them is refused) with 403 insufficient_scope per RFC 6750 before upstream contact; a session route uses the set only to decide what its login requests and never pre-checks a live session, leaving insufficient scope to the upstream; a none route ignores it, and endpoint.scopes on an endpoint whose every route is none is a boot error; a bearer check on endpoint.scopes alone is rejected because request and check would read different sets, and a session pre-check with re-login is deferred until a live session can be widened; amended: the session half is superseded by ADR-0056, under which a session route compares a live session against the set and refreshes or widens it, while the bearer half and the neededScopes derivation stand.
 // tags: auth, scopes, bearer, bff, oidc, insufficient-scope
 // affects: api-sheriff
 // supersedes:
@@ -21,6 +21,23 @@
 == Status
 
 Proposed
+
+[NOTE]
+====
+*Amended.* The session half of this decision is superseded by
+link:0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056].
+
+The live-session widening this ADR deferred its session pre-check on now exists. A session route --
+and the SESSION branch of a `session_fallback` route -- compares a live session against the route's
+`neededScopes` on every request, obtains a missing scope by a refresh or by widening the session,
+and refuses `403` when it cannot. The statements below that a session route "only requests" the set,
+that a live session "is never checked", and that insufficient scope on a session route is left to
+the upstream no longer describe the gateway. They are kept as the record of this decision.
+
+Unchanged and still in force: the boot derivation `neededScopes = oidc.scopes ∪ endpoint.scopes`, the
+bearer check with its `403 insufficient_scope` challenge, the `require: none` rule, and the boot
+refusal of `endpoint.scopes` on an endpoint whose every route is `none`.
+====
 
 == Context
 
