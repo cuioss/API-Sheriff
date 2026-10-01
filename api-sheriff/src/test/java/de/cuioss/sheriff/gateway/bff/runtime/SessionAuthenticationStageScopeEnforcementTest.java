@@ -218,7 +218,7 @@ class SessionAuthenticationStageScopeEnforcementTest {
         @DisplayName("a refresh that does not obtain the scope redirects a navigation into a widening")
         void refusedRefreshWidensNavigation() {
             SessionRecord live = session(SESSION_TOKEN, Set.of(OPENID), NEEDED);
-            RecordingScopeRefresh scopeRefresh = RecordingScopeRefresh.keeping(List.of());
+            RecordingScopeRefresh scopeRefresh = RecordingScopeRefresh.keeping();
             RecordingWidening widening = new RecordingWidening();
             SessionAuthenticationStage stage = stage(bindingWith(live), scopeRefresh, widening);
             PipelineRequest request = sessionRequest(NEEDED, navigationHeaders(), null);
@@ -238,7 +238,7 @@ class SessionAuthenticationStageScopeEnforcementTest {
         @DisplayName("a refresh that does not obtain the scope refuses an API call 403")
         void refusedRefreshRefusesApiCall() {
             SessionBinding binding = bindingWith(session(SESSION_TOKEN, Set.of(OPENID), NEEDED));
-            RecordingScopeRefresh scopeRefresh = RecordingScopeRefresh.keeping(List.of());
+            RecordingScopeRefresh scopeRefresh = RecordingScopeRefresh.keeping();
             SessionAuthenticationStage stage = stage(binding, scopeRefresh, unreachableWidening());
             PipelineRequest request = sessionRequest(NEEDED, xhrHeaders(), null);
 
@@ -600,9 +600,9 @@ class SessionAuthenticationStageScopeEnforcementTest {
         }
 
         /** A refresh that keeps the session exactly as it was — the set was not obtained. */
-        static RecordingScopeRefresh keeping(List<String> cookies) {
+        static RecordingScopeRefresh keeping() {
             return new RecordingScopeRefresh((kept, requestedScopes) ->
-                    RefreshResult.mediate(new SessionBinding.BoundSession(kept, cookies)));
+                    RefreshResult.mediate(new SessionBinding.BoundSession(kept, List.of())));
         }
 
         @Override

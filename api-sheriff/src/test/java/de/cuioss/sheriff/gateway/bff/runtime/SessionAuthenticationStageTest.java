@@ -57,7 +57,7 @@ import org.junit.jupiter.api.Test;
 @DisplayName("SessionAuthenticationStage — stage 4 require:session runtime")
 class SessionAuthenticationStageTest {
 
-    static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
+    private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
     private static final Instant SESSION_EXPIRY = NOW.plusSeconds(3600);
     static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
