@@ -44,10 +44,10 @@ added path — `AGENTS.md`. Nothing declared was left untouched. No collision wi
   re-read by the orchestrator). `cuioss-review-bot` was re-requested by a hand-posted `/review`.
   `pr comments --unresolved-only` returns 8 rows, all with an empty `thread_id` — zero
   unresolved resolvable threads.
-- CI/merge: merged through the merge queue. 32 of 33 PR checks green at analysis time.
+- CI/merge: merged through the merge queue. All 33 PR checks green.
 - Post-merge, checked by the orchestrator 2026-10-01:
-  - PR-attached `Run Integration Benchmarks` (run 36879327716): **still in progress** at
-    analysis time — carried as a Watch.
+  - PR-attached `Run Integration Benchmarks` (run 36879327716): success (in progress at the
+    landing analysis, read green later the same day; the Watch opened for it is retired).
   - Main-branch `Maven Build` for the merge commit (run 36879323055, event `push`): success;
     `build`, `sonar-build` and `deploy-snapshot` were **skipped** by `check-changes`, as expected
     for a documentation-only commit. `Integration Tests`, `Demo Client E2E` and `Scorecard` push
@@ -72,7 +72,6 @@ added path — `AGENTS.md`. Nothing declared was left untouched. No collision wi
 
 ## Follow-Ups
 
-- **Benchmark run 36879327716** — outcome not yet observed. Watch; retire once green.
 - **Stale architecture descriptors.** `.plan/project-architecture/_project.json` and
   `documentation/enriched.json` still describe "remaining implementation plans under doc/plan/"
   (the plan's claim; outside the epic tree, not edited by the orchestrator). Needs a

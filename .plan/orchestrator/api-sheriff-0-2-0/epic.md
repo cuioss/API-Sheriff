@@ -390,11 +390,6 @@ doc-only or build-light plan for the second and third slots.
   — which skips the build by this repository's own rule — can still land a duplicate ordinal or a
   drifted module list, caught only at the next build-triggering change. Left open by design; same
   shape as the `build.map` CI-side gap `CLAUDE.md` already documents. No plan staged.
-- **POST-MERGE BENCHMARK FOR `PLAN-V02-18` NOT YET OBSERVED** (added 2026-10-01). The PR-attached
-  `Run Integration Benchmarks` run 36879327716 on PR #368 was still in progress at the landing
-  analysis. Every other post-merge run on merge commit `4228d42f` is green. Retire this Watch once
-  the run is read as success; a failure on a documentation-only commit would point at the lane, not
-  the change.
 - **ARCHITECTURE DESCRIPTORS STILL NAME `doc/plan/`** (added 2026-10-01, `PLAN-V02-18` landing,
   the plan's claim — unverified lead). `.plan/project-architecture/_project.json` and
   `documentation/enriched.json` still describe "remaining implementation plans under doc/plan/";
