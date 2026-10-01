@@ -43,6 +43,11 @@ would otherwise force a retrofit.
 - **PLAN-V02-08** (running since 2026-10-01): emitted under an operator override of the fail-closed
   candidate comparison; the record is the 2026-10-01 entry in `logs/decision.log`. A follow-up to
   align the cookie sealing key with its file-based key model is held as a Watch until it lands.
+  ADR ordinal: the mailbox finding `inbox/to/plan-v02-08-fapi-2-0-conformance/orchestrator-001.md`
+  still reads `unconsumed`, but the worktree observed later the same day carries
+  `0056-A_header_matchers…` and its own record as `0057-The_BFF_pushes…`, so the collision is
+  resolved on the branch. Every other staged spec has an overlap row against this plan's actual
+  footprint, so nothing else is emittable until it lands.
 
 ## Workstreams
 
