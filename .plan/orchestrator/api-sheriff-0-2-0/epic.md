@@ -27,11 +27,20 @@ would otherwise force a retrofit.
 
 ### Queue annotations
 
-- **PLAN-V02-19** (staged 2026-09-24, inbox drain): **land before `PLAN-V02-04`.** V02-04 audits
-  and renumbers `doc/adr/**`, so it must start from a corpus with unique ordinals, and V02-19's
-  ordinal-uniqueness test then guards V02-04's own merges. Sequence it against `PLAN-V02-18` as well:
-  V02-18 edits `CLAUDE.md`, and V02-19's module-list test reads it. Otherwise small and build-light,
-  so it is a good fit for a second or third slot.
+- **PLAN-V02-19** — SHIPPED 2026-10-01 as PR #367 (`6bb90765`), see `landings/PLAN-V02-19.md`. Its
+  two sequencing constraints are discharged: `PLAN-V02-04` now starts from a corpus with unique
+  ordinals, guarded by `AdrOrdinalUniquenessContractTest`, and `PLAN-V02-18` may edit `CLAUDE.md`.
+- **PLAN-V02-18** (note added 2026-10-01): `ReactorModuleListContractTest` now reads the module-list
+  section of `CLAUDE.md` and `AGENTS.md`. V02-18's `CLAUDE.md` edit must leave that section's
+  bullets equal to the root `pom.xml` `<modules>`, or the build fails.
+- **Every ADR-authoring plan** (V02-01, V02-04, V02-06, V02-08, V02-11, V02-12, V02-13), note added
+  2026-10-01: the header-matcher record is now **ADR-0056** (was the duplicate `0053`; the portal
+  record keeps `0053`). The next free ordinal on `origin/main` at `6bb90765` is `0057`, which
+  supersedes the "next free ADR is 0055" figure in the resume anchor. Re-derive it on the branch at
+  implementation time; a duplicate now fails the build.
+- **PLAN-V02-08** (running since 2026-10-01): emitted under an operator override of the fail-closed
+  candidate comparison; the record is the 2026-10-01 entry in `logs/decision.log`. A follow-up to
+  align the cookie sealing key with its file-based key model is held as a Watch until it lands.
 
 ## Workstreams
 
@@ -356,6 +365,36 @@ doc-only or build-light plan for the second and third slots.
   is shell-expanded into a filename list**, silently dropping real hits. That third one is a
   different mechanism from the other two (shell expansion, not tool behaviour), so knowing the first
   two does not predict it. **Run a control query before trusting any asserted absence.**
+- **FOLLOW-UP HELD UNTIL `PLAN-V02-08` LANDS — align the cookie sealing key with the file-based key
+  model** (added 2026-10-01, inbox `plan-v02-08-fapi-2-0-conformance-001.md`, `finding`, disposition
+  `observed`). Operator backlog request made during V02-08's outline, explicitly out of that plan's
+  scope. V02-08 gives its two signing keys (`private_key_jwt`, DPoP proof key) one model: a provided
+  key is a mounted PEM file referenced by path, an omitted key is generated at startup. The cookie
+  sealing key (`oidc.session.encryption_key`, `CookieKeyMaterial`) keeps a base64 value from an
+  environment variable, so provided key material would be supplied two ways. **Not staged now, on
+  the message's own instruction:** the model was still being settled when it was written (one
+  sub-point awaited operator confirmation), so read the landed plan and its ADR first. When staged
+  it is a breaking change to the `oidc` block and joins the sequential chain V02-08 → V02-12 →
+  V02-09; it must not run concurrently with them. Open design question the spec must settle: a
+  symmetric AES-256 key has no PEM form. **Retire this Watch by staging the spec at V02-08's
+  landing analysis.** The claims about V02-08's key model are the sender's, not yet corroborated.
+- **CONTRACT TESTS RUN ONLY WHEN A BUILD RUNS** (added 2026-10-01, `PLAN-V02-19` landing). The ADR
+  ordinal-uniqueness test and the module-list test are Maven tests, so a documentation-only change
+  — which skips the build by this repository's own rule — can still land a duplicate ordinal or a
+  drifted module list, caught only at the next build-triggering change. Left open by design; same
+  shape as the `build.map` CI-side gap `CLAUDE.md` already documents. No plan staged.
+- **TOOLING GAPS REPORTED BY `PLAN-V02-19`, OWNED UPSTREAM IN plan-marshall — UNVERIFIED LEADS**
+  (added 2026-10-01). Reported by the plan, not corroborated by the orchestrator: (a) `ci-verify`
+  filed red-CI findings under producer `ci-verify-policy`, which the verification-feedback workflow
+  rejected as `unknown_producer`; (b) the pre-push gate derived no gate bundles for Maven paths and
+  the whole-tree module-tests canonical did not resolve at the reactor root, so the gate row read
+  DEGRADED and a full verify was run instead; (c) `manage-status transition`'s mailbox probe
+  reported the plan as not orchestrated while `orchestrator inbox detect` reported orchestrated;
+  (d) `cuioss-review-bot` is not re-requested on a loop-back (`re_review_on_loopback` false), so a
+  `/review` comment was posted by hand. **Observed by the orchestrator itself, same day:** `corpus
+  cross-check` counts the plan-less sentinel `.plan/local/plans/NO_PLAN` (`"sentinel": true`) as a
+  live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
+  `next` while it exists; the operator ruled that verdict wrong and overrode it.
 
 ## Inbox Drain — 2026-09-24 (sender `deployment-configurability`, closing hand-off)
 
