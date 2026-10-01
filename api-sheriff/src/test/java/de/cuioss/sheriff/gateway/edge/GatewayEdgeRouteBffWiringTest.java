@@ -135,6 +135,10 @@ class GatewayEdgeRouteBffWiringTest {
     private static final String USER_INFO_PATH = "/auth/userinfo";
     private static final String LOGIN_PATH = "/auth/login";
     private static final String STEP_UP_PATH = "/auth/step-up";
+    /** Where the engine-free session stage redirects an unauthenticated navigation. */
+    private static final String LOGIN_CHALLENGE_LOCATION = "/login";
+    /** Where the engine-free session stage redirects a navigation whose session needs widening. */
+    private static final String WIDENING_CHALLENGE_LOCATION = "/widen";
 
     @Nested
     @DisplayName("ReservedPathRegistry registers the user_info, login and step-up folds")
@@ -794,12 +798,7 @@ class GatewayEdgeRouteBffWiringTest {
                 return new AuthorizationCodeFlow.AuthenticationResult(access, id, null);
             }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1), widening);
 
-            SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
-                    (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
-                            new SessionBinding.BoundSession(session, List.of())),
-                    (returnUrl, scopes, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
-                    SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
-                    Clock.systemUTC());
+            SessionAuthenticationStage sessionStage = engineFreeSessionStage(sessionBinding);
             StepUpCoordinator stepUp = new StepUpCoordinator(
                     (session, challenge, instant) -> Optional.empty(),
                     challenge -> {
@@ -1025,6 +1024,147 @@ class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * The session-route scope enforcement end to end, over a live Vert.x server against a stub
+     * upstream: the stage's {@code 403} reaches the client as {@code application/problem+json} carrying
+     * the stage's extension members, and the request never reaches the upstream.
+     * <p>
+     * The first two tests are a matched pair. The same API call on the same route is refused for a
+     * session that lacks the route's scope and forwarded for one that carries it, so the refusal is
+     * attributable to the scope comparison and to nothing else on the session path.
+     */
+    @Nested
+    @DisplayName("session route: an under-scoped session is refused before any upstream contact")
+    class SessionScopeEnforcement {
+
+        private static final String NEEDED_SCOPE = "orders:read";
+
+        /** Counts the requests that actually reached the stub upstream. */
+        private final AtomicInteger upstreamHits = new AtomicInteger();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpServer front;
+        private HttpClient client;
+        private String underScopedCookie;
+        private String coveringCookie;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
+                    request.body().onComplete(body -> {
+                        upstreamHits.incrementAndGet();
+                        request.response().end("upstream");
+                    })).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+
+            SessionStore store = new InMemorySessionStore(16);
+            underScopedCookie = createSession(store, Set.of());
+            coveringCookie = createSession(store, Set.of(NEEDED_SCOPE));
+
+            ResolvedRoute scopedRoute = ResolvedRoute.builder()
+                    .id("scoped")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/scoped").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .neededScopes(Set.of(NEEDED_SCOPE))
+                    .build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(scopedRoute)),
+                    GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("an API call missing a needed scope answers 403 problem+json with the extension members and no upstream contact")
+        void underScopedApiCallIsRefusedWithProblemMembers() throws Exception {
+            EdgeAnswer answer = get("/scoped/orders?tab=a", underScopedCookie, "application/json");
+
+            assertAll("the stage's refusal is rendered by the edge and never forwarded",
+                    () -> assertEquals(403, answer.status(), "an under-scoped session is refused"),
+                    () -> assertEquals("application/problem+json", answer.contentType(),
+                            "the refusal is an RFC 9457 problem"),
+                    () -> assertEquals("""
+                            {"type":"urn:api-sheriff:problem:authorization","title":"Authorization","status":403,\
+                            "missing_scopes":["orders:read"],\
+                            "step_up_url":"/auth/step-up?returnUrl=%2Fscoped%2Forders%3Ftab%3Da"}""", answer.body(),
+                            "the body names the missing scope and the step-up URL for the refused request"),
+                    () -> assertNull(answer.wwwAuthenticate(), "a session refusal carries no bearer challenge"),
+                    () -> assertEquals(0, upstreamHits.get(), "the request never reaches the upstream"));
+        }
+
+        @Test
+        @DisplayName("control: the same API call with a session carrying the scope is forwarded")
+        void coveringSessionIsForwarded() throws Exception {
+            EdgeAnswer answer = get("/scoped/orders?tab=a", coveringCookie, "application/json");
+
+            assertAll("the refusal above is the scope comparison's own",
+                    () -> assertEquals(200, answer.status(), "a session covering the scope is served"),
+                    () -> assertEquals(1, upstreamHits.get(), "the request is forwarded upstream"));
+        }
+
+        @Test
+        @DisplayName("a navigation missing a needed scope is redirected into the widening with no upstream contact")
+        void underScopedNavigationIsRedirectedIntoWidening() throws Exception {
+            EdgeAnswer answer = get("/scoped/orders", underScopedCookie, "text/html");
+
+            assertAll("a browser navigation is widened rather than refused",
+                    () -> assertEquals(302, answer.status(), "the navigation is redirected"),
+                    () -> assertEquals(WIDENING_CHALLENGE_LOCATION, answer.location(),
+                            "the target is the session stage's widening challenge, not its login challenge"),
+                    () -> assertEquals(0, upstreamHits.get(), "the request never reaches the upstream"));
+        }
+
+        /** Creates a live session whose active and granted scope sets are {@code scopes}; returns its cookie. */
+        private static String createSession(SessionStore store, Set<String> scopes) {
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1)))
+                    .activeScopes(scopes).grantedScopes(scopes).build(), Instant.now());
+            return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+        }
+
+        private EdgeAnswer get(String uri, String cookie, String accept) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+            return Awaits.connect(client.request(options)
+                            .compose(request -> request.putHeader("Cookie", cookie).putHeader("Accept", accept).send())
+                            .compose(response -> response.body().map(body -> new EdgeAnswer(response.statusCode(),
+                                    response.getHeader("Content-Type"), response.getHeader("WWW-Authenticate"),
+                                    response.getHeader("Location"), body.toString()))),
+                    "the edge response to GET " + uri);
+        }
+
+        /** The parts of an edge response these tests assert, read off the wire in one step. */
+        private record EdgeAnswer(int status, @Nullable String contentType, @Nullable String wwwAuthenticate,
+        @Nullable String location, String body) {
+        }
+    }
+
     private static OidcConfig fullOidc() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
                 .path(LOGOUT_PATH)
@@ -1069,12 +1209,7 @@ class GatewayEdgeRouteBffWiringTest {
             throw new AssertionError("engine authorize must not be reached");
         }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
 
-        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
-                (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
-                        new SessionBinding.BoundSession(session, List.of())),
-                (returnUrl, scopes, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
-                SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
-                Clock.systemUTC());
+        SessionAuthenticationStage sessionStage = engineFreeSessionStage(binding);
 
         CsrfDefence csrf = new CsrfDefence(Set.of(ORIGIN));
 
@@ -1105,6 +1240,28 @@ class GatewayEdgeRouteBffWiringTest {
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
                 userInfo, login, engineFreeStepUpEndpoint(widening, binding));
+    }
+
+    /**
+     * The session stage for the engine-free fixtures. Both refresh seams hand the session back
+     * unchanged, so a session short of a needed scope is never refreshed into one that carries it; the
+     * login and widening seams answer fixed, distinguishable redirect targets instead of reaching the
+     * engine; and the stage names {@link #STEP_UP_PATH} on a {@code 403}, the path {@link #fullOidc()}
+     * reserves.
+     */
+    private static SessionAuthenticationStage engineFreeSessionStage(SessionBinding binding) {
+        return new SessionAuthenticationStage(binding,
+                (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(session, List.of())),
+                (session, cookieHeader, requestedScopes, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(session, List.of())),
+                (returnUrl, scopes, instant) ->
+                        new SessionAuthenticationStage.LoginChallenge(LOGIN_CHALLENGE_LOCATION, List.of()),
+                (live, returnUrl, neededScopes, instant) ->
+                        new SessionAuthenticationStage.LoginChallenge(WIDENING_CHALLENGE_LOCATION, List.of()),
+                SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
+                STEP_UP_PATH,
+                Clock.systemUTC());
     }
 
     /**

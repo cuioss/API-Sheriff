@@ -63,8 +63,9 @@ import org.jspecify.annotations.Nullable;
  * non-matching rather than guessed.
  * <p>
  * The resolved set only decides what the login <em>requests</em>; it is never an authorization
- * decision. A session route runs no scope check, so a target that resolves to {@code oidc.scopes}
- * yields a session that is still admitted to that route.
+ * decision. That decision is the session route's own: a session established from a target that
+ * resolved to {@code oidc.scopes} is compared against the route's {@code neededScopes} when it
+ * arrives there, and is refreshed or widened until it carries them — it is not relayed short of one.
  * <p>
  * <strong>Thread safety.</strong> Immutable once built at boot; safe for concurrent use.
  *

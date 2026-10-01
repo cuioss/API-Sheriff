@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.JsonWriter;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
@@ -175,7 +176,9 @@ import org.jspecify.annotations.Nullable;
  *       challenged before the location is disclosed.</li>
  * </ol>
  * A {@link GatewayException} at any stage is rendered as an RFC 9457 {@code application/problem+json}
- * response carrying the failing event's status and problem type, never leaking internal detail.
+ * response carrying the failing event's status and problem type, followed by the exception's
+ * {@linkplain GatewayException#getProblemExtensions() problem extension members} when it carries any,
+ * never leaking internal detail.
  * <strong>Negotiated HTML error pages.</strong> With {@code portal.error_pages} on, the three
  * gateway-originated error writers — the problem renderer, a failed OIDC callback and a
  * {@code source: directory} asset miss — answer an {@link ErrorPageClassifier HTML-eligible} exit with
@@ -1119,7 +1122,7 @@ public class GatewayEdgeRoute {
             }
         }
         recordError(ctx, rejected.getEventType());
-        renderRejection(ctx, request, rejected.getEventType());
+        renderRejection(ctx, request, rejected);
     }
 
     /**
@@ -1496,10 +1499,13 @@ public class GatewayEdgeRoute {
     /**
      * Renders a post-route-resolution rejection: a {@code protocol: grpc} route emits a trailers-only
      * gRPC status via {@link GrpcStatusMapper} (a gRPC client cannot consume problem+json), every
-     * other route renders the RFC 9457 problem+json response. A rejection that fires before route
-     * selection (no selected route) always renders problem+json.
+     * other route renders the RFC 9457 problem+json response, carrying the rejection's
+     * {@linkplain GatewayException#getProblemExtensions() problem extension members}. A rejection that
+     * fires before route selection (no selected route) always renders problem+json. A gRPC status has
+     * no place for extension members, so they are not rendered there.
      */
-    private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType) {
+    private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
+        EventType eventType = rejected.getEventType();
         RouteRuntime selected = request != null ? request.selectedRoute() : null;
         if (selected != null && selected.getProtocol() == Protocol.GRPC) {
             Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
@@ -1510,7 +1516,16 @@ public class GatewayEdgeRoute {
             });
             return;
         }
-        renderProblem(ctx, request, eventType);
+        renderProblem(ctx, request, eventType, rejected.getProblemExtensions());
+    }
+
+    /**
+     * Renders a gateway rejection that carries no problem extension members — the unrouted/unreserved
+     * {@code 404}, a rejection answered before a {@link GatewayException} exists, and an unexpected
+     * internal failure ({@code eventType == null}).
+     */
+    private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType) {
+        renderProblem(ctx, request, eventType, Map.of());
     }
 
     /**
@@ -1519,9 +1534,11 @@ public class GatewayEdgeRoute {
      * An {@link ErrorPageClassifier#classify(EventType) HTML-eligible} event negotiates the portal's
      * HTML error page first ({@link #answeredWithErrorPage}); otherwise, or when the request does not
      * explicitly accept {@code text/html}, the RFC 9457 {@code application/problem+json} body is
-     * written with the same status.
+     * written with the same status. The body carries the standard members first and then
+     * {@code problemExtensions}; the HTML error page never does.
      */
-    private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType) {
+    private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType,
+            Map<String, Object> problemExtensions) {
         int status;
         String type;
         String title;
@@ -1541,7 +1558,7 @@ public class GatewayEdgeRoute {
         if (answeredWithErrorPage(ctx, request, classification, status, List.of())) {
             return;
         }
-        String body = "{\"type\":\"" + type + "\",\"title\":\"" + title + "\",\"status\":" + status + "}";
+        String body = problemBody(type, title, status, problemExtensions);
         Map<String, String> responseHeaders = request != null ? request.gatewayAuthoredResponseHeaders() : Map.of();
         // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
         // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
@@ -1557,6 +1574,32 @@ public class GatewayEdgeRoute {
             response.putHeader("Content-Type", PROBLEM_JSON);
             response.end(body);
         });
+    }
+
+    /**
+     * Builds the RFC 9457 {@code application/problem+json} body: the standard members {@code type},
+     * {@code title} and {@code status}, followed by the extension members in their iteration order.
+     * The standard members come from the gateway's own event catalogue and are written as they are;
+     * every extension member name and value is serialized through {@link JsonWriter}, which applies
+     * RFC 8259 string escaping. Without extension members the body is exactly the three standard
+     * members.
+     * <p>
+     * Package-private rather than private so the rendering is asserted directly by
+     * {@code GatewayEdgeRouteTest}, matching the precedent {@link #securityPostureFor} sets.
+     *
+     * @param type              the problem type URI
+     * @param title             the problem title
+     * @param status            the HTTP status
+     * @param problemExtensions the extension members to append, empty for none
+     * @return the compact JSON body
+     */
+    static String problemBody(String type, String title, int status, Map<String, Object> problemExtensions) {
+        StringBuilder body = new StringBuilder("{\"type\":\"").append(type)
+                .append("\",\"title\":\"").append(title)
+                .append("\",\"status\":").append(status);
+        problemExtensions.forEach((name, value) -> body.append(',')
+                .append(JsonWriter.toJson(name)).append(':').append(JsonWriter.toJson(value)));
+        return body.append('}').toString();
     }
 
     private static void reject(RoutingContext ctx, int status) {

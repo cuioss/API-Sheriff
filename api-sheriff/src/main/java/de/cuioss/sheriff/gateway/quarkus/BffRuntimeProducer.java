@@ -126,6 +126,15 @@ import org.jspecify.annotations.Nullable;
  * stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is handed that
  * static set as the scope set its re-drive requests.
  * <p>
+ * <strong>Scope enforcement on session routes.</strong> The session stage compares the session's
+ * active scope set against the route's {@code neededScopes} on every request, and the producer binds
+ * the two seams it obtains a missing scope through: the scope-driven refresh seam to the same
+ * {@link TokenRefreshCoordinator} the near-expiry seam drives (or, with refresh switched off, to a
+ * pass-through that hands the session back unchanged, which leads straight to widening), and the
+ * widening seam to the runtime's one {@link SessionWidening}, always starting with a silent attempt.
+ * {@code oidc.step_up.path} is handed to the stage as the path its {@code 403} answer names; when the
+ * key is absent the answer names no step-up URL.
+ * <p>
  * <strong>Response mode.</strong> Both authorization-URL seams are wired with the gateway-owned
  * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
  * {@code response_mode=query} and the callback is a top-level GET the browser sends the
@@ -400,9 +409,11 @@ public class BffRuntimeProducer {
         // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
         // The refresh grant requests the session's active scope set A through ScopedEngineFlows, never
         // the static oidc.scopes the base configuration carries.
+        // ONE coordinator serves both stage seams — the near-expiry leg and the scope-driven leg — so the
+        // two share its single-flight exclusion and a session's refresh token is never presented twice.
         RevocationClient revocationClient = new RevocationClient(clientConfiguration);
-        SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
-                ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
+        TokenRefreshCoordinator refreshCoordinator = refreshEnabled
+                ? new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 (refreshToken, activeScopes) -> scopedFlows.refresh(metadata.get(), refreshToken, activeScopes),
@@ -410,19 +421,38 @@ public class BffRuntimeProducer {
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
                         clientAuthentication),
                 virtualThreadExecutor,
-                endedRefreshTokens(session)))
-                : sessionUnchanged();
+                endedRefreshTokens(session))
+                : null;
+        SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshCoordinator == null
+                ? sessionUnchanged()
+                : nearExpiryRefresh(refreshCoordinator);
+        // With refresh switched off no grant can restore a scope, so the scope seam hands the session
+        // back unchanged and the stage goes straight to widening.
+        SessionAuthenticationStage.ScopeRefresh scopeRefresh = refreshCoordinator == null
+                ? scopesUnobtainable()
+                : scopeRefresh(refreshCoordinator);
 
-        // D4 session stage-4 runtime — binds refresh and the login-redirect seam. A session route runs
-        // no scope check: the scopes it needs are requested at login, never enforced per request.
+        // D4 session stage-4 runtime — binds both refresh seams, the login-redirect seam and the
+        // widening seam. A session route enforces its needed scopes on every request: missing scopes
+        // inside the granted set are refreshed, anything else is widened through the runtime's ONE
+        // SessionWidening (silent attempt first) or refused 403 naming oidc.step_up.path.
+        OidcConfig.StepUp stepUp = oidc.stepUp();
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                 tokenRefresh,
+                scopeRefresh,
                 (returnUrl, scopes, now) -> {
                     LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
+                (live, returnUrl, neededScopes, now) -> {
+                    LoginFlow.LoginRedirect redirect = sessionWidening.initiate(live, returnUrl, neededScopes,
+                            PendingAuthorizationRecord.Widening.Attempt.SILENT, now);
+                    return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
+                            redirect.setCookieHeaders());
+                },
                 onFailure,
+                stepUp == null ? null : stepUp.path(),
                 clock);
 
         // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam; the upstream-challenge
@@ -645,25 +675,49 @@ public class BffRuntimeProducer {
      * scope-driven refresh of the same session; it always carries the kept session and any cookie the
      * shared re-bind produced, so mediating it is the only consistent mapping. It is safe because the
      * stage's scope comparison runs after mediation, so a mediated session is never relayed short of a
-     * needed scope. The switch has no {@code default} arm on purpose: a later outcome kind fails
-     * compilation here instead of being mediated silently.
+     * needed scope.
      * <p>
      * Extracted so the enabled and disabled bindings of the seam read as the two alternatives they
      * are, rather than one of them being a multi-statement lambda inline in the assembly.
      *
-     * @param coordinator the assembled near-expiry refresh coordinator
-     * @return the stage seam driving {@code coordinator}
+     * @param coordinator the assembled refresh coordinator
+     * @return the stage seam driving {@code coordinator}'s near-expiry leg
      */
     static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
-        return (sessionRecord, cookieHeader, now) -> {
-            TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
-            return switch (outcome.kind()) {
-                case CURRENT, REFRESHED, DEFERRED, SCOPE_REFUSED -> SessionAuthenticationStage.RefreshResult.mediate(
-                        new SessionBinding.BoundSession(Objects.requireNonNull(outcome.session(), "session"),
-                                outcome.setCookieHeaders()));
-                case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
-                case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
-            };
+        return (sessionRecord, cookieHeader, now) ->
+                refreshResult(coordinator.refresh(sessionRecord, cookieHeader, now));
+    }
+
+    /**
+     * Adapts the refresh coordinator's scope-driven leg to the stage's
+     * {@link SessionAuthenticationStage.ScopeRefresh} seam, with the same outcome mapping as
+     * {@link #nearExpiryRefresh}. On this leg a mediated session does not always carry the requested
+     * set: {@code SCOPE_REFUSED} (a narrower grant, no refresh token, or a shared refresh that did not
+     * request it) and {@code DEFERRED} (a refresh that is backing off — which is also how an identity
+     * provider's outright {@code invalid_scope} refusal arrives, TokenSheriff#763) both hand the kept
+     * session back. The stage compares the returned session against the route's needed scopes again
+     * and widens when it is still short, so neither is ever relayed under-scoped.
+     *
+     * @param coordinator the assembled refresh coordinator
+     * @return the stage seam driving {@code coordinator}'s scope-driven leg
+     */
+    static SessionAuthenticationStage.ScopeRefresh scopeRefresh(TokenRefreshCoordinator coordinator) {
+        return (sessionRecord, cookieHeader, requestedScopes, now) ->
+                refreshResult(coordinator.refreshForScopes(sessionRecord, cookieHeader, requestedScopes, now));
+    }
+
+    /**
+     * Maps a coordinator outcome onto the stage's three dispositions. The switch has no {@code default}
+     * arm on purpose: a later outcome kind fails compilation here instead of being mediated silently.
+     */
+    private static SessionAuthenticationStage.RefreshResult refreshResult(
+            TokenRefreshCoordinator.RefreshOutcome outcome) {
+        return switch (outcome.kind()) {
+            case CURRENT, REFRESHED, DEFERRED, SCOPE_REFUSED -> SessionAuthenticationStage.RefreshResult.mediate(
+                    new SessionBinding.BoundSession(Objects.requireNonNull(outcome.session(), "session"),
+                            outcome.setCookieHeaders()));
+            case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
+            case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
         };
     }
 
@@ -713,6 +767,20 @@ public class BffRuntimeProducer {
      */
     static SessionAuthenticationStage.TokenRefresh sessionUnchanged() {
         return (sessionRecord, cookieHeader, now) ->
+                SessionAuthenticationStage.RefreshResult.mediate(new SessionBinding.BoundSession(sessionRecord, List.of()));
+    }
+
+    /**
+     * The disabled binding of the scope-driven seam — the alternative {@link #scopeRefresh} adapts to.
+     * With {@code oidc.session.refresh.enabled=false} no coordinator exists and no refresh token is
+     * retained, so no grant can restore a scope: the seam yields the session verbatim, never reaches the
+     * engine, and the stage — finding the session still short of a needed scope — goes straight to
+     * widening.
+     *
+     * @return the unwired stage seam
+     */
+    static SessionAuthenticationStage.ScopeRefresh scopesUnobtainable() {
+        return (sessionRecord, cookieHeader, requestedScopes, now) ->
                 SessionAuthenticationStage.RefreshResult.mediate(new SessionBinding.BoundSession(sessionRecord, List.of()));
     }
 

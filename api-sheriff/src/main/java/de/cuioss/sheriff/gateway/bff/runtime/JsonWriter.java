@@ -22,18 +22,20 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /**
- * A minimal, dependency-free JSON serializer for the curated user-info disclosure the
- * {@link BffRuntime} renders (D11). It serializes only the value shapes that disclosure produces —
- * an insertion-ordered {@link Map} of allowlisted claims and session metadata whose leaves are
- * {@link String}, {@link Number}, {@link Boolean}, {@link Collection}, nested {@link Map}, or
- * {@code null} — with RFC 8259 string escaping. It is deliberately not a general-purpose JSON
- * library: the response body is a small, gateway-controlled structure, and keeping the writer here
- * avoids a runtime JSON dependency on the data-plane edge.
+ * A minimal, dependency-free JSON serializer for the small, gateway-controlled bodies the gateway
+ * authors itself: the curated user-info disclosure the {@link BffRuntime} renders (D11), and the
+ * RFC 9457 problem extension members the edge appends to an {@code application/problem+json} body.
+ * It serializes only the value shapes those bodies produce — an insertion-ordered {@link Map} whose
+ * leaves are {@link String}, {@link Number}, {@link Boolean}, {@link Collection}, nested {@link Map},
+ * or {@code null} — with RFC 8259 string escaping. It is deliberately not a general-purpose JSON
+ * library: keeping the writer here avoids a runtime JSON dependency on the data-plane edge.
+ * <p>
+ * <strong>Thread safety.</strong> Stateless; safe for concurrent use.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-final class JsonWriter {
+public final class JsonWriter {
 
     private JsonWriter() {
     }
@@ -45,7 +47,7 @@ final class JsonWriter {
      *              {@link Number}, {@link Boolean}, or {@code null})
      * @return the compact JSON rendering
      */
-    static String toJson(@Nullable Object value) {
+    public static String toJson(@Nullable Object value) {
         StringBuilder out = new StringBuilder();
         write(out, value);
         return out.toString();

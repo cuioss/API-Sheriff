@@ -56,10 +56,16 @@ import org.jspecify.annotations.Nullable;
  *       runtime (D4): the opaque session cookie is resolved to a live session, the mediated token is
  *       injected as the upstream {@code Authorization: Bearer}, and an unauthenticated request is
  *       redirected into the auth-code flow (navigation) or challenged 401
- *       {@code application/problem+json} (everything else). A session route runs <em>no</em> scope
- *       check: the scopes it needs are requested at login, not enforced against the session's token.
- *       Bearer and session stay separate mechanisms — the bearer-validation logic above is
- *       untouched;</li>
+ *       {@code application/problem+json} (everything else). The session's active scope set is
+ *       compared against the route's {@link RouteRuntime#getNeededScopes() needed scopes} on every
+ *       request, whatever {@code token_relay} says: a missing scope the session was granted before is
+ *       obtained by one refresh; any other missing scope redirects a navigation into a widening of
+ *       the live session and answers everything else 403 {@link EventType#SCOPE_MISSING} as
+ *       {@code application/problem+json} naming the missing scopes and, when
+ *       {@code oidc.step_up.path} is configured, the step-up URL. A session short of a needed scope
+ *       is never relayed. Bearer and session stay separate mechanisms — the bearer-validation logic
+ *       above is untouched, and the session answer carries no {@code WWW-Authenticate}
+ *       challenge;</li>
  *   <li>{@code require: bearer} with {@code session_fallback: true} — a request carrying an
  *       {@code Authorization} header (any scheme, any value, an empty value included) takes the
  *       bearer branch above, with the same 401 / 403 answers and no session lookup; after a
@@ -123,7 +129,8 @@ public final class AuthenticationStage {
      * Enforces the selected route's auth posture on the {@link AuthBranch} resolved for the request.
      *
      * @param request the in-flight request context; its route must be selected (stage 2)
-     * @throws GatewayException on a missing / invalid token (401) or a missing scope (403)
+     * @throws GatewayException on a missing / invalid token or a missing session (401), or a missing
+     *                          scope (403) on either branch
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
