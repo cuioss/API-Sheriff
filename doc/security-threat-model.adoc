@@ -1982,15 +1982,17 @@ the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
   `Set-Cookie`, and the browser `Cookie` is withheld upstream by the gateway-owned never-forward set,
   as on every route. The upstream receives exactly the validated client token through the
   mediated-bearer seam, not a re-admitted inbound header (ADR-0037).
-* *Nothing new is accepted.* The BEARER branch is exactly a `require: bearer` route, including the
-  `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The SESSION branch is
-  exactly a `require: session` route. A request is admitted on a `session_fallback` route only if one
-  of those two routes would admit it. The consequence for scopes is deliberate and must be read as
-  such: the SESSION branch runs no scope check (ADR-0049), so any live session is admitted to a
-  `session_fallback` route whatever scopes its token carries. Enabling the key on a bearer route
-  therefore widens that route's authorization for browser users from "token carries
-  `neededScopes`" to "holds a gateway session"; the operator documentation says so, and a route
-  whose scopes are its authorization boundary must stay a plain `require: bearer` route.
+* *Both branches enforce the same scope set.* The BEARER branch is exactly a `require: bearer` route,
+  including the `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The
+  SESSION branch is exactly a `require: session` route, including its comparison of the session's
+  active scope set against the same `neededScopes`
+  (link:adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056]):
+  a session lacking a scope is refreshed inside its grant, widened (<<bff-17>>) or refused `403`,
+  and is never relayed short of one. A request is admitted on a `session_fallback` route only if one
+  of those two routes would admit it, so enabling the key on a bearer route does not lower that
+  route's authorization for browser users: either caller must carry `neededScopes`. The two answers
+  differ in form only -- the BEARER `403` carries the RFC 6750 challenge, the SESSION `403` carries
+  `missing_scopes` in a problem body and no `WWW-Authenticate`.
 * *Discoverable and refused when meaningless.* The key is refused at boot on a posture other than
   `require: bearer` and on a gateway without an `oidc` block. The per-route boot posture line
   (`ApiSheriff-3`) reports `auth.session_fallback` for every route, and
@@ -2005,15 +2007,17 @@ lacking a needed scope is `403 insufficient_scope`; an invalid, `Basic` or empty
 live session is served with its mediated token, a navigation is redirected into the IdP, an XHR is
 `401`, and an unsafe method under a foreign `Origin` is CSRF-rejected while a bearer unsafe method
 without any `Origin` is admitted (`BffSessionFallbackIT`, `AuthBranchTest`, `AuthenticationStageTest`,
-`GatewayEdgeRouteBffWiringTest`). Both boot refusals are asserted (`ConfigValidatorSessionFallbackTest`,
-`verify-invalid-config-fails.sh`), and the meter records only on `session_fallback` routes
-(`MetricsIT`, `SheriffMetricsTest`).
+`GatewayEdgeRouteBffWiringTest`). A live session lacking a needed scope is widened or refused `403`
+on the SESSION branch exactly as on a `require: session` route, and never relayed
+(`BffSessionScopeParityIT`, which runs each of its rows on both kinds of route). Both boot refusals
+are asserted (`ConfigValidatorSessionFallbackTest`, `verify-invalid-config-fails.sh`), and the meter
+records only on `session_fallback` routes (`MetricsIT`, `SheriffMetricsTest`).
 
 [#bff-17]
 === BFF-17 -- Widening a live session (identity swap, attacker-driven authorization, refusal loop)
 
-A session route that lacks a scope does not relay; it sends the browser back to the identity provider
-to have the *live* session widened (<<bff-15>>). Adding to an existing session is a different
+A session route does not relay a session that lacks a needed scope; it sends the browser back to the
+identity provider to have the *live* session widened (<<bff-15>>). Adding to an existing session is a different
 operation from starting one, and it fails in its own ways. The grant can land in a session that
 belongs to someone else. A request the user never made -- a cross-site link -- can start the
 authorization, and the question is then who chose the scopes and the landing URL. A refusal can send

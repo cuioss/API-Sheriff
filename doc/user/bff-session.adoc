@@ -165,12 +165,14 @@ endpoint:
 | `401` with `WWW-Authenticate: Bearer`. Never a login redirect, and a valid session cookie does not
   rescue it -- the bearer branch was chosen the moment the header was sent.
 | No `Authorization`, live session
-| Served exactly as on a `require: session` route: the session's token is relayed upstream (unless
-  `token_relay: false`), refreshed near expiry, and the session cookie is stripped. As on every
-  session route, *no scope check runs*: any live session is admitted, even one whose login never
-  requested the route's scopes. The `403 insufficient_scope` row above applies to bearer clients
-  only, so a route whose `scopes` are its authorization boundary is not a `session_fallback`
-  candidate.
+| Served exactly as on a `require: session` route. The session's scopes are compared with the set
+  the route needs. A session that carries them is relayed: its token goes upstream (unless
+  `token_relay: false`) and is refreshed near expiry, and the session cookie is stripped. A session
+  lacking one is not relayed: a scope it was granted before is obtained by one refresh, any other is
+  obtained by widening the session on a navigation, and an XHR or API call gets `403`
+  `application/problem+json` naming the `missing_scopes` and, when `oidc.step_up.path` is
+  configured, a `step_up_url` (see <<scope-enforcement>>). Both branches enforce the same set; the
+  `insufficient_scope` challenge of the second row is the answer to bearer clients only.
 | No `Authorization`, no session, navigation
 | `302` into the login. The login requests the route's scope set, `oidc.scopes` plus the endpoint's
   `scopes`.
