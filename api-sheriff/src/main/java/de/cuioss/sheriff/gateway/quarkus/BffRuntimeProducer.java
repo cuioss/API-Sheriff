@@ -107,22 +107,19 @@ import org.jspecify.annotations.Nullable;
  * <strong>Both modes drive the same wiring.</strong> The only thing the mode selects is which
  * {@link SessionBinding} is assembled — the store-backed {@link ServerSessionBinding} or the
  * stateless {@link CookieSessionBinding} over the AES-256-GCM sealed-cookie codec. Every other
- * collaborator (login flow, CSRF defence, step-up, refresh, and all reserved endpoints) is
+ * collaborator (login flow, CSRF defence, RFC 9470 step-up, refresh, and all reserved endpoints) is
  * identical, and cookie mode reaches the confidential-client engine exactly as server mode does.
  * On the active path the producer assembles the session binding, the cookie codecs, the CSRF
  * defence, the token-refresh / step-up coordinators, the
  * reserved-endpoint handlers, and the {@code require: session} stage-4 runtime, and binds the
  * {@code token-sheriff-client} engine seams, so the engine is reached at runtime.
  * <p>
- * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
- * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
- * resolves for a {@code /auth/login?returnUrl=} target — and the refresh leg requests the session's
- * active scope set {@code A}, plus the missing scopes on a scope-driven refresh, through
+ * <strong>Per-request scope (ADR-0048).</strong> A leg requesting a per-request scope set goes through
  * {@link ScopedEngineFlows}, which drives a flow over a
  * {@link ClientConfiguration} built for exactly that set by
- * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, step-up and revocation
- * stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is handed that
- * static set as the scope set its re-drive requests.
+ * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, the RFC 9470 step-up and
+ * revocation stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is
+ * handed that static set as the scope set its re-drive requests.
  * <p>
  * <strong>Scope enforcement on session routes.</strong> The session stage compares the session's
  * active scope set against the route's {@code neededScopes} on every request, and the producer binds
@@ -329,8 +326,8 @@ public class BffRuntimeProducer {
                 : Set.copyOf(declaredTrustedOrigins);
 
         // The base configuration carries the static oidc.scopes and serves every leg that does not
-        // request a per-request scope set: discovery, the callback code exchange, step-up and
-        // revocation. The login and refresh legs request per scope set through ScopedEngineFlows below, whose
+        // request a per-request scope set: discovery, the callback code exchange, the RFC 9470 step-up
+        // and revocation. The legs that request one go through ScopedEngineFlows below, whose
         // factory is this same method — so every scoped variant carries the identical pinned posture.
         reportBackChannelPosture();
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
@@ -345,7 +342,7 @@ public class BffRuntimeProducer {
         // to be a top-level GET navigation so the SameSite=Lax browser-binding cookie is actually sent
         // on it (a Lax cookie is dropped on the cross-site POST a form_post callback performs, which
         // dead-ended every real-browser login on the "no binding cookie" 403 branch). One instance is
-        // shared with the step-up leg below, so the engine seams that build an authorization URL carry
+        // shared, so the engine seams that build an authorization URL carry
         // the corrected mode. Every other collaborator here is exactly what the 4-arg
         // AuthorizationCodeFlow constructor supplies on its own — a default IssValidator and
         // CallbackHandler, and no sender constraint (DPoP is not in use) — so nothing else changes.
@@ -353,9 +350,8 @@ public class BffRuntimeProducer {
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
                 tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
                 new CallbackHandler(), null);
-        // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so a login that
-        // requests a route's neededScopes, and a refresh that requests the set the coordinator names,
-        // each ride a configuration built for exactly that set.
+        // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so each
+        // per-request scope set rides a configuration built for exactly that set.
         ScopedEngineFlows scopedFlows = new ScopedEngineFlows(scopes -> backChannelConfiguration(oidc, scopes),
                 tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication);
 
@@ -370,8 +366,8 @@ public class BffRuntimeProducer {
         Clock clock = Clock.systemUTC();
 
         // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
-        // widening, the step-up endpoint and the step-up re-drive all fall back to the same configured
-        // target.
+        // widening, the step-up endpoint and the RFC 9470 step-up re-drive all fall back to the same
+        // configured target.
         String defaultReturnUrl = defaultReturnUrl(oidc);
 
         // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime, requesting
