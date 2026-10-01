@@ -30,9 +30,11 @@ would otherwise force a retrofit.
 - **PLAN-V02-19** — SHIPPED 2026-10-01 as PR #367 (`6bb90765`), see `landings/PLAN-V02-19.md`. Its
   two sequencing constraints are discharged: `PLAN-V02-04` now starts from a corpus with unique
   ordinals, guarded by `AdrOrdinalUniquenessContractTest`, and `PLAN-V02-18` may edit `CLAUDE.md`.
-- **PLAN-V02-18** (note added 2026-10-01): `ReactorModuleListContractTest` now reads the module-list
-  section of `CLAUDE.md` and `AGENTS.md`. V02-18's `CLAUDE.md` edit must leave that section's
-  bullets equal to the root `pom.xml` `<modules>`, or the build fails.
+- **PLAN-V02-18** — SHIPPED 2026-10-01 as PR #368 (`4228d42f`), see `landings/PLAN-V02-18.md`.
+  `doc/plan/` is gone; the 1.0-cut milestone now lives in the Pre-1.0 Rules section of `CLAUDE.md`
+  and `AGENTS.md`. Its edit added one paragraph to each file and touched no module list, but no
+  build has yet run `ReactorModuleListContractTest` against it (documentation-only commit, build
+  skipped locally and in CI) — the next build-triggering change is the first proof.
 - **Every ADR-authoring plan** (V02-01, V02-04, V02-06, V02-08, V02-11, V02-12, V02-13), note added
   2026-10-01: the header-matcher record is now **ADR-0056** (was the duplicate `0053`; the portal
   record keeps `0053`). The next free ordinal on `origin/main` at `6bb90765` is `0057`, which
@@ -383,6 +385,16 @@ doc-only or build-light plan for the second and third slots.
   — which skips the build by this repository's own rule — can still land a duplicate ordinal or a
   drifted module list, caught only at the next build-triggering change. Left open by design; same
   shape as the `build.map` CI-side gap `CLAUDE.md` already documents. No plan staged.
+- **POST-MERGE BENCHMARK FOR `PLAN-V02-18` NOT YET OBSERVED** (added 2026-10-01). The PR-attached
+  `Run Integration Benchmarks` run 36879327716 on PR #368 was still in progress at the landing
+  analysis. Every other post-merge run on merge commit `4228d42f` is green. Retire this Watch once
+  the run is read as success; a failure on a documentation-only commit would point at the lane, not
+  the change.
+- **ARCHITECTURE DESCRIPTORS STILL NAME `doc/plan/`** (added 2026-10-01, `PLAN-V02-18` landing,
+  the plan's claim — unverified lead). `.plan/project-architecture/_project.json` and
+  `documentation/enriched.json` still describe "remaining implementation plans under doc/plan/";
+  the finalize architecture refresh reported no structural change and did not rewrite them. Outside
+  the epic tree, so not edited here. Needs a `/marshall-steward` pass; no plan staged.
 - **TOOLING GAPS REPORTED BY `PLAN-V02-19`, OWNED UPSTREAM IN plan-marshall — UNVERIFIED LEADS**
   (added 2026-10-01). Reported by the plan, not corroborated by the orchestrator: (a) `ci-verify`
   filed red-CI findings under producer `ci-verify-policy`, which the verification-feedback workflow
