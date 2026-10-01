@@ -7,13 +7,14 @@ Review of the AsciiDoc tree (root README, `doc/` with 37 ADRs, `doc/user/`,
 checked for structure, accuracy against code, completeness, ambiguity, duplication drift, and
 currency. See link:README.adoc[the index] for conventions.
 
-NOTE: `doc/plan/` was retired after this snapshot was taken. The paths cited under DOC-7
-(`doc/plan/09-release-readiness.adoc`) and DOC-9 (`doc/plan/01-base-implementation.adoc`), and
-the `doc/plan/` mentions in the scope paragraph above and in the structure assessment, no longer
-exist in the repository. Verbatim copies of both cited files are archived under
-`.plan/orchestrator/api-sheriff-0-2-0/archive/`, each beneath an archival header. The directory's
-index is archived there too, in the revision that preceded its last edit; its final revision
-remains in the git history. The findings below are left as written.
+NOTE: `doc/plan/` was retired after this snapshot was taken. The two paths cited below,
+`doc/plan/09-release-readiness.adoc` (DOC-7) and `doc/plan/01-base-implementation.adoc` (DOC-9),
+no longer exist in the repository. The scope paragraph above and the structure assessment still
+contain historical `doc/plan/` references to paths removed after this snapshot. Verbatim copies
+of both cited files are archived under `.plan/orchestrator/api-sheriff-0-2-0/archive/`, each
+beneath an archival header. The directory's index is archived there too, in the revision that
+preceded its last edit; its final revision remains in the git history. The findings below are
+left as written.
 
 toc::[]
 
