@@ -68,10 +68,10 @@ import org.jspecify.annotations.Nullable;
  * session's mediated access token was granted. After login it is the access token's {@code scope}
  * claim, or the scope set the login requested when the token carries none; after a refresh it is
  * the refresh response's {@code scope}, or unchanged when the response omits it (RFC 6749 §5.1:
- * omitted means identical to what was requested). It is the {@code scope} the refresh grant sends,
- * so a refresh never narrows the session back to the static {@code oidc.scopes} and never widens it
- * past what was granted (ADR-0048). Scope names are not credentials, so {@link #toString()} prints
- * them.
+ * omitted means identical to what was requested). It is the {@code scope} the near-expiry refresh
+ * grant sends, so a refresh never narrows the session back to the static {@code oidc.scopes} and
+ * never widens it past what was granted (ADR-0048). Scope names are not credentials, so
+ * {@link #toString()} prints them.
  * <p>
  * <strong>The granted scope set {@code S} versus the active set {@code A}.</strong>
  * {@link #grantedScopes()} is the set of scopes the IdP is known to grant this session — the ceiling
@@ -87,7 +87,7 @@ import org.jspecify.annotations.Nullable;
  *       return, and changes nothing else.</li>
  * </ul>
  * No refresh ever adds to {@code S}: only a widening obtains a scope the session was not granted.
- * {@code A} stays the set the mediated token was granted and the refresh grant requests. A route
+ * {@code A} stays the set the mediated token was granted and the near-expiry refresh requests. A route
  * whose needed scopes are missing from {@code A} but contained in {@code S} is served by a refresh;
  * one needing a scope outside {@code S} needs a widening. Like {@code A}, the names are printed by
  * {@link #toString()}.
@@ -106,7 +106,7 @@ import org.jspecify.annotations.Nullable;
  * @param sessionNonce the per-session nonce keying the cookie-mode derived identity; always
  *                     {@code null} in server mode (see the mode split above), and never blank when present
  * @param activeScopes the active scope set {@code A} the mediated access token was granted and the
- *                     refresh grant requests (see above); an absent set normalizes to empty
+ *                     near-expiry refresh grant requests (see above); an absent set normalizes to empty
  * @param grantedScopes the granted scope set {@code S} — the scopes the IdP is known to grant the
  *                      session: set at login, replaced by a widening, and reduced by a scope-driven
  *                      refresh that did not return a requested scope (see above); an absent set

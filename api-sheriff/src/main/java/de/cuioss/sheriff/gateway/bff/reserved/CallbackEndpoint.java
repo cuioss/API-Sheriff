@@ -114,11 +114,11 @@ import org.jspecify.annotations.Nullable;
  * same-origin-validated return URL.
  * <p>
  * <strong>Active scope set.</strong> The new session's active scope set {@code A} — the {@code scope}
- * every later refresh grant sends — is the access token's granted {@code scope} claim, or the scope set
- * the authorization request asked for (recorded on the pending record) when the token carries no
- * {@code scope} claim. A fresh login sets the session's granted scope set {@code S} to that same
- * derived set ({@code S = A} at login): at this point the IdP has granted exactly what the token
- * carries, and nothing more.
+ * every later near-expiry refresh grant sends — is the access token's granted {@code scope} claim, or
+ * the scope set the authorization request asked for (recorded on the pending record) when the token
+ * carries no {@code scope} claim. A fresh login sets the session's granted scope set {@code S} to
+ * that same derived set ({@code S = A} at login): at this point the IdP has granted exactly what the
+ * token carries, and nothing more.
  * <p>
  * <strong>The refresh token never reaches the browser in the clear.</strong> It is a component of
  * the {@link SessionRecord}, so it lives wherever the active binding puts that record: server-side

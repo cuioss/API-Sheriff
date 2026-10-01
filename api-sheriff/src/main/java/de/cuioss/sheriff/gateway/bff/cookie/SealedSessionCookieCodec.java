@@ -125,8 +125,8 @@ public final class SealedSessionCookieCodec {
      * <p>
      * Version {@code 2} is the eleven-field {@link SealedSessionPayload} — the session's tokens and
      * bookkeeping plus the active scope set {@code A} the mediated token was granted and the granted
-     * scope set {@code S} the session has accumulated — framed as length-prefixed raw UTF-8 and
-     * deflated before sealing. It superseded version {@code 1}, the ten-field shape without
+     * scope set {@code S} the IdP is known to grant the session — framed as length-prefixed raw UTF-8
+     * and deflated before sealing. It superseded version {@code 1}, the ten-field shape without
      * {@code S}; a version-{@code 1} cookie is refused at the version gate and its browser logs in
      * again.
      * <p>

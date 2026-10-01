@@ -120,7 +120,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
  * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
  * resolves for a {@code /auth/login?returnUrl=} target — and the refresh leg requests the session's
- * active scope set {@code A}, both through {@link ScopedEngineFlows}, which drives a flow over a
+ * active scope set {@code A}, plus the missing scopes on a scope-driven refresh, both through
+ * {@link ScopedEngineFlows}, which drives a flow over a
  * {@link ClientConfiguration} built for exactly that set by
  * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, step-up and revocation
  * stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is handed that
@@ -357,7 +358,7 @@ public class BffRuntimeProducer {
                 tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
                 new CallbackHandler(), null);
         // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so a login that
-        // requests a route's neededScopes, and a refresh that requests the session's active scope set,
+        // requests a route's neededScopes, and a refresh that requests the set the coordinator names,
         // each ride a configuration built for exactly that set.
         ScopedEngineFlows scopedFlows = new ScopedEngineFlows(scopes -> backChannelConfiguration(oidc, scopes),
                 tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication);
@@ -407,8 +408,9 @@ public class BffRuntimeProducer {
         // gateway mediates the current token verbatim until the session's absolute TTL expires.
         // The revocation client is built from the SAME back-channel configuration, so a refresh token
         // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
-        // The refresh grant requests the session's active scope set A through ScopedEngineFlows, never
-        // the static oidc.scopes the base configuration carries.
+        // The refresh grant requests the set the coordinator names through ScopedEngineFlows — the
+        // session's active scope set A near expiry, A plus the missing scopes on the scope-driven leg —
+        // never the static oidc.scopes the base configuration carries.
         // ONE coordinator serves both stage seams — the near-expiry leg and the scope-driven leg — so the
         // two share its single-flight exclusion and a session's refresh token is never presented twice.
         RevocationClient revocationClient = new RevocationClient(clientConfiguration);
@@ -416,7 +418,7 @@ public class BffRuntimeProducer {
                 ? new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
-                (refreshToken, activeScopes) -> scopedFlows.refresh(metadata.get(), refreshToken, activeScopes),
+                (refreshToken, scopes) -> scopedFlows.refresh(metadata.get(), refreshToken, scopes),
                 sessionBinding,
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
                         clientAuthentication),

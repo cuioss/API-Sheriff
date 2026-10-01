@@ -66,7 +66,7 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * are distinct route scope sets.
  * <p>
  * <strong>Refresh leg — never cached.</strong> {@link #refresh} builds a {@link RefreshFlow} per call,
- * because the active scope set a session refreshes with comes from the identity provider's grant and
+ * because the scope set a session refreshes with comes from the identity provider's grant and
  * is therefore not bounded by the configuration. Building the flow is cheap (it holds references
  * only); the network cost is the refresh grant itself.
  * <p>
@@ -179,7 +179,8 @@ public final class ScopedEngineFlows {
      *
      * @param metadata     the resolved provider metadata
      * @param refreshToken the refresh token to redeem
-     * @param scopes       the scope set the grant requests — the session's active scope set
+     * @param scopes       the scope set the grant requests — the session's active scope set, plus the
+     *                     missing scopes on a scope-driven refresh
      * @return the engine's rotation result
      */
     public RotationResult refresh(ProviderMetadata metadata, String refreshToken, Collection<String> scopes) {
