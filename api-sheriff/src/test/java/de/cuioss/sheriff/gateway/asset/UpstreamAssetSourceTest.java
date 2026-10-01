@@ -343,7 +343,7 @@ class UpstreamAssetSourceTest {
     @DisplayName("Should map an upstream timeout to 504")
     void shouldMapTimeoutToGatewayTimeout() {
         UpstreamFetcher fetcher = target -> {
-            throw new UpstreamFetcher.UpstreamTimeoutException(new HttpTimeoutException("slow"));
+            throw new UpstreamAssetSource.UpstreamTimeoutException(new HttpTimeoutException("slow"));
         };
 
         AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
