@@ -98,7 +98,7 @@ class AdrOrdinalUniquenessContractTest {
 
     @Test
     @DisplayName("No ordinal in doc/adr is claimed by two decision records")
-    void noOrdinalIsClaimedByTwoDecisionRecords() throws IOException {
+    void noOrdinalIsClaimedByTwoDecisionRecords() throws Exception {
         Path adrDirectory = repoRoot().resolve(ADR_DIRECTORY);
 
         OrdinalClaims claims = ordinalClaims(adrDirectory);
@@ -128,7 +128,7 @@ class AdrOrdinalUniquenessContractTest {
      */
     @Test
     @DisplayName("The detector reports an ordinal two files share and not one a single file claims")
-    void detectorReportsASharedOrdinalAndNotADistinctOne(@TempDir Path fixture) throws IOException {
+    void detectorReportsASharedOrdinalAndNotADistinctOne(@TempDir Path fixture) throws Exception {
         Files.createFile(fixture.resolve(CONTROL_FIRST_CLAIMANT));
         Files.createFile(fixture.resolve(CONTROL_SECOND_CLAIMANT));
         Files.createFile(fixture.resolve(CONTROL_SOLE_CLAIMANT));
@@ -158,7 +158,7 @@ class AdrOrdinalUniquenessContractTest {
      *                       stable across file systems
      */
     private record OrdinalClaims(List<String> records, List<String> withoutOrdinal,
-            Map<String, List<String>> claimedTwice) {
+    Map<String, List<String>> claimedTwice) {
     }
 
     /**
