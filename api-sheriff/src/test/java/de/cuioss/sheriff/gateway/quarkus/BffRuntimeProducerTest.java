@@ -592,8 +592,7 @@ class BffRuntimeProducerTest {
                                 "the walk must see the near-expiry coordinator, or this test is vacuous");
                         assertEquals(1, behindScopeSeam.size(), "the scope seam is bound to a coordinator");
                         assertSame(behindNearExpirySeam.getFirst(), behindScopeSeam.getFirst(),
-                                "both seams share one coordinator, so a session's refresh token is never "
-                                        + "presented twice");
+                                "both seams share one coordinator");
                     }));
         }
 

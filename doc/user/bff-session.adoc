@@ -168,7 +168,7 @@ endpoint:
 | Served exactly as on a `require: session` route. The session's scopes are compared with the set
   the route needs. A session that carries them is relayed: its token goes upstream (unless
   `token_relay: false`) and is refreshed near expiry, and the session cookie is stripped. A session
-  lacking one is not relayed: a scope inside its granted set is obtained by one refresh, any other is
+  lacking one is not relayed: a scope inside its granted set is obtained by a refresh, any other is
   obtained by widening the session on a navigation, and an XHR or API call gets `403`
   `application/problem+json` naming the `missing_scopes` and, when `oidc.step_up.path` is
   configured, a `step_up_url` (see <<scope-enforcement>>). Both branches enforce the same set; the
@@ -305,21 +305,21 @@ upstream, not the check from the request.
 | Nothing is missing
 | The request continues. The comparison is local: no call to the IdP, no rotated token, no cookie.
 | Every missing scope lies inside the session's granted set
-| Exactly one refresh, requesting the active set plus the missing scopes. Navigations and API calls
-  take this path alike.
+| A refresh, requesting the active set plus the missing scopes. Navigations and API calls take this
+  path alike.
 | A missing scope lies outside the session's granted set, or the refresh did not obtain it
 | The session has to be *widened*. A navigation is redirected to the IdP; any other request is
   refused `403`.
 |===
 
-=== One refresh for a scope granted before
+=== A refresh for a scope granted before
 
-When every missing scope lies inside the session's granted set, the gateway makes one refresh that
+When every missing scope lies inside the session's granted set, the gateway makes a refresh that
 requests the active set plus the missing scopes. A session that then carries the `needed` set is
 relayed. A session that is kept but still lacks a scope -- the IdP granted less than requested, or
 the refresh is backing off -- is widened or refused as described below; it is never relayed short of
 a scope. When the IdP granted less than requested, the scopes it did not return also leave the
-session's granted set, so later requests for them are not refreshed again (see <<scope-revoked>>).
+session's granted set (see <<scope-revoked>>).
 A refresh that ends the session, or leaves the request without a valid token, is answered
 exactly as a failed near-expiry refresh is (see
 link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table]).
@@ -419,15 +419,14 @@ scope the IdP will not return. The gateway corrects the granted set the first ti
 
 * *A refresh is answered with fewer scopes than it asked for.* The scopes the IdP did not return
   leave the granted set. A navigation is then widened once, and when that grant lacks the scope too
-  the callback answers the terminal `403` above. An API call is refused `403`; later calls for the
-  same scope are refused without another refresh.
+  the callback answers the terminal `403` above. An API call is refused `403`.
 * *No refresh ran* -- the session holds no refresh token, refresh is switched off, or (cookie mode)
   the near-expiry refresh had just issued a new cookie. The widening's grant is merged, which takes
   the scope out of the granted set, and the browser is sent back to the route once. The next
   widening is the one that ends in the terminal `403`.
 
 Either way the session is kept and stays usable on every route it still satisfies. A navigation ends
-in the `403` after at most two round trips to the IdP, and API calls cost one refresh in total.
+in the `403` after at most two round trips to the IdP.
 
 One case is not corrected this way. An IdP that answers the refresh with an outright `invalid_scope`
 error gives the gateway nothing to learn from (see the back-off note above): the granted set is left

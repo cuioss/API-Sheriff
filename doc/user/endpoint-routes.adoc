@@ -685,7 +685,7 @@ auth:
 * *`require: session`* -- the set is what a login started on the route *requests* from the IdP, and
   what every live session is compared against on each request, whatever `token_relay` says. A
   session whose token carries every member is relayed with no call to the IdP. A missing scope inside
-  the session's granted set costs one refresh; any other missing scope redirects a navigation to
+  the session's granted set costs a refresh; any other missing scope redirects a navigation to
   the IdP to widen the live session, and answers every other request `403`
   `application/problem+json` naming the `missing_scopes` and, when `oidc.step_up.path` is
   configured, a `step_up_url`. A session short of a scope is never relayed. See

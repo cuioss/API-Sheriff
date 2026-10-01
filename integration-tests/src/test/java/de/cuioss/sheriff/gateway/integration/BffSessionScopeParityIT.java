@@ -87,7 +87,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * </ul>
  * <p>
  * <strong>The refresh-restores probe.</strong> The remaining case — a scope inside the session's
- * granted set but missing from its active set, obtained by one refresh — cannot be produced through
+ * granted set but missing from its active set, obtained by a refresh — cannot be produced through
  * the gateway's public surface, because the two sets are equal after a login and after a widening.
  * That branch is exercised at unit level, by {@code SessionAuthenticationStageScopeEnforcementTest}
  * and {@code TokenRefreshCoordinatorTest}. What it rests on is a property of the identity provider:

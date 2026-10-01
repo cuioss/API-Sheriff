@@ -61,7 +61,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * The scope enforcement of {@link SessionAuthenticationStage}: a session route compares the session's
  * active scope set {@code A} against the route's needed scopes on every request, obtains a missing
- * scope by one refresh when it lies inside the granted set {@code S} and by a widening otherwise, and
+ * scope by a refresh when it lies inside the granted set {@code S} and by a widening otherwise, and
  * never relays a session short of a needed scope.
  * <p>
  * The scope names, the step-up path and the two problem member names are literals on purpose: each is

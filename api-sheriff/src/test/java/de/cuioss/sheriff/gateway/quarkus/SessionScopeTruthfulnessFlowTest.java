@@ -79,10 +79,9 @@ import org.junit.jupiter.api.Test;
  * authorization seam records every request it is asked to build, so "how often was the identity
  * provider asked" is read off directly rather than inferred.
  * <p>
- * The invariant: such a session is never relayed, costs the identity provider a bounded number of
- * calls — one refresh grant in total for API calls, and no redirect after the terminal {@code 403}
- * for a navigation — and a scope the provider <em>does</em> still grant keeps being restored by one
- * refresh and relayed (the matched control).
+ * The invariant: such a session is never relayed, a navigation gets no redirect after the terminal
+ * {@code 403}, and a scope the provider <em>does</em> still grant keeps being restored by a refresh
+ * and relayed (the matched control).
  * <p>
  * The scope names are literals on purpose: they are the values the route's needed set, the session's
  * two scope sets and the grants are compared by, so a generated value would assert nothing about the

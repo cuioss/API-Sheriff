@@ -444,7 +444,7 @@ boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `Resolv
 * *Session check.* `SessionAuthenticationStage` compares the session's active scope set `A` against
   `neededScopes` on every request, after the near-expiry refresh and before any bearer is recorded,
   whatever `auth.token_relay` says. Nothing missing: the request continues with no
-  identity-provider call. Everything missing inside the session's granted scope set `S`: one refresh
+  identity-provider call. Everything missing inside the session's granted scope set `S`: a refresh
   requesting `A ∪ missing` through the scope-driven leg of `TokenRefreshCoordinator`, and the
   returned session is compared again. Anything else: a navigation is redirected `302` into a
   widening of the live session, and every other request is `403 SCOPE_MISSING` whose problem body
@@ -470,8 +470,7 @@ boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `Resolv
   it rather than adding to it. No refresh adds to `S` and a near-expiry refresh never changes it. A
   scope-driven refresh the identity provider processed removes every requested scope its response
   did not return. A scope the provider stopped granting therefore leaves `S` the first time it is
-  asked for, the next request for it is widened rather than refreshed, and a widening whose grant
-  lacks it again ends in the terminal `403`.
+  asked for, and a widening whose grant lacks it again ends in the terminal `403`.
 
 Why a session route obtains what is missing rather than relaying, and what it does when the identity
 provider refuses, is recorded in

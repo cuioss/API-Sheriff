@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A session route, and the SESSION branch of a session_fallback route, never relays a session that lacks a scope the route needs; on every request, whatever token_relay says, the session's active scope set A is compared against the route's boot-derived neededScopes, a satisfied route makes no identity-provider call, a scope missing from A but inside the session's granted scope set S costs exactly one refresh requesting A ∪ missing, and a scope outside S widens the live session: a navigation is redirected into an authorization request for S ∪ needed, prompt=none first and then exactly one interactive attempt, merged into the same session after the subject is re-checked, while every other request gets 403 application/problem+json with missing_scopes and a step_up_url on the reserved oidc.step_up.path; an identity-provider refusal is a terminal 403 with the session unchanged; S is kept truthful -- a widening replaces it with the granted scope and a processed scope refresh removes the scopes it did not return -- so a scope the identity provider stops granting ends in that 403 instead of a redirect loop or a refresh per request, and the merged session takes the sid of the grant's ID token so a back-channel logout still finds it; this supersedes the session half of ADR-0049, whose bearer half and neededScopes derivation stand; relaying and letting the upstream refuse, per-endpoint token narrowing, probing with a refresh instead of tracking S, and reusing the RFC 9470 step-up coordinator are rejected.
+// summary: A session route, and the SESSION branch of a session_fallback route, never relays a session that lacks a scope the route needs; on every request, whatever token_relay says, the session's active scope set A is compared against the route's boot-derived neededScopes, a satisfied route makes no identity-provider call, a scope missing from A but inside the session's granted scope set S costs a refresh requesting A ∪ missing, and a scope outside S widens the live session: a navigation is redirected into an authorization request for S ∪ needed, prompt=none first and then exactly one interactive attempt, merged into the same session after the subject is re-checked, while every other request gets 403 application/problem+json with missing_scopes and a step_up_url on the reserved oidc.step_up.path; an identity-provider refusal is a terminal 403 with the session unchanged; S is kept truthful -- a widening replaces it with the granted scope and a processed scope refresh removes the scopes it did not return -- so a scope the identity provider stops granting ends in that 403 instead of a redirect loop, and the merged session takes the sid of the grant's ID token so a back-channel logout still finds it; this supersedes the session half of ADR-0049, whose bearer half and neededScopes derivation stand; relaying and letting the upstream refuse, per-endpoint token narrowing, probing with a refresh instead of tracking S, and reusing the RFC 9470 step-up coordinator are rejected.
 // tags: auth, scopes, bff, session, oidc, step-up
 // affects: api-sheriff, integration-tests
 // supersedes:
@@ -64,7 +64,7 @@ so the decision also has to say when a scope leaves `S`.
 == Decision
 
 *A session route never relays a session that lacks a scope the route needs. It compares on every
-request, obtains what is missing -- by one refresh when it lies inside `S`, by widening the
+request, obtains what is missing -- by a refresh when it lies inside `S`, by widening the
 live session when not -- and refuses when the identity provider does.*
 
 * *The comparison runs on every session request.* After the session is resolved and the near-expiry
@@ -72,7 +72,7 @@ live session when not -- and refuses when the identity provider does.*
   whatever `auth.token_relay` says and before any bearer is recorded, so `token_relay: false` withholds
   the token from the upstream but not the check from the request. With nothing missing the request
   continues and no identity-provider call is made.
-* *Inside the grant, one refresh.* When every missing scope lies inside `S`, the stage makes exactly
+* *Inside the grant, a refresh.* When every missing scope lies inside `S`, the stage makes exactly
   one call through the scope-driven leg of `TokenRefreshCoordinator`, requesting `A ∪ missing`. The
   leg shares the near-expiry leg's per-session single-flight, re-checks the re-resolved session under
   that exclusion, and never adds to `S`. The stage compares the returned session again, so no
@@ -124,10 +124,10 @@ needs, and the first scope-driven refresh that does ask settles the question.
 * *A scope the provider stopped granting reaches that refusal.* Because `S` is truthful, such a scope
   is sought beyond `S` by the time a widening callback checks its grant. When a scope refresh ran
   first and was answered with a narrower grant, the scope has already left `S`: the widening that
-  follows is refused, and a later API call is refused without another refresh. When no refresh ran
-  -- the session holds no refresh token, transparent refresh is off, or the near-expiry refresh had
-  just re-bound the cookie -- the first widening is merged, the merge takes the scope out of `S`,
-  and the next round is the refused one. A navigation ends in the `403` after at most two rounds.
+  follows is refused. When no refresh ran -- the session holds no refresh token, transparent refresh
+  is off, or the near-expiry refresh had just re-bound the cookie -- the first widening is merged,
+  the merge takes the scope out of `S`, and the next round is the refused one. A navigation ends in
+  the `403` after at most two rounds.
 * *The step-up path is a reserved path that serves a live session only.* `oidc.step_up.path` is
   registered from the key's presence and matched like the other browser-facing reserved paths.
   Without a live session it answers `401` with no identity-provider redirect and no pending record.
@@ -181,9 +181,8 @@ session back unchanged, and the stage goes straight to widening.
 * The session stays the same session across a widening. Its identifier, authentication time and
   absolute expiry are kept, so a widening neither creates a second session to track nor extends how
   long the session lives.
-* A scope the identity provider stops granting costs a bounded number of provider calls. A navigation
-  ends in the terminal `403` after at most two widening rounds, and API calls cost one refresh grant
-  in total instead of one refresh grant and one token rotation per request.
+* A navigation for a scope the identity provider stops granting ends in the terminal `403` after at
+  most two widening rounds.
 * A back-channel logout finds a widened session. The session is indexed under the `sid` of the
   identity-provider session its tokens belong to, so a logout for that session destroys it instead of
   matching nothing.
@@ -218,7 +217,7 @@ session back unchanged, and the stage goes straight to widening.
   the new `sid` only. Its tokens belong to that session, so this is the correct match, but a logout
   for the earlier session that is delivered late destroys nothing.
 * *A near-expiry refresh that narrows `A` leaves `S` untouched.* The scope stays in `S` until a route
-  needs it and one scope refresh asks for it. That is one refresh, not one per request.
+  needs it and a scope refresh asks for it.
 * *The sealed cookie format is not migrated.* A cookie-mode session sealed without the granted set
   is refused, and its browser logs in again.
 
@@ -242,9 +241,8 @@ session back unchanged, and the stage goes straight to widening.
 * *A refresh inside the grant depends on the identity provider honouring it.* A provider that
   declines to restore a previously granted scope returns a narrower grant or refuses the request, and
   the session is widened instead. The outcome is slower, not wrong. A narrower grant also takes the
-  scope out of `S`, so the provider is asked by refresh once. An outright `invalid_scope` refusal
-  does not: it arrives as an outage (see the Negative consequences), leaves `S` unchanged, and is
-  retried once per back-off window.
+  scope out of `S`. An outright `invalid_scope` refusal does not: it arrives as an outage (see the
+  Negative consequences), leaves `S` unchanged, and is retried once per back-off window.
 
 == Alternatives Considered
 
@@ -284,7 +282,7 @@ Rejected: the terminal refusal above depends on `S` being true.
 lacking a needed scope and so end a navigation on the first round. It leaves `S` naming a scope the
 provider no longer grants, so API calls for it would still refresh on every request, and the
 step-up path would still answer such a target with a direct redirect. Rejected in favour of fixing
-`S`, which closes both.
+`S`.
 
 *Refuse a widening whose ID token names another `sid`.* It would keep a session bound to the
 identity-provider session it was created from. It would also turn the interactive attempt into a

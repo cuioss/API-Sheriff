@@ -233,10 +233,9 @@ scope the IdP had stopped granting would send every request for that scope into 
 cannot succeed.
 
 * *Nothing missing.* The request continues. No call to the IdP is made.
-* *Missing, but inside the granted set.* Exactly one refresh requests the active set plus the
-  missing scopes, through the same single-flight coordinator the near-expiry refresh uses. The
-  returned session is compared again, so no outcome of that refresh relays a session short of a
-  scope.
+* *Missing, but inside the granted set.* A refresh requests the active set plus the missing scopes,
+  through the same single-flight coordinator the near-expiry refresh uses. The returned session is
+  compared again, so no outcome of that refresh relays a session short of a scope.
 * *Missing, and outside the granted set* -- or the refresh did not obtain it. A refresh cannot widen
   a grant (RFC 6749 §6), so the live session is *widened* instead. A navigation is redirected into an
   authorization request for the granted set plus the `needed` set, with `prompt=none` first and
@@ -251,7 +250,7 @@ cannot succeed.
 * *The IdP stops granting a scope the session held.* The scope leaves the granted set the first time
   the gateway asks for it and does not get it: on the scope-driven refresh, or, when no refresh ran,
   on the widening merge. The next widening for it ends in the terminal `403`, after at most two
-  rounds, and API calls for it cost one refresh in total rather than one each.
+  rounds.
 
 Taking the `sid` of the grant keeps back-channel logout working across a widening. The merged tokens
 belong to the IdP session that answered, which is a different one when the user had to sign in

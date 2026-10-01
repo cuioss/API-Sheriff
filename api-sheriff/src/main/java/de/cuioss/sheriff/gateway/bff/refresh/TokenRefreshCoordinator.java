@@ -75,9 +75,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>A processed scope refresh keeps {@code S} truthful.</strong> When the identity provider
  * processes the scope-driven grant and returns a {@code scope} lacking a requested member, every such
  * member is removed from the rotated session's {@code S} before it is persisted: the provider has just
- * shown it no longer grants that scope to this session. The scope then lies outside {@code S}, so the
- * next request needing it makes no further refresh — a navigation is widened, anything else is refused
- * — instead of presenting the refresh token again on every request. A response that omits
+ * shown it no longer grants that scope to this session. A response that omits
  * {@code scope} refuses nothing (RFC 6749 §5.1) and leaves {@code S} as it was, as does every outcome
  * in which the provider did not process the grant.
  * <p>
@@ -146,8 +144,7 @@ import org.jspecify.annotations.Nullable;
  * concurrent request on the same session joins the leader's result instead of launching its own
  * refresh. The leader re-resolves the session through the binding under this exclusion and
  * re-checks near-expiry, so a request that arrives just after a refresh completed observes the
- * already-rotated token and makes no engine call. The scope-driven leg leads through the same map, so a
- * near-expiry refresh and a scope refresh on one session never present its refresh token twice; a
+ * already-rotated token and makes no engine call. The scope-driven leg leads through the same map: a
  * request that coalesces with a refresh of the other leg shares that refresh's result, and a scope
  * request whose shared current or refreshed session does not carry its requested set receives
  * {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED} with the shared session and cookies rather
@@ -745,8 +742,7 @@ public final class TokenRefreshCoordinator {
      * The granted scope set {@code S} is never added to — only a widening obtains a scope the session
      * was not granted. On the near-expiry leg it is copied verbatim, even when the response narrows
      * {@code A}. On the scope-driven leg ({@code scopeDriven}) it loses every requested scope the new
-     * {@code A} lacks: the identity provider processed a grant naming that scope and did not return it,
-     * so keeping it in {@code S} would send every later request for it into the same refresh again.
+     * {@code A} lacks: the identity provider processed a grant naming that scope and did not return it.
      */
     private static SessionRecord rotate(SessionRecord previous, RotationResult rotation, Set<String> requestedScopes,
             boolean scopeDriven) {

@@ -403,7 +403,7 @@ public class BffRuntimeProducer {
         // session's active scope set A near expiry, A plus the missing scopes on the scope-driven leg —
         // never the static oidc.scopes the base configuration carries.
         // ONE coordinator serves both stage seams — the near-expiry leg and the scope-driven leg — so the
-        // two share its single-flight exclusion and a session's refresh token is never presented twice.
+        // two share its single-flight exclusion.
         RevocationClient revocationClient = new RevocationClient(clientConfiguration);
         TokenRefreshCoordinator refreshCoordinator = refreshEnabled
                 ? new TokenRefreshCoordinator(refreshLeeway,

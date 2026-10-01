@@ -236,7 +236,7 @@ public final class SessionAuthenticationStage {
 
     /**
      * The scope enforcement every session request passes before anything is relayed: compares the
-     * session's active scope set against the route's needed scopes, and obtains what is missing by one
+     * session's active scope set against the route's needed scopes, and obtains what is missing by a
      * refresh inside the granted set or by a widening outside it.
      *
      * @param mediated     the session the near-expiry leg mediates from, plus the cookies its re-bind
@@ -451,7 +451,7 @@ public final class SessionAuthenticationStage {
 
     /**
      * The scope-driven refresh seam: obtains needed scopes that are missing from the session's active
-     * scope set but lie inside its granted scope set, by one refresh grant requesting exactly the set
+     * scope set but lie inside its granted scope set, by a refresh grant requesting exactly the set
      * it is given. The session runtime binds it to the refresh coordinator's scope-driven leg, which
      * shares the near-expiry leg's single-flight exclusion; with transparent refresh switched off it
      * binds a pass-through that returns the session unchanged.

@@ -1729,7 +1729,7 @@ class TokenRefreshCoordinatorTest {
      * lifetime. It shares the near-expiry leg's single-flight exclusion and refusal dispositions, and it
      * reports a grant that is still short of the set as {@code SCOPE_REFUSED} without arming the back-off.
      * Such a processed, narrower grant also takes every requested scope it did not return out of the
-     * granted set {@code S}, so the session's next request for it starts no further refresh.
+     * granted set {@code S}.
      * An outright {@code invalid_scope} refusal reaches the coordinator as the bare transport failure
      * {@code token-sheriff-client} raises for it, so it takes the pre-redemption back-off
      * (TokenSheriff#763).
