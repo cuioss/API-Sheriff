@@ -131,7 +131,7 @@ the answer must always be the runtime, so the check has to be built from it.
 
 == References
 
-* link:0053-A_header_matchers_name_is_normalised_once_at_the_route-compile_seam_and_its_fields_compose_with_AND.adoc[ADR-0053] — the runtime header-matcher semantics this validator mirrors
+* link:0056-A_header_matchers_name_is_normalised_once_at_the_route-compile_seam_and_its_fields_compose_with_AND.adoc[ADR-0056] — the runtime header-matcher semantics this validator mirrors
 * link:0007-anchor-scoped-policy.adoc[ADR-0007] — the other boot-time route-table invariants
 * link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026]
   — the sibling principle that stages reasoning about the same input must not silently disagree

@@ -1,4 +1,4 @@
-= ADR-0053: A header matcher's name is normalised once at the route-compile seam and its fields compose with AND
+= ADR-0056: A header matcher's name is normalised once at the route-compile seam and its fields compose with AND
 :toc: left
 :toclevels: 2
 :sectnums:

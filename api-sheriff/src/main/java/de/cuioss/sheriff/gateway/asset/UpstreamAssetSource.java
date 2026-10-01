@@ -213,7 +213,7 @@ public final class UpstreamAssetSource implements AssetSource {
         UpstreamFetcher.Fetched fetched;
         try {
             fetched = fetcher.fetch(target);
-        } catch (UpstreamFetcher.UpstreamTimeoutException _) {
+        } catch (UpstreamTimeoutException _) {
             return new Served(GATEWAY_TIMEOUT, Map.of(), EMPTY_BODY);
         } catch (IOException _) {
             return new Served(BAD_GATEWAY, Map.of(), EMPTY_BODY);
@@ -337,7 +337,7 @@ public final class UpstreamAssetSource implements AssetSource {
             try {
                 response = client.send(request, info -> new CappedByteArrayBodySubscriber(maxBytes));
             } catch (HttpTimeoutException timeout) {
-                throw new UpstreamFetcher.UpstreamTimeoutException(timeout);
+                throw new UpstreamTimeoutException(timeout);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 throw new IOException("upstream fetch interrupted", interrupted);
@@ -361,24 +361,24 @@ public final class UpstreamAssetSource implements AssetSource {
             });
             return new UpstreamFetcher.Fetched(response.statusCode(), headers, body, truncated);
         }
-    }
 
-    /**
-     * Resolves the JVM default {@link SSLContext} the asset-origin client is pinned to — the same
-     * context {@link HttpClient.Builder} would fall back to when none is set, so pinning it changes
-     * no behaviour and only makes the posture visible at the construction site.
-     *
-     * @return the JVM default TLS context
-     * @throws IllegalStateException when the JVM offers no default TLS context — a construction-time
-     *                               failure, since a client that cannot negotiate TLS must not be
-     *                               built at all
-     */
-    private static SSLContext defaultSslContext() {
-        try {
-            return SSLContext.getDefault();
-        } catch (NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException(
-                    "the JVM default TLS context is required for the asset-origin HTTP client", unavailable);
+        /**
+         * Resolves the JVM default {@link SSLContext} the asset-origin client is pinned to — the same
+         * context {@link HttpClient.Builder} would fall back to when none is set, so pinning it changes
+         * no behaviour and only makes the posture visible at the construction site.
+         *
+         * @return the JVM default TLS context
+         * @throws IllegalStateException when the JVM offers no default TLS context — a construction-time
+         *                               failure, since a client that cannot negotiate TLS must not be
+         *                               built at all
+         */
+        private static SSLContext defaultSslContext() {
+            try {
+                return SSLContext.getDefault();
+            } catch (NoSuchAlgorithmException unavailable) {
+                throw new IllegalStateException(
+                        "the JVM default TLS context is required for the asset-origin HTTP client", unavailable);
+            }
         }
     }
 
@@ -549,23 +549,23 @@ public final class UpstreamAssetSource implements AssetSource {
                         .formatted(status, headers, body.length, truncated);
             }
         }
+    }
+
+    /**
+     * Signals that the upstream fetch exceeded its read timeout.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public static final class UpstreamTimeoutException extends IOException {
+
+        private static final long serialVersionUID = 1L;
 
         /**
-         * Signals that the upstream fetch exceeded its read timeout.
-         *
-         * @author API Sheriff Team
-         * @since 1.0
+         * @param cause the underlying timeout
          */
-        final class UpstreamTimeoutException extends IOException {
-
-            private static final long serialVersionUID = 1L;
-
-            /**
-             * @param cause the underlying timeout
-             */
-            public UpstreamTimeoutException(Throwable cause) {
-                super("upstream fetch timed out", cause);
-            }
+        public UpstreamTimeoutException(Throwable cause) {
+            super("upstream fetch timed out", cause);
         }
     }
 }
