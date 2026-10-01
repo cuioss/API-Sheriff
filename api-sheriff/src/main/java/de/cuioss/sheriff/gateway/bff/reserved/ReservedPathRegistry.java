@@ -30,17 +30,24 @@ import org.jspecify.annotations.Nullable;
 /**
  * The exact-match registry of the gateway's reserved OIDC endpoints (D2).
  * <p>
- * The BFF variants carve up to six gateway-owned paths out of the proxy route table — the
+ * The BFF variants carve up to seven gateway-owned paths out of the proxy route table — the
  * {@code oidc.redirect_uri} callback, the RP-initiated {@code oidc.logout.path}, its
  * {@code post_logout_redirect_uri} return leg, the {@code oidc.logout.backchannel_path}
- * receiver, the {@code oidc.user_info.path} session/user-info fold (D11), and the
- * {@code oidc.login.path} login-initiation fold (D12). Each is matched <strong>exactly</strong>
- * (never by prefix). Five of the six are matched <strong>only on the OIDC host</strong> (the host of
- * {@code oidc.redirect_uri}); the back-channel logout receiver is matched on <strong>every</strong>
- * host, for the reason {@link #match(String, String)} documents. The gateway edge consults this
- * registry <em>before</em> the route table, so a proxy route such as {@code path_prefix: /auth}
- * can never swallow the exact {@code /auth/callback}: the reserved path is resolved here first
- * and the prefix route never sees it.
+ * receiver, the {@code oidc.user_info.path} session/user-info fold (D11), the
+ * {@code oidc.login.path} login-initiation fold (D12), and the
+ * {@code oidc.client_authentication.jwks_path} client JWKS endpoint. Each is matched
+ * <strong>exactly</strong> (never by prefix). Five of the seven are matched <strong>only on the
+ * OIDC host</strong> (the host of {@code oidc.redirect_uri}); the other two — the back-channel
+ * logout receiver and the client JWKS endpoint — are matched on <strong>every</strong> host, for
+ * the reason {@link #match(String, String)} documents. The gateway edge consults this registry
+ * <em>before</em> the route table, so a proxy route such as {@code path_prefix: /auth} can never
+ * swallow the exact {@code /auth/callback}: the reserved path is resolved here first and the
+ * prefix route never sees it.
+ * <p>
+ * The client JWKS path is the one reserved path that needs no declaration: an {@code oidc} block
+ * that names none reserves the default path. It is reserved in both client-authentication modes —
+ * the registry does not read the mode; what the endpoint answers in each mode is
+ * {@link ClientJwksEndpoint}'s concern.
  * <p>
  * The registry is built once at boot from the frozen {@link OidcConfig}. When no {@code oidc}
  * block (or no {@code redirect_uri}) is configured the registry is {@linkplain #isEmpty() empty}
@@ -76,8 +83,21 @@ public final class ReservedPathRegistry {
         USER_INFO,
 
         /** The {@code oidc.login.path} login-initiation fold endpoint (D12). */
-        LOGIN
+        LOGIN,
+
+        /**
+         * The {@code oidc.client_authentication.jwks_path} client JWKS endpoint, at which the
+         * identity provider fetches the gateway's client-authentication public key.
+         */
+        CLIENT_JWKS
     }
+
+    /**
+     * The kinds an identity provider dials server-to-server, and which are therefore matched on
+     * every host rather than on the OIDC host only — see {@link #match(String, String)}.
+     */
+    private static final Set<ReservedEndpoint> MATCHED_ON_EVERY_HOST =
+            Set.of(ReservedEndpoint.BACKCHANNEL_LOGOUT, ReservedEndpoint.CLIENT_JWKS);
 
     private final @Nullable String oidcHost;
     private final Map<String, ReservedEndpoint> endpointsByPath;
@@ -128,10 +148,33 @@ public final class ReservedPathRegistry {
     }
 
     /**
-     * The single derivation of the reserved path map shared by {@link #from(OidcConfig)} and
-     * {@link #reservedPaths(OidcConfig)}: the callback path of {@code redirect_uri} first, then the
-     * logout, logout-return, back-channel, user-info and login paths, keeping the first
-     * registration for a path.
+     * Resolves, <strong>host-independently</strong>, the kind a path is reserved as — through the same
+     * derivation {@link #from(OidcConfig)} registers the paths with. Where two keys of the
+     * {@code oidc} block name the same path, the kind returned is the one that derivation keeps: the
+     * first registration.
+     * <p>
+     * The boot-time configuration validator uses it to detect that the client JWKS path is already
+     * claimed by another reserved endpoint: the JWKS path is registered last, so it resolves to
+     * {@link ReservedEndpoint#CLIENT_JWKS} exactly when no other key names the same path.
+     *
+     * @param config the global OIDC configuration, {@code null} when the gateway serves no BFF variant
+     * @param path   the path to resolve
+     * @return the kind {@code path} is reserved as, empty when the {@code oidc} block does not
+     *         reserve it
+     */
+    public static Optional<ReservedEndpoint> reservedKind(@Nullable OidcConfig config, String path) {
+        if (config == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(pathsOf(config).get(path));
+    }
+
+    /**
+     * The single derivation of the reserved path map shared by {@link #from(OidcConfig)},
+     * {@link #reservedPaths(OidcConfig)} and {@link #reservedKind(OidcConfig, String)}: the callback
+     * path of {@code redirect_uri} first, then the logout, logout-return, back-channel, user-info and
+     * login paths, and last the effective client JWKS path, keeping the first registration for a
+     * path.
      */
     private static Map<String, ReservedEndpoint> pathsOf(OidcConfig config) {
         Map<String, ReservedEndpoint> paths = new LinkedHashMap<>();
@@ -151,6 +194,9 @@ public final class ReservedPathRegistry {
         if (login != null) {
             reservePath(paths, login.path(), ReservedEndpoint.LOGIN);
         }
+        // Resolved through the one accessor boot validation reads too, so the default path cannot be
+        // reserved here and judged there as two different values.
+        reservePath(paths, config.effectiveClientJwksPath(), ReservedEndpoint.CLIENT_JWKS);
         return paths;
     }
 
@@ -178,7 +224,7 @@ public final class ReservedPathRegistry {
      * {@code /auth/callback}) never matches — that is precisely the carve-out this registry
      * guarantees.
      * <p>
-     * <strong>Five of the six endpoints additionally require the request host to be the OIDC
+     * <strong>The five browser-facing endpoints additionally require the request host to be the OIDC
      * host</strong> (the host of {@code oidc.redirect_uri}). That is right for all five, because each
      * of them is reached by a <em>browser</em> at the origin the gateway published to it: the callback,
      * the login initiation, the RP-initiated logout and its return leg, and the user-info fold are all
@@ -186,24 +232,28 @@ public final class ReservedPathRegistry {
      * arriving on a different virtual host is not the browser and must fall through to the proxy route
      * table.
      * <p>
-     * <strong>{@link ReservedEndpoint#BACKCHANNEL_LOGOUT} is matched on every host, and that
-     * asymmetry is the contract rather than a relaxation of it.</strong> The back-channel receiver is
-     * the one reserved endpoint no browser ever reaches: the identity provider dials it
-     * server-to-server at whatever address the relying party registered as its
-     * {@code backchannel_logout_uri}, and that address is routinely an internal one — a container or
-     * service name on the network the two share — while the OIDC host is the public name the browser
-     * uses. Requiring the two to coincide makes back-channel logout silently unreachable in exactly
-     * those deployments: the {@code POST} is delivered, answered {@code 404} by the proxy route table
-     * because no route claims the reserved path, and the session it was meant to destroy survives with
-     * no diagnostic on either side. Host-gating the browser endpoints and not this one is therefore the
-     * faithful rule, not an exception to it.
+     * <strong>{@link ReservedEndpoint#BACKCHANNEL_LOGOUT} and {@link ReservedEndpoint#CLIENT_JWKS} are
+     * matched on every host, and that asymmetry is the contract rather than a relaxation of
+     * it.</strong> They are the two reserved endpoints no browser ever reaches: the identity provider
+     * dials both server-to-server, at whatever address the relying party registered — its
+     * {@code backchannel_logout_uri} for the one, its client key-set URL for the other — and that
+     * address is routinely an internal one, a container or service name on the network the two share,
+     * while the OIDC host is the public name the browser uses. Requiring the two to coincide makes both
+     * silently unreachable in exactly those deployments. The back-channel {@code POST} is delivered,
+     * answered {@code 404} by the proxy route table because no route claims the reserved path, and the
+     * session it was meant to destroy survives with no diagnostic on either side. The key-set
+     * {@code GET} is answered {@code 404} the same way, the identity provider cannot verify the client
+     * assertion, and every login fails. Host-gating the browser endpoints and not these two is
+     * therefore the faithful rule, not an exception to it.
      * <p>
-     * Widening the host for this one path costs no authorization: the receiver rejects anything that is
-     * not a JWKS-signature-verified logout token carrying the expected {@code iss}/{@code aud}, so
-     * reaching it on a second host confers nothing a caller could not already attempt on the first. What
-     * it does cost is the ability to proxy the configured back-channel path on another virtual host —
-     * the same price ADR-0018 already records for the reserved paths on the OIDC host, now paid on all
-     * of them for this single path.
+     * Widening the host for these two paths costs no authorization. The back-channel receiver rejects
+     * anything that is not a JWKS-signature-verified logout token carrying the expected
+     * {@code iss}/{@code aud}, so reaching it on a second host confers nothing a caller could not
+     * already attempt on the first. The client JWKS endpoint publishes a public key and reads no input,
+     * so there is nothing a second host could add to what it discloses. What the widening does cost is
+     * the ability to proxy either configured path on another virtual host — the same price ADR-0018
+     * already records for the reserved paths on the OIDC host, now paid on all of them for these two
+     * paths.
      *
      * @param host the request host authority (without port), may be {@code null}
      * @param path the single canonical request path, may be {@code null} before canonicalization
@@ -218,7 +268,7 @@ public final class ReservedPathRegistry {
         if (endpoint == null) {
             return Optional.empty();
         }
-        if (endpoint == ReservedEndpoint.BACKCHANNEL_LOGOUT) {
+        if (MATCHED_ON_EVERY_HOST.contains(endpoint)) {
             return Optional.of(endpoint);
         }
         if (host == null || oidcHost == null || !oidcHost.equalsIgnoreCase(host)) {

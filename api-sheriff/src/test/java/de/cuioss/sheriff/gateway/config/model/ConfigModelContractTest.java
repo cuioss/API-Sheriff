@@ -426,19 +426,31 @@ class ConfigModelContractTest {
                     voCase("OidcConfig.Login", new OidcConfig.Login("/session/login", "/home"),
                             new OidcConfig.Login("/session/login", "/home"),
                             new OidcConfig.Login("/session/login", "/elsewhere")),
-                    voCase("OidcConfig.ClientAuthenticationSettings",
-                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem"),
-                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem"),
-                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/other.pem")),
+                    // One case per component: each unequal instance varies exactly one of the two, so a
+                    // component dropped from equals() fails its own case alone.
+                    voCase("OidcConfig.ClientAuthenticationSettings (key_file)",
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/other.pem",
+                                    "/auth/client-keys")),
+                    voCase("OidcConfig.ClientAuthenticationSettings (jwks_path)",
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/other-keys")),
                     // client_authentication participates in identity: the unequal instance varies only
                     // that component, so dropping it from equals() fails this case alone.
                     voCase("OidcConfig (client_authentication)",
                             OidcConfig.builder().clientAuthentication(
-                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem")).build(),
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem", null)).build(),
                             OidcConfig.builder().clientAuthentication(
-                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem")).build(),
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem", null)).build(),
                             OidcConfig.builder().clientAuthentication(
-                                    new OidcConfig.ClientAuthenticationSettings("/keys/b.pem")).build()),
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/b.pem", null)).build()),
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
@@ -1723,23 +1735,74 @@ class ConfigModelContractTest {
     class ClientAuthenticationSelection {
 
         private static final String KEY_FILE = "/etc/sheriff/keys/client-auth.pem";
+        private static final String JWKS_PATH = "/auth/client-keys";
         private static final String SECRET = "resolved-client-secret-value";
+        /**
+         * Deliberately the literal and not {@code ClientAuthenticationSettings.DEFAULT_JWKS_PATH}: the
+         * default is a documented contract of the configuration surface, so a change of the constant
+         * must turn these tests red rather than follow it.
+         */
+        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
 
-        @Test
-        void clientAuthenticationSettingsBuilderMatchesConstructor() {
-            OidcConfig.ClientAuthenticationSettings viaCtor = new OidcConfig.ClientAuthenticationSettings(KEY_FILE);
-            OidcConfig.ClientAuthenticationSettings viaBuilder =
-                    OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).build();
-
-            assertAll("the builder and the canonical constructor agree",
-                    () -> assertEquals(viaCtor, viaBuilder),
-                    () -> assertEquals(KEY_FILE, viaBuilder.keyFile()));
+        private static OidcConfig.ClientAuthenticationSettings keyFileOnly() {
+            return OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).build();
         }
 
         @Test
-        void clientAuthenticationSettingsKeepsAnAbsentKeyFileAbsent() {
-            assertNull(OidcConfig.ClientAuthenticationSettings.builder().build().keyFile(),
-                    "an omitted key_file stays absent; the runtime then generates a key on startup");
+        void clientAuthenticationSettingsBuilderMatchesConstructor() {
+            OidcConfig.ClientAuthenticationSettings viaCtor =
+                    new OidcConfig.ClientAuthenticationSettings(KEY_FILE, JWKS_PATH);
+            OidcConfig.ClientAuthenticationSettings viaBuilder =
+                    OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).jwksPath(JWKS_PATH).build();
+
+            assertAll("the builder and the canonical constructor agree",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals(KEY_FILE, viaBuilder.keyFile()),
+                    () -> assertEquals(JWKS_PATH, viaBuilder.jwksPath()));
+        }
+
+        @Test
+        void clientAuthenticationSettingsKeepsAbsentComponentsAbsent() {
+            OidcConfig.ClientAuthenticationSettings empty = OidcConfig.ClientAuthenticationSettings.builder().build();
+
+            assertAll("the record applies no default of its own",
+                    () -> assertNull(empty.keyFile(),
+                            "an omitted key_file stays absent; the runtime then generates a key on startup"),
+                    () -> assertNull(empty.jwksPath(),
+                            "an omitted jwks_path stays absent; the default is resolved by the one accessor"));
+        }
+
+        @Test
+        void defaultJwksPathIsTheDocumentedDefault() {
+            assertEquals(DEFAULT_JWKS_PATH, OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH);
+        }
+
+        @Test
+        void effectiveClientJwksPathResolvesTheDefaultForAnAbsentBlockAndAnAbsentKey() {
+            assertAll("both absences resolve to the one default",
+                    () -> assertEquals(DEFAULT_JWKS_PATH, OidcConfig.builder().build().effectiveClientJwksPath(),
+                            "no client_authentication block"),
+                    () -> assertEquals(DEFAULT_JWKS_PATH,
+                            OidcConfig.builder().clientAuthentication(keyFileOnly()).build().effectiveClientJwksPath(),
+                            "a block that declares a key file and no jwks_path"));
+        }
+
+        @Test
+        void effectiveClientJwksPathReturnsADeclaredPath() {
+            OidcConfig oidc = OidcConfig.builder().clientAuthentication(
+                    OidcConfig.ClientAuthenticationSettings.builder().jwksPath(JWKS_PATH).build()).build();
+
+            assertEquals(JWKS_PATH, oidc.effectiveClientJwksPath(), "a declared jwks_path is returned as declared");
+        }
+
+        @Test
+        void effectiveClientJwksPathDoesNotReadTheClientAuthenticationMode() {
+            assertAll("the path is resolved the same with a client secret configured",
+                    () -> assertEquals(DEFAULT_JWKS_PATH,
+                            OidcConfig.builder().clientSecret(SECRET).build().effectiveClientJwksPath()),
+                    () -> assertEquals(JWKS_PATH, OidcConfig.builder().clientSecret(SECRET).clientAuthentication(
+                            OidcConfig.ClientAuthenticationSettings.builder().jwksPath(JWKS_PATH).build())
+                            .build().effectiveClientJwksPath()));
         }
 
         @Test
@@ -1757,7 +1820,7 @@ class ConfigModelContractTest {
         void oidcToStringRendersTheKeyFilePathAndStillRedactsTheSecret() {
             String rendered = OidcConfig.builder()
                     .clientSecret(SECRET)
-                    .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(KEY_FILE))
+                    .clientAuthentication(keyFileOnly())
                     .build().toString();
 
             assertAll("a path is rendered, a secret is not",
@@ -1773,7 +1836,7 @@ class ConfigModelContractTest {
             assertAll("an absent secret selects private_key_jwt, with or without a key file",
                     () -> assertFalse(OidcConfig.builder().build().usesClientSecret()),
                     () -> assertFalse(OidcConfig.builder()
-                            .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(KEY_FILE))
+                            .clientAuthentication(keyFileOnly())
                             .build().usesClientSecret()));
         }
 

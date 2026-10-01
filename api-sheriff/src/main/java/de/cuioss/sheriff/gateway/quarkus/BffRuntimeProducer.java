@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ClaimAllowlistFilter;
+import de.cuioss.sheriff.gateway.bff.reserved.ClientJwksEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.IdTokenClaimProjection;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
@@ -129,6 +130,14 @@ import org.jspecify.annotations.Nullable;
  *       authenticates with {@code client_secret_basic}, resolves no client-authentication key, and
  *       reports {@code ApiSheriff-130} once per assembled runtime, so at every boot.</li>
  * </ul>
+ * <p>
+ * <strong>The client JWKS endpoint follows the same decision.</strong> The {@link ClientJwksEndpoint}
+ * is assembled in both session modes and handed to the runtime in both client-authentication modes.
+ * In key mode it publishes the public half of the client-authentication key — for a provided and for
+ * a generated key alike — so the identity provider can verify the client assertion. In client-secret
+ * mode there is no such key: the endpoint is the withheld form, which answers {@code 404} while the
+ * path stays reserved. The authentication and the endpoint are yielded together by the one mode
+ * decision, so the key the gateway signs with and the key it publishes cannot differ.
  * <p>
  * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
  * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
@@ -340,7 +349,8 @@ public class BffRuntimeProducer {
         // factory is this same method — so every scoped variant carries the identical pinned posture.
         reportBackChannelPosture();
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
-        ClientAuthentication clientAuthentication = selectClientAuthentication(oidc, clientId, issuer);
+        ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);
+        ClientAuthentication clientAuthentication = clientCredential.authentication();
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
         TokenValidator validator = tokenValidator.get();
@@ -488,7 +498,8 @@ public class BffRuntimeProducer {
                 session.isCookieMode() ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER,
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
-                backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
+                backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint,
+                clientCredential.jwksEndpoint());
     }
 
     /**
@@ -546,7 +557,7 @@ public class BffRuntimeProducer {
                 // Called unconditionally, on the true path as well, so the posture never rests on the
                 // library default (ADR-0022).
                 .verifyHostname(verifyHostname);
-        // The same predicate selects the authentication instance in selectClientAuthentication(...), so the
+        // The same predicate selects the authentication instance in selectClientCredential(...), so the
         // declared method and the credential actually presented cannot disagree. Key mode sets no
         // secret at all: the engine admits an absent secret for the key-based methods and refuses a
         // blank one.
@@ -563,19 +574,22 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Selects the confidential-client authentication once, for the single build this
-     * {@link Singleton} runtime performs. The instance returned is shared by the code exchange, the
-     * refresh grant and RFC 7009 revocation.
+     * Selects the confidential-client credential once, for the single build this {@link Singleton}
+     * runtime performs: the authentication every back-channel leg presents, and the form of the
+     * client JWKS endpoint that goes with it. The authentication instance is shared by the code
+     * exchange, the refresh grant and RFC 7009 revocation.
      * <p>
      * <strong>Client-secret mode</strong> — {@link OidcConfig#usesClientSecret()} is {@code true}. The
      * gateway keeps authenticating with {@code client_secret_basic} and reports {@code ApiSheriff-130},
      * whose template takes no parameter and therefore cannot carry the secret. No client-authentication
-     * key is resolved in this mode, so none is generated and none is read.
+     * key is resolved in this mode, so none is generated and none is read — and none can be published:
+     * the JWKS endpoint is the {@linkplain ClientJwksEndpoint#withheld() withheld} form.
      * <p>
      * <strong>Key mode</strong> — no secret is configured. The key is resolved from
      * {@code oidc.client_authentication.key_file}; an absent block or an absent key selects the
      * generated mode. The key hands out the {@code private_key_jwt} authentication itself, so the
-     * private key never leaves {@link ClientSigningKey}.
+     * private key never leaves {@link ClientSigningKey}, and its public JWK is what the JWKS endpoint
+     * publishes. Both come from the one resolved key, so the published key is the signing key.
      * <p>
      * The mode is named by one {@code DEBUG} line, in key mode together with the key mode and the
      * algorithm — never key material and never the secret.
@@ -584,23 +598,36 @@ public class BffRuntimeProducer {
      *                 predicate
      * @param clientId the resolved client id
      * @param issuer   the resolved issuer, used in key mode as the audience of the client assertion
-     * @return the client authentication every back-channel leg presents
+     * @return the client authentication and the client JWKS endpoint of the selected mode
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the configured
      *                          client-authentication key file is refused
      */
-    private static ClientAuthentication selectClientAuthentication(OidcConfig oidc, String clientId, String issuer) {
+    private static ClientCredential selectClientCredential(OidcConfig oidc, String clientId, String issuer) {
         String clientSecret = oidc.clientSecret();
         if (oidc.usesClientSecret() && clientSecret != null) {
             LOGGER.warn(ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION);
             LOGGER.debug("BFF client authentication: client_secret_basic");
-            return new ClientSecretBasicAuth(clientId, clientSecret);
+            return new ClientCredential(new ClientSecretBasicAuth(clientId, clientSecret),
+                    ClientJwksEndpoint.withheld());
         }
         OidcConfig.ClientAuthenticationSettings settings = oidc.clientAuthentication();
         ClientSigningKey signingKey = resolveSigningKey(settings == null ? null : settings.keyFile(),
                 ClientSigningKey.Purpose.CLIENT_AUTHENTICATION);
         LOGGER.debug("BFF client authentication: private_key_jwt (key mode=%s, algorithm=%s)",
                 signingKey.mode().diagnosticName(), signingKey.algorithm());
-        return signingKey.clientAuthentication(clientId, issuer);
+        return new ClientCredential(signingKey.clientAuthentication(clientId, issuer),
+                new ClientJwksEndpoint(signingKey.publicJwk()));
+    }
+
+    /**
+     * What the one client-authentication decision yields. The two are held together because they must
+     * agree: the endpoint publishes the key the authentication signs with, or withholds when the
+     * authentication is a secret.
+     *
+     * @param authentication the client authentication every back-channel leg presents
+     * @param jwksEndpoint   the client JWKS endpoint in the form that goes with that authentication
+     */
+    private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint) {
     }
 
     /**

@@ -48,8 +48,8 @@ import org.jspecify.annotations.Nullable;
  *                             when omitted
  * @param login                the login-initiation reserved-path settings, {@code null} when
  *                             omitted
- * @param clientAuthentication the {@code private_key_jwt} client-authentication settings,
- *                             {@code null} when omitted
+ * @param clientAuthentication the client-authentication settings — the {@code private_key_jwt}
+ *                             key file and the client JWKS path — {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -88,6 +88,22 @@ List<String> scopes,
      */
     public boolean usesClientSecret() {
         return clientSecret != null;
+    }
+
+    /**
+     * The single resolution of the path the client JWKS endpoint is reserved at — the reserved-path
+     * registry and boot validation both read it, so the two cannot resolve the default differently.
+     * <p>
+     * An absent {@code client_authentication} block and a block that declares no {@code jwks_path}
+     * both resolve to {@link ClientAuthenticationSettings#DEFAULT_JWKS_PATH}; a declared
+     * {@code jwks_path} is returned as declared. The path is resolved whatever the
+     * client-authentication mode: it stays reserved when {@code client_secret} is configured.
+     *
+     * @return the effective client JWKS path, never {@code null}
+     */
+    public String effectiveClientJwksPath() {
+        String declared = clientAuthentication == null ? null : clientAuthentication.jwksPath();
+        return declared == null ? ClientAuthenticationSettings.DEFAULT_JWKS_PATH : declared;
     }
 
     /**
@@ -367,21 +383,31 @@ List<String> scopes,
 
     /**
      * The {@code client_authentication} block: the key the gateway signs its
-     * {@code private_key_jwt} client assertion with. It is read only when no {@code client_secret}
-     * is configured (see {@link OidcConfig#usesClientSecret()}); boot validation refuses a document
-     * that declares both.
+     * {@code private_key_jwt} client assertion with, and the path its public half is published at.
+     * {@code keyFile} is read only when no {@code client_secret} is configured (see
+     * {@link OidcConfig#usesClientSecret()}); boot validation refuses a document that declares a key
+     * file together with a secret. {@code jwksPath} is read in both client-authentication modes.
      * <p>
      * The record is named {@code ClientAuthenticationSettings} so that it does not shadow the token
      * engine's {@code ClientAuthentication} type where both are in scope.
      *
-     * @param keyFile the path of a PEM file on a mount holding the client-authentication key,
-     *                {@code null} when omitted — a key is then generated at startup. The value is a
-     *                location, not a secret: it may be written literally and is never redacted
+     * @param keyFile  the path of a PEM file on a mount holding the client-authentication key,
+     *                 {@code null} when omitted — a key is then generated at startup. The value is a
+     *                 location, not a secret: it may be written literally and is never redacted
+     * @param jwksPath the gateway path the client JWKS endpoint is reserved at, {@code null} when
+     *                 omitted — {@link #DEFAULT_JWKS_PATH} then applies. Read it through
+     *                 {@link OidcConfig#effectiveClientJwksPath()}, never directly, so the default is
+     *                 resolved in one place
      * @author API Sheriff Team
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record ClientAuthenticationSettings(@Nullable String keyFile) {
+    public record ClientAuthenticationSettings(@Nullable String keyFile, @Nullable String jwksPath) {
+
+        /** The path the client JWKS endpoint is reserved at when {@code jwks_path} is omitted. */
+        // java:S1075 — the documented default of a configuration key, not a customizable URI/filesystem path.
+        @SuppressWarnings("java:S1075")
+        public static final String DEFAULT_JWKS_PATH = "/auth/jwks";
     }
 }

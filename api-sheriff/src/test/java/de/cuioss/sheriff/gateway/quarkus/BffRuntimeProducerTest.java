@@ -35,13 +35,26 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
+import java.math.BigInteger;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.AlgorithmParameters;
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
 import java.security.KeyPair;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.security.spec.ECGenParameterSpec;
+import java.security.spec.ECParameterSpec;
+import java.security.spec.ECPoint;
+import java.security.spec.ECPublicKeySpec;
+import java.security.spec.MGF1ParameterSpec;
+import java.security.spec.PSSParameterSpec;
+import java.security.spec.RSAPublicKeySpec;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -149,6 +162,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Covers {@link BffRuntimeProducer}: the runtime is active (and its reserved handlers and session
@@ -1578,6 +1592,9 @@ class BffRuntimeProducerTest {
                 "Signing key for client-authentication generated at startup";
         /** An RFC 7638 SHA-256 thumbprint: 32 bytes, base64url without padding. */
         private static final String THUMBPRINT_SHAPE = "[A-Za-z0-9_-]{43}";
+        private static final String EC_KEY_TYPE = "EC";
+        /** The private members of an RSA or EC JWK — none of which the client JWKS path may publish. */
+        private static final List<String> PRIVATE_JWK_MEMBERS = List.of("d", "p", "q", "dp", "dq", "qi", "oth");
         private static final ObjectMapper JSON = new ObjectMapper();
 
         @TempDir
@@ -1622,12 +1639,12 @@ class BffRuntimeProducerTest {
         enum RefusedKeyFile {
 
             MISMATCHED_HALVES {
-                @Override
-                Path write(Path directory) {
-                    return TestSigningKeys.writeHalves(directory, TestSigningKeys.ecKeyPair().getPrivate(),
-                            TestSigningKeys.ecKeyPair().getPublic());
-                }
-            },
+            @Override
+            Path write(Path directory) {
+                return TestSigningKeys.writeHalves(directory, TestSigningKeys.ecKeyPair().getPrivate(),
+                        TestSigningKeys.ecKeyPair().getPublic());
+            }
+        },
 
             ENCRYPTED_BLOCK {
                 @Override
@@ -1728,7 +1745,7 @@ class BffRuntimeProducerTest {
         @ParameterizedTest(name = "{0} key on the {1} leg")
         @MethodSource("keyModesOnEveryLeg")
         @DisplayName("Should present a client assertion signed with the resolved key, and no secret, in key mode")
-        void shouldPresentAClientAssertionInKeyMode(KeyMode mode, Leg leg) throws IOException {
+        void shouldPresentAClientAssertionInKeyMode(KeyMode mode, Leg leg) throws Exception {
             KeyFixture fixture = keyFixture(mode);
             BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
 
@@ -1761,7 +1778,7 @@ class BffRuntimeProducerTest {
 
         @Test
         @DisplayName("Should sign every leg with the one generated key, and generate a fresh key per runtime")
-        void shouldUseOneGeneratedKeyPerRuntime() throws IOException {
+        void shouldUseOneGeneratedKeyPerRuntime() throws Exception {
             OidcConfig oidc = stubOidc().build();
             BffRuntime runtime = stubProducer(oidc).bffRuntime();
             BffRuntime secondBoot = stubProducer(oidc).bffRuntime();
@@ -1781,13 +1798,12 @@ class BffRuntimeProducerTest {
         @ParameterizedTest(name = "{0}")
         @EnumSource(RefusedKeyFile.class)
         @DisplayName("Should abort the build with CONFIG_INVALID for a key file the resolver refuses")
-        void shouldAbortTheBuildOnARefusedKeyFile(RefusedKeyFile refused) throws IOException {
+        void shouldAbortTheBuildOnARefusedKeyFile(RefusedKeyFile refused) throws Exception {
             Path keyFile = refused.write(keyDirectory);
             List<String> keyMembers = Files.readAllLines(keyFile, StandardCharsets.US_ASCII).stream()
                     .filter(line -> !line.isBlank() && !line.startsWith("-----"))
                     .toList();
-            BffRuntimeProducer producer = stubProducer(stubOidc()
-                    .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(keyFile.toString())).build());
+            BffRuntimeProducer producer = stubProducer(stubOidc().clientAuthentication(keyFileSettings(keyFile)).build());
 
             GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime);
 
@@ -1862,6 +1878,177 @@ class BffRuntimeProducerTest {
                             "without oidc.client_secret the warning must not appear"),
                     () -> assertEquals(1, recordsContaining(TestLogLevel.INFO, GENERATED_CLIENT_AUTHENTICATION_KEY),
                             "the handler does see this build: the generated client-authentication key is recorded"));
+        }
+
+        /**
+         * The published key and the signing key are one key. The key id alone would not show that — an
+         * endpoint publishing some other key under the assertion's key id would pass a key-id
+         * comparison — so the assertion the stub's token endpoint recorded is verified against the key
+         * the client JWKS path published, the way an identity provider verifies it.
+         */
+        @ParameterizedTest(name = "{0} key")
+        @EnumSource(KeyMode.class)
+        @DisplayName("Should publish, on the client JWKS path, the key the client assertion is signed with")
+        void shouldPublishTheKeyTheClientAssertionIsSignedWith(KeyMode mode)
+                throws Exception {
+            KeyFixture fixture = keyFixture(mode);
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+
+            JsonNode published = publishedKeyOf(runtime);
+            String assertion = clientAssertionOf(drive(Leg.CODE_EXCHANGE, runtime));
+
+            JsonNode header = jwtPart(assertion, 0);
+            String publishedKeyId = published.path("kid").asText();
+            assertAll("the published " + mode + " key and the client assertion",
+                    () -> assertTrue(publishedKeyId.matches(THUMBPRINT_SHAPE),
+                            "the published key id is an RFC 7638 thumbprint: " + publishedKeyId),
+                    () -> assertEquals(publishedKeyId, header.path("kid").asText(),
+                            "the assertion names the published key"),
+                    () -> fixture.expectedKeyId().ifPresent(expected -> assertEquals(expected, publishedKeyId,
+                            "the published key id is the thumbprint of the configured key")),
+                    () -> assertEquals(mode.algorithm, published.path("alg").asText()),
+                    () -> assertEquals(header.path("alg").asText(), published.path("alg").asText(),
+                            "the published algorithm is the one the assertion is signed with"),
+                    () -> assertEquals("sig", published.path("use").asText()),
+                    () -> assertTrue(PRIVATE_JWK_MEMBERS.stream().noneMatch(published::has),
+                            "no private key member is published: " + memberNamesOf(published)),
+                    () -> assertTrue(verifies(published, assertion),
+                            "the assertion's signature verifies against the published key"));
+        }
+
+        /**
+         * The negative control for the signature verification above, and the per-startup property of a
+         * generated key seen from the endpoint: a second runtime publishes another key, under which the
+         * first runtime's assertion does not verify.
+         */
+        @Test
+        @DisplayName("Should publish a fresh generated key per runtime, under which another runtime's assertion fails (control)")
+        void shouldPublishAFreshGeneratedKeyPerRuntime() throws Exception {
+            OidcConfig oidc = stubOidc().build();
+            BffRuntime runtime = stubProducer(oidc).bffRuntime();
+            BffRuntime secondBoot = stubProducer(oidc).bffRuntime();
+
+            JsonNode published = publishedKeyOf(runtime);
+            JsonNode secondBootPublished = publishedKeyOf(secondBoot);
+            String assertion = clientAssertionOf(drive(Leg.REFRESH_GRANT, runtime));
+
+            assertAll("each runtime publishes its own generated key",
+                    () -> assertNotEquals(published.path("kid").asText(), secondBootPublished.path("kid").asText(),
+                            "a second runtime publishes another key"),
+                    () -> assertEquals(published, publishedKeyOf(runtime),
+                            "one runtime publishes the same key on every request"),
+                    () -> assertTrue(verifies(published, assertion), "the assertion verifies under its own runtime's key"),
+                    () -> assertFalse(verifies(secondBootPublished, assertion),
+                            "and not under the other runtime's key — the verification is of this key, not of any key"));
+        }
+
+        @Test
+        @DisplayName("Should publish the key set without contacting the identity provider")
+        void shouldPublishWithoutContactingTheIdentityProvider() throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+
+            publishedKeyOf(runtime);
+
+            assertAll("the key set is served from the runtime alone",
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.DISCOVERY)),
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.TOKEN)));
+        }
+
+        @Test
+        @DisplayName("Should answer a method other than GET with 405 and Allow: GET in key mode")
+        void shouldRefuseAnotherMethodOnTheClientJwksPathInKeyMode() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+
+            BffRuntime.ReservedHttpResponse response = clientJwks(runtime, "POST");
+
+            assertAll("POST on the client JWKS path in key mode",
+                    () -> assertEquals(405, response.status()),
+                    () -> assertEquals(Map.of("Allow", "GET"), response.headers()),
+                    () -> assertEquals(Optional.empty(), response.jsonBodyOptional()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"GET", "HEAD", "POST"})
+        @DisplayName("Should answer the client JWKS path 404 with no body in client-secret mode")
+        void shouldWithholdTheKeySetInClientSecretMode(String method) {
+            BffRuntime runtime = stubProducer(secretFixture().oidc()).bffRuntime();
+
+            BffRuntime.ReservedHttpResponse response = clientJwks(runtime, method);
+
+            assertAll(method + " on the client JWKS path with a client secret configured",
+                    () -> assertTrue(runtime.isActive(), "the path is dispatched by an active runtime"),
+                    () -> assertEquals(404, response.status(),
+                            "there is no client-authentication key, so there is nothing to publish"),
+                    () -> assertEquals(Map.of("Cache-Control", "no-store"), response.headers(),
+                            "no-store, and no Allow header: the answer is not a method refusal"),
+                    () -> assertEquals(Optional.empty(), response.jsonBodyOptional(), "no body, not an empty key set"),
+                    () -> assertEquals(0, recordsContaining(TestLogLevel.INFO, GENERATED_CLIENT_AUTHENTICATION_KEY),
+                            "no client-authentication key was generated to answer it"));
+        }
+
+        private static BffRuntime.ReservedHttpResponse clientJwks(BffRuntime runtime, String method) {
+            return runtime.dispatch(ReservedEndpoint.CLIENT_JWKS,
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, method), NOW);
+        }
+
+        /** The one key a {@code GET} on the client JWKS path publishes, asserting that there is exactly one. */
+        private static JsonNode publishedKeyOf(BffRuntime runtime) throws IOException {
+            BffRuntime.ReservedHttpResponse response = clientJwks(runtime, "GET");
+            assertEquals(200, response.status(), "key mode publishes the client key set");
+            assertEquals(Map.of("Cache-Control", "no-store", "Content-Type", "application/json"), response.headers());
+            JsonNode document = JSON.readTree(response.jsonBodyOptional().orElseThrow());
+            assertEquals(List.of("keys"), memberNamesOf(document), "the document holds the key set and nothing else");
+            JsonNode keys = document.path("keys");
+            assertEquals(1, keys.size(), "exactly one key is published: " + keys);
+            return keys.get(0);
+        }
+
+        private static List<String> memberNamesOf(JsonNode object) {
+            return object.properties().stream().map(Map.Entry::getKey).toList();
+        }
+
+        private static String clientAssertionOf(StubIdentityProvider.ReceivedRequest request) {
+            String assertion = request.form().get(CLIENT_ASSERTION);
+            assertNotNull(assertion, "the request body carries no client_assertion");
+            return assertion;
+        }
+
+        /**
+         * Verifies a compact JWS against a published JWK with the JDK alone: {@code ES256} over the raw
+         * {@code R || S} signature of an EC key, {@code PS256} over an RSA key.
+         */
+        private static boolean verifies(JsonNode jwk, String compactJws) throws GeneralSecurityException {
+            String[] parts = compactJws.split("\\.");
+            assertEquals(3, parts.length, "a compact JWS has three parts");
+            Signature verifier;
+            if (EC_KEY_TYPE.equals(jwk.path("kty").asText())) {
+                verifier = Signature.getInstance("SHA256withECDSAinP1363Format");
+            } else {
+                verifier = Signature.getInstance("RSASSA-PSS");
+                verifier.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+            }
+            verifier.initVerify(publicKeyOf(jwk));
+            verifier.update((parts[0] + "." + parts[1]).getBytes(StandardCharsets.US_ASCII));
+            return verifier.verify(Base64.getUrlDecoder().decode(parts[2]));
+        }
+
+        /** Rebuilds the public key from the published members alone — what an identity provider has to go on. */
+        private static PublicKey publicKeyOf(JsonNode jwk) throws GeneralSecurityException {
+            if (EC_KEY_TYPE.equals(jwk.path("kty").asText())) {
+                assertEquals("P-256", jwk.path("crv").asText(), "the published EC key is on curve P-256");
+                AlgorithmParameters parameters = AlgorithmParameters.getInstance(EC_KEY_TYPE);
+                parameters.init(new ECGenParameterSpec("secp256r1"));
+                return KeyFactory.getInstance(EC_KEY_TYPE).generatePublic(new ECPublicKeySpec(
+                        new ECPoint(unsignedMember(jwk, "x"), unsignedMember(jwk, "y")),
+                        parameters.getParameterSpec(ECParameterSpec.class)));
+            }
+            assertEquals("RSA", jwk.path("kty").asText(), "the published key is EC or RSA");
+            return KeyFactory.getInstance("RSA").generatePublic(
+                    new RSAPublicKeySpec(unsignedMember(jwk, "n"), unsignedMember(jwk, "e")));
+        }
+
+        private static BigInteger unsignedMember(JsonNode jwk, String member) {
+            return new BigInteger(1, Base64.getUrlDecoder().decode(jwk.path(member).asText()));
         }
 
         private StubIdentityProvider.ReceivedRequest drive(Leg leg, BffRuntime runtime) {
@@ -1965,9 +2152,13 @@ class BffRuntimeProducerTest {
             }
             KeyPair keyPair = providedKey.get();
             Path keyFile = TestSigningKeys.writeKeyFile(keyDirectory, keyPair);
-            OidcConfig oidc = stubOidc()
-                    .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(keyFile.toString())).build();
+            OidcConfig oidc = stubOidc().clientAuthentication(keyFileSettings(keyFile)).build();
             return new KeyFixture(oidc, Optional.of(new DpopProofGenerator(keyPair, mode.algorithm).jkt()));
+        }
+
+        /** A {@code client_authentication} block naming {@code keyFile} and declaring no {@code jwks_path}. */
+        private static OidcConfig.ClientAuthenticationSettings keyFileSettings(Path keyFile) {
+            return OidcConfig.ClientAuthenticationSettings.builder().keyFile(keyFile.toString()).build();
         }
 
         /**

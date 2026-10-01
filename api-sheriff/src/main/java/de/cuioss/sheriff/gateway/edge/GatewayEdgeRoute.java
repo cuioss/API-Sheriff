@@ -149,9 +149,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
  *       guard, and the framing gate;</li>
  *   <li>the gateway's own reserved paths, ahead of the route table and after the passthrough host
- *       guard: first the OIDC reserved paths (exact, on the OIDC host), then the application
- *       portal's {@code portal.path} (exact, on any host) — so a prefix route never swallows
- *       either;</li>
+ *       guard: first the OIDC reserved paths (exact; on the OIDC host, except for the two kinds the
+ *       identity provider dials server-to-server — back-channel logout and the client JWKS — which
+ *       are matched on every host), then the application portal's {@code portal.path} (exact, on
+ *       any host) — so a prefix route never swallows either;</li>
  *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
  *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
  *       then the per-route verb gate;</li>

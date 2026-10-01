@@ -27,6 +27,7 @@ import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.ClientJwksEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
@@ -53,11 +54,13 @@ import org.jspecify.annotations.Nullable;
  *       requests;</li>
  *   <li>{@link #dispatch(ReservedEndpoint, ReservedHttpRequest, Instant)} — the framework-agnostic
  *       fan-out that routes each matched reserved kind (callback, logout, logout-return, back-channel
- *       logout, user-info, login) to its already-wired handler and normalizes the heterogeneous
- *       handler outcomes into one {@link ReservedHttpResponse} the edge renders verbatim. The
- *       back-channel arm stays wired in both session modes — the endpoint's own capability gate
- *       answers {@code 404} where IdP-driven destruction is unsupported, so the reserved path never
- *       falls through to the proxy route table.</li>
+ *       logout, user-info, login, client JWKS) to its already-wired handler and normalizes the
+ *       heterogeneous handler outcomes into one {@link ReservedHttpResponse} the edge renders
+ *       verbatim. The back-channel arm stays wired in both session modes — the endpoint's own
+ *       capability gate answers {@code 404} where IdP-driven destruction is unsupported, so the
+ *       reserved path never falls through to the proxy route table. The client JWKS arm stays wired
+ *       in both client-authentication modes for the same reason: with a client secret configured the
+ *       endpoint answers {@code 404} itself.</li>
  *   <li>{@link #sessionIdentity(String, Instant)} — the display identity (signed in or not, and the
  *       {@code preferred_username}) the application portal renders for the request's session.</li>
  * </ol>
@@ -84,6 +87,7 @@ public final class BffRuntime {
     private final @Nullable BackchannelLogoutEndpoint backchannelLogoutEndpoint;
     private final @Nullable UserInfoEndpoint userInfoEndpoint;
     private final @Nullable LoginInitiationEndpoint loginInitiationEndpoint;
+    private final @Nullable ClientJwksEndpoint clientJwksEndpoint;
 
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     private BffRuntime(boolean active, @Nullable SessionAuthenticationStage sessionStage,
@@ -91,7 +95,8 @@ public final class BffRuntime {
             @Nullable CallbackEndpoint callbackEndpoint,
             @Nullable Supplier<LogoutEndpoint> logoutEndpoint,
             @Nullable BackchannelLogoutEndpoint backchannelLogoutEndpoint,
-            @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint) {
+            @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint,
+            @Nullable ClientJwksEndpoint clientJwksEndpoint) {
         this.active = active;
         this.sessionStage = sessionStage;
         this.csrfDefence = csrfDefence;
@@ -101,6 +106,7 @@ public final class BffRuntime {
         this.backchannelLogoutEndpoint = backchannelLogoutEndpoint;
         this.userInfoEndpoint = userInfoEndpoint;
         this.loginInitiationEndpoint = loginInitiationEndpoint;
+        this.clientJwksEndpoint = clientJwksEndpoint;
     }
 
     /**
@@ -117,12 +123,16 @@ public final class BffRuntime {
      * @param backchannelLogoutEndpoint the OIDC back-channel logout receiver
      * @param userInfoEndpoint          the session/user-info fold handler (D11)
      * @param loginInitiationEndpoint   the login-initiation fold handler (D12)
+     * @param clientJwksEndpoint        the client JWKS handler, in its publishing form for
+     *                                  {@code private_key_jwt} client authentication and in its
+     *                                  withheld form for client-secret authentication
      */
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     public BffRuntime(SessionAuthenticationStage sessionStage, CsrfDefence csrfDefence,
             StepUpCoordinator stepUpCoordinator, CallbackEndpoint callbackEndpoint,
             Supplier<LogoutEndpoint> logoutEndpoint, BackchannelLogoutEndpoint backchannelLogoutEndpoint,
-            UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint) {
+            UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint,
+            ClientJwksEndpoint clientJwksEndpoint) {
         this(true,
                 Objects.requireNonNull(sessionStage, "sessionStage"),
                 Objects.requireNonNull(csrfDefence, "csrfDefence"),
@@ -131,7 +141,8 @@ public final class BffRuntime {
                 Objects.requireNonNull(logoutEndpoint, "logoutEndpoint"),
                 Objects.requireNonNull(backchannelLogoutEndpoint, "backchannelLogoutEndpoint"),
                 Objects.requireNonNull(userInfoEndpoint, "userInfoEndpoint"),
-                Objects.requireNonNull(loginInitiationEndpoint, "loginInitiationEndpoint"));
+                Objects.requireNonNull(loginInitiationEndpoint, "loginInitiationEndpoint"),
+                Objects.requireNonNull(clientJwksEndpoint, "clientJwksEndpoint"));
     }
 
     /**
@@ -139,7 +150,7 @@ public final class BffRuntime {
      *         {@link #isActive()} {@code false}, exposes no session stage, and dispatches nothing.
      */
     public static BffRuntime inert() {
-        return new BffRuntime(false, null, null, null, null, null, null, null, null);
+        return new BffRuntime(false, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -233,6 +244,7 @@ public final class BffRuntime {
             case USER_INFO -> render(requireNonNull(userInfoEndpoint).handle(req.cookieHeader(), req.claimsParam(), now));
             case LOGIN ->
                 render(requireNonNull(loginInitiationEndpoint).initiate(req.returnUrlParam(), req.cookieHeader(), now));
+            case CLIENT_JWKS -> render(requireNonNull(clientJwksEndpoint).handle(req.httpMethod()));
         };
     }
 
@@ -283,6 +295,14 @@ public final class BffRuntime {
     private static ReservedHttpResponse render(LoginInitiationEndpoint.LoginInitiationOutcome outcome) {
         return new ReservedHttpResponse(outcome.status(), outcome.location(), null, Map.of(),
                 outcome.setCookieHeaders());
+    }
+
+    private static ReservedHttpResponse render(ClientJwksEndpoint.JwksOutcome outcome) {
+        // Only the publishing form's GET carries a document; every other outcome is body-less, and an
+        // absent body must stay absent rather than be serialized as the JSON literal null.
+        Map<String, Object> document = outcome.document();
+        return new ReservedHttpResponse(outcome.status(), null, document == null ? null : JsonWriter.toJson(document),
+                outcome.headers(), List.of());
     }
 
     private static <T> T requireNonNull(@Nullable T value) {
@@ -351,13 +371,15 @@ public final class BffRuntime {
     /**
      * The normalized response the edge renders for a dispatched reserved path: the HTTP status, an
      * optional redirect {@code Location}, an optional already-serialized JSON body (the user-info
-     * fold), the fixed response headers, and the {@code Set-Cookie} header values to emit. Token
-     * material never appears here — only opaque cookie headers, the redirect location, and allowlisted
-     * disclosure.
+     * fold and the published client key set), the fixed response headers, and the {@code Set-Cookie}
+     * header values to emit. Token material never appears here — only opaque cookie headers, the
+     * redirect location, allowlisted disclosure, and the client-authentication public key.
      *
      * @param status           the HTTP status the edge returns
      * @param location         the redirect target, present only for a redirect outcome
      * @param jsonBody         the already-serialized JSON body, present only for the user-info fold
+     *                         and for the client key set a {@code GET} on the client JWKS path
+     *                         publishes
      * @param headers          the fixed response headers the edge emits verbatim
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit
      * @author API Sheriff Team

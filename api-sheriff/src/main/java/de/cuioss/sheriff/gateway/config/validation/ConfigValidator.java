@@ -40,6 +40,8 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -150,6 +152,11 @@ import org.jspecify.annotations.Nullable;
  * value. The schema does not encode the exclusion; this rule owns it, because its message has to
  * name both keys.
  * <p>
+ * The client JWKS path rule refuses an {@code oidc.client_authentication.jwks_path} — declared, or
+ * the default it resolves to when omitted — that another reserved OIDC endpoint already claims. The
+ * reserved-path registry keeps the first registration for a path, so the collision would otherwise
+ * drop the key-set endpoint without a diagnostic.
+ * <p>
  * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
  * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect
  * spellings at boot — a redirect is written verbatim at request time, so this review is the only
@@ -235,6 +242,10 @@ public final class ConfigValidator {
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
     private static final String OIDC_CLIENT_SECRET_POINTER = "/oidc/client_secret";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_CLIENT_JWKS_PATH_POINTER = "/oidc/client_authentication/jwks_path";
+    private static final String OIDC_CLIENT_JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
 
     /**
      * The fixed detail of the refusal of {@code oidc.client_secret} together with
@@ -365,6 +376,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionCookieName(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateClientAuthentication(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateClientJwksPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
@@ -2383,6 +2395,61 @@ public final class ConfigValidator {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER,
                     CLIENT_SECRET_WITH_KEY_FILE_DETAIL));
         }
+    }
+
+    /**
+     * Rule: the client JWKS path must not be the path of another reserved OIDC endpoint.
+     * <p>
+     * The reserved-path registry keeps the first registration for a path and registers the client
+     * JWKS path last. A JWKS path that another key of the {@code oidc} block also names — the callback
+     * of {@code redirect_uri}, the logout path, its return leg, the back-channel logout path, the
+     * user-info path or the login path — would therefore lose silently: the other endpoint would answer
+     * there, the key set would never be published, and the identity provider could not verify the
+     * gateway's client assertion. The collision is refused instead, naming both keys.
+     * <p>
+     * The path is read through {@link OidcConfig#effectiveClientJwksPath()}, the accessor the registry
+     * resolves it with, and the owner of the path through
+     * {@link ReservedPathRegistry#reservedKind(OidcConfig, String)}, the registry's own derivation — so
+     * the rule judges exactly what the runtime would register. It therefore covers the default path as
+     * well: a document that declares no {@code jwks_path} and names {@code /auth/jwks} under another key
+     * is refused like one that declares the collision outright.
+     * <p>
+     * The rule does not read the client-authentication mode. The path is reserved with a client secret
+     * configured too, so the collision is the same defect in both modes. Every violation collects into
+     * the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateClientJwksPath(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null) {
+            return;
+        }
+        ReservedPathRegistry.reservedKind(oidc, oidc.effectiveClientJwksPath())
+                .filter(owner -> owner != ReservedEndpoint.CLIENT_JWKS)
+                .ifPresent(owner -> errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_JWKS_PATH_POINTER,
+                        ("%s and %s resolve to the same gateway path; two reserved endpoints cannot share one "
+                                + "path, and the client key set would never be published there — when %s is "
+                                + "omitted it resolves to %s. Declare an %s that no other oidc key names, or "
+                                + "change %s")
+                                .formatted(OIDC_CLIENT_JWKS_PATH_KEY, reservedPathKey(owner),
+                                        OIDC_CLIENT_JWKS_PATH_KEY,
+                                        OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH,
+                                        OIDC_CLIENT_JWKS_PATH_KEY, reservedPathKey(owner)))));
+    }
+
+    /**
+     * The {@code gateway.yaml} key a reserved endpoint's path is declared under, for a refusal that has
+     * to name it.
+     */
+    private static String reservedPathKey(ReservedEndpoint endpoint) {
+        return switch (endpoint) {
+            case CALLBACK -> "oidc.redirect_uri";
+            case LOGOUT -> "oidc.logout.path";
+            case LOGOUT_RETURN -> "oidc.logout.post_logout_redirect_uri";
+            case BACKCHANNEL_LOGOUT -> "oidc.logout.backchannel_path";
+            case USER_INFO -> "oidc.user_info.path";
+            case LOGIN -> "oidc.login.path";
+            case CLIENT_JWKS -> OIDC_CLIENT_JWKS_PATH_KEY;
+        };
     }
 
     /**

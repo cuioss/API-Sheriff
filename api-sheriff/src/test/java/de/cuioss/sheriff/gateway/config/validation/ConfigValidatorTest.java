@@ -3527,7 +3527,12 @@ class ConfigValidatorTest {
         }
 
         private static OidcConfig.ClientAuthenticationSettings keyFile() {
-            return new OidcConfig.ClientAuthenticationSettings(KEY_FILE);
+            return OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).build();
+        }
+
+        /** A declared {@code client_authentication} block that names no key file. */
+        private static OidcConfig.ClientAuthenticationSettings emptyBlock() {
+            return OidcConfig.ClientAuthenticationSettings.builder().build();
         }
 
         @Test
@@ -3550,16 +3555,14 @@ class ConfigValidatorTest {
             assertAll("private_key_jwt with a generated key",
                     () -> assertEquals(List.of(), clientAuthenticationErrors(null, null),
                             "no secret and no block selects a generated key"),
-                    () -> assertEquals(List.of(),
-                            clientAuthenticationErrors(null, new OidcConfig.ClientAuthenticationSettings(null)),
+                    () -> assertEquals(List.of(), clientAuthenticationErrors(null, emptyBlock()),
                             "a block that names no key file selects a generated key too"));
         }
 
         @Test
         @DisplayName("Should admit a client secret beside a client_authentication block that names no key file")
         void shouldAdmitSecretBesideAnEmptyBlock() {
-            assertEquals(List.of(),
-                    clientAuthenticationErrors(SECRET, new OidcConfig.ClientAuthenticationSettings(null)),
+            assertEquals(List.of(), clientAuthenticationErrors(SECRET, emptyBlock()),
                     "the refusal is about two credentials, and an empty block names none");
         }
 
@@ -3618,6 +3621,178 @@ class ConfigValidatorTest {
                     topologyWith());
 
             assertHasError(errors, POINTER, KEY_FILE_KEY);
+        }
+    }
+
+    /**
+     * The client JWKS path must not be the path of another reserved OIDC endpoint. The registry keeps
+     * the first registration for a path and registers the client JWKS path last, so a collision would
+     * drop the key-set endpoint without a diagnostic; the rule refuses it instead, naming both keys.
+     * It reads the effective path, so the default is covered exactly as a declared path is.
+     */
+    @Nested
+    @DisplayName("oidc.client_authentication.jwks_path must differ from every other reserved OIDC path")
+    class ClientJwksPathCollision {
+
+        private static final String POINTER = "/oidc/client_authentication/jwks_path";
+        private static final String JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
+        private static final String ORIGIN = "https://gateway.example.com";
+        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        private static final String DECLARED_JWKS_PATH = "/auth/client-keys";
+
+        /** The six reserved keys a JWKS path can collide with, each placing a path under its own key. */
+        enum ReservedKey {
+
+            REDIRECT_URI("oidc.redirect_uri") {
+            @Override
+            OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                return oidc.redirectUri(ORIGIN + path);
+            }
+        },
+
+            LOGOUT_PATH("oidc.logout.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.logout(OidcConfig.Logout.builder().path(path).build());
+                }
+            },
+
+            POST_LOGOUT_REDIRECT_URI("oidc.logout.post_logout_redirect_uri") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.logout(OidcConfig.Logout.builder().postLogoutRedirectUri(ORIGIN + path).build());
+                }
+            },
+
+            BACKCHANNEL_PATH("oidc.logout.backchannel_path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.logout(OidcConfig.Logout.builder().backchannelPath(path).build());
+                }
+            },
+
+            USER_INFO_PATH("oidc.user_info.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.userInfo(OidcConfig.UserInfo.builder().path(path).build());
+                }
+            },
+
+            LOGIN_PATH("oidc.login.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.login(OidcConfig.Login.builder().path(path).build());
+                }
+            };
+
+            private final String key;
+
+            ReservedKey(String key) {
+                this.key = key;
+            }
+
+            abstract OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path);
+        }
+
+        private List<ConfigError> jwksPathErrors(OidcConfig oidc) {
+            return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        private static OidcConfig.ClientAuthenticationSettings declaring(String jwksPath) {
+            return OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build();
+        }
+
+        /** A document declaring all six other reserved paths, none of them the default JWKS path. */
+        private static OidcConfig.OidcConfigBuilder everyOtherReservedPath() {
+            return OidcConfig.builder()
+                    .redirectUri(ORIGIN + "/auth/callback")
+                    .logout(OidcConfig.Logout.builder()
+                            .path("/auth/logout")
+                            .postLogoutRedirectUri(ORIGIN + "/auth/logout/return")
+                            .backchannelPath("/auth/backchannel")
+                            .build())
+                    .userInfo(OidcConfig.UserInfo.builder().path("/auth/userinfo").build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build());
+        }
+
+        @Test
+        @DisplayName("Should admit the default and a declared JWKS path beside six distinct reserved paths")
+        void shouldAdmitDistinctPaths() {
+            assertAll("no reserved path equals the client JWKS path",
+                    () -> assertEquals(List.of(), jwksPathErrors(everyOtherReservedPath().build()),
+                            "the default path"),
+                    () -> assertEquals(List.of(), jwksPathErrors(
+                            everyOtherReservedPath().clientAuthentication(declaring(DECLARED_JWKS_PATH)).build()),
+                            "a declared path"));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ReservedKey.class)
+        @DisplayName("Should refuse a declared JWKS path that another reserved key names, naming both keys")
+        void shouldRefuseADeclaredPathAnotherKeyNames(ReservedKey reservedKey) {
+            OidcConfig oidc = reservedKey.declare(OidcConfig.builder(), DECLARED_JWKS_PATH)
+                    .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build();
+
+            List<ConfigError> errors = jwksPathErrors(oidc);
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            assertAll("the refusal names both colliding keys",
+                    () -> assertEquals("gateway.yaml", errors.getFirst().file()),
+                    () -> assertTrue(errors.getFirst().message().contains(JWKS_PATH_KEY),
+                            () -> "the refusal must name " + JWKS_PATH_KEY + ": " + errors.getFirst().message()),
+                    () -> assertTrue(errors.getFirst().message().contains(reservedKey.key),
+                            () -> "the refusal must name " + reservedKey.key + ": " + errors.getFirst().message()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ReservedKey.class)
+        @DisplayName("Should refuse another reserved key that names the default JWKS path while no jwks_path is declared")
+        void shouldRefuseACollisionWithTheDefaultPath(ReservedKey reservedKey) {
+            OidcConfig oidc = reservedKey.declare(OidcConfig.builder(), DEFAULT_JWKS_PATH).build();
+
+            List<ConfigError> errors = jwksPathErrors(oidc);
+
+            assertEquals(1, errors.size(),
+                    () -> "the default path is covered exactly as a declared one, got: " + errors);
+            assertAll("the refusal names both keys and the default the omitted key resolves to",
+                    () -> assertTrue(errors.getFirst().message().contains(JWKS_PATH_KEY)),
+                    () -> assertTrue(errors.getFirst().message().contains(reservedKey.key),
+                            () -> "the refusal must name " + reservedKey.key + ": " + errors.getFirst().message()),
+                    () -> assertTrue(errors.getFirst().message().contains(DEFAULT_JWKS_PATH),
+                            () -> "the refusal must name the default: " + errors.getFirst().message()));
+        }
+
+        /**
+         * The matched control for the default-path refusal: the same {@code logout.path} is admitted
+         * once the JWKS path is declared elsewhere, so the refusal above is about the two endpoints
+         * sharing a path and not about the literal {@code /auth/jwks}.
+         */
+        @Test
+        @DisplayName("Should admit another key on the default JWKS path once jwks_path is declared elsewhere (matched control)")
+        void shouldAdmitTheDefaultPathUnderAnotherKeyOnceJwksPathMoves() {
+            OidcConfig oidc = ReservedKey.LOGOUT_PATH.declare(OidcConfig.builder(), DEFAULT_JWKS_PATH)
+                    .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build();
+
+            assertEquals(List.of(), jwksPathErrors(oidc));
+        }
+
+        @Test
+        @DisplayName("Should hold the rule with a client secret configured — the path stays reserved in that mode")
+        void shouldRefuseTheCollisionInClientSecretMode() {
+            OidcConfig oidc = ReservedKey.LOGIN_PATH.declare(OidcConfig.builder(), DEFAULT_JWKS_PATH)
+                    .clientSecret("configured-secret-value").build();
+
+            assertEquals(1, jwksPathErrors(oidc).size(), "the rule does not read the client-authentication mode");
+        }
+
+        @Test
+        @DisplayName("Should report nothing without an oidc block")
+        void shouldReportNothingWithoutOidc() {
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> POINTER.equals(error.pointer())), errors::toString);
         }
     }
 }

@@ -389,6 +389,12 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   PRIVATE KEY block and one PUBLIC KEY block. RSA (>= 2048
                                    #   bits, signs PS256) or EC P-256 (signs ES256). OPTIONAL --
                                    #   omit to generate a key on startup (single node only)
+    jwks_path: /auth/jwks          # OPTIONAL; default /auth/jwks. An unauthenticated GET here
+                                   #   publishes the client-authentication public key (reserved
+                                   #   path, matched on EVERY host: the IdP dials it
+                                   #   server-to-server). Register its https URL at the IdP as
+                                   #   the client's key-set URL. With client_secret configured
+                                   #   the path stays reserved and answers 404
   # client_secret: ${SHERIFF_CLIENT_SECRET}   # selects client-secret authentication, which is
                                    #   not FAPI 2.0 conformant and may weaken security. Refused
                                    #   at boot together with client_authentication.key_file

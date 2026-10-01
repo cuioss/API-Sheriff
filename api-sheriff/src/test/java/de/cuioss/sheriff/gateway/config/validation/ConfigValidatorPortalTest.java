@@ -155,6 +155,9 @@ class ConfigValidatorPortalTest {
         private static final String BACKCHANNEL = "/auth/backchannel";
         private static final String USER_INFO = "/session/userinfo";
         private static final String LOGIN = "/session/login";
+        /** The path the client JWKS endpoint is reserved at when {@code jwks_path} is omitted. */
+        private static final String DEFAULT_CLIENT_JWKS = "/auth/jwks";
+        private static final String DECLARED_CLIENT_JWKS = "/keys/client";
 
         private OidcConfig oidc() {
             return OidcConfig.builder()
@@ -185,6 +188,45 @@ class ConfigValidatorPortalTest {
         @Test
         void acceptsAnyPathWithoutOidcBlock() {
             assertEquals(List.of(), portalErrors(gateway(portal(CALLBACK), null), List.of()));
+        }
+
+        /**
+         * The client JWKS path is reserved without being declared, so the portal is refused on the
+         * default path by an {@code oidc} block that never names it.
+         */
+        @Test
+        void refusesTheDefaultClientJwksPath() {
+            assertRefused(portalErrors(gateway(portal(DEFAULT_CLIENT_JWKS), oidc()), List.of()),
+                    PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+        }
+
+        /**
+         * A declared {@code jwks_path} moves the reservation: the portal is refused on the declared
+         * path and admitted on the default one, which that document no longer reserves.
+         */
+        @Test
+        void refusesTheDeclaredClientJwksPathAndReleasesTheDefault() {
+            OidcConfig declaring = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK)
+                    .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder()
+                            .jwksPath(DECLARED_CLIENT_JWKS).build())
+                    .build();
+
+            assertRefused(portalErrors(gateway(portal(DECLARED_CLIENT_JWKS), declaring), List.of()),
+                    PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+            assertEquals(List.of(), portalErrors(gateway(portal(DEFAULT_CLIENT_JWKS), declaring), List.of()),
+                    "the default path is not reserved once jwks_path names another");
+        }
+
+        @Test
+        void refusesTheClientJwksPathWithAClientSecretConfigured() {
+            OidcConfig secretMode = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK)
+                    .clientSecret(Generators.letterStrings(16, 32).next())
+                    .build();
+
+            assertRefused(portalErrors(gateway(portal(DEFAULT_CLIENT_JWKS), secretMode), List.of()),
+                    PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
         }
     }
 
