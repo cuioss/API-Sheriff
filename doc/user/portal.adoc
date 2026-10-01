@@ -92,8 +92,8 @@ refuses, each with `ApiSheriff-200`:
   percent-encoded separator, or anything the URL path review refuses. Such a path could never equal a
   canonical request path and would silently never answer;
 * a path equal to one of the reserved OIDC paths (callback, logout, logout return, back-channel
-  logout, user-info, login). The portal matches on every host, so it would collide with the reserved
-  endpoint;
+  logout, user-info, login, step-up). The portal matches on every host, so it would collide with the
+  reserved endpoint;
 * a path equal to the exact `match.path` of an *enabled* endpoint's route, which would make that
   route unreachable. A disabled endpoint's route does not count, and a prefix route never collides.
 

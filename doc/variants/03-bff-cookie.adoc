@@ -62,8 +62,10 @@ and the gateway holds no per-user state.
 | AES-256-GCM (authenticated encryption) over a *packed and deflated* plaintext. The payload is the
   token set -- access token, refresh token, the raw ID token (needed as `id_token_hint` at logout --
   without it in the cookie, the stateless gateway could not drive RP-initiated logout), and minimal
-  metadata, including the session's active scope set (the scopes the IdP granted, which every
-  refresh requests) -- framed as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
+  metadata, including the session's active scope set (the scopes of the current token, which every
+  near-expiry refresh requests) and its granted scope set (every scope the IdP has granted the
+  session, which decides whether a missing scope costs a refresh or a new authorization) -- framed
+  as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
   plus nonce and auth tag form the cookie value. Framing by declared length rather than by a
   separator is what removes the per-field base64 armouring the earlier format needed, and deflation
   is what turns that saving into fitting the budget. Compress-then-encrypt is safe in this
@@ -125,6 +127,15 @@ challenge -- with one difference: the refreshed token is re-sealed
 into a *new cookie* (`Set-Cookie` on the response) rather than written to a store. The refresh
 requests the session's active scope set, and the re-sealed cookie carries the set the response
 granted, so a session that logged in on a scoped route keeps its endpoint scopes across refreshes.
+
+*Scope enforcement works as in the session-based variant too.* A session route compares the
+session's active scope set against the route's needed set on every request and refreshes, widens or
+refuses (link:02-bff-session.adoc#_scope_enforcement[Scope Enforcement]). Two things differ here,
+both consequences of the session being the cookie. A granted widening is persisted by re-sealing:
+the callback sets a new session cookie for the same derived session identity. And a request whose
+near-expiry refresh has just re-sealed the session does not also start a scope-driven refresh,
+because its own `Cookie` header still names the refresh token that refresh rotated away; it is
+widened or refused instead, and the next request, carrying the new cookie, is refreshed normally.
 
 *The refresh token's cost in the seal is measured, not open.* Holding it makes the session a
 three-token payload -- the largest shape this variant carries -- and under the shipped packaging
@@ -227,7 +238,9 @@ endpoint:
   auth: { require: session }     # default for all routes here; add token_relay: false to
                                  #   require the login without relaying the token upstream
   scopes: [orders.read]          # a login for these routes requests oidc.scopes ∪ [orders.read];
-                                 #   a live session is never checked against it
+                                 #   a live session is compared against that set on every
+                                 #   request, then refreshed within its granted set, widened,
+                                 #   or refused 403
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }
@@ -281,18 +294,21 @@ across replicas with no affinity at all.
 
 The sealed-cookie format version is bound into the cookie's authenticated data, so a cookie carrying
 any other version fails to unseal rather than being mis-parsed -- the version byte is read at an
-explicit gate before a cipher is ever constructed. The current version is *1*: the ten-field payload
--- tokens, identity and session claims, and the session's active scope set -- framed as
-length-prefixed raw UTF-8 and deflated before the seal. *The rule is to increment the version by one
-on every change to the sealed payload's field set*; a change that leaves the field set and its
-framing untouched keeps the version.
+explicit gate before a cipher is ever constructed. The current version is *2*: the eleven-field
+payload -- tokens, identity and session claims, the session's active scope set and its granted scope
+set `S` -- framed as length-prefixed raw UTF-8 and deflated before the seal. *The rule is to
+increment the version by one on every change to the sealed payload's field set*; a change that
+leaves the field set and its framing untouched keeps the version.
 
 *Upgrade consequence*: existing cookie-mode sessions are invalidated on deploy and users must log
 in again, once. The numbering restarted at 1 with the change that added the active scope set, so
 cookies sealed before that change carry an earlier version byte and are refused at the version gate
-as no session; the browser re-authenticates. There is deliberately no backward-compatible acceptance
+as no session; the browser re-authenticates. Version 2 added the granted scope set, so that bump
+again invalidates existing cookie-mode sessions once: a version-1 cookie is refused at the same gate
+and its browser logs in again. There is deliberately no backward-compatible acceptance
 path for a retired format: accepting one would mean synthesizing the fields it lacks -- for the
-active scope set, silently narrowing a session to `oidc.scopes`; for the per-session identity nonce,
+active scope set, silently narrowing a session to `oidc.scopes`; for the granted scope set, guessing
+what the user has authorized; for the per-session identity nonce,
 silently changing the derived session identity -- or carrying a second reader for a format that
 exists only in cookies already issued. See
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
