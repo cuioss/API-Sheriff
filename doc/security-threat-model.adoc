@@ -1885,7 +1885,7 @@ nothing, so the check is the gateway's (see the foundation section above).
 *Control.* One boot-time derivation per route, `neededScopes = oidc.scopes ∪ endpoint.scopes`,
 drives every leg, so requesting and checking cannot drift apart
 (link:adr/0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048],
-link:adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056]):
+link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]):
 
 * *Login scope minimization.* A login requests the `neededScopes` of the route it is for -- the
   session route a navigation hit, or the authenticated route a `/auth/login?returnUrl=` target
@@ -2033,7 +2033,7 @@ RFC 6749 §6 forbids a refresh grant from widening the original grant, which is 
 authorization request at all.
 
 *Control.*
-(link:adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056])
+(link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057])
 
 * *The widening callback is bound to the browser like a login callback.* It runs on the same pending
   record, binding cookie and `state` (<<bff-02>>), and all three are checked before anything else --
@@ -2336,9 +2336,9 @@ outstanding hardening work (next section).
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED
 | <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- gateway usage rule | COVERED
 | <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) | PARTIAL
-| <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, a session route compares it on every request and refreshes, widens or refuses `403`, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `SessionAuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048, ADR-0056 | PARTIAL (session-wide scope growth accepted)
+| <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, a session route compares it on every request and refreshes, widens or refuses `403`, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `SessionAuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048, ADR-0057 | PARTIAL (session-wide scope growth accepted)
 | <<bff-16>> | `session_fallback` branch chosen from `Authorization` presence only; no session fallback on a failed bearer; CSRF on the session branch only; one resolver for CSRF and authentication | Gateway (`AuthBranch`, `AuthenticationStage`, `GatewayEdgeRoute`) + configuration validator -- ADR-0055 | COVERED
-| <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `ReservedPathRegistry`) -- ADR-0056 | COVERED (cross-site start and merge/refresh race accepted)
+| <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED

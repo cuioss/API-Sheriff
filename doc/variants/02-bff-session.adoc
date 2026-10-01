@@ -222,7 +222,7 @@ session is later presented to routes that need others. A session route does not 
 and leave the answer to the upstream: on every request it compares the session's *active* scope set
 -- the scopes of its current access token -- against the route's `needed` set, whatever
 `auth.token_relay` says, and before any bearer is recorded
-(link:../adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056]).
+(link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 Two facts about a session's tokens decide what happens when a scope is missing. The active set is
 what the current token carries, and a refresh response can narrow it. The *granted* set is every

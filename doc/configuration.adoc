@@ -2574,7 +2574,7 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   exactly one interactive attempt when the IdP answers `login_required`, `interaction_required` or
   `consent_required`. Any other IdP refusal ends in a terminal `403` that leaves the session
   unchanged. See link:user/bff-session.adoc#step-up-path[Server-Session BFF -- The step-up path] and
-  link:adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056].
+  link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
 |===
 
 [[_refresh_failure_dispositions]]
@@ -2629,7 +2629,7 @@ That outcome records no back-off and no warning, and the request goes on to a wi
 An IdP that answers the refresh with `invalid_scope` is *not* recognised as that outcome: the token
 engine reports it without the OAuth error code, so it is disposed as *pre-redemption* -- the session
 is kept, `ApiSheriff-127` is logged, and the session's next refresh waits out the back-off
-(link:adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056]).
+(link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 *Refresh-token reuse detection is the identity provider's job, not the gateway's.* A confidential
 client only sees the refresh tokens it presents itself, and a stateless cookie-mode instance keeps no

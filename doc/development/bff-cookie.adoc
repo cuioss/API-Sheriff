@@ -101,7 +101,7 @@ access token) and the eleventh its granted scope set `S` (`grantedScopes`, every
 provider has granted the session so far). Each is written as its names sorted and joined by a single
 space; an empty set is a zero-length field. The two are sealed as independent fields and never
 derived from one another: a refresh re-seals `S` unchanged, a widening extends it
-(link:../adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056]).
+(link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 It is read only *after* the GCM tag has authenticated the bytes -- `decode(...)` is never a parser
 for untrusted input.
 

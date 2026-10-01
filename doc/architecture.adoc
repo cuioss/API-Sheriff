@@ -468,7 +468,7 @@ boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `Resolv
 
 Why a session route obtains what is missing rather than relaying, and what it does when the identity
 provider refuses, is recorded in
-link:adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056],
+link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057],
 which supersedes the session half of
 link:adr/0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049];
 the `neededScopes` derivation and the bearer check of ADR-0049 stand.

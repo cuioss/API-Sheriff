@@ -434,7 +434,7 @@ all.
 The path's presence alone registers the endpoint. `oidc.step_up.enabled` and
 `oidc.step_up.honor_upstream_challenge` govern the RFC 9470 upstream-challenge leg and do not gate
 it. See link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] and
-link:../adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056].
+link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
 
 === What the integration realm showed
 
