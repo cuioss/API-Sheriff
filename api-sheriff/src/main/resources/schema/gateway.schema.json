@@ -356,7 +356,22 @@
       "properties": {
         "issuer": { "type": "string" },
         "client_id": { "type": "string" },
-        "client_secret": { "type": "string" },
+        "client_secret": {
+          "type": "string",
+          "description": "The client secret, written as a bare ${VAR} reference — never a literal and never a defaulted placeholder. Configuring it selects client-secret authentication (client_secret_basic), which is not FAPI 2.0 conformant and may weaken security; omitting it selects private_key_jwt. It must not be combined with client_authentication.key_file: a document declaring both is refused at boot (enforced in code)."
+        },
+        "client_authentication": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The key the gateway signs its private_key_jwt client assertion with. Read only when no client_secret is configured.",
+          "properties": {
+            "key_file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path of a PEM file on a mount holding the client-authentication key. The file must hold exactly one unencrypted PKCS#8 PRIVATE KEY block and exactly one PUBLIC KEY block, the two halves of one key, and nothing else but whitespace. Accepted key types: RSA with a modulus of at least 2048 bits, and EC on curve P-256. The signing algorithm (PS256 for RSA, ES256 for EC) and the key id (the RFC 7638 thumbprint of the public key) are derived from the key and are not configurable. The value is a location, not a secret, so it may be written literally. With neither a key file nor a client secret configured, a key is generated at startup; a generated key lives in one process, so that mode suits a single node only."
+            }
+          }
+        },
         "scopes": {
           "type": "array",
           "description": "The OIDC scopes every session login requests and every bearer route requires; an endpoint's endpoint.scopes is added on top. Each entry must be an RFC 6749 section 3.3 scope-token: one or more printable ASCII characters (0x21-0x7E) excluding the double quote and the backslash, so no space, no control character and no non-ASCII. A malformed name is refused at boot rather than being sent to the identity provider or compared against a token's scope claim. The pattern terminates with a negative lookahead rather than '$', because '$' also matches before a final line terminator.",

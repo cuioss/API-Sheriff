@@ -62,8 +62,10 @@ import org.jspecify.annotations.Nullable;
  * {@code ClientConfiguration} built in {@code BffRuntimeProducer} is what
  * {@code DiscoveryResolver}, {@code TokenEndpointClient}, {@code RefreshFlow} and
  * {@code RevocationClient} dial the identity provider with — discovery, the authorization-code
- * exchange, refresh and refresh-token revocation — presenting the client secret under
- * {@code CLIENT_SECRET_BASIC}. {@code oidcVerifyHostname} is passed to
+ * exchange, refresh and refresh-token revocation — presenting the client credential: the signed
+ * client assertion ({@code private_key_jwt}) by default, the client secret under
+ * {@code client_secret_basic} when {@code oidc.client_secret} is configured.
+ * {@code oidcVerifyHostname} is passed to
  * that builder's {@code verifyHostname} on every build, the {@code true} path included, so an
  * upstream default change cannot move the leg's posture (ADR-0022); {@code oidcTlsProfile}, when
  * named, supplies the builder's {@code sslContext}. The two are mutually exclusive in the same way

@@ -384,7 +384,14 @@ token_validation:                  # offline bearer validation (routes with auth
 oidc:                              # only used by the BFF variants (2 and 3)
   issuer: https://idp.example.com/realms/main
   client_id: api-sheriff
-  client_secret: ${SHERIFF_CLIENT_SECRET}
+  client_authentication:           # private_key_jwt client authentication (the default)
+    key_file: /etc/sheriff/keys/client-auth.pem   # PEM file on a mount: one unencrypted PKCS#8
+                                   #   PRIVATE KEY block and one PUBLIC KEY block. RSA (>= 2048
+                                   #   bits, signs PS256) or EC P-256 (signs ES256). OPTIONAL --
+                                   #   omit to generate a key on startup (single node only)
+  # client_secret: ${SHERIFF_CLIENT_SECRET}   # selects client-secret authentication, which is
+                                   #   not FAPI 2.0 conformant and may weaken security. Refused
+                                   #   at boot together with client_authentication.key_file
   scopes: [openid, profile]        # REQUESTED on every login and joined into every route's
                                    #   needed set (bearer routes check them too); endpoints add
                                    #   their own via endpoint.scopes, never remove these.

@@ -30,6 +30,7 @@ import java.util.function.Supplier;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
+import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -114,6 +115,20 @@ import org.jspecify.annotations.Nullable;
  * {@code AuthorizationCodeFlow#exchange} for the callback, {@link ScopedEngineFlows#refresh} for
  * transparent refresh, and {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is
  * reached at runtime.
+ * <p>
+ * <strong>Client authentication has two modes, selected once (ADR-0057).</strong> The mode is read
+ * through {@link OidcConfig#usesClientSecret()}, and the one {@link ClientAuthentication} instance it
+ * yields is shared by the code exchange, the refresh grant and RFC 7009 revocation.
+ * <ul>
+ *   <li><em>Key mode</em> — no {@code oidc.client_secret}, the default. The client-authentication key
+ *       is resolved by {@link ClientSigningKey} from {@code oidc.client_authentication.key_file}; an
+ *       absent block or an absent key selects a key generated at startup. The gateway authenticates
+ *       with {@code private_key_jwt}, whose assertion names the resolved issuer as its audience. A
+ *       key file the resolver refuses fails the boot with {@code CONFIG_INVALID}.</li>
+ *   <li><em>Client-secret mode</em> — {@code oidc.client_secret} is configured. The gateway
+ *       authenticates with {@code client_secret_basic}, resolves no client-authentication key, and
+ *       reports {@code ApiSheriff-130} once per assembled runtime, so at every boot.</li>
+ * </ul>
  * <p>
  * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
  * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
@@ -293,7 +308,6 @@ public class BffRuntimeProducer {
         String gatewayOrigin = originOf(redirectUri);
         String issuer = Objects.requireNonNullElse(oidc.issuer(), gatewayOrigin);
         String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
-        String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
 
         Duration sessionTtl = Duration.ofSeconds(
                 Objects.requireNonNullElse(session.ttlSeconds(), OidcConfig.Session.DEFAULT_TTL_SECONDS));
@@ -326,7 +340,7 @@ public class BffRuntimeProducer {
         // factory is this same method — so every scoped variant carries the identical pinned posture.
         reportBackChannelPosture();
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
-        ClientAuthentication clientAuthentication = new ClientSecretBasicAuth(clientId, clientSecret);
+        ClientAuthentication clientAuthentication = selectClientAuthentication(oidc, clientId, issuer);
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
         TokenValidator validator = tokenValidator.get();
@@ -526,19 +540,88 @@ public class BffRuntimeProducer {
         String issuer = declaredIssuer == null ? gatewayOrigin : declaredIssuer;
         String declaredClientId = oidc.clientId();
         String clientId = declaredClientId == null ? "" : declaredClientId;
-        String declaredClientSecret = oidc.clientSecret();
-        String clientSecret = declaredClientSecret == null ? "" : declaredClientSecret;
         ClientConfiguration.ClientConfigurationBuilder builder = ClientConfiguration.builder()
-                .issuer(issuer).clientId(clientId).clientSecret(clientSecret)
-                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .issuer(issuer).clientId(clientId)
                 .scopes(scopes).redirectUri(redirectUri)
                 // Called unconditionally, on the true path as well, so the posture never rests on the
                 // library default (ADR-0022).
                 .verifyHostname(verifyHostname);
+        // The same predicate selects the authentication instance in selectClientAuthentication(...), so the
+        // declared method and the credential actually presented cannot disagree. Key mode sets no
+        // secret at all: the engine admits an absent secret for the key-based methods and refuses a
+        // blank one.
+        String clientSecret = oidc.clientSecret();
+        if (oidc.usesClientSecret() && clientSecret != null) {
+            builder.clientSecret(clientSecret).authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC);
+        } else {
+            builder.authMethod(ClientAuthMethod.PRIVATE_KEY_JWT);
+        }
         if (tlsProfile != null) {
             builder.sslContext(trustProfileResolver.resolveEgressProfile(OIDC_TLS_PROFILE_KEY, tlsProfile));
         }
         return builder.build();
+    }
+
+    /**
+     * Selects the confidential-client authentication once, for the single build this
+     * {@link Singleton} runtime performs. The instance returned is shared by the code exchange, the
+     * refresh grant and RFC 7009 revocation.
+     * <p>
+     * <strong>Client-secret mode</strong> — {@link OidcConfig#usesClientSecret()} is {@code true}. The
+     * gateway keeps authenticating with {@code client_secret_basic} and reports {@code ApiSheriff-130},
+     * whose template takes no parameter and therefore cannot carry the secret. No client-authentication
+     * key is resolved in this mode, so none is generated and none is read.
+     * <p>
+     * <strong>Key mode</strong> — no secret is configured. The key is resolved from
+     * {@code oidc.client_authentication.key_file}; an absent block or an absent key selects the
+     * generated mode. The key hands out the {@code private_key_jwt} authentication itself, so the
+     * private key never leaves {@link ClientSigningKey}.
+     * <p>
+     * The mode is named by one {@code DEBUG} line, in key mode together with the key mode and the
+     * algorithm — never key material and never the secret.
+     *
+     * @param oidc     the global {@code oidc} block, already cleared by the BFF-mode activation
+     *                 predicate
+     * @param clientId the resolved client id
+     * @param issuer   the resolved issuer, used in key mode as the audience of the client assertion
+     * @return the client authentication every back-channel leg presents
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the configured
+     *                          client-authentication key file is refused
+     */
+    private static ClientAuthentication selectClientAuthentication(OidcConfig oidc, String clientId, String issuer) {
+        String clientSecret = oidc.clientSecret();
+        if (oidc.usesClientSecret() && clientSecret != null) {
+            LOGGER.warn(ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION);
+            LOGGER.debug("BFF client authentication: client_secret_basic");
+            return new ClientSecretBasicAuth(clientId, clientSecret);
+        }
+        OidcConfig.ClientAuthenticationSettings settings = oidc.clientAuthentication();
+        ClientSigningKey signingKey = resolveSigningKey(settings == null ? null : settings.keyFile(),
+                ClientSigningKey.Purpose.CLIENT_AUTHENTICATION);
+        LOGGER.debug("BFF client authentication: private_key_jwt (key mode=%s, algorithm=%s)",
+                signingKey.mode().diagnosticName(), signingKey.algorithm());
+        return signingKey.clientAuthentication(clientId, issuer);
+    }
+
+    /**
+     * Resolves one signing key of the confidential client and translates a refusal into the boot
+     * failure every other invalid configuration raises. The refusal text of {@link ClientSigningKey}
+     * names the configuration field and the defect only — never the configured path nor a line of
+     * the file — so it is carried over as it is.
+     *
+     * @param keyFile the configured {@code key_file} of the purpose, {@code null} to generate a key
+     * @param purpose what the key signs
+     * @return the resolved key
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the key file is refused
+     */
+    private static ClientSigningKey resolveSigningKey(@Nullable String keyFile, ClientSigningKey.Purpose purpose) {
+        try {
+            return ClientSigningKey.resolve(keyFile, purpose);
+        } catch (IllegalStateException refused) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    Objects.requireNonNullElse(refused.getMessage(), purpose.configField() + " is refused"),
+                    refused);
+        }
     }
 
     /**

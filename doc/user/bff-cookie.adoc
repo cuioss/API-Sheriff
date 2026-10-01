@@ -39,7 +39,8 @@ Add an `oidc` block to `gateway.yaml` and set at least one route's effective aut
 oidc:
   issuer: https://idp.example.com/realms/main
   client_id: api-sheriff
-  client_secret: ${SHERIFF_CLIENT_SECRET}     # must be an ${ENV_VAR} reference
+  # no client_secret and no client_authentication.key_file: the gateway authenticates with
+  # private_key_jwt and a key it generates on startup
   redirect_uri: https://gw.example.com/auth/callback   # registered exactly at the IdP
   scopes: [openid, profile]                   # requested on every login; endpoints add their own
   session:

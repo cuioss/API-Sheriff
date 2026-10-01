@@ -65,7 +65,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
- * One signing key of the confidential client (ADR-0056), resolved at boot into one of two
+ * One signing key of the confidential client (ADR-0057), resolved at boot into one of two
  * first-class, fully supported production modes. The gateway holds one such key per
  * {@link Purpose}: the key that signs the {@code private_key_jwt} client assertion, and the key that
  * signs the DPoP proofs its tokens are bound to.

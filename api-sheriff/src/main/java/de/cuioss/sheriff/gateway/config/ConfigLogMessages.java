@@ -265,7 +265,8 @@ public final class ConfigLogMessages {
          * {@code WARN} rather than a boot refusal for the same reason: an identity provider reached
          * through an address its certificate does not name is a legitimate deployment (ADR-0045).
          * What must not happen is the relaxation reaching production silently — this leg carries the
-         * client secret and the authorization codes the gateway establishes sessions from.
+         * client credential, which is the signed client assertion by default and the client secret
+         * when one is configured, and the authorization codes the gateway establishes sessions from.
          * <p>
          * The template states the scope rather than leaving it to be inferred: hostname matching only,
          * chain trust unaffected, this leg only, the collision refusal with
@@ -299,6 +300,29 @@ public final class ConfigLogMessages {
                 .prefix(PREFIX)
                 .identifier(126)
                 .template("egress_tls.oidc_tls_profile '%s' is in effect — its anchors REPLACE the JVM default trust store on the BFF OIDC back-channel (discovery, the authorization-code exchange, refresh and refresh-token revocation), so a public certificate authority is no longer trusted for the identity provider unless the profile carries it too. The JWKS back-channel and the proxy, gRPC and WebSocket egress clients are not governed by this profile")
+                .build();
+
+        /**
+         * {@code oidc.client_secret} is configured, so the BFF authenticates to the identity provider
+         * with {@code client_secret_basic} instead of {@code private_key_jwt}.
+         * <p>
+         * Client-secret authentication is an operator choice, selected by the presence of the key
+         * alone. It is a {@code WARN} and never a boot refusal: the mode is supported. What must not
+         * happen is a deployment running the weaker client authentication without anyone having
+         * decided it — a descriptor copied from another deployment selects it silently otherwise.
+         * <p>
+         * Reported by {@code BffRuntimeProducer} at the point it reports
+         * {@link #OIDC_HOSTNAME_VERIFICATION_DISABLED} and {@link #OIDC_TRUST_PROFILE_IN_EFFECT}:
+         * once per assembled runtime, so at every boot of an active BFF gateway in this mode. It is
+         * never latched across boots and never emitted for the inert runtime of a bearer-only
+         * gateway.
+         * <p>
+         * The template takes no parameter by design, so it cannot carry the secret by construction.
+         */
+        public static final LogRecord OIDC_CLIENT_SECRET_AUTHENTICATION = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(130)
+                .template("The BFF authenticates to the identity provider with oidc.client_secret. Client-secret authentication is not FAPI 2.0 conformant and may weaken security. Pushed authorization requests and the DPoP sender constraint stay in effect. Removing oidc.client_secret selects private_key_jwt")
                 .build();
 
         /**

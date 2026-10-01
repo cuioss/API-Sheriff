@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.auth;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -45,11 +46,17 @@ import io.vertx.core.net.TrustOptions;
  */
 public final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
 
+    private static final String TLS_PROTOCOL = "TLSv1.3";
+
     private final Map<String, TlsConfiguration> byName = new HashMap<>();
     private final SSLContext profileContext;
 
     private TestTlsConfigurationRegistry() {
-        this.profileContext = freshContext();
+        this(freshContext());
+    }
+
+    private TestTlsConfigurationRegistry(SSLContext profileContext) {
+        this.profileContext = profileContext;
     }
 
     /**
@@ -67,6 +74,34 @@ public final class TestTlsConfigurationRegistry implements TlsConfigurationRegis
      */
     public static TestTlsConfigurationRegistry with(String name) {
         return usable(name, trustStore(), null);
+    }
+
+    /**
+     * The shape a deployment has when {@code quarkus.tls.<name>.trust-store} holds a private root:
+     * the profile's trust material holds exactly the one given anchor, and its SSL context is built
+     * from that material. A client dialling through the profile therefore trusts a certificate that
+     * chains to {@code anchor} and nothing else — in particular no public certificate authority.
+     *
+     * @param name   the logical profile name to define
+     * @param anchor the single certificate the profile trusts
+     * @return a registry defining {@code name} against that anchor and the SSL context built from it
+     */
+    public static TestTlsConfigurationRegistry withAnchor(String name, X509Certificate anchor) {
+        KeyStore anchorStore = trustStore();
+        SSLContext anchorContext;
+        try {
+            anchorStore.setCertificateEntry("anchor", anchor);
+            TrustManagerFactory factory =
+                    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            factory.init(anchorStore);
+            anchorContext = SSLContext.getInstance(TLS_PROTOCOL);
+            anchorContext.init(null, factory.getTrustManagers(), null);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("the anchor could not be bound into a trust profile", e);
+        }
+        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry(anchorContext);
+        registry.register(name, new UsableTlsConfiguration(anchorContext, anchorStore, null));
+        return registry;
     }
 
     /**
@@ -162,11 +197,11 @@ public final class TestTlsConfigurationRegistry implements TlsConfigurationRegis
 
     private static SSLContext freshContext() {
         try {
-            SSLContext context = SSLContext.getInstance("TLSv1.3");
+            SSLContext context = SSLContext.getInstance(TLS_PROTOCOL);
             context.init(null, null, null);
             return context;
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("TLSv1.3 must be available to the test JVM", e);
+            throw new IllegalStateException(TLS_PROTOCOL + " must be available to the test JVM", e);
         }
     }
 

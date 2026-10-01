@@ -144,6 +144,12 @@ import org.jspecify.annotations.Nullable;
  * {@code Set-Cookie} header, and not collide with a gateway-owned cookie. The schema declares the key
  * an unrestricted string; this rule is the single enforcing authority.
  * <p>
+ * The client-authentication refusal adds one more: {@code oidc.client_secret} and
+ * {@code oidc.client_authentication.key_file} select different client authentications, so a document
+ * declaring both is refused, and so is a declared {@code oidc.client_secret} that resolves to a blank
+ * value. The schema does not encode the exclusion; this rule owns it, because its message has to
+ * name both keys.
+ * <p>
  * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
  * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect
  * spellings at boot — a redirect is written verbatim at request time, so this review is the only
@@ -228,6 +234,28 @@ public final class ConfigValidator {
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
+    private static final String OIDC_CLIENT_SECRET_POINTER = "/oidc/client_secret";
+
+    /**
+     * The fixed detail of the refusal of {@code oidc.client_secret} together with
+     * {@code oidc.client_authentication.key_file}. Fixed text, so the boot log echoes neither the
+     * secret nor the configured path.
+     */
+    private static final String CLIENT_SECRET_WITH_KEY_FILE_DETAIL =
+            "oidc.client_secret and oidc.client_authentication.key_file are both declared; the two select "
+                    + "different client authentications — client_secret selects client_secret_basic, "
+                    + "client_authentication.key_file selects private_key_jwt — so exactly one of them may be "
+                    + "configured: remove oidc.client_secret to authenticate with the key, or remove "
+                    + "oidc.client_authentication.key_file to authenticate with the secret";
+
+    /**
+     * The fixed detail of the refusal of a declared {@code oidc.client_secret} that resolves to a
+     * blank value. Fixed text, so the boot log never echoes a configured scalar.
+     */
+    private static final String CLIENT_SECRET_BLANK_DETAIL =
+            "oidc.client_secret is declared but resolves to a blank value; a declared client secret selects "
+                    + "client_secret_basic and must carry a value — set the variable it references, or remove "
+                    + "oidc.client_secret to authenticate with private_key_jwt";
 
     /**
      * The cookie-name prefix every gateway-owned cookie carries. A browser honours a
@@ -336,6 +364,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionCookieName(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateClientAuthentication(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
@@ -2316,6 +2345,43 @@ public final class ConfigValidator {
                             .formatted(renderForMessage(declared), String.join(" and ", failures),
                                     HOST_COOKIE_PREFIX, String.join(", ", GATEWAY_OWNED_COOKIE_NAMES),
                                     SessionCookieCodec.DEFAULT_COOKIE_NAME)));
+        }
+    }
+
+    /**
+     * Rule: the client-authentication mode must be unambiguous and usable.
+     * <p>
+     * The presence of {@code oidc.client_secret} selects {@code client_secret_basic}; its absence
+     * selects {@code private_key_jwt}, signed with the key {@code oidc.client_authentication.key_file}
+     * names or with a generated one. The mode is read through
+     * {@link OidcConfig#usesClientSecret()}, the predicate the runtime producer reads as well, so
+     * validation and runtime cannot resolve it differently. Two documents are refused:
+     * <ul>
+     *   <li><strong>Both keys declared.</strong> The two select different client authentications, and
+     *       preferring one would be a silent choice between two credentials. One error is collected
+     *       at {@code /oidc/client_secret}; it names both keys and neither value.</li>
+     *   <li><strong>A blank secret.</strong> A variable set to the empty string resolves to an empty
+     *       secret. It is a present key the token engine cannot use, so it is refused here instead of
+     *       surfacing as the engine's own exception while the runtime is assembled.</li>
+     * </ul>
+     * A document with only the secret, only the key file, or neither is admitted. The rule holds for
+     * a gateway whose BFF runtime is inert as well, because it is a property of the document. Both
+     * detail texts are fixed, so neither the secret nor the configured path reaches the boot log.
+     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateClientAuthentication(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null || !oidc.usesClientSecret()) {
+            return;
+        }
+        String clientSecret = oidc.clientSecret();
+        if (clientSecret != null && clientSecret.isBlank()) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER, CLIENT_SECRET_BLANK_DETAIL));
+        }
+        OidcConfig.ClientAuthenticationSettings clientAuthentication = oidc.clientAuthentication();
+        if (clientAuthentication != null && clientAuthentication.keyFile() != null) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER,
+                    CLIENT_SECRET_WITH_KEY_FILE_DETAIL));
         }
     }
 

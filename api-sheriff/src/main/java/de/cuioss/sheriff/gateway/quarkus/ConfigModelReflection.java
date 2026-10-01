@@ -95,6 +95,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         OidcConfig.StepUp.class,
         OidcConfig.UserInfo.class,
         OidcConfig.Login.class,
+        OidcConfig.ClientAuthenticationSettings.class,
         AuthConfig.class,
         AnchorConfig.class,
         RouteConfig.class,

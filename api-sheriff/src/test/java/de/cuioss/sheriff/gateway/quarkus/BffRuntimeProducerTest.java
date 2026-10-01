@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -36,9 +37,11 @@ import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
 import java.net.URI;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -61,6 +64,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
 
@@ -71,6 +76,7 @@ import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
+import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
@@ -102,9 +108,11 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
+import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
@@ -121,25 +129,35 @@ import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Vetoed;
 import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Covers {@link BffRuntimeProducer}: the runtime is active (and its reserved handlers and session
  * stage are wired) only when a global {@code oidc} block with {@code session.mode=server} and a
  * {@code redirect_uri} is configured, and inert (bearer-only) otherwise. Assembly resolves no OIDC
  * discovery (that is deferred to first engine use), so the producer builds a working runtime without
- * a live IdP; the live engine round-trips are covered by the Keycloak integration tests.
+ * a live IdP. The requests a produced runtime sends on its back-channel — discovery, the code
+ * exchange, the refresh grant and revocation — are asserted against {@link StubIdentityProvider};
+ * the round-trips that need a real grant are covered by the Keycloak integration tests.
  */
 @EnableGeneratorController
 @DisplayName("BffRuntimeProducer — server-mode activation and inert bearer-only default")
@@ -354,6 +372,22 @@ class BffRuntimeProducerTest {
     private static boolean isWalkable(Class<?> type) {
         String name = type.getName();
         return name.startsWith("de.cuioss.sheriff.gateway.") || name.startsWith("de.cuioss.sheriff.token.client.");
+    }
+
+    /**
+     * The one instance a walk is expected to find. Exactly one, not merely at least one: zero means
+     * the caller would go on to assert nothing, and more than one means the first hit can no longer be
+     * assumed to be the instance the runtime actually uses.
+     *
+     * @param found the result of {@link #reachableInstancesOf(Object, Class)}
+     * @param what  what was searched for, for the failure message
+     * @param <T>   the collaborator type
+     * @return the single instance
+     */
+    private static <T> T single(List<T> found, String what) {
+        assertEquals(1, found.size(), "exactly one " + what + " is reachable from the assembled runtime — "
+                + "this test must never pass vacuously; if the producer's wiring moved, retarget the walk");
+        return found.getFirst();
     }
 
     @Nested
@@ -1413,12 +1447,6 @@ class BffRuntimeProducerTest {
             return new RecordingProducer(gatewayConfig, tokenValidator, logoutTokenVerifier);
         }
 
-        private static <T> T single(List<T> found, String what) {
-            assertEquals(1, found.size(), "exactly one " + what + " is reachable from the assembled runtime — "
-                    + "this test must never pass vacuously; if the producer's wiring moved, retarget the walk");
-            return found.getFirst();
-        }
-
         /**
          * An active server-mode runtime whose discovery reaches the SAN-mismatch fixture over the relaxed
          * hostname posture, over a route table carrying one scoped session route.
@@ -1510,6 +1538,504 @@ class BffRuntimeProducerTest {
             Files.deleteIfExists(path);
         } catch (IOException e) {
             throw new UncheckedIOException("could not clean up the SAN-mismatch fixture at " + path, e);
+        }
+    }
+
+    /**
+     * Tests that drive a runtime the producer built against {@link StubIdentityProvider}, so that what
+     * is asserted is the request an identity provider actually receives rather than a value carried on
+     * a configuration object.
+     * <p>
+     * <strong>The runtime reaches the stub through configuration alone</strong> — the route a deployment
+     * with a private-CA identity provider takes. {@code oidc.issuer} is the stub's issuer,
+     * {@code egress_tls.oidc_tls_profile} names a profile the test registry binds to the stub's root
+     * certificate, and {@code egress_tls.oidc_verify_hostname} stays at its default. Nothing is relaxed
+     * to get there, and {@link #discoveryReachesTheStubThroughTheNamedProfile()} with its two matched
+     * controls is what shows it: the same dial is refused without the profile, and a plain-HTTP issuer
+     * is refused before anything is sent.
+     * <p>
+     * <strong>The three back-channel legs.</strong> The code exchange is driven through the runtime's own
+     * reserved login and callback dispatch; the refresh grant and the revocation through the two seams
+     * the assembled refresh coordinator holds. The stub's token endpoint refuses every grant, so each
+     * leg ends in a refusal and every assertion is made on the request the stub recorded.
+     */
+    @Nested
+    @EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
+    @DisplayName("Produced runtime against the stub identity provider")
+    class StubIdentityProviderRuntime {
+
+        private static final String PROFILE = "stub-idp";
+        private static final String CLIENT_ID = "gateway-client";
+        private static final Instant NOW = Instant.parse("2026-07-25T10:00:00Z");
+        private static final String CLIENT_ASSERTION = "client_assertion";
+        private static final String CLIENT_ASSERTION_TYPE = "client_assertion_type";
+        private static final String JWT_BEARER_ASSERTION = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+        private static final String CLIENT_SECRET_PARAMETER = "client_secret";
+        private static final String AUTHORIZATION = "Authorization";
+        private static final String BASIC_SCHEME = "Basic ";
+        private static final String KEY_FILE_FIELD = "oidc.client_authentication.key_file";
+        private static final String GENERATED_CLIENT_AUTHENTICATION_KEY =
+                "Signing key for client-authentication generated at startup";
+        /** An RFC 7638 SHA-256 thumbprint: 32 bytes, base64url without padding. */
+        private static final String THUMBPRINT_SHAPE = "[A-Za-z0-9_-]{43}";
+        private static final ObjectMapper JSON = new ObjectMapper();
+
+        @TempDir
+        Path keyDirectory;
+
+        private StubIdentityProvider stub;
+
+        @BeforeEach
+        void startStub() throws IOException {
+            stub = StubIdentityProvider.start();
+        }
+
+        @AfterEach
+        void stopStub() {
+            stub.close();
+        }
+
+        /** The three ways the client-authentication key is resolved, each with the algorithm it signs. */
+        enum KeyMode {
+
+            PROVIDED_EC("ES256", TestSigningKeys::ecKeyPair),
+
+            PROVIDED_RSA("PS256", TestSigningKeys::rsaKeyPair),
+
+            GENERATED("ES256", null);
+
+            private final String algorithm;
+            private final @Nullable Supplier<KeyPair> providedKey;
+
+            KeyMode(String algorithm, @Nullable Supplier<KeyPair> providedKey) {
+                this.algorithm = algorithm;
+                this.providedKey = providedKey;
+            }
+        }
+
+        /** The three back-channel legs that present the client credential. */
+        enum Leg {
+            CODE_EXCHANGE, REFRESH_GRANT, REVOCATION
+        }
+
+        /** The three key files the producer must refuse, each written the way an operator gets it wrong. */
+        enum RefusedKeyFile {
+
+            MISMATCHED_HALVES {
+                @Override
+                Path write(Path directory) {
+                    return TestSigningKeys.writeHalves(directory, TestSigningKeys.ecKeyPair().getPrivate(),
+                            TestSigningKeys.ecKeyPair().getPublic());
+                }
+            },
+
+            ENCRYPTED_BLOCK {
+                @Override
+                Path write(Path directory) {
+                    return TestSigningKeys.writeRelabelledPrivateBlock(directory, TestSigningKeys.rsaKeyPair(),
+                            "ENCRYPTED PRIVATE KEY");
+                }
+            },
+
+            UNDERSIZED_RSA {
+                @Override
+                Path write(Path directory) {
+                    return TestSigningKeys.writeKeyFile(directory, TestSigningKeys.undersizedRsaKeyPair());
+                }
+            };
+
+            abstract Path write(Path directory);
+        }
+
+        /**
+         * A key-mode configuration together with the key id its client assertion must carry — known for
+         * a provided key, whose thumbprint the test computes itself, and unknown for a generated one.
+         */
+        private record KeyFixture(OidcConfig oidc, Optional<String> expectedKeyId) {
+        }
+
+        /** A client-secret-mode configuration together with the two values its credential is built from. */
+        private record SecretFixture(OidcConfig oidc, String clientId, String secret) {
+
+            /** The credential as RFC 6749 section 2.3.1 renders it: both halves form-encoded, then joined. */
+            String formEncodedCredential() {
+                return URLEncoder.encode(clientId, StandardCharsets.UTF_8) + ":"
+                        + URLEncoder.encode(secret, StandardCharsets.UTF_8);
+            }
+
+            String basicCredential() {
+                return Base64.getEncoder().encodeToString(formEncodedCredential().getBytes(StandardCharsets.UTF_8));
+            }
+        }
+
+        static Stream<Arguments> keyModesOnEveryLeg() {
+            return Stream.of(KeyMode.values())
+                    .flatMap(mode -> Stream.of(Leg.values()).map(leg -> Arguments.of(mode, leg)));
+        }
+
+        @Test
+        @DisplayName("Should complete discovery against the stub when the trust profile is named")
+        void discoveryReachesTheStubThroughTheNamedProfile() {
+            OidcConfig oidc = stubOidc().build();
+            ClientConfiguration configuration = assembledBackChannel(stubProducer(oidc), oidc, oidc.scopes());
+
+            ProviderMetadata metadata = assertDoesNotThrow(() -> new DiscoveryResolver(configuration).resolve(),
+                    "the profile holds the stub's root, and the served certificate names the dialled address");
+
+            assertAll("the discovery document was fetched from the stub, over a posture nothing relaxed",
+                    () -> assertEquals(Optional.of(stub.issuer()), metadata.getIssuer()),
+                    () -> assertEquals(Optional.of(stub.url(StubIdentityProvider.Endpoint.TOKEN)),
+                            metadata.getTokenEndpoint()),
+                    () -> assertEquals(Optional.of(stub.url(StubIdentityProvider.Endpoint.REVOCATION)),
+                            metadata.getRevocationEndpoint()),
+                    () -> assertTrue(configuration.isVerifyHostname(), "hostname verification stays on"),
+                    () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
+                            "the stub served exactly the one discovery request"));
+        }
+
+        @Test
+        @DisplayName("Should refuse the same dial when no trust profile is named (matched control)")
+        void discoveryIsRefusedWithoutTheProfile() {
+            OidcConfig oidc = stubOidc().build();
+            DiscoveryResolver withoutProfile = new DiscoveryResolver(assembledBackChannel(
+                    producer(oidc, EgressTlsConfig.defaults(), TestTlsConfigurationRegistry.empty()), oidc,
+                    oidc.scopes()));
+
+            assertThrows(TransportException.class, withoutProfile::resolve,
+                    "the JVM default trust store does not hold the stub's root, so the handshake is refused");
+
+            assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.DISCOVERY),
+                    "a refused handshake sends no request — the profile is what reaches the stub");
+        }
+
+        @Test
+        @DisplayName("Should refuse a plain-HTTP issuer before anything is sent (matched control)")
+        void plainHttpIssuerIsRefusedBeforeAnythingIsSent() {
+            OidcConfig oidc = stubOidc().issuer(stub.issuer().replaceFirst("^https", "http")).build();
+            DiscoveryResolver plainHttp = new DiscoveryResolver(
+                    assembledBackChannel(stubProducer(oidc), oidc, oidc.scopes()));
+
+            TransportException refused = assertThrows(TransportException.class, plainHttp::resolve);
+
+            assertAll("the configuration the producer builds cannot dial plain HTTP",
+                    () -> assertNull(refused.getCause(),
+                            "the refusal is decided on the scheme: a dial that was attempted and failed would "
+                                    + "chain its I/O failure as the cause"),
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.DISCOVERY),
+                            "the stub records no request"));
+        }
+
+        @ParameterizedTest(name = "{0} key on the {1} leg")
+        @MethodSource("keyModesOnEveryLeg")
+        @DisplayName("Should present a client assertion signed with the resolved key, and no secret, in key mode")
+        void shouldPresentAClientAssertionInKeyMode(KeyMode mode, Leg leg) throws IOException {
+            KeyFixture fixture = keyFixture(mode);
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+
+            StubIdentityProvider.ReceivedRequest request = drive(leg, runtime);
+
+            Map<String, String> form = request.form();
+            String assertion = form.get(CLIENT_ASSERTION);
+            assertNotNull(assertion, "the request body carries no client_assertion: " + form.keySet());
+            JsonNode header = jwtPart(assertion, 0);
+            JsonNode claims = jwtPart(assertion, 1);
+            String keyId = header.path("kid").asText();
+            assertAll("private_key_jwt on the " + leg + " leg with a " + mode + " key",
+                    () -> assertEquals(JWT_BEARER_ASSERTION, form.get(CLIENT_ASSERTION_TYPE)),
+                    () -> assertEquals(mode.algorithm, header.path("alg").asText(),
+                            "the algorithm follows the key type"),
+                    () -> assertTrue(keyId.matches(THUMBPRINT_SHAPE),
+                            "the key id is an RFC 7638 thumbprint: " + keyId),
+                    () -> fixture.expectedKeyId().ifPresent(expected -> assertEquals(expected, keyId,
+                            "the key id is the thumbprint of the configured key")),
+                    () -> assertTrue(claims.path("aud").isTextual(),
+                            "the audience is one JSON string, not an array: " + claims.path("aud")),
+                    () -> assertEquals(stub.issuer(), claims.path("aud").asText(),
+                            "the audience is the configured issuer"),
+                    () -> assertEquals(CLIENT_ID, claims.path("iss").asText()),
+                    () -> assertEquals(Optional.empty(), request.header(AUTHORIZATION),
+                            "key mode sends no Authorization header, so no Basic credential"),
+                    () -> assertFalse(form.containsKey(CLIENT_SECRET_PARAMETER),
+                            "key mode sends no client_secret parameter"));
+        }
+
+        @Test
+        @DisplayName("Should sign every leg with the one generated key, and generate a fresh key per runtime")
+        void shouldUseOneGeneratedKeyPerRuntime() throws IOException {
+            OidcConfig oidc = stubOidc().build();
+            BffRuntime runtime = stubProducer(oidc).bffRuntime();
+            BffRuntime secondBoot = stubProducer(oidc).bffRuntime();
+
+            String exchangeKeyId = keyIdOf(drive(Leg.CODE_EXCHANGE, runtime));
+            String refreshKeyId = keyIdOf(drive(Leg.REFRESH_GRANT, runtime));
+            String revocationKeyId = keyIdOf(drive(Leg.REVOCATION, runtime));
+            String secondBootKeyId = keyIdOf(drive(Leg.REFRESH_GRANT, secondBoot));
+
+            assertAll("one key per assembled runtime",
+                    () -> assertEquals(exchangeKeyId, refreshKeyId, "the refresh grant signs with the exchange's key"),
+                    () -> assertEquals(exchangeKeyId, revocationKeyId, "revocation signs with the exchange's key"),
+                    () -> assertNotEquals(exchangeKeyId, secondBootKeyId,
+                            "the key is generated per startup: a second runtime authenticates with another key"));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(RefusedKeyFile.class)
+        @DisplayName("Should abort the build with CONFIG_INVALID for a key file the resolver refuses")
+        void shouldAbortTheBuildOnARefusedKeyFile(RefusedKeyFile refused) throws IOException {
+            Path keyFile = refused.write(keyDirectory);
+            List<String> keyMembers = Files.readAllLines(keyFile, StandardCharsets.US_ASCII).stream()
+                    .filter(line -> !line.isBlank() && !line.startsWith("-----"))
+                    .toList();
+            BffRuntimeProducer producer = stubProducer(stubOidc()
+                    .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(keyFile.toString())).build());
+
+            GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime);
+
+            String message = thrown.getMessage();
+            assertAll("the refusal of a " + refused + " key file",
+                    () -> assertEquals(EventType.CONFIG_INVALID, thrown.getEventType()),
+                    () -> assertTrue(message.contains(KEY_FILE_FIELD),
+                            "the refusal must name the configuration field: " + message),
+                    () -> assertFalse(keyMembers.isEmpty(), "the fixture must hold content that could leak"),
+                    () -> assertTrue(keyMembers.stream().noneMatch(message::contains),
+                            "no line of the key file may be echoed: " + message),
+                    () -> assertFalse(message.contains(keyFile.toString()),
+                            "the configured path is not echoed either: " + message));
+        }
+
+        @ParameterizedTest(name = "on the {0} leg")
+        @EnumSource(Leg.class)
+        @DisplayName("Should present the Basic credential, and no client assertion, in client-secret mode")
+        void shouldPresentTheBasicCredentialInClientSecretMode(Leg leg) {
+            SecretFixture fixture = secretFixture();
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+
+            StubIdentityProvider.ReceivedRequest request = drive(leg, runtime);
+
+            Map<String, String> form = request.form();
+            String authorization = request.header(AUTHORIZATION).orElse("");
+            assertTrue(authorization.startsWith(BASIC_SCHEME),
+                    "client-secret mode authenticates with an Authorization: Basic header, got: "
+                            + request.headers().keySet());
+            String[] credential = new String(Base64.getDecoder().decode(authorization.substring(BASIC_SCHEME.length())),
+                    StandardCharsets.UTF_8).split(":", -1);
+            assertAll("client_secret_basic on the " + leg + " leg",
+                    () -> assertEquals(2, credential.length,
+                            "the form-encoded halves carry no colon of their own, so exactly one separates them"),
+                    () -> assertEquals(fixture.formEncodedCredential(), String.join(":", credential),
+                            "the credential is the form-encoded client id and secret"),
+                    () -> assertEquals(fixture.clientId(), URLDecoder.decode(credential[0], StandardCharsets.UTF_8)),
+                    () -> assertEquals(fixture.secret(), URLDecoder.decode(credential[1], StandardCharsets.UTF_8)),
+                    () -> assertFalse(form.containsKey(CLIENT_ASSERTION_TYPE), "no client_assertion_type is sent"),
+                    () -> assertFalse(form.containsKey(CLIENT_ASSERTION), "no client_assertion is sent"),
+                    () -> assertFalse(form.containsKey(CLIENT_SECRET_PARAMETER),
+                            "the secret travels in the header only, never as a form parameter"));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        @Test
+        @DisplayName("Should report client-secret authentication exactly once per runtime and resolve no client-authentication key")
+        void shouldWarnOncePerRuntimeInClientSecretMode() {
+            SecretFixture fixture = secretFixture();
+
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+            for (Leg leg : Leg.values()) {
+                drive(leg, runtime);
+            }
+
+            assertAll("client-secret mode is reported once, at the build, and resolves no key",
+                    () -> assertEquals(1, recordsContaining(TestLogLevel.WARN, clientSecretWarning()),
+                            "one record per assembled runtime — not one per leg or per scoped configuration"),
+                    () -> assertEquals(0, recordsContaining(TestLogLevel.INFO, GENERATED_CLIENT_AUTHENTICATION_KEY),
+                            "no client-authentication key is generated when a secret authenticates"));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        @Test
+        @DisplayName("Should not report client-secret authentication for a runtime built without a secret (matched control)")
+        void shouldNotWarnInKeyMode() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+
+            assertAll("key mode: the generated key is recorded and the client-secret warning is absent",
+                    () -> assertTrue(runtime.isActive()),
+                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN, clientSecretWarning()),
+                            "without oidc.client_secret the warning must not appear"),
+                    () -> assertEquals(1, recordsContaining(TestLogLevel.INFO, GENERATED_CLIENT_AUTHENTICATION_KEY),
+                            "the handler does see this build: the generated client-authentication key is recorded"));
+        }
+
+        private StubIdentityProvider.ReceivedRequest drive(Leg leg, BffRuntime runtime) {
+            return switch (leg) {
+                case CODE_EXCHANGE -> codeExchange(runtime);
+                case REFRESH_GRANT -> refreshGrant(runtime);
+                case REVOCATION -> revocation(runtime);
+            };
+        }
+
+        /**
+         * Drives the code exchange through the runtime's reserved login and callback dispatch: the login
+         * leg yields the {@code state} and the browser-binding cookie, and the callback presents both
+         * with an authorization code. The stub refuses the grant, so the callback answers {@code 400}.
+         */
+        private StubIdentityProvider.ReceivedRequest codeExchange(BffRuntime runtime) {
+            String code = token();
+            BffRuntime.ReservedHttpResponse login = runtime.dispatch(ReservedEndpoint.LOGIN,
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/", null, null, "GET"), NOW);
+            String state = rawQueryParameter(login.locationOptional().orElseThrow(), "state");
+            String bindingCookie = login.setCookieHeaders().getFirst().split(";", 2)[0];
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN, () -> {
+                BffRuntime.ReservedHttpResponse callback = runtime.dispatch(ReservedEndpoint.CALLBACK,
+                        new BffRuntime.ReservedHttpRequest("code=" + code + "&state=" + state, bindingCookie, null,
+                                null, null, null, "GET"),
+                        NOW);
+                assertEquals(400, callback.status(), "the stub refuses the grant, so the login is not completed");
+            });
+
+            assertAll("the request is the code exchange",
+                    () -> assertEquals("authorization_code", request.form().get("grant_type")),
+                    () -> assertEquals(code, request.form().get("code")));
+            return request;
+        }
+
+        private StubIdentityProvider.ReceivedRequest refreshGrant(BffRuntime runtime) {
+            String refreshToken = token();
+            TokenRefreshCoordinator.RefreshExchange exchange = single(
+                    reachableInstancesOf(refreshCoordinatorOf(runtime), TokenRefreshCoordinator.RefreshExchange.class),
+                    "refresh exchange the coordinator holds");
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
+                    () -> assertThrows(RuntimeException.class, () -> exchange.exchange(refreshToken, Set.of("openid")),
+                            "the stub refuses the grant"));
+
+            assertAll("the request is the refresh grant",
+                    () -> assertEquals("refresh_token", request.form().get("grant_type")),
+                    () -> assertEquals(refreshToken, request.form().get("refresh_token")));
+            return request;
+        }
+
+        private StubIdentityProvider.ReceivedRequest revocation(BffRuntime runtime) {
+            String refreshToken = token();
+            TokenRefreshCoordinator.RefreshTokenRevocation revocation = single(
+                    reachableInstancesOf(refreshCoordinatorOf(runtime),
+                            TokenRefreshCoordinator.RefreshTokenRevocation.class),
+                    "revocation seam the coordinator holds");
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.REVOCATION,
+                    () -> revocation.revoke(refreshToken));
+
+            assertEquals(refreshToken, request.form().get("token"), "the request revokes the presented token");
+            return request;
+        }
+
+        private TokenRefreshCoordinator refreshCoordinatorOf(BffRuntime runtime) {
+            return single(reachableInstancesOf(runtime, TokenRefreshCoordinator.class), "refresh coordinator");
+        }
+
+        /** Runs one leg and returns the single request it sent to {@code endpoint}. */
+        private StubIdentityProvider.ReceivedRequest receivedBy(StubIdentityProvider.Endpoint endpoint, Runnable leg) {
+            int before = stub.received(endpoint).size();
+            leg.run();
+            List<StubIdentityProvider.ReceivedRequest> received = stub.received(endpoint);
+            assertEquals(before + 1, received.size(),
+                    "the leg sends exactly one request to the " + endpoint + " endpoint");
+            return received.getLast();
+        }
+
+        private OidcConfig.OidcConfigBuilder stubOidc() {
+            return OidcConfig.builder()
+                    .issuer(stub.issuer())
+                    .clientId(CLIENT_ID)
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build());
+        }
+
+        /** A producer whose back-channel reaches the stub through the named trust profile alone. */
+        private BffRuntimeProducer stubProducer(OidcConfig oidc) {
+            return producer(oidc, new EgressTlsConfig(true, true, null, true, PROFILE),
+                    TestTlsConfigurationRegistry.withAnchor(PROFILE, stub.rootCertificate()));
+        }
+
+        private KeyFixture keyFixture(KeyMode mode) {
+            Supplier<KeyPair> providedKey = mode.providedKey;
+            if (providedKey == null) {
+                return new KeyFixture(stubOidc().build(), Optional.empty());
+            }
+            KeyPair keyPair = providedKey.get();
+            Path keyFile = TestSigningKeys.writeKeyFile(keyDirectory, keyPair);
+            OidcConfig oidc = stubOidc()
+                    .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(keyFile.toString())).build();
+            return new KeyFixture(oidc, Optional.of(new DpopProofGenerator(keyPair, mode.algorithm).jkt()));
+        }
+
+        /**
+         * A client id and a secret that both carry characters the form encoding has to escape — a space,
+         * a colon, and the reserved characters of a form body — so an unencoded credential and a
+         * form-encoded one cannot be the same string.
+         */
+        private SecretFixture secretFixture() {
+            String clientId = "gateway client:" + Generators.letterStrings(4, 8).next();
+            String secret = Generators.letterStrings(16, 32).next() + "+/ :&=%" + Generators.letterStrings(4, 8).next();
+            return new SecretFixture(stubOidc().clientId(clientId).clientSecret(secret).build(), clientId, secret);
+        }
+
+        private String keyIdOf(StubIdentityProvider.ReceivedRequest request) throws IOException {
+            String assertion = request.form().get(CLIENT_ASSERTION);
+            assertNotNull(assertion, "the request body carries no client_assertion");
+            return jwtPart(assertion, 0).path("kid").asText();
+        }
+
+        private static JsonNode jwtPart(String compactJwt, int index) throws IOException {
+            return JSON.readTree(Base64.getUrlDecoder().decode(compactJwt.split("\\.")[index]));
+        }
+
+        /** The still-encoded value of one query parameter of {@code url}. */
+        private static String rawQueryParameter(String url, String name) {
+            for (String pair : URI.create(url).getRawQuery().split("&")) {
+                String[] nameValue = pair.split("=", 2);
+                if (name.equals(nameValue[0]) && nameValue.length == 2) {
+                    return nameValue[1];
+                }
+            }
+            throw new AssertionError("the URL carries no " + name + " parameter: " + url);
+        }
+
+        private static String clientSecretWarning() {
+            return ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION.resolveIdentifierString();
+        }
+
+        private static int recordsContaining(TestLogLevel level, String part) {
+            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(level, part).size();
+        }
+
+        /**
+         * Asserts that no record captured so far, at any level, carries the secret — neither as written,
+         * nor form-encoded, nor inside the Basic credential — in its message or in the message of a
+         * throwable it chains.
+         */
+        private void assertNoRecordCarriesTheSecret(SecretFixture fixture) {
+            List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
+            assertFalse(records.isEmpty(),
+                    "no record was captured at all, so the absence of the secret would prove nothing");
+            List<String> forbidden = List.of(fixture.secret(),
+                    URLEncoder.encode(fixture.secret(), StandardCharsets.UTF_8), fixture.basicCredential());
+            assertAll("no captured record carries the client secret",
+                    records.stream().map(captured -> (Executable) () -> {
+                        String rendered = rendered(captured);
+                        assertTrue(forbidden.stream().noneMatch(rendered::contains),
+                                "a " + captured.getLevel() + " record of " + captured.getLoggerName()
+                                        + " carries the client secret");
+                    }));
+        }
+
+        private static String rendered(LogRecord captured) {
+            StringBuilder rendered = new StringBuilder(String.valueOf(captured.getMessage()));
+            for (Throwable thrown = captured.getThrown(); thrown != null; thrown = thrown.getCause()) {
+                rendered.append('\n').append(thrown.getMessage());
+            }
+            return rendered.toString();
         }
     }
 

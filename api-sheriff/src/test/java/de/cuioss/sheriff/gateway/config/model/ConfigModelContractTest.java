@@ -426,6 +426,19 @@ class ConfigModelContractTest {
                     voCase("OidcConfig.Login", new OidcConfig.Login("/session/login", "/home"),
                             new OidcConfig.Login("/session/login", "/home"),
                             new OidcConfig.Login("/session/login", "/elsewhere")),
+                    voCase("OidcConfig.ClientAuthenticationSettings",
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/other.pem")),
+                    // client_authentication participates in identity: the unequal instance varies only
+                    // that component, so dropping it from equals() fails this case alone.
+                    voCase("OidcConfig (client_authentication)",
+                            OidcConfig.builder().clientAuthentication(
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem")).build(),
+                            OidcConfig.builder().clientAuthentication(
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem")).build(),
+                            OidcConfig.builder().clientAuthentication(
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/b.pem")).build()),
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
@@ -1700,6 +1713,86 @@ class ConfigModelContractTest {
             assertTrue(rendered.contains("maxSessions="), "Session toString must surface the max_sessions bound");
             assertTrue(rendered.contains("***REDACTED***"), "the encryption key must stay redacted");
             assertFalse(rendered.contains("${SESSION_KEY}"), "the raw encryption-key reference must never appear");
+        }
+    }
+
+    // --- Client-authentication selection ------------------------------------
+
+    @Nested
+    @DisplayName("Client authentication — the client_authentication block and the mode predicate")
+    class ClientAuthenticationSelection {
+
+        private static final String KEY_FILE = "/etc/sheriff/keys/client-auth.pem";
+        private static final String SECRET = "resolved-client-secret-value";
+
+        @Test
+        void clientAuthenticationSettingsBuilderMatchesConstructor() {
+            OidcConfig.ClientAuthenticationSettings viaCtor = new OidcConfig.ClientAuthenticationSettings(KEY_FILE);
+            OidcConfig.ClientAuthenticationSettings viaBuilder =
+                    OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).build();
+
+            assertAll("the builder and the canonical constructor agree",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals(KEY_FILE, viaBuilder.keyFile()));
+        }
+
+        @Test
+        void clientAuthenticationSettingsKeepsAnAbsentKeyFileAbsent() {
+            assertNull(OidcConfig.ClientAuthenticationSettings.builder().build().keyFile(),
+                    "an omitted key_file stays absent; the runtime then generates a key on startup");
+        }
+
+        @Test
+        void oidcConfigKeepsAnAbsentClientAuthenticationBlockAbsent() {
+            assertNull(OidcConfig.builder().build().clientAuthentication(),
+                    "an omitted client_authentication block binds as absent");
+        }
+
+        /**
+         * The two neighbouring components are rendered by opposite rules, and the rendering must keep
+         * them apart: the key file is a location an operator needs to see in a diagnostic, the secret is
+         * a credential that must never reach one.
+         */
+        @Test
+        void oidcToStringRendersTheKeyFilePathAndStillRedactsTheSecret() {
+            String rendered = OidcConfig.builder()
+                    .clientSecret(SECRET)
+                    .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(KEY_FILE))
+                    .build().toString();
+
+            assertAll("a path is rendered, a secret is not",
+                    () -> assertTrue(rendered.contains("clientAuthentication="),
+                            "toString must surface the client_authentication block: " + rendered),
+                    () -> assertTrue(rendered.contains(KEY_FILE), "the key-file path is a location and is rendered"),
+                    () -> assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted"),
+                    () -> assertFalse(rendered.contains(SECRET), "the client-secret value must never appear"));
+        }
+
+        @Test
+        void usesClientSecretIsFalseWhenNoSecretIsDeclared() {
+            assertAll("an absent secret selects private_key_jwt, with or without a key file",
+                    () -> assertFalse(OidcConfig.builder().build().usesClientSecret()),
+                    () -> assertFalse(OidcConfig.builder()
+                            .clientAuthentication(new OidcConfig.ClientAuthenticationSettings(KEY_FILE))
+                            .build().usesClientSecret()));
+        }
+
+        @Test
+        void usesClientSecretIsTrueWhenASecretIsDeclared() {
+            assertTrue(OidcConfig.builder().clientSecret(SECRET).build().usesClientSecret(),
+                    "a declared secret selects client_secret_basic");
+        }
+
+        /**
+         * The mode is selected by presence alone. A blank secret must NOT read as "no secret" here:
+         * that would let a variable set to the empty string fall back to the key-based mode silently,
+         * where boot validation is meant to refuse it.
+         */
+        @ParameterizedTest(name = "a declared secret of ''{0}'' still selects client-secret mode")
+        @ValueSource(strings = {"", " ", "\t"})
+        void usesClientSecretIsTrueForADeclaredButBlankSecret(String blank) {
+            assertTrue(OidcConfig.builder().clientSecret(blank).build().usesClientSecret(),
+                    "presence selects the mode whatever the value; the blank value is refused by validation");
         }
     }
 }

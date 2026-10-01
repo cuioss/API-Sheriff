@@ -3495,4 +3495,129 @@ class ConfigValidatorTest {
             assertFalse(refused(errors));
         }
     }
+
+    /**
+     * {@code oidc.client_secret} and {@code oidc.client_authentication.key_file} select different
+     * client authentications. The three documents that name at most one of them are admitted; the
+     * document naming both, and a declared secret that resolves blank, are refused at
+     * {@code /oidc/client_secret} with a fixed text that carries no configured value.
+     */
+    @Nested
+    @DisplayName("oidc.client_secret and oidc.client_authentication.key_file select one client authentication")
+    class ClientAuthenticationMode {
+
+        private static final String POINTER = "/oidc/client_secret";
+        private static final String SECRET_KEY = "oidc.client_secret";
+        private static final String KEY_FILE_KEY = "oidc.client_authentication.key_file";
+        /** Distinctive values, so an echo of either into a refusal is detectable. */
+        private static final String SECRET = "configured-secret-value-7f3a";
+        private static final String KEY_FILE = "/etc/sheriff/keys/configured-key-file-91c2.pem";
+
+        private List<ConfigError> clientAuthenticationErrors(@Nullable String clientSecret,
+                OidcConfig.@Nullable ClientAuthenticationSettings clientAuthentication) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer("https://idp.example.com/realms/main")
+                    .clientId("api-sheriff")
+                    .clientSecret(clientSecret)
+                    .clientAuthentication(clientAuthentication)
+                    .build();
+            return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        private static OidcConfig.ClientAuthenticationSettings keyFile() {
+            return new OidcConfig.ClientAuthenticationSettings(KEY_FILE);
+        }
+
+        @Test
+        @DisplayName("Should admit a document declaring only the client secret")
+        void shouldAdmitSecretOnly() {
+            assertEquals(List.of(), clientAuthenticationErrors(SECRET, null),
+                    "client-secret authentication is a supported mode");
+        }
+
+        @Test
+        @DisplayName("Should admit a document declaring only the key file")
+        void shouldAdmitKeyFileOnly() {
+            assertEquals(List.of(), clientAuthenticationErrors(null, keyFile()),
+                    "private_key_jwt with a provided key is the default mode");
+        }
+
+        @Test
+        @DisplayName("Should admit a document declaring neither, with or without an empty client_authentication block")
+        void shouldAdmitNeither() {
+            assertAll("private_key_jwt with a generated key",
+                    () -> assertEquals(List.of(), clientAuthenticationErrors(null, null),
+                            "no secret and no block selects a generated key"),
+                    () -> assertEquals(List.of(),
+                            clientAuthenticationErrors(null, new OidcConfig.ClientAuthenticationSettings(null)),
+                            "a block that names no key file selects a generated key too"));
+        }
+
+        @Test
+        @DisplayName("Should admit a client secret beside a client_authentication block that names no key file")
+        void shouldAdmitSecretBesideAnEmptyBlock() {
+            assertEquals(List.of(),
+                    clientAuthenticationErrors(SECRET, new OidcConfig.ClientAuthenticationSettings(null)),
+                    "the refusal is about two credentials, and an empty block names none");
+        }
+
+        @Test
+        @DisplayName("Should refuse both keys together, naming both and echoing neither value")
+        void shouldRefuseSecretTogetherWithKeyFile() {
+            List<ConfigError> errors = clientAuthenticationErrors(SECRET, keyFile());
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            ConfigError refusal = errors.getFirst();
+            assertAll("the refusal names both keys and neither value",
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(SECRET_KEY),
+                            () -> "the refusal must name " + SECRET_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(KEY_FILE_KEY),
+                            () -> "the refusal must name " + KEY_FILE_KEY + ": " + refusal.message()),
+                    () -> assertFalse(refusal.message().contains(SECRET),
+                            "the secret value must never reach the boot log"),
+                    () -> assertFalse(refusal.message().contains(KEY_FILE),
+                            "the configured path must not be echoed either"));
+        }
+
+        @ParameterizedTest(name = "a declared secret of ''{0}''")
+        @ValueSource(strings = {"", " ", "\t "})
+        @DisplayName("Should refuse a declared client secret that resolves to a blank value")
+        void shouldRefuseBlankSecret(String blank) {
+            List<ConfigError> errors = clientAuthenticationErrors(blank, null);
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            assertAll("the refusal names the secret key and the defect",
+                    () -> assertTrue(errors.getFirst().message().contains(SECRET_KEY),
+                            () -> "the refusal must name " + SECRET_KEY + ": " + errors.getFirst().message()),
+                    () -> assertTrue(errors.getFirst().message().contains("blank"),
+                            () -> "the refusal must name the defect: " + errors.getFirst().message()));
+        }
+
+        @Test
+        @DisplayName("Should collect the blank-secret and the both-keys refusal together rather than stopping at the first")
+        void shouldCollectBothRefusalsTogether() {
+            List<ConfigError> errors = clientAuthenticationErrors("", keyFile());
+
+            assertAll("both violations of one document are reported in one pass",
+                    () -> assertEquals(2, errors.size(), () -> "two refusals at " + POINTER + ", got: " + errors),
+                    () -> assertTrue(errors.stream().anyMatch(error -> error.message().contains("blank")),
+                            () -> "the blank-secret refusal is reported, got: " + errors),
+                    () -> assertTrue(errors.stream().anyMatch(error -> error.message().contains(KEY_FILE_KEY)),
+                            () -> "the both-keys refusal is reported, got: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should hold the rule without any session route — it is a property of the document")
+        void shouldRefuseOnABearerOnlyGateway() {
+            OidcConfig oidc = OidcConfig.builder().clientSecret(SECRET).clientAuthentication(keyFile()).build();
+
+            List<ConfigError> errors = validator.validate(validGateway().oidc(oidc).build(), List.of(),
+                    topologyWith());
+
+            assertHasError(errors, POINTER, KEY_FILE_KEY);
+        }
+    }
 }
