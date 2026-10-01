@@ -122,8 +122,8 @@ public class PortalRules {
         if (ReservedPathRegistry.reservedPaths(gateway.oidc()).contains(portal.path())) {
             errors.add(new ConfigError(GATEWAY_FILE, PORTAL_PATH_POINTER,
                     "portal.path equals a reserved OIDC path (callback, logout, logout return, back-channel "
-                            + "logout, user-info or login); the portal matches on any host and would collide "
-                            + "with the reserved endpoint"));
+                            + "logout, user-info, login or client JWKS); the portal matches on any host and would "
+                            + "collide with the reserved endpoint"));
         }
     }
 
