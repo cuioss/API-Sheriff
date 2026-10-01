@@ -99,6 +99,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
+import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
@@ -129,6 +130,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
@@ -174,6 +176,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -1611,9 +1614,16 @@ class BffRuntimeProducerTest {
      * <strong>The sender constraint.</strong> Every token request carries a DPoP proof, and the tests of
      * the binding check script the token endpoint's answer: a success answer that is not bound to the
      * proof key is refused by the runtime, and one that is bound is accepted.
+     * <p>
+     * <strong>What the captured records cover.</strong> The assertion that no record carries the client
+     * secret reads every captured record down to {@code DEBUG}. The root level alone does not open the
+     * loggers of the gateway and of the token library for that — see {@link SheriffDebugCapture} — so
+     * the extension is registered here, and the assertion first proves that a {@code DEBUG} record of
+     * the loggers on the back-channel legs is captured.
      */
     @Nested
     @EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
+    @ExtendWith(SheriffDebugCapture.class)
     @DisplayName("Produced runtime against the stub identity provider")
     class StubIdentityProviderRuntime {
 
@@ -3208,11 +3218,18 @@ class BffRuntimeProducerTest {
         }
 
         /**
-         * Asserts that no record captured so far, at any level, carries the secret — neither as written,
-         * nor form-encoded, nor inside the Basic credential — in its message or in the message of a
-         * throwable it chains.
+         * Asserts that no record captured so far, down to {@code DEBUG}, carries the secret — neither as
+         * written, nor form-encoded, nor inside the Basic credential — in its message or in the message
+         * of a throwable it chains.
+         * <p>
+         * The control comes first: a {@code DEBUG} record of the producer, of the two gateway classes on
+         * the pushed-request and token legs, and of the two engine clients those legs send through is
+         * captured, so the records read below include the {@code DEBUG} output of the code that holds
+         * the secret.
          */
         private void assertNoRecordCarriesTheSecret(SecretFixture fixture) {
+            SheriffDebugCapture.assertDebugIsCaptured(BffRuntimeProducer.class, PushedAuthorizationRequests.class,
+                    BoundTokenEndpointClient.class, ParClient.class, TokenEndpointClient.class);
             List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
             assertFalse(records.isEmpty(),
                     "no record was captured at all, so the absence of the secret would prove nothing");
