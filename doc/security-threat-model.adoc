@@ -1986,7 +1986,7 @@ the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
   including the `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The
   SESSION branch is exactly a `require: session` route, including its comparison of the session's
   active scope set against the same `neededScopes`
-  (link:adr/0056-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0056]):
+  (link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]):
   a session lacking a scope is refreshed inside its grant, widened (<<bff-17>>) or refused `403`,
   and is never relayed short of one. A request is admitted on a `session_fallback` route only if one
   of those two routes would admit it, so enabling the key on a bearer route does not lower that
