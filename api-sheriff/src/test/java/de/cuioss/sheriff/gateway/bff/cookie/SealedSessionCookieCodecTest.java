@@ -253,7 +253,7 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should stamp format version 2 — the eleven-field layout carrying both scope sets")
         void shouldStampFormatVersionTwo() {
-            assertEquals((byte) 2, SealedSessionCookieCodec.FORMAT_VERSION,
+            assertEquals(2, SealedSessionCookieCodec.FORMAT_VERSION,
                     "version 2 is the eleven-field, length-prefixed, deflated layout carrying A and S; any "
                             + "change to the sealed field set must increment it by exactly one, and this pin "
                             + "moves with it");
