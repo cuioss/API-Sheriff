@@ -18,16 +18,19 @@ package de.cuioss.sheriff.gateway.bff.login;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
@@ -48,6 +51,8 @@ import de.cuioss.sheriff.token.client.flow.RedeemedResponseException;
 import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.token.TokenResponse;
+import de.cuioss.sheriff.token.commons.transport.ParserConfig;
+import de.cuioss.sheriff.token.validation.json.MapRepresentation;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.TestLogLevel;
@@ -75,6 +80,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>
  * The refusals are matched controls over one fixture — each differs from the accepted response in a
  * single property.
+ * <p>
+ * Two inputs cannot be produced through the stub, because the engine and the library parser never
+ * yield them: a token response without an access token, which the engine refuses itself, and a read
+ * that fails with an unchecked exception. They are driven through the two package-private seams of the
+ * class — the judgement of a hand-built response, and the parser seam — each next to a control that
+ * passes the same seam and is accepted.
  */
 @EnableGeneratorController
 @EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
@@ -119,6 +130,43 @@ class BoundTokenEndpointClientTest {
 
         /** Three segments whose payload segment decodes to something that is not JSON. */
         PAYLOAD_NOT_JSON
+    }
+
+    /**
+     * How the read of a well-formed, bound access token is made to fail with an unchecked exception.
+     * No payload makes the library parser do that, so each constant supplies a parser for the seam.
+     */
+    enum UncheckedReadFailure {
+
+        /** The parser itself raises a runtime failure. */
+        PARSER_THROWS {
+        @Override
+        BoundTokenEndpointClient.PayloadParser parser(String echoed) {
+            return _ -> {
+                throw new IllegalStateException(echoed);
+            };
+        }
+    },
+
+        /** The parser returns claims, and reading a claim from them raises a runtime failure. */
+        CLAIM_READ_THROWS {
+            @Override
+            BoundTokenEndpointClient.PayloadParser parser(String echoed) {
+                return _ -> new MapRepresentation(new AbstractMap<>() {
+                    @Override
+                    public Set<Entry<String, Object>> entrySet() {
+                        throw new IllegalStateException(echoed);
+                    }
+                });
+            }
+        };
+
+        /**
+         * @param echoed the message the failure carries, standing for a payload fragment a parser
+         *               would echo
+         * @return a parser whose read fails with an unchecked exception carrying {@code echoed}
+         */
+        abstract BoundTokenEndpointClient.PayloadParser parser(String echoed);
     }
 
     /**
@@ -182,6 +230,18 @@ class BoundTokenEndpointClientTest {
         return Stream.of(
                 Arguments.of("an unlisted grant_type", Map.of(GRANT_TYPE, "client_credentials")),
                 Arguments.of("no grant_type at all", Map.of("scope", "openid")));
+    }
+
+    static Stream<Arguments> bothLegs() {
+        return Stream.of(
+                Arguments.of(AUTHORIZATION_CODE, LEG_CODE_EXCHANGE),
+                Arguments.of(REFRESH_TOKEN, LEG_REFRESH));
+    }
+
+    static Stream<Arguments> uncheckedReadFailuresOnBothLegs() {
+        return Stream.of(UncheckedReadFailure.values()).flatMap(failure -> Stream.of(
+                Arguments.of(failure, AUTHORIZATION_CODE, LEG_CODE_EXCHANGE),
+                Arguments.of(failure, REFRESH_TOKEN, LEG_REFRESH)));
     }
 
     @ParameterizedTest(name = "token_type ''{0}''")
@@ -293,11 +353,87 @@ class BoundTokenEndpointClientTest {
     }
 
     /**
-     * Asserts the whole refusal contract: the failure is classified as a redeemed grant, exactly one
-     * {@code WARN} record names the leg and the reason, the exception names the reason, and neither a
-     * record of any level nor the exception carries a scripted value.
+     * The engine refuses a token response without an access token itself, so this input reaches the
+     * class only if that guard is ever lost. The judgement is therefore handed the response directly.
+     */
+    @ParameterizedTest(name = "grant_type {0}")
+    @MethodSource("bothLegs")
+    @DisplayName("Should refuse a response of type DPoP that carries no access token, as a redeemed response")
+    void shouldRefuseAResponseWithoutAnAccessToken(String grantType, String leg) {
+        Scripted scripted = scripted(AccessTokenShape.BOUND);
+        TokenResponse response = response(TYPE_DPOP, null, scripted);
+
+        RedeemedResponseException refused =
+                assertThrows(RedeemedResponseException.class, () -> client.bound(response, grantType));
+
+        assertRefusal(refused, List.of(scripted.refreshToken(), scripted.idToken()), leg, REASON_UNREADABLE);
+    }
+
+    @Test
+    @DisplayName("Should return a judged response of type DPoP whose access token names the proof key, unchanged")
+    void shouldReturnAJudgedBoundResponseUnchanged() {
+        Scripted scripted = scripted(AccessTokenShape.BOUND);
+        TokenResponse response = response(TYPE_DPOP, scripted.accessToken(), scripted);
+
+        TokenResponse judged = client.bound(response, REFRESH_TOKEN);
+
+        assertAll("the control of the refused response without an access token",
+                () -> assertSame(response, judged, "the judged response is handed back as it is"),
+                () -> assertEquals(List.of(), refusalRecords(), "an accepted response is not recorded"));
+    }
+
+    @ParameterizedTest(name = "{0} — grant_type {1}")
+    @MethodSource("uncheckedReadFailuresOnBothLegs")
+    @DisplayName("Should refuse a bound response whose access token cannot be read, whatever the read raises")
+    void shouldRefuseAnUncheckedFailureOfTheRead(UncheckedReadFailure failure, String grantType, String leg) {
+        Scripted scripted = script(TYPE_DPOP, AccessTokenShape.BOUND);
+        String echoed = "payload fragment " + Generators.letterStrings(16, 24).next();
+        BoundTokenEndpointClient failing =
+                new BoundTokenEndpointClient(configuration(), proofGenerator.jkt(), failure.parser(echoed));
+        String tokenEndpoint = stub.url(StubIdentityProvider.Endpoint.TOKEN);
+        Map<String, String> form = form(grantType);
+
+        RedeemedResponseException refused = assertThrows(RedeemedResponseException.class,
+                () -> failing.requestToken(tokenEndpoint, form, Map.of(), senderConstraint),
+                "an unchecked failure of the read must not leave the client unclassified");
+
+        List<String> secrets = scripted.secrets();
+        secrets.add(echoed);
+        assertRefusal(refused, secrets, leg, REASON_UNREADABLE);
+    }
+
+    @ParameterizedTest(name = "grant_type {0}")
+    @MethodSource("bothLegs")
+    @DisplayName("Should accept the same bound response when the read through the parser seam succeeds")
+    void shouldAcceptABoundResponseReadThroughTheParserSeam(String grantType, String leg) {
+        Scripted scripted = script(TYPE_DPOP, AccessTokenShape.BOUND);
+        ParserConfig parserConfig = ParserConfig.builder().build();
+        BoundTokenEndpointClient reading = new BoundTokenEndpointClient(configuration(), proofGenerator.jkt(),
+                payload -> MapRepresentation.fromJson(parserConfig.getDslJson(), payload));
+        String tokenEndpoint = stub.url(StubIdentityProvider.Endpoint.TOKEN);
+        Map<String, String> form = form(grantType);
+
+        TokenResponse response = reading.requestToken(tokenEndpoint, form, Map.of(), senderConstraint);
+
+        assertAll("the control of the unchecked read failures on the " + leg + " leg",
+                () -> assertEquals(scripted.accessToken(), response.accessToken),
+                () -> assertEquals(List.of(), refusalRecords(), "an accepted response is not recorded"));
+    }
+
+    /**
+     * Asserts the whole refusal contract for a scripted response: see
+     * {@link #assertRefusal(RedeemedResponseException, List, String, String)}.
      */
     private void assertRefusal(RedeemedResponseException refused, Scripted scripted, String leg, String reason) {
+        assertRefusal(refused, scripted.secrets(), leg, reason);
+    }
+
+    /**
+     * Asserts the whole refusal contract: the failure is classified as a redeemed grant, exactly one
+     * {@code WARN} record names the leg and the reason, the exception names the reason, and neither a
+     * record of any level nor the exception carries one of {@code secrets}.
+     */
+    private void assertRefusal(RedeemedResponseException refused, List<String> secrets, String leg, String reason) {
         List<LogRecord> refusals = refusalRecords();
         assertEquals(1, refusals.size(), "the refusal is recorded exactly once");
         String recorded = String.valueOf(refusals.getFirst().getMessage());
@@ -308,17 +444,17 @@ class BoundTokenEndpointClientTest {
                 () -> assertTrue(recorded.contains("on the " + leg + " leg"), "the record names the leg: " + recorded),
                 () -> assertTrue(recorded.contains("(" + reason + ")"), "the record names the reason: " + recorded),
                 () -> assertTrue(thrown.contains(reason), "the exception names the reason: " + thrown));
-        assertNothingScriptedIsDisclosed(refused, scripted);
+        assertNothingScriptedIsDisclosed(refused, secrets);
     }
 
     /**
      * Asserts that no captured record, at any level, and no message of the refusal or of a cause it
-     * chains carries the scripted access token, refresh token, ID token or {@code jkt}.
+     * chains carries one of {@code secrets} — the scripted access token, refresh token, ID token and
+     * {@code jkt}, and whatever else a test adds.
      */
-    private static void assertNothingScriptedIsDisclosed(Throwable refused, Scripted scripted) {
+    private static void assertNothingScriptedIsDisclosed(Throwable refused, List<String> secrets) {
         List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
-        List<String> secrets = scripted.secrets();
         List<Executable> checks = new ArrayList<>();
         for (LogRecord captured : records) {
             String rendered = rendered(captured);
@@ -393,6 +529,21 @@ class BoundTokenEndpointClientTest {
                     encode("{\"alg\":\"RS256\"}") + "." + encode("not json " + subject) + "." + encode("signature"),
                     refreshToken, idToken, Optional.empty());
         };
+    }
+
+    /**
+     * A token response as the engine would hand it to the judgement, built by hand so it can carry
+     * what the engine never returns.
+     *
+     * @param accessToken the access token, {@code null} for a response that carries none
+     */
+    private static TokenResponse response(String tokenType, String accessToken, Scripted scripted) {
+        TokenResponse response = new TokenResponse();
+        response.tokenType = tokenType;
+        response.accessToken = accessToken;
+        response.refreshToken = scripted.refreshToken();
+        response.idToken = scripted.idToken();
+        return response;
     }
 
     private static String accessTokenBoundTo(String subject, String thumbprint) {

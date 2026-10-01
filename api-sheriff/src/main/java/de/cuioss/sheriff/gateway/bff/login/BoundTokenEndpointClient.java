@@ -69,6 +69,13 @@ import org.jspecify.annotations.Nullable;
  * issues opaque access tokens has never completed a login, and the gateway configures no JWE
  * decryption.
  * <p>
+ * <strong>Nothing that goes wrong while reading leaves this class unclassified.</strong> A response
+ * that carries no access token, and any failure of the parser or of the claim read — a checked
+ * parse failure and an unchecked one alike — is the same {@code unreadable-access-token} refusal.
+ * The judgement runs after the identity provider answered with success, so the grant is already
+ * redeemed; a failure that escaped as anything but the refusal below would be read by the refresh
+ * path as a grant the provider never processed, and the session would be kept.
+ * <p>
  * <strong>Refusal.</strong> One private emission point records {@code ApiSheriff-131} with two
  * bounded tokens — the leg ({@code code-exchange}, {@code refresh} or {@code other}, mapped from the
  * request's {@code grant_type} by an allow-list) and the reason ({@code token-type},
@@ -122,8 +129,12 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
     private static final int PAYLOAD_SEGMENT = 1;
 
     private final String expectedThumbprint;
+    private final PayloadParser payloadParser;
 
     /**
+     * Builds the client production code uses: the access-token payload is read with the token
+     * library's bounded parser.
+     *
      * @param configuration      the back-channel client configuration carrying the TLS posture of
      *                           the token-endpoint leg
      * @param expectedThumbprint the RFC 7638 thumbprint of the gateway's DPoP proof key — the
@@ -132,12 +143,29 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
      *                                  comparand would accept a token whose {@code jkt} is blank
      */
     public BoundTokenEndpointClient(ClientConfiguration configuration, String expectedThumbprint) {
+        this(configuration, expectedThumbprint,
+                payload -> MapRepresentation.fromJson(PARSER_CONFIG.getDslJson(), payload));
+    }
+
+    /**
+     * The constructor a test reaches the parser seam through; it is package-private and exists for
+     * testability alone. Production code builds the client with the public constructor, which binds
+     * the library's bounded parser.
+     *
+     * @param configuration      the back-channel client configuration
+     * @param expectedThumbprint the RFC 7638 thumbprint every accepted access token must carry
+     * @param payloadParser      reads the claims of a decoded access-token payload
+     * @throws IllegalArgumentException when {@code expectedThumbprint} is blank
+     */
+    BoundTokenEndpointClient(ClientConfiguration configuration, String expectedThumbprint,
+            PayloadParser payloadParser) {
         super(configuration);
         Objects.requireNonNull(expectedThumbprint, "expectedThumbprint");
         if (expectedThumbprint.isBlank()) {
             throw new IllegalArgumentException("expectedThumbprint must not be blank");
         }
         this.expectedThumbprint = expectedThumbprint;
+        this.payloadParser = Objects.requireNonNull(payloadParser, "payloadParser");
     }
 
     /**
@@ -158,9 +186,25 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
     @Override
     public TokenResponse requestToken(String tokenEndpoint, Map<String, String> formParameters,
             Map<String, String> requestHeaders, @Nullable SenderConstraint senderConstraint) {
-        TokenResponse response = super.requestToken(tokenEndpoint, formParameters, requestHeaders,
-                senderConstraint);
-        Leg leg = Leg.of(formParameters.get(PARAM_GRANT_TYPE));
+        return bound(super.requestToken(tokenEndpoint, formParameters, requestHeaders, senderConstraint),
+                formParameters.get(PARAM_GRANT_TYPE));
+    }
+
+    /**
+     * Judges a token response the engine returned. Kept apart from the transport, and package-private
+     * rather than private, for testability alone: a test hands the judgement a response the engine
+     * itself would have refused — one without an access token. Production code reaches it only through
+     * {@link #requestToken(String, Map, Map, SenderConstraint)}.
+     *
+     * @param response  a token response of a success answer
+     * @param grantType the request's {@code grant_type}, which selects the leg a refusal is recorded
+     *                  under; {@code null} when the request carried none
+     * @return {@code response}, unchanged
+     * @throws RedeemedResponseException when the response is not of type {@code DPoP} or its access
+     *                                   token does not carry the expected {@code cnf.jkt}
+     */
+    TokenResponse bound(TokenResponse response, @Nullable String grantType) {
+        Leg leg = Leg.of(grantType);
         if (!TokenResponse.TOKEN_TYPE_DPOP.equalsIgnoreCase(response.tokenType)) {
             throw refusal(leg, Reason.TOKEN_TYPE);
         }
@@ -173,33 +217,38 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
 
     /**
      * Reads {@code cnf.jkt} from the unverified payload of the access token and compares it with the
-     * expected thumbprint.
+     * expected thumbprint. Never throws: an absent token and every failure of the read are the
+     * {@code unreadable-access-token} defect.
      *
-     * @param accessToken the access token of a response the engine returned
+     * @param accessToken the access token of a response the engine returned; {@code null} when the
+     *                    response carried none
      * @return the reason the token is not bound to the proof key, empty when it is
      */
-    private Optional<Reason> bindingDefect(String accessToken) {
+    private Optional<Reason> bindingDefect(@Nullable String accessToken) {
+        if (accessToken == null) {
+            return Optional.of(Reason.UNREADABLE_ACCESS_TOKEN);
+        }
         String[] segments = accessToken.split("\\.", -1);
         if (segments.length != COMPACT_JWS_SEGMENTS) {
             return Optional.of(Reason.UNREADABLE_ACCESS_TOKEN);
         }
-        byte[] payload;
+        Optional<String> thumbprint;
+        // The read runs on a response the identity provider has already redeemed the grant for. An
+        // unchecked failure of the decoder, the parser or the claim read must become the same refusal as
+        // a checked one: escaping as a plain runtime failure it would be classified as a grant the
+        // provider never processed, and a refresh would keep the session. The failure's message can echo
+        // a fragment of the token payload — it is neither logged nor chained.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            payload = Base64.getUrlDecoder().decode(segments[PAYLOAD_SEGMENT]);
-        } catch (IllegalArgumentException _) {
+            byte[] payload = Base64.getUrlDecoder().decode(segments[PAYLOAD_SEGMENT]);
+            if (payload.length == 0 || payload.length > PARSER_CONFIG.getMaxPayloadSize()) {
+                return Optional.of(Reason.UNREADABLE_ACCESS_TOKEN);
+            }
+            thumbprint = payloadParser.parse(payload).getNestedMap(CLAIM_CNF)
+                    .flatMap(cnf -> cnf.getString(MEMBER_JKT));
+        } catch (IOException | RuntimeException _) {
             return Optional.of(Reason.UNREADABLE_ACCESS_TOKEN);
         }
-        if (payload.length == 0 || payload.length > PARSER_CONFIG.getMaxPayloadSize()) {
-            return Optional.of(Reason.UNREADABLE_ACCESS_TOKEN);
-        }
-        MapRepresentation claims;
-        try {
-            claims = MapRepresentation.fromJson(PARSER_CONFIG.getDslJson(), payload);
-        } catch (IOException _) {
-            // The parser's message can echo a fragment of the token payload — it is not logged.
-            return Optional.of(Reason.UNREADABLE_ACCESS_TOKEN);
-        }
-        Optional<String> thumbprint = claims.getNestedMap(CLAIM_CNF).flatMap(cnf -> cnf.getString(MEMBER_JKT));
         if (thumbprint.isEmpty()) {
             return Optional.of(Reason.CNF_ABSENT);
         }
@@ -218,6 +267,23 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
         LOGGER.warn(BffLogMessages.WARN.TOKEN_RESPONSE_NOT_BOUND, leg.label, reason.token);
         return new RedeemedResponseException(
                 "Token response refused: not bound to the DPoP proof key (" + reason.token + ")");
+    }
+
+    /**
+     * Reads the claims of a decoded access-token payload. The production binding is the token
+     * library's bounded parser; the seam exists so a test can make the read fail in ways no payload
+     * makes that parser fail.
+     */
+    @FunctionalInterface
+    interface PayloadParser {
+
+        /**
+         * @param payload the base64url-decoded payload segment of the access token, non-empty and
+         *                within the parser's size limit
+         * @return the claims of the payload
+         * @throws IOException when the payload is not JSON within the parser limits
+         */
+        MapRepresentation parse(byte[] payload) throws IOException;
     }
 
     /**
@@ -264,7 +330,10 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
         /** The response's {@code token_type} is not {@code DPoP}. */
         TOKEN_TYPE("token-type"),
 
-        /** The access token is not a compact JWS whose payload is JSON within the parser limits. */
+        /**
+         * The access token is absent, is not a compact JWS whose payload is JSON within the parser
+         * limits, or could not be read for any other reason.
+         */
         UNREADABLE_ACCESS_TOKEN("unreadable-access-token"),
 
         /** The access token carries no {@code cnf} object holding a {@code jkt} string. */
