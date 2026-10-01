@@ -60,9 +60,10 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The BFF OIDC back-channel is bound through its own peer keys (ADR-0045).</strong> The
  * {@code ClientConfiguration} built in {@code BffRuntimeProducer} is what
- * {@code DiscoveryResolver}, {@code TokenEndpointClient}, {@code RefreshFlow} and
- * {@code RevocationClient} dial the identity provider with — discovery, the authorization-code
- * exchange, refresh and refresh-token revocation — presenting the client credential: the signed
+ * {@code DiscoveryResolver}, {@code ParClient}, {@code TokenEndpointClient}, {@code RefreshFlow} and
+ * {@code RevocationClient} dial the identity provider with — discovery, the pushed authorization
+ * request, the authorization-code exchange, refresh and refresh-token revocation — presenting the
+ * client credential: the signed
  * client assertion ({@code private_key_jwt}) by default, the client secret under
  * {@code client_secret_basic} when {@code oidc.client_secret} is configured.
  * {@code oidcVerifyHostname} is passed to
@@ -123,10 +124,10 @@ import org.jspecify.annotations.Nullable;
  *                               profile <em>replaces</em> the client's anchors rather
  *                               than adding to them, on those three clients only — the
  *                               asset-origin leg keeps the JVM default trust store
- * @param oidcVerifyHostname     whether the BFF OIDC back-channel — discovery, the
- *                               authorization-code exchange, refresh and refresh-token
- *                               revocation — verifies that the identity provider's
- *                               certificate names the dialled host
+ * @param oidcVerifyHostname     whether the BFF OIDC back-channel — discovery, the pushed
+ *                               authorization request, the authorization-code exchange,
+ *                               refresh and refresh-token revocation — verifies that the
+ *                               identity provider's certificate names the dialled host
  *                               (default {@code true}). Read by {@code BffRuntimeProducer},
  *                               which passes it to token-sheriff's
  *                               {@code ClientConfigurationBuilder#verifyHostname} on every

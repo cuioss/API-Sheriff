@@ -33,6 +33,8 @@ import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -120,6 +122,41 @@ class LoginFlowTest {
             loginFlow.initiate("/dashboard", SCOPES, T0);
 
             assertEquals(SCOPES, requestedScopes.get(), "the seam receives exactly the scope set the caller named");
+        }
+    }
+
+    /**
+     * The runtime binds the seam to the engine authorization followed by the push of the request
+     * (ADR-0057), so a push that fails surfaces here as a throwing seam. The flow calls the seam
+     * before it stores anything, which is what keeps a refused login from being left half-started.
+     */
+    @Nested
+    @DisplayName("A failing authorization seam")
+    class FailingSeam {
+
+        @Test
+        @DisplayName("Should propagate the seam's failure, store no pending record and yield no binding cookie")
+        void shouldStoreNothingWhenTheSeamThrows() {
+            GatewayException refusal =
+                    new GatewayException(EventType.UPSTREAM_ERROR, "Pushed authorization request refused (push-failed)");
+            LoginFlow failing = new LoginFlow(scopes -> {
+                throw refusal;
+            }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+
+            GatewayException thrown =
+                    assertThrows(GatewayException.class, () -> failing.initiate("/dashboard", SCOPES, T0));
+
+            assertSame(refusal, thrown, "the refusal reaches the caller as it was raised — no redirect, so no Set-Cookie");
+            assertEquals(0, pendingStore.size(), "nothing is stored for a request that was never pushed");
+        }
+
+        @Test
+        @DisplayName("Should store exactly one pending record when the seam yields a redirect (matched control)")
+        void shouldStoreOneRecordWhenTheSeamYieldsARedirect() {
+            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, T0);
+
+            assertEquals(1, pendingStore.size(), "the store does count a record, so the zero above is observed");
+            assertEquals(1, result.setCookieHeaders().size(), "and the redirect carries the binding cookie");
         }
     }
 

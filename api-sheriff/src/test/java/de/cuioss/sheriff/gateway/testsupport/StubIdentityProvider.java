@@ -79,7 +79,9 @@ import org.jspecify.annotations.Nullable;
  * {@linkplain #script(Endpoint, Answer) filled} it, and otherwise from the endpoint's default.
  * <p>
  * The fixture mints no token and validates nothing. The token endpoint refuses every grant by
- * default, because an assertion on the shape of a request needs the request and not a grant.
+ * default, because an assertion on the shape of a request needs the request and not a grant. The
+ * pushed-authorization-request endpoint accepts every push by default, because a login has to get
+ * past it before the runtime sends anything else.
  *
  * <h2>Binding</h2>
  *
@@ -253,7 +255,15 @@ public final class StubIdentityProvider implements AutoCloseable {
         TOKEN("/token", "POST", "token_endpoint", _ -> Answer.json(400, "{\"error\":\"invalid_grant\"}")),
 
         /** The RFC 7009 revocation endpoint. It answers {@code 200} with no body. */
-        REVOCATION("/revoke", "POST", "revocation_endpoint", _ -> Answer.of(200));
+        REVOCATION("/revoke", "POST", "revocation_endpoint", _ -> Answer.of(200)),
+
+        /**
+         * The RFC 9126 pushed-authorization-request endpoint. It answers {@code 201} with a
+         * {@code request_uri} and an {@code expires_in}.
+         */
+        PUSHED_AUTHORIZATION_REQUEST("/par", "POST", "pushed_authorization_request_endpoint",
+                _ -> Answer.json(201,
+                        "{\"request_uri\":\"urn:ietf:params:oauth:request_uri:stub-identity-provider\",\"expires_in\":60}"));
 
         private final String path;
         private final String method;

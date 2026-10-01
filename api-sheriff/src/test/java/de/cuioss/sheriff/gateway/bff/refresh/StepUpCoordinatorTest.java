@@ -35,6 +35,8 @@ import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.SilentSatisfactio
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.StepUpInitiation;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.StepUpOutcome;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.flow.StepUpChallengeParser.StepUpChallenge;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
@@ -224,6 +226,44 @@ class StepUpCoordinatorTest {
             assertEquals(Set.copyOf(STEP_UP_SCOPES), pending.requestedScopes(),
                     "the step-up request is built from the static oidc.scopes, so that is the set it records — "
                             + "not the session's active set (the PLAN-20 residual)");
+        }
+    }
+
+    /**
+     * The runtime binds the step-up seam to the engine request followed by the push of that request
+     * (ADR-0057), so a push that fails surfaces here as a throwing seam. The coordinator calls the
+     * seam before it stores anything.
+     */
+    @Nested
+    @DisplayName("A failing step-up seam")
+    class FailingSeam {
+
+        @Test
+        @DisplayName("Should propagate the seam's failure, store no pending record and yield no binding cookie")
+        void shouldStoreNothingWhenTheSeamThrows() {
+            GatewayException refusal =
+                    new GatewayException(EventType.UPSTREAM_ERROR, "Pushed authorization request refused (push-failed)");
+            StepUpCoordinator coordinator = coordinator((s, c, now) -> Optional.empty(), c -> {
+                throw refusal;
+            });
+            SessionRecord session = session("urn:example:silver");
+            StepUpChallenge challenge = challenge();
+
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> coordinator.coordinate(session, challenge, REPLAY_URL, NOW));
+
+            assertSame(refusal, thrown, "the refusal reaches the caller as it was raised — no outcome, so no Set-Cookie");
+            assertEquals(0, pendingStore.size(), "nothing is stored for a request that was never pushed");
+        }
+
+        @Test
+        @DisplayName("Should store exactly one pending record when the seam yields a request (matched control)")
+        void shouldStoreOneRecordWhenTheSeamYieldsARequest() {
+            StepUpOutcome outcome =
+                    reDrivingCoordinator().coordinate(session("urn:example:silver"), challenge(), REPLAY_URL, NOW);
+
+            assertEquals(1, pendingStore.size(), "the store does count a record, so the zero above is observed");
+            assertEquals(1, outcome.setCookieHeaders().size(), "and the re-drive carries the binding cookie");
         }
     }
 

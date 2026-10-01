@@ -74,6 +74,14 @@ import de.cuioss.tools.logging.CuiLogger;
  * Not overstated: the exposure of the code to intermediaries is real and is not removed by any of
  * the above — it is bounded by them.
  * <p>
+ * <strong>The URL this builder returns is not what the browser is sent to (ADR-0057).</strong> It is
+ * the parameter source of a pushed authorization request: the runtime hands it to
+ * {@link PushedAuthorizationRequests}, which pushes its parameters to the identity provider and sends
+ * the browser to the authorization endpoint with {@code client_id} and {@code request_uri} only. The
+ * accepted {@code response_mode=query} tradeoff above is unchanged by that, because it concerns the
+ * authorization <em>response</em>: the identity provider still returns {@code code}, {@code state}
+ * and {@code iss} on the callback URL.
+ * <p>
  * <strong>How the rewrite works.</strong> {@link #build} delegates to the engine and then rewrites
  * <em>only</em> the {@code response_mode} parameter of the returned URL. The rewrite is
  * parameter-aware (it splits the query into its {@code name=value} pairs rather than substring-

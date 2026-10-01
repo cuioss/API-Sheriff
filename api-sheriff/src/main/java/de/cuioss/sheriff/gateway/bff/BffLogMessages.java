@@ -135,7 +135,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127 and 131).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127, 131 and 132).
      */
     @UtilityClass
     public static final class WARN {
@@ -263,6 +263,30 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(131)
                 .template("Token response on the %s leg refused — the token is not bound to the gateway's DPoP proof key (%s)")
+                .build();
+
+        /**
+         * An authorization request could not be pushed to the identity provider, so the login — or
+         * the step-up re-drive — was refused with {@code 502} before anything was stored and before
+         * a cookie was set. The only substitution is the reason, a closed set: {@code no-par-endpoint}
+         * (the provider metadata advertises no {@code pushed_authorization_request_endpoint}),
+         * {@code invalid-request} (the engine-built authorization request could not be split into
+         * its parameters, or names one parameter twice) or {@code push-failed} (the push itself
+         * failed: a transport failure, a timeout, a non-success answer, an unparsable answer or an
+         * answer without a {@code request_uri}). Never records the authorization URL, a parameter
+         * value or the {@code request_uri}.
+         * <p>
+         * <strong>Latched per reason.</strong> The login-initiation path is reachable without a
+         * credential, so the record is emitted only on the FIRST occurrence of each reason and every
+         * repeat drops to {@code DEBUG} (ADR-0051) — see
+         * {@code de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests}. Absence of a
+         * repeated {@code WARN} therefore says nothing about the refusal <em>rate</em>; read the
+         * DEBUG channel for that.
+         */
+        public static final LogRecord AUTHORIZATION_PUSH_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(132)
+                .template("Pushed authorization request refused: %s — the login was not started; further refusals with this reason stay at DEBUG")
                 .build();
     }
 }

@@ -62,6 +62,13 @@ import org.jspecify.annotations.Nullable;
  *       elevated parameters. The recorded return URL is same-origin-validated so the post-step-up
  *       redirect is never an open redirect.</li>
  * </ol>
+ * <strong>The re-drive location is a pushed-request redirect (ADR-0057).</strong> The runtime pushes
+ * the step-up authorization request before this coordinator sees it, so the location carries
+ * {@code client_id} and {@code request_uri} only and the elevated {@code acr_values} / {@code max_age}
+ * travel in the pushed request. A failed push propagates out of the {@link StepUpInitiation} seam as
+ * a {@code 502} refusal: {@link #coordinate} calls the seam before it stores the pending record, so
+ * nothing is stored and no cookie is minted for a request that was never pushed.
+ * <p>
  * The class is framework-agnostic — it consumes a raw {@code WWW-Authenticate} header value and
  * returns a {@link StepUpOutcome} the edge renders, so it is unit-testable without a container or a
  * live IdP. It is exercised only when {@code session.step_up.honor_upstream_challenge} is enabled;

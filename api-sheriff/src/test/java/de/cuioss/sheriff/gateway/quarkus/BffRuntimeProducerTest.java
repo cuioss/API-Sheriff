@@ -68,6 +68,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -77,6 +78,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
@@ -100,6 +102,7 @@ import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
@@ -136,8 +139,10 @@ import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackParameters;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
+import de.cuioss.sheriff.token.client.flow.ParClient;
 import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.flow.StepUpChallengeParser.StepUpChallenge;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.TransportException;
@@ -182,9 +187,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * stage are wired) only when a global {@code oidc} block with {@code session.mode=server} and a
  * {@code redirect_uri} is configured, and inert (bearer-only) otherwise. Assembly resolves no OIDC
  * discovery (that is deferred to first engine use), so the producer builds a working runtime without
- * a live IdP. The requests a produced runtime sends on its back-channel — discovery, the code
- * exchange, the refresh grant and revocation — are asserted against {@link StubIdentityProvider};
- * the round-trips that need a real grant are covered by the Keycloak integration tests.
+ * a live IdP. The requests a produced runtime sends on its back-channel — discovery, the pushed
+ * authorization request, the code exchange, the refresh grant and revocation — are asserted against
+ * {@link StubIdentityProvider}; the round-trips that need a real grant are covered by the Keycloak
+ * integration tests.
  */
 @EnableGeneratorController
 @DisplayName("BffRuntimeProducer — server-mode activation and inert bearer-only default")
@@ -200,6 +206,9 @@ class BffRuntimeProducerTest {
      * built with, so the two must be distinguishable by construction.
      */
     private static final String ROTATED_ACCESS_TOKEN = "rotated-access-token";
+
+    /** The scope a scoped endpoint adds on top of {@code oidc.scopes = [openid]}. */
+    private static final String SCOPED_ENDPOINT_SCOPE = "orders:read";
 
     /**
      * Stands in for the Quarkus-managed virtual-thread executor the producer hands the refresh coordinator.
@@ -1208,11 +1217,6 @@ class BffRuntimeProducerTest {
 
         private static final String PROFILE = "corporate-idp";
         private static final String EMPTY_JWKS = "{\"keys\":[]}";
-        /** The scope a scoped endpoint adds on top of {@code oidc.scopes = [openid]}. */
-        private static final String SCOPED_ENDPOINT_SCOPE = "orders:read";
-        private static final String SCOPED_ROUTE_PREFIX = "/orders";
-        /** {@code oidc.scopes ∪ endpoint.scopes} for the scoped session route. */
-        private static final Set<String> SCOPED_NEEDED_SCOPES = Set.of("openid", SCOPED_ENDPOINT_SCOPE);
 
         private Path fixtureDir;
         private SanMismatchedJwksServer server;
@@ -1387,46 +1391,89 @@ class BffRuntimeProducerTest {
             assertThrows(GatewayException.class, colliding::bffRuntime, "and boot itself still refuses it");
         }
 
+        /**
+         * The fixture's discovery document names no {@code pushed_authorization_request_endpoint}, and
+         * the runtime has no mode without the push (ADR-0057). The login is therefore refused before a
+         * redirect is built — and before the pending authorization is stored, which the walk to the
+         * runtime's own pending store shows.
+         */
         @Test
-        @DisplayName("a navigation login on a scoped session route requests exactly oidc.scopes united with the endpoint's scopes")
-        void sessionRouteLoginRequestsNeededScopes() {
-            BffRuntime runtime = scopedRuntime();
-            PipelineRequest request = PipelineRequest.builder()
-                    .method(HttpMethod.GET)
-                    .requestPath(SCOPED_ROUTE_PREFIX + "/list")
-                    .queryParameters(List.of())
-                    .headers(Map.of("accept", List.of("text/html")))
+        @DisplayName("a provider that advertises no pushed-authorization-request endpoint refuses the login with the 502 event")
+        void providerWithoutPushedRequestEndpointRefusesTheLogin() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer(server.issuer())
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build())
                     .build();
-            request.canonicalPath(SCOPED_ROUTE_PREFIX + "/list");
-            request.selectedRoute(RouteRuntime.builder().id("orders")
-                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .neededScopes(SCOPED_NEEDED_SCOPES)
-                    .build());
+            BffRuntime runtime = producer(oidc, oidcHostname(false), TestTlsConfigurationRegistry.empty()).bffRuntime();
+            BffRuntime.ReservedHttpRequest login =
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/", null, null, "GET");
+            Instant now = Instant.parse("2026-07-25T10:00:00Z");
 
-            runtime.sessionStage().process(request);
+            GatewayException refused = assertThrows(GatewayException.class,
+                    () -> runtime.dispatch(ReservedEndpoint.LOGIN, login, now));
 
-            assertEquals(Optional.of(302), request.shortCircuitStatus(), "the navigation is redirected into login");
-            assertEquals(SCOPED_NEEDED_SCOPES, scopeOf(request.responseHeaders().get("Location")),
-                    "the authorization URL requests the route's neededScopes, never the static oidc.scopes alone");
+            PendingAuthorizationStore.InMemory pendingStore = single(
+                    reachableInstancesOf(runtime, PendingAuthorizationStore.InMemory.class), "pending store");
+            assertAll("a login against a provider without a pushed-authorization-request endpoint",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, refused.getEventType()),
+                    () -> assertEquals(502, refused.getEventType().httpStatus(), "the edge answers 502"),
+                    () -> assertTrue(String.valueOf(refused.getMessage()).contains("no-par-endpoint"),
+                            "the refusal names its reason: " + refused.getMessage()),
+                    () -> assertEquals(0, pendingStore.size(), "nothing is stored for a login that was never started"));
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    BffLogMessages.WARN.AUTHORIZATION_PUSH_REFUSED.resolveIdentifierString());
         }
 
         @Test
-        @DisplayName("/auth/login requests the landing route's needed scopes, and oidc.scopes alone for an unrouted target")
-        void loginInitiationRequestsReturnTargetScopes() {
-            BffRuntime runtime = scopedRuntime();
-            Instant now = Instant.parse("2026-07-25T10:00:00Z");
+        @DisplayName("the pushed-authorization-request client dials with the base configuration when oidc_verify_hostname is false")
+        void pushedRequestClientRidesTheBaseConfigurationWithARelaxedHostname() {
+            assertPushedRequestClientRidesTheBaseConfiguration(oidcHostname(false), false);
+        }
 
-            BffRuntime.ReservedHttpResponse routed = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", null, null, SCOPED_ROUTE_PREFIX + "/list", null, null, "GET"),
-                    now);
-            BffRuntime.ReservedHttpResponse unrouted = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "/unrouted", null, null, "GET"), now);
+        @Test
+        @DisplayName("the pushed-authorization-request client dials with the base configuration at the default hostname posture")
+        void pushedRequestClientRidesTheBaseConfigurationAtTheDefaultPosture() {
+            assertPushedRequestClientRidesTheBaseConfiguration(null, true);
+        }
 
-            assertAll("the producer wires ReturnTargetScopes over the injected route table",
-                    () -> assertEquals(SCOPED_NEEDED_SCOPES, scopeOf(routed.locationOptional().orElseThrow())),
-                    () -> assertEquals(Set.of("openid"), scopeOf(unrouted.locationOptional().orElseThrow())));
-            assertFalse(reachableInstancesOf(runtime, ReturnTargetScopes.class).isEmpty(),
-                    "the login-initiation endpoint holds the producer-built resolver");
+        /**
+         * The pushed authorization request has to carry the hostname and trust posture of every other
+         * back-channel leg (ADR-0045), which it does by riding the base back-channel configuration.
+         * The assertion is type-directed, in the style of the query-mode builder walk: it collects the
+         * one {@link ParClient} reachable from the assembled runtime, then the one
+         * {@link ClientConfiguration} reachable from that client, and requires it to be the very
+         * instance the producer built as its base configuration. No engine field is named, so an
+         * engine field rename does not break it; a client built over any other configuration does.
+         *
+         * @param egressTls        the {@code egress_tls} block, {@code null} for an omitted block
+         * @param verifiesHostname the hostname posture the base configuration must then carry
+         */
+        private void assertPushedRequestClientRidesTheBaseConfiguration(@Nullable EgressTlsConfig egressTls,
+                boolean verifiesHostname) {
+            OidcConfig oidc = serverModeOidc();
+            RecordingProducer recording = new RecordingProducer(
+                    GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build(), tokenValidator,
+                    logoutTokenVerifier);
+
+            BffRuntime runtime = recording.bffRuntime();
+
+            ParClient parClient = single(reachableInstancesOf(runtime, ParClient.class),
+                    "pushed-authorization-request client");
+            ClientConfiguration dialled = single(reachableInstancesOf(parClient, ClientConfiguration.class),
+                    "client configuration the pushed-authorization-request client holds");
+            assertAll("the configuration the push dials the identity provider with",
+                    () -> assertEquals(List.of(oidc.scopes()), recording.requested,
+                            "assembly builds the base configuration and no scoped variant"),
+                    () -> assertEquals(1, recording.built.size(), "so exactly one configuration exists to compare with"),
+                    () -> assertSame(recording.built.getFirst(), dialled,
+                            "the push rides the base back-channel configuration itself, not a copy or a variant"),
+                    () -> assertEquals(verifiesHostname, dialled.isVerifyHostname(),
+                            "and so carries the hostname posture of every other back-channel leg"));
         }
 
         /**
@@ -1474,43 +1521,6 @@ class BffRuntimeProducerTest {
             return new RecordingProducer(gatewayConfig, tokenValidator, logoutTokenVerifier);
         }
 
-        /**
-         * An active server-mode runtime whose discovery reaches the SAN-mismatch fixture over the relaxed
-         * hostname posture, over a route table carrying one scoped session route.
-         */
-        private BffRuntime scopedRuntime() {
-            OidcConfig oidc = OidcConfig.builder()
-                    .issuer(server.issuer())
-                    .clientId("gateway-client")
-                    .clientSecret("secret")
-                    .scopes(List.of("openid"))
-                    .redirectUri(REDIRECT_URI)
-                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
-                    .login(OidcConfig.Login.builder().path("/auth/login").build())
-                    .build();
-            ResolvedRoute scopedRoute = ResolvedRoute.builder()
-                    .id("orders")
-                    .match(MatchConfig.builder().pathPrefix(SCOPED_ROUTE_PREFIX).build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                    .upstream(new ResolvedUpstream("https", "orders.example", 443, ""))
-                    .neededScopes(SCOPED_NEEDED_SCOPES)
-                    .build();
-            return producer(oidc, oidcHostname(false), TestTlsConfigurationRegistry.empty(),
-                    new RouteTable(List.of(scopedRoute))).bffRuntime();
-        }
-
-        private static Set<String> scopeOf(String authorizationUrl) {
-            String rawQuery = URI.create(authorizationUrl).getRawQuery();
-            for (String pair : rawQuery.split("&")) {
-                String[] nameValue = pair.split("=", 2);
-                if ("scope".equals(nameValue[0])) {
-                    return Set.of(URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8).split(" "));
-                }
-            }
-            throw new AssertionError("the authorization URL carries no scope parameter: " + authorizationUrl);
-        }
-
         private ClientConfiguration backChannelFor(SanMismatchedJwksServer target, @Nullable EgressTlsConfig egressTls) {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(target.issuer())
@@ -1530,8 +1540,9 @@ class BffRuntimeProducerTest {
     }
 
     /**
-     * A producer that records every scope list its back-channel configuration factory is asked for,
-     * then builds the configuration exactly as the production method does. Only the recording is added.
+     * A producer that records every scope list its back-channel configuration factory is asked for and
+     * every configuration it then yields, building each exactly as the production method does. Only
+     * the recording is added.
      * {@link Vetoed} because {@code @ApplicationScoped} is inherited: without it the test-class index a
      * {@code @QuarkusTest} run builds would see a second producer bean.
      */
@@ -1539,6 +1550,8 @@ class BffRuntimeProducerTest {
     private static final class RecordingProducer extends BffRuntimeProducer {
 
         private final List<List<String>> requested = new CopyOnWriteArrayList<>();
+        /** The configurations the factory built, in call order — one per entry of {@link #requested}. */
+        private final List<ClientConfiguration> built = new CopyOnWriteArrayList<>();
 
         RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator,
                 SignatureOnlyTokenVerifier logoutTokenVerifier) {
@@ -1550,7 +1563,9 @@ class BffRuntimeProducerTest {
         @Override
         ClientConfiguration backChannelConfiguration(OidcConfig oidc, List<String> scopes) {
             requested.add(List.copyOf(scopes));
-            return super.backChannelConfiguration(oidc, scopes);
+            ClientConfiguration configuration = super.backChannelConfiguration(oidc, scopes);
+            built.add(configuration);
+            return configuration;
         }
     }
 
@@ -1581,11 +1596,17 @@ class BffRuntimeProducerTest {
      * controls is what shows it: the same dial is refused without the profile, and a plain-HTTP issuer
      * is refused before anything is sent.
      * <p>
-     * <strong>The three back-channel legs.</strong> The code exchange is driven through the runtime's own
-     * reserved login and callback dispatch; the refresh grant and the revocation through the two seams
-     * the assembled refresh coordinator holds. Unless a test scripts an answer, the stub's token
-     * endpoint refuses every grant, so each leg ends in a refusal and the assertion is made on the
-     * request the stub recorded.
+     * <strong>The four back-channel legs.</strong> The pushed authorization request is driven through the
+     * runtime's own reserved login dispatch, and the code exchange through that login followed by the
+     * callback dispatch; the refresh grant and the revocation through the two seams the assembled
+     * refresh coordinator holds. Unless a test scripts an answer, the stub accepts every push and its
+     * token endpoint refuses every grant, so each token leg ends in a refusal and the assertion is made
+     * on the request the stub recorded.
+     * <p>
+     * <strong>The pushed authorization request.</strong> A login redirect carries {@code client_id} and
+     * {@code request_uri} and nothing else, so nothing about the authorization request can be read from
+     * it. Whatever a test asserts about that request — its scope set, its {@code state} — is read from
+     * the form body the stub's pushed-authorization-request endpoint recorded.
      * <p>
      * <strong>The sender constraint.</strong> Every token request carries a DPoP proof, and the tests of
      * the binding check script the token endpoint's answer: a success answer that is not bound to the
@@ -1619,6 +1640,20 @@ class BffRuntimeProducerTest {
         /** The private members of an RSA or EC JWK — none of which the client JWKS path may publish. */
         private static final List<String> PRIVATE_JWK_MEMBERS = List.of("d", "p", "q", "dp", "dq", "qi", "oth");
         private static final ObjectMapper JSON = new ObjectMapper();
+        private static final String SCOPED_ROUTE_PREFIX = "/orders";
+        /** {@code oidc.scopes ∪ endpoint.scopes} for the scoped session route. */
+        private static final Set<String> SCOPED_NEEDED_SCOPES = Set.of("openid", SCOPED_ENDPOINT_SCOPE);
+        private static final String OTHER_SCOPED_ROUTE_PREFIX = "/invoices";
+        /** The needed scopes of a second scoped session route, differing from the first in one scope. */
+        private static final Set<String> OTHER_SCOPED_NEEDED_SCOPES = Set.of("openid", "invoices:read");
+        private static final String PARAM_CLIENT_ID = "client_id";
+        private static final String PARAM_REQUEST_URI = "request_uri";
+        private static final String PARAM_STATE = "state";
+        /** The parameter names of a pushed-request redirect, in the order the runtime renders them. */
+        private static final List<String> PUSHED_REDIRECT_PARAMETERS = List.of(PARAM_CLIENT_ID, PARAM_REQUEST_URI);
+        private static final String REQUEST_URI_PREFIX = "urn:ietf:params:oauth:request_uri:";
+        private static final String STEP_UP_ACR = "urn:example:gold";
+        private static final int STEP_UP_MAX_AGE = 300;
 
         @TempDir
         Path keyDirectory;
@@ -1653,9 +1688,9 @@ class BffRuntimeProducerTest {
             }
         }
 
-        /** The three back-channel legs that present the client credential. */
+        /** The four back-channel legs that present the client credential. */
         enum Leg {
-            CODE_EXCHANGE, REFRESH_GRANT, REVOCATION
+            PUSHED_REQUEST, CODE_EXCHANGE, REFRESH_GRANT, REVOCATION
         }
 
         /** The three key files the producer must refuse, each written the way an operator gets it wrong. */
@@ -1765,6 +1800,192 @@ class BffRuntimeProducerTest {
                             "the stub records no request"));
         }
 
+        @Test
+        @DisplayName("Should push the request of a login and redirect with client_id and request_uri only")
+        void shouldRedirectALoginThroughThePushedRequestEndpoint() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            String requestUri = scriptedRequestUri();
+            stub.script(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST, pushAccepted(requestUri));
+            AtomicReference<BffRuntime.ReservedHttpResponse> redirected = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest pushed = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> redirected.set(login(runtime, "/")));
+
+            BffRuntime.ReservedHttpResponse answer = redirected.get();
+            String location = answer.locationOptional().orElseThrow();
+            Map<String, String> form = pushed.form();
+            assertEquals(requestUri, assertPushedRedirect(location, CLIENT_ID),
+                    "the redirect carries the request_uri the identity provider answered");
+            assertAll("a login of the produced runtime",
+                    () -> assertEquals(302, answer.status()),
+                    () -> assertEquals(1, answer.setCookieHeaders().size(), "the browser-binding cookie is set"),
+                    () -> assertEquals(1, pendingStoreOf(runtime).size(), "the pending authorization is stored"),
+                    () -> assertEquals(Set.of("openid"), scopeOf(pushed), "an unrouted login asks for oidc.scopes"),
+                    () -> assertEquals("query", form.get("response_mode")),
+                    () -> assertEquals(REDIRECT_URI, form.get("redirect_uri")),
+                    () -> assertEquals(CLIENT_ID, form.get(PARAM_CLIENT_ID)),
+                    () -> assertNotNull(form.get(PARAM_STATE), "the state travels in the pushed request"),
+                    () -> assertNotNull(form.get("nonce"), "and the nonce"),
+                    () -> assertNotNull(form.get("code_challenge"), "and the PKCE challenge"),
+                    () -> assertFalse(location.contains(String.valueOf(form.get(PARAM_STATE))),
+                            "none of which the browser is shown"),
+                    () -> assertFalse(form.containsKey("dpop_jkt"), "the gateway adds no dpop_jkt"),
+                    () -> assertEquals(Optional.empty(), pushed.header(DPOP_HEADER), "and the push carries no proof"));
+        }
+
+        @Test
+        @DisplayName("Should push the request of a step-up re-drive and redirect with client_id and request_uri only")
+        void shouldReDriveAStepUpThroughThePushedRequestEndpoint() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            String requestUri = scriptedRequestUri();
+            stub.script(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST, pushAccepted(requestUri));
+            StepUpChallenge challenge = new StepUpChallenge(STEP_UP_ACR, STEP_UP_MAX_AGE);
+            SessionRecord session = sessionToElevate();
+            AtomicReference<StepUpCoordinator.StepUpOutcome> coordinated = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest pushed = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> coordinated.set(runtime.stepUpCoordinator().coordinate(session, challenge, "/orders/42", NOW)));
+
+            StepUpCoordinator.StepUpOutcome outcome = coordinated.get();
+            Map<String, String> form = pushed.form();
+            assertEquals(StepUpCoordinator.StepUpOutcome.Kind.RE_DRIVE, outcome.kind(),
+                    "the produced runtime satisfies no challenge silently, so the browser is re-driven");
+            assertEquals(requestUri,
+                    assertPushedRedirect(Objects.requireNonNull(outcome.location(), "location"), CLIENT_ID),
+                    "the re-drive location carries the request_uri the identity provider answered");
+            assertAll("a step-up re-drive of the produced runtime",
+                    () -> assertEquals(1, outcome.setCookieHeaders().size(), "the browser-binding cookie is set"),
+                    () -> assertEquals(1, pendingStoreOf(runtime).size(), "the pending authorization is stored"),
+                    () -> assertEquals(STEP_UP_ACR, form.get("acr_values"),
+                            "the elevated authentication context travels in the pushed request"),
+                    () -> assertEquals(Integer.toString(STEP_UP_MAX_AGE), form.get("max_age"),
+                            "and so does the authentication age"),
+                    () -> assertEquals(Set.of("openid"), scopeOf(pushed),
+                            "the step-up request is built from the static oidc.scopes"),
+                    () -> assertEquals("query", form.get("response_mode")),
+                    () -> assertNotNull(form.get(PARAM_STATE), "the state travels in the pushed request"));
+        }
+
+        @Test
+        @DisplayName("Should refuse a login with the 502 event when the identity provider refuses the push, storing nothing")
+        void shouldRefuseALoginWhosePushIsRefused() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            stub.script(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    StubIdentityProvider.Answer.json(400, "{\"error\":\"invalid_request\"}"));
+
+            GatewayException refused = assertThrows(GatewayException.class, () -> login(runtime, "/"));
+
+            assertAll("a login whose authorization request the identity provider refuses",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, refused.getEventType()),
+                    () -> assertEquals(502, refused.getEventType().httpStatus(), "the edge answers 502"),
+                    () -> assertTrue(String.valueOf(refused.getMessage()).contains("push-failed"),
+                            "the refusal names its reason: " + refused.getMessage()),
+                    () -> assertEquals(1,
+                            stub.received(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST).size(),
+                            "the push did reach the identity provider — the refusal is of its answer"),
+                    () -> assertEquals(0, pendingStoreOf(runtime).size(),
+                            "nothing is stored for a login that was never started"),
+                    () -> assertEquals(1, recordsContaining(TestLogLevel.WARN, pushRefused()),
+                            "the refusal is recorded once"));
+        }
+
+        @Test
+        @DisplayName("Should push a different scope set for two routes whose needed scope sets differ")
+        void shouldPushTheScopeSetOfTheRouteALoginLandsOn() {
+            BffRuntime runtime = scopedRuntime();
+
+            StubIdentityProvider.ReceivedRequest orders = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> login(runtime, SCOPED_ROUTE_PREFIX + "/list"));
+            StubIdentityProvider.ReceivedRequest invoices = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> login(runtime, OTHER_SCOPED_ROUTE_PREFIX + "/list"));
+
+            assertAll("two logins of one runtime, landing on two routes",
+                    () -> assertEquals(SCOPED_NEEDED_SCOPES, scopeOf(orders)),
+                    () -> assertEquals(OTHER_SCOPED_NEEDED_SCOPES, scopeOf(invoices)),
+                    () -> assertNotEquals(scopeOf(orders), scopeOf(invoices),
+                            "the pushed scope follows the route, it is not one static set"),
+                    () -> assertNotEquals(orders.form().get(PARAM_STATE), invoices.form().get(PARAM_STATE),
+                            "each login pushes a transaction of its own"));
+        }
+
+        @Test
+        @DisplayName("a navigation login on a scoped session route requests exactly oidc.scopes united with the endpoint's scopes")
+        void sessionRouteLoginRequestsNeededScopes() {
+            BffRuntime runtime = scopedRuntime();
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.GET)
+                    .requestPath(SCOPED_ROUTE_PREFIX + "/list")
+                    .queryParameters(List.of())
+                    .headers(Map.of("accept", List.of("text/html")))
+                    .build();
+            request.canonicalPath(SCOPED_ROUTE_PREFIX + "/list");
+            request.selectedRoute(RouteRuntime.builder().id("orders")
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .neededScopes(SCOPED_NEEDED_SCOPES)
+                    .build());
+
+            StubIdentityProvider.ReceivedRequest pushed = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> runtime.sessionStage().process(request));
+
+            assertEquals(Optional.of(302), request.shortCircuitStatus(), "the navigation is redirected into login");
+            assertPushedRedirect(request.responseHeaders().get("Location"), CLIENT_ID);
+            assertEquals(SCOPED_NEEDED_SCOPES, scopeOf(pushed),
+                    "the pushed request asks for the route's neededScopes — nothing missing, nothing extra, and "
+                            + "never the static oidc.scopes alone");
+        }
+
+        @Test
+        @DisplayName("/auth/login requests the landing route's needed scopes, and oidc.scopes alone for an unrouted target")
+        void loginInitiationRequestsReturnTargetScopes() {
+            BffRuntime runtime = scopedRuntime();
+            AtomicReference<BffRuntime.ReservedHttpResponse> routedRedirect = new AtomicReference<>();
+            AtomicReference<BffRuntime.ReservedHttpResponse> unroutedRedirect = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest routed = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> routedRedirect.set(login(runtime, SCOPED_ROUTE_PREFIX + "/list")));
+            StubIdentityProvider.ReceivedRequest unrouted = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> unroutedRedirect.set(login(runtime, "/unrouted")));
+
+            assertPushedRedirect(routedRedirect.get().locationOptional().orElseThrow(), CLIENT_ID);
+            assertPushedRedirect(unroutedRedirect.get().locationOptional().orElseThrow(), CLIENT_ID);
+            assertAll("the producer wires ReturnTargetScopes over the injected route table",
+                    () -> assertEquals(SCOPED_NEEDED_SCOPES, scopeOf(routed),
+                            "the routed target asks for oidc.scopes united with the endpoint's scopes"),
+                    () -> assertEquals(Set.of("openid"), scopeOf(unrouted),
+                            "the unrouted target asks for oidc.scopes alone"));
+            assertFalse(reachableInstancesOf(runtime, ReturnTargetScopes.class).isEmpty(),
+                    "the login-initiation endpoint holds the producer-built resolver");
+        }
+
+        @Test
+        @DisplayName("Should name one audience in the client assertion of the pushed request and of the token legs")
+        void shouldNameOneAudienceOnThePushedRequestAndTheTokenLegs() throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+
+            JsonNode pushed = jwtPart(clientAssertionOf(drive(Leg.PUSHED_REQUEST, runtime)), 1);
+            JsonNode exchanged = jwtPart(clientAssertionOf(drive(Leg.CODE_EXCHANGE, runtime)), 1);
+            JsonNode refreshed = jwtPart(clientAssertionOf(drive(Leg.REFRESH_GRANT, runtime)), 1);
+
+            assertAll("the audience of the client assertion, leg by leg",
+                    () -> assertTrue(pushed.path("aud").isTextual(),
+                            "the audience of the pushed request is one JSON string: " + pushed.path("aud")),
+                    () -> assertEquals(stub.issuer(), pushed.path("aud").asText(),
+                            "and it is the configured issuer, not the pushed-authorization-request endpoint"),
+                    () -> assertEquals(exchanged.path("aud"), pushed.path("aud"),
+                            "the pushed request names the audience the code exchange names"),
+                    () -> assertEquals(refreshed.path("aud"), pushed.path("aud"),
+                            "and the audience the refresh grant names"),
+                    () -> assertNotEquals(exchanged.path("jti").asText(), pushed.path("jti").asText(),
+                            "each leg presents an assertion of its own"));
+        }
+
         @ParameterizedTest(name = "{0} key on the {1} leg")
         @MethodSource("keyModesOnEveryLeg")
         @DisplayName("Should present a client assertion signed with the resolved key, and no secret, in key mode")
@@ -1806,12 +2027,14 @@ class BffRuntimeProducerTest {
             BffRuntime runtime = stubProducer(oidc).bffRuntime();
             BffRuntime secondBoot = stubProducer(oidc).bffRuntime();
 
+            String pushedKeyId = keyIdOf(drive(Leg.PUSHED_REQUEST, runtime));
             String exchangeKeyId = keyIdOf(drive(Leg.CODE_EXCHANGE, runtime));
             String refreshKeyId = keyIdOf(drive(Leg.REFRESH_GRANT, runtime));
             String revocationKeyId = keyIdOf(drive(Leg.REVOCATION, runtime));
             String secondBootKeyId = keyIdOf(drive(Leg.REFRESH_GRANT, secondBoot));
 
             assertAll("one key per assembled runtime",
+                    () -> assertEquals(exchangeKeyId, pushedKeyId, "the pushed request signs with the exchange's key"),
                     () -> assertEquals(exchangeKeyId, refreshKeyId, "the refresh grant signs with the exchange's key"),
                     () -> assertEquals(exchangeKeyId, revocationKeyId, "revocation signs with the exchange's key"),
                     () -> assertNotEquals(exchangeKeyId, secondBootKeyId,
@@ -2320,6 +2543,7 @@ class BffRuntimeProducerTest {
 
         private StubIdentityProvider.ReceivedRequest drive(Leg leg, BffRuntime runtime) {
             return switch (leg) {
+                case PUSHED_REQUEST -> pushedRequest(runtime);
                 case CODE_EXCHANGE -> codeExchange(runtime);
                 case REFRESH_GRANT -> refreshGrant(runtime);
                 case REVOCATION -> revocation(runtime);
@@ -2327,9 +2551,31 @@ class BffRuntimeProducerTest {
         }
 
         /**
+         * Drives one login through the runtime's reserved dispatch and returns the pushed authorization
+         * request it sent. The stub accepts the push, so the login answers with the redirect.
+         */
+        private StubIdentityProvider.ReceivedRequest pushedRequest(BffRuntime runtime) {
+            StubIdentityProvider.ReceivedRequest request = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> assertEquals(302, login(runtime, "/").status(),
+                            "the stub accepts the push, so the login is redirected to the identity provider"));
+
+            assertEquals("code", request.form().get("response_type"),
+                    "the request is the pushed authorization request");
+            return request;
+        }
+
+        /** Dispatches the reserved login path for {@code returnUrl} on a browser that holds no session. */
+        private static BffRuntime.ReservedHttpResponse login(BffRuntime runtime, String returnUrl) {
+            return runtime.dispatch(ReservedEndpoint.LOGIN,
+                    new BffRuntime.ReservedHttpRequest("", null, null, returnUrl, null, null, "GET"), NOW);
+        }
+
+        /**
          * Drives the code exchange through the runtime's reserved login and callback dispatch: the login
-         * leg yields the {@code state} and the browser-binding cookie, and the callback presents both
-         * with an authorization code. The stub refuses the grant, so the callback answers {@code 400}.
+         * leg pushes the {@code state} and yields the browser-binding cookie, and the callback presents
+         * both with an authorization code. The stub refuses the grant, so the callback answers
+         * {@code 400}.
          */
         private StubIdentityProvider.ReceivedRequest codeExchange(BffRuntime runtime) {
             String code = token();
@@ -2349,15 +2595,23 @@ class BffRuntimeProducerTest {
          * presenting {@code code} with the login's {@code state} and browser-binding cookie — and
          * returns the callback's answer. The token endpoint answers from the stub's script, or refuses
          * the grant when nothing is scripted.
+         * <p>
+         * The redirect of a pushed request carries no {@code state}, so the callback's {@code state} is
+         * taken from where the identity provider has it: the form body the stub's
+         * pushed-authorization-request endpoint recorded for this login.
          */
-        private static BffRuntime.ReservedHttpResponse loginAndCallback(BffRuntime runtime, String code) {
-            BffRuntime.ReservedHttpResponse login = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "/", null, null, "GET"), NOW);
-            String state = rawQueryParameter(login.locationOptional().orElseThrow(), "state");
-            String bindingCookie = login.setCookieHeaders().getFirst().split(";", 2)[0];
+        private BffRuntime.ReservedHttpResponse loginAndCallback(BffRuntime runtime, String code) {
+            AtomicReference<BffRuntime.ReservedHttpResponse> redirected = new AtomicReference<>();
+            StubIdentityProvider.ReceivedRequest pushed = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> redirected.set(login(runtime, "/")));
+            String state = pushed.form().get(PARAM_STATE);
+            assertNotNull(state, "the pushed request carries the state the callback has to echo");
+            String bindingCookie = redirected.get().setCookieHeaders().getFirst().split(";", 2)[0];
             return runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("code=" + code + "&state=" + state, bindingCookie, null,
-                            null, null, null, "GET"),
+                    new BffRuntime.ReservedHttpRequest(
+                            "code=" + code + "&state=" + URLEncoder.encode(state, StandardCharsets.UTF_8),
+                            bindingCookie, null, null, null, null, "GET"),
                     NOW);
         }
 
@@ -2595,19 +2849,101 @@ class BffRuntimeProducerTest {
             return JSON.readTree(Base64.getUrlDecoder().decode(compactJwt.split("\\.")[index]));
         }
 
-        /** The still-encoded value of one query parameter of {@code url}. */
-        private static String rawQueryParameter(String url, String name) {
+        /** The decoded query parameters of {@code url}, in URL order; a repeated name fails the test. */
+        private static Map<String, String> queryParametersOf(String url) {
+            Map<String, String> parameters = new LinkedHashMap<>();
             for (String pair : URI.create(url).getRawQuery().split("&")) {
                 String[] nameValue = pair.split("=", 2);
-                if (name.equals(nameValue[0]) && nameValue.length == 2) {
-                    return nameValue[1];
-                }
+                String name = URLDecoder.decode(nameValue[0], StandardCharsets.UTF_8);
+                assertNull(parameters.put(name, nameValue.length == 2
+                        ? URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8) : ""),
+                        "the URL names " + name + " twice: " + url);
             }
-            throw new AssertionError("the URL carries no " + name + " parameter: " + url);
+            return parameters;
+        }
+
+        /**
+         * Asserts that {@code location} is the redirect of a pushed request: the stub's authorization
+         * endpoint with {@code client_id} and {@code request_uri}, and nothing else.
+         *
+         * @return the {@code request_uri} the redirect carries
+         */
+        private String assertPushedRedirect(String location, String clientId) {
+            Map<String, String> query = queryParametersOf(location);
+            assertAll("the redirect of a pushed authorization request",
+                    () -> assertEquals(stub.issuer() + "/authorize", location.substring(0, location.indexOf('?')),
+                            "the browser is sent to the authorization endpoint"),
+                    () -> assertEquals(PUSHED_REDIRECT_PARAMETERS, List.copyOf(query.keySet()),
+                            "the redirect carries client_id and request_uri and nothing else"),
+                    () -> assertEquals(clientId, query.get(PARAM_CLIENT_ID)),
+                    () -> assertTrue(String.valueOf(query.get(PARAM_REQUEST_URI)).startsWith(REQUEST_URI_PREFIX),
+                            "the request_uri is the identity provider's: " + query.get(PARAM_REQUEST_URI)));
+            return query.get(PARAM_REQUEST_URI);
+        }
+
+        /** The scope set a recorded pushed authorization request asks for. */
+        private static Set<String> scopeOf(StubIdentityProvider.ReceivedRequest pushed) {
+            String scope = pushed.form().get("scope");
+            assertNotNull(scope, "the pushed request carries no scope parameter: " + pushed.form().keySet());
+            return Set.of(scope.split(" "));
+        }
+
+        /** A request-URI a test scripts, so the redirect can be shown to carry exactly what the stub answered. */
+        private static String scriptedRequestUri() {
+            return REQUEST_URI_PREFIX + Generators.letterStrings(16, 24).next();
+        }
+
+        private static StubIdentityProvider.Answer pushAccepted(String requestUri) {
+            return StubIdentityProvider.Answer.json(201,
+                    JSON.createObjectNode().put(PARAM_REQUEST_URI, requestUri).put("expires_in", 60).toString());
+        }
+
+        /**
+         * An active runtime that reaches the stub through the named trust profile, over a route table
+         * carrying two scoped session routes whose needed scope sets differ.
+         */
+        private BffRuntime scopedRuntime() {
+            return producer(stubOidc().build(), new EgressTlsConfig(true, true, null, true, PROFILE),
+                    TestTlsConfigurationRegistry.withAnchor(PROFILE, stub.rootCertificate()),
+                    new RouteTable(List.of(
+                            scopedRoute("orders", SCOPED_ROUTE_PREFIX, SCOPED_NEEDED_SCOPES),
+                            scopedRoute("invoices", OTHER_SCOPED_ROUTE_PREFIX, OTHER_SCOPED_NEEDED_SCOPES))))
+                    .bffRuntime();
+        }
+
+        private static ResolvedRoute scopedRoute(String id, String pathPrefix, Set<String> neededScopes) {
+            return ResolvedRoute.builder()
+                    .id(id)
+                    .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("https", id + ".example", 443, ""))
+                    .neededScopes(neededScopes)
+                    .build();
+        }
+
+        /** A live session with no authentication context, the session an upstream step-up challenge meets. */
+        private static SessionRecord sessionToElevate() {
+            return SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(token())
+                    .idToken(token())
+                    .sub(SUBJECT)
+                    .expiresAt(NOW.plusSeconds(3600))
+                    .build();
         }
 
         private static String clientSecretWarning() {
             return ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION.resolveIdentifierString();
+        }
+
+        private static String pushRefused() {
+            return BffLogMessages.WARN.AUTHORIZATION_PUSH_REFUSED.resolveIdentifierString();
+        }
+
+        /** The one pending-authorization store of an assembled runtime, located by the bounded walk. */
+        private static PendingAuthorizationStore.InMemory pendingStoreOf(BffRuntime runtime) {
+            return single(reachableInstancesOf(runtime, PendingAuthorizationStore.InMemory.class), "pending store");
         }
 
         private static int recordsContaining(TestLogLevel level, String part) {

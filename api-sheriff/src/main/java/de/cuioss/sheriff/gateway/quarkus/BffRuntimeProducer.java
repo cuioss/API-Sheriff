@@ -37,6 +37,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
+import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
@@ -81,6 +82,7 @@ import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackHandler;
 import de.cuioss.sheriff.token.client.flow.IssValidator;
+import de.cuioss.sheriff.token.client.flow.ParClient;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
@@ -121,7 +123,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Client authentication has two modes, selected once (ADR-0057).</strong> The mode is read
  * through {@link OidcConfig#usesClientSecret()}, and the one {@link ClientAuthentication} instance it
- * yields is shared by the code exchange, the refresh grant and RFC 7009 revocation.
+ * yields is shared by the pushed authorization request, the code exchange, the refresh grant and
+ * RFC 7009 revocation.
  * <ul>
  *   <li><em>Key mode</em> — no {@code oidc.client_secret}, the default. The client-authentication key
  *       is resolved by {@link ClientSigningKey} from {@code oidc.client_authentication.key_file}; an
@@ -176,6 +179,17 @@ import org.jspecify.annotations.Nullable;
  * {@code SameSite=Lax} binding cookie on. See that class for the reasoning and for the accepted
  * code-in-the-URL tradeoff.
  * <p>
+ * <strong>Every authorization request is pushed (ADR-0057).</strong> The URL the engine builds on
+ * either seam — the login leg and the RFC 9470 step-up re-drive — is not sent to the browser. It is
+ * the parameter source of a pushed authorization request (RFC 9126): the one
+ * {@link PushedAuthorizationRequests} this producer builds pushes those parameters to the identity
+ * provider and yields the redirect, which carries {@code client_id} and {@code request_uri} and
+ * nothing else. The engine's {@code FlowContext} is kept unchanged on both seams. The producer is the
+ * only class that constructs the engine's {@link ParClient}, over the base back-channel
+ * configuration, and it never calls it. An identity provider that offers no pushed-authorization
+ * endpoint, and a push that fails, refuse the login with {@code 502} before the pending
+ * authorization is stored and before the binding cookie is set. In both client-authentication modes.
+ * <p>
  * <strong>Transparent refresh is switchable.</strong> {@code oidc.session.refresh.enabled} governs
  * the whole refresh path and is applied here, at the two points that path is constructed: the
  * {@code CodeExchange} seam retains the exchange's refresh token only when refresh is on, and the
@@ -203,8 +217,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
- * authorization-code exchange, refresh and refresh-token revocation — is the sixth TLS-terminating
- * outbound leg, and it is bound
+ * pushed authorization request, the authorization-code exchange, refresh and refresh-token
+ * revocation — is the sixth TLS-terminating outbound leg, and it is bound
  * to the global {@code egress_tls} block through its own peer keys: {@code oidc_verify_hostname} is
  * passed to the builder's {@code verifyHostname} on every build, the {@code true} path included, so
  * the leg's effect never depends on token-sheriff's own default (ADR-0022); {@code oidc_tls_profile},
@@ -366,9 +380,10 @@ public class BffRuntimeProducer {
                 : Set.copyOf(declaredTrustedOrigins);
 
         // The base configuration carries the static oidc.scopes and serves every leg that does not
-        // request a per-request scope set: discovery, the callback code exchange, step-up and
-        // revocation. The login and refresh legs request per scope set through ScopedEngineFlows below, whose
-        // factory is this same method — so every scoped variant carries the identical pinned posture.
+        // request a per-request scope set: discovery, the pushed authorization request, the callback
+        // code exchange, step-up and revocation. The login and refresh legs request per scope set
+        // through ScopedEngineFlows below, whose factory is this same method — so every scoped variant
+        // carries the identical pinned posture.
         reportBackChannelPosture();
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
         ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);
@@ -421,9 +436,20 @@ public class BffRuntimeProducer {
         // re-drive all fall back to the same configured post-login target.
         String defaultReturnUrl = defaultReturnUrl(oidc);
 
+        // ADR-0057: every authorization request is pushed. The one ParClient rides the base back-channel
+        // configuration, so the push carries the ADR-0045 hostname and trust posture and the engine's
+        // timeouts; this producer builds it and never calls it — PushedAuthorizationRequests does.
+        PushedAuthorizationRequests pushedRequests =
+                new PushedAuthorizationRequests(new ParClient(clientConfiguration), clientAuthentication);
+
         // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime, requesting
-        // exactly the scope set the caller names (a route's neededScopes, or oidc.scopes).
-        LoginFlow loginFlow = new LoginFlow(scopes -> scopedFlows.authorize(metadata.get(), scopes),
+        // exactly the scope set the caller names (a route's neededScopes, or oidc.scopes). The engine
+        // renders the request, the request is pushed, and the redirect keeps the engine's FlowContext
+        // while its URL carries client_id and request_uri only. A failed push propagates from here,
+        // before LoginFlow stores the pending record or sets the binding cookie.
+        LoginFlow loginFlow = new LoginFlow(
+                scopes -> pushed(pushedRequests, metadata.get(), clientId,
+                        scopedFlows.authorize(metadata.get(), scopes)),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
@@ -470,18 +496,21 @@ public class BffRuntimeProducer {
                 onFailure,
                 clock);
 
-        // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam; the upstream-challenge
-        // edge integration is exercised by the Keycloak integration tests.
+        // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam. No edge code drives the
+        // step-up coordinator: the re-drive is assembled here and proven at unit level, but a running
+        // gateway never reaches it.
         // Built with the SAME response-mode-corrected builder as the login leg: StepUpHandler#initiate
         // constructs its own authorization URL through an AuthorizationRequestBuilder, so leaving it on
         // the default builder would keep the step-up re-drive emitting response_mode=form_post and
         // reintroduce the dropped-binding-cookie failure on that leg alone.
         // The step-up request is built from the base configuration, so the re-drive records the static
-        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0048).
+        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0048). Like the login request it
+        // is pushed: the re-drive location carries client_id and request_uri only.
         StepUpHandler stepUpHandler = new StepUpHandler(authorizationRequestBuilder);
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
                 (sessionRecord, challenge, now) -> Optional.empty(),
-                challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),
+                challenge -> pushed(pushedRequests, metadata.get(), clientId,
+                        stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge)),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes());
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
@@ -608,8 +637,8 @@ public class BffRuntimeProducer {
     /**
      * Selects the confidential-client credential once, for the single build this {@link Singleton}
      * runtime performs: the authentication every back-channel leg presents, and the form of the
-     * client JWKS endpoint that goes with it. The authentication instance is shared by the code
-     * exchange, the refresh grant and RFC 7009 revocation.
+     * client JWKS endpoint that goes with it. The authentication instance is shared by the pushed
+     * authorization request, the code exchange, the refresh grant and RFC 7009 revocation.
      * <p>
      * <strong>Client-secret mode</strong> — {@link OidcConfig#usesClientSecret()} is {@code true}. The
      * gateway keeps authenticating with {@code client_secret_basic} and reports {@code ApiSheriff-130},
@@ -660,6 +689,42 @@ public class BffRuntimeProducer {
      * @param jwksEndpoint   the client JWKS endpoint in the form that goes with that authentication
      */
     private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint) {
+    }
+
+    /**
+     * Replaces the URL of an engine-built login redirect with its pushed form. The engine's
+     * {@code FlowContext} — {@code state}, {@code nonce} and the PKCE verifier — is kept as it is:
+     * it is what the callback is later checked against, and the pushed request carries exactly the
+     * parameters derived from it.
+     *
+     * @param pushedRequests the runtime's pushed-authorization-request adapter
+     * @param metadata       the resolved provider metadata
+     * @param clientId       the resolved client id
+     * @param redirect       the engine's authorization redirect
+     * @return the same transaction context with the pushed-request redirect URL
+     * @throws GatewayException with {@link EventType#UPSTREAM_ERROR} when the request cannot be pushed
+     */
+    private static AuthorizationCodeFlow.AuthorizationRedirect pushed(PushedAuthorizationRequests pushedRequests,
+            ProviderMetadata metadata, String clientId, AuthorizationCodeFlow.AuthorizationRedirect redirect) {
+        return new AuthorizationCodeFlow.AuthorizationRedirect(
+                pushedRequests.push(metadata, clientId, redirect.authorizationUrl()), redirect.context());
+    }
+
+    /**
+     * Replaces the URL of an engine-built step-up request with its pushed form, keeping its
+     * {@code FlowContext} — the step-up counterpart of the login overload.
+     *
+     * @param pushedRequests the runtime's pushed-authorization-request adapter
+     * @param metadata       the resolved provider metadata
+     * @param clientId       the resolved client id
+     * @param request        the engine's step-up authorization request
+     * @return the same transaction context with the pushed-request redirect URL
+     * @throws GatewayException with {@link EventType#UPSTREAM_ERROR} when the request cannot be pushed
+     */
+    private static StepUpHandler.StepUpRequest pushed(PushedAuthorizationRequests pushedRequests,
+            ProviderMetadata metadata, String clientId, StepUpHandler.StepUpRequest request) {
+        return new StepUpHandler.StepUpRequest(
+                pushedRequests.push(metadata, clientId, request.authorizationUrl()), request.context());
     }
 
     /**
