@@ -28,6 +28,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,7 @@ import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
+import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
 import de.cuioss.sheriff.token.client.auth.PrivateKeyJwtAuth;
 import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
@@ -115,6 +117,7 @@ class PushedAuthorizationRequestsTest {
     private static final String CLIENT_ASSERTION_TYPE = "client_assertion_type";
     private static final String JWT_BEARER_ASSERTION = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
     private static final String AUTHORIZATION = "Authorization";
+    private static final String BASIC_SCHEME = "Basic ";
     private static final String DPOP_HEADER = "DPoP";
     private static final String REASON_NO_PAR_ENDPOINT = "no-par-endpoint";
     private static final String REASON_INVALID_REQUEST = "invalid-request";
@@ -132,11 +135,11 @@ class PushedAuthorizationRequestsTest {
 
         /** The endpoint answers {@code 500}. */
         SERVER_ERROR {
-            @Override
-            MockResponse answer() {
-                return json(500, "{\"error\":\"server_error\"}");
-            }
-        },
+        @Override
+        MockResponse answer() {
+            return json(500, "{\"error\":\"server_error\"}");
+        }
+    },
 
         /** The endpoint refuses the request with {@code 400}. */
         CLIENT_ERROR {
@@ -181,11 +184,11 @@ class PushedAuthorizationRequestsTest {
 
         /** One parameter name occurs twice. */
         REPEATED_PARAMETER_NAME {
-            @Override
-            String corrupt(String authorizationUrl) {
-                return authorizationUrl + "&state=another-state";
-            }
-        },
+        @Override
+        String corrupt(String authorizationUrl) {
+            return authorizationUrl + "&state=another-state";
+        }
+    },
 
         /** The URL is built on another endpoint than the one the metadata names. */
         ANOTHER_ENDPOINT {
@@ -236,6 +239,28 @@ class PushedAuthorizationRequestsTest {
         };
 
         abstract String corrupt(String authorizationUrl);
+    }
+
+    /** The two authorization requests the runtime pushes. */
+    enum PushedRequest {
+
+        /** The request of a login: no authentication context is asked for. */
+        LOGIN {
+        @Override
+        FlowContext context() {
+            return FlowContext.create(REDIRECT_URI);
+        }
+    },
+
+        /** The request of a step-up re-drive: an authentication context and an authentication age. */
+        STEP_UP {
+            @Override
+            FlowContext context() {
+                return FlowContext.create(REDIRECT_URI, STEP_UP_ACR, STEP_UP_MAX_AGE);
+            }
+        };
+
+        abstract FlowContext context();
     }
 
     /**
@@ -364,8 +389,8 @@ class PushedAuthorizationRequestsTest {
         Map<String, String> query = queryOf(redirect);
         assertAll("the redirect the browser is sent to",
                 () -> assertEquals(AUTHORIZATION_ENDPOINT + "?" + PARAM_CLIENT_ID + "="
-                                + URLEncoder.encode(CLIENT_ID, StandardCharsets.UTF_8) + "&" + PARAM_REQUEST_URI + "="
-                                + URLEncoder.encode(requestUri, StandardCharsets.UTF_8), redirect,
+                        + URLEncoder.encode(CLIENT_ID, StandardCharsets.UTF_8) + "&" + PARAM_REQUEST_URI + "="
+                        + URLEncoder.encode(requestUri, StandardCharsets.UTF_8), redirect,
                         "the authorization endpoint, client_id, request_uri — both values form-encoded"),
                 () -> assertEquals(List.of(PARAM_CLIENT_ID, PARAM_REQUEST_URI), List.copyOf(query.keySet()),
                         "exactly two parameters"),
@@ -568,6 +593,68 @@ class PushedAuthorizationRequestsTest {
         assertNothingIsDisclosed(secrets, failed, invalid);
     }
 
+    // The adapter with the engine's client_secret_basic authentication in place of the key-based one.
+    // It is handed an authentication and never looks at it, so the pushed parameter set and the
+    // redirect are the ones of the tests above; only how the request is authenticated differs.
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(PushedRequest.class)
+    @DisplayName("Should push the same parameter set with a client secret, authenticated by the Basic header alone")
+    void shouldPushTheSameParameterSetWithAClientSecret(PushedRequest kind, URIBuilder uriBuilder) {
+        String secret = clientSecret();
+        ClientConfiguration configuration = secretConfiguration(secret);
+        ProviderMetadata metadata = metadata(parEndpoint(uriBuilder));
+        FlowContext context = kind.context();
+        String authorizationUrl = REQUEST_BUILDER.build(configuration, metadata, context);
+
+        secretAdapter(configuration, secret).push(metadata, CLIENT_ID, authorizationUrl);
+
+        assertEquals(1, received.size(), "exactly one request is pushed");
+        Pushed pushed = received.getFirst();
+        Map<String, String> form = pushed.form();
+        assertAll("the pushed request of a " + kind + " under client-secret authentication",
+                () -> assertEquals(engineParameters(authorizationUrl), form,
+                        "the body is the engine-built parameter set exactly — the authentication adds no parameter"),
+                () -> assertEquals(Set.copyOf(SCOPES), scopeSet(form.get("scope")), "the requested scope set"),
+                () -> assertEquals("query", form.get("response_mode")),
+                () -> assertEquals(context.state(), form.get(PARAM_STATE)),
+                () -> assertEquals(context.acrValues(), Optional.ofNullable(form.get("acr_values")),
+                        "the elevated authentication context is pushed exactly when the request carries one"),
+                () -> assertFalse(form.containsKey(CLIENT_ASSERTION), "no client_assertion is sent"),
+                () -> assertFalse(form.containsKey(CLIENT_ASSERTION_TYPE), "no client_assertion_type is sent"),
+                () -> assertFalse(form.containsKey("client_secret"),
+                        "the secret travels in the header only, never as a form parameter"),
+                () -> assertFalse(form.containsKey("dpop_jkt"), "the gateway adds no dpop_jkt"),
+                () -> assertEquals(Optional.of(basicCredential(secret)), pushed.header(AUTHORIZATION),
+                        "the request carries the form-encoded client id and secret as the Basic credential"),
+                () -> assertEquals(Optional.empty(), pushed.header(DPOP_HEADER), "and no proof"));
+    }
+
+    @Test
+    @DisplayName("Should return the same two-parameter redirect with a client secret, disclosing the secret nowhere")
+    void shouldReturnTheSameRedirectWithAClientSecret(URIBuilder uriBuilder) {
+        String secret = clientSecret();
+        ClientConfiguration configuration = secretConfiguration(secret);
+        ProviderMetadata metadata = metadata(parEndpoint(uriBuilder));
+        String requestUri = REQUEST_URI_PREFIX + Generators.letterStrings(16, 24).next();
+        scripted.add(accepted(requestUri));
+        scripted.add(PushFailure.SERVER_ERROR.answer());
+        String authorizationUrl = REQUEST_BUILDER.build(configuration, metadata, FlowContext.create(REDIRECT_URI));
+        PushedAuthorizationRequests adapter = secretAdapter(configuration, secret);
+
+        String redirect = adapter.push(metadata, CLIENT_ID, authorizationUrl);
+        GatewayException refused = assertThrows(GatewayException.class,
+                () -> adapter.push(metadata, CLIENT_ID, authorizationUrl));
+
+        assertEquals(AUTHORIZATION_ENDPOINT + "?" + PARAM_CLIENT_ID + "="
+                + URLEncoder.encode(CLIENT_ID, StandardCharsets.UTF_8) + "&" + PARAM_REQUEST_URI + "="
+                + URLEncoder.encode(requestUri, StandardCharsets.UTF_8), redirect,
+                "the authorization endpoint with client_id and request_uri, and nothing else");
+        assertRefusal(refused, REASON_PUSH_FAILED);
+        assertNothingIsDisclosed(List.of(secret, URLEncoder.encode(secret, StandardCharsets.UTF_8),
+                basicCredential(secret).substring(BASIC_SCHEME.length())), refused);
+    }
+
     @Test
     @DisplayName("Should reject absent collaborators and absent arguments")
     void shouldRejectAbsentArguments() {
@@ -654,6 +741,33 @@ class PushedAuthorizationRequestsTest {
         return new PushedAuthorizationRequests(new ParClient(configuration), keyAuthentication);
     }
 
+    private static PushedAuthorizationRequests secretAdapter(ClientConfiguration configuration, String secret) {
+        return new PushedAuthorizationRequests(new ParClient(configuration),
+                new ClientSecretBasicAuth(CLIENT_ID, secret));
+    }
+
+    /** A client secret carrying characters the form encoding has to escape. */
+    private static String clientSecret() {
+        return Generators.letterStrings(16, 32).next() + "+/ :&=%" + Generators.letterStrings(4, 8).next();
+    }
+
+    /** The {@code Authorization} header value RFC 6749 section 2.3.1 renders for the client id and {@code secret}. */
+    private static String basicCredential(String secret) {
+        String credential = URLEncoder.encode(CLIENT_ID, StandardCharsets.UTF_8) + ":"
+                + URLEncoder.encode(secret, StandardCharsets.UTF_8);
+        return BASIC_SCHEME + Base64.getEncoder().encodeToString(credential.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** The client configuration of a client that authenticates with {@code secret}; plain HTTP is allowed. */
+    private static ClientConfiguration secretConfiguration(String secret) {
+        return ClientConfiguration.builder()
+                .issuer(ISSUER).clientId(CLIENT_ID).clientSecret(secret)
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .scopes(SCOPES).redirectUri(REDIRECT_URI)
+                .allowInsecureHttp(true)
+                .build();
+    }
+
     private static ClientConfiguration configuration() {
         return configuration(ClientConfiguration.DEFAULT_READ_TIMEOUT_SECONDS);
     }
@@ -727,7 +841,7 @@ class PushedAuthorizationRequestsTest {
             String[] nameValue = pair.split("=", 2);
             String name = URLDecoder.decode(nameValue[0], StandardCharsets.UTF_8);
             assertNull(pairs.put(name, nameValue.length == 2
-                    ? URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8) : ""),
+                            ? URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8) : ""),
                     "the parameter " + name + " occurs twice");
         }
         return pairs;

@@ -1743,6 +1743,14 @@ class BffRuntimeProducerTest {
             }
         }
 
+        /**
+         * A client-secret-mode configuration whose {@code sender_constraint} block follows a
+         * {@link KeyMode}, together with the proof-key thumbprint every proof must then carry — known for
+         * a provided key and unknown for a generated one.
+         */
+        private record SecretKeyFixture(SecretFixture credential, Optional<String> expectedProofKey) {
+        }
+
         static Stream<Arguments> keyModesOnEveryLeg() {
             return Stream.of(KeyMode.values())
                     .flatMap(mode -> Stream.of(Leg.values()).map(leg -> Arguments.of(mode, leg)));
@@ -2476,6 +2484,236 @@ class BffRuntimeProducerTest {
                             "under the leg of the refresh grant: " + refusals.getFirst().getMessage()));
         }
 
+        // Client-secret authentication together with pushed requests and DPoP. Only the client
+        // authentication differs in that mode, so each test below drives a runtime built with
+        // oidc.client_secret over the legs the key-mode tests above drive, and asserts on the request
+        // the stub recorded: the Basic credential in place of the client assertion, and everything else
+        // — the pushed request, the proof, the nonce retry, the binding check — unchanged.
+
+        @ParameterizedTest(name = "{0} sender-constraint key")
+        @EnumSource(KeyMode.class)
+        @DisplayName("Should push the request of a login and of a step-up with the Basic credential in client-secret mode")
+        void shouldPushWithTheBasicCredentialInClientSecretMode(KeyMode mode) {
+            SecretFixture fixture = secretFixture(mode).credential();
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+            StepUpChallenge challenge = new StepUpChallenge(STEP_UP_ACR, STEP_UP_MAX_AGE);
+            SessionRecord session = sessionToElevate();
+            AtomicReference<BffRuntime.ReservedHttpResponse> redirected = new AtomicReference<>();
+            AtomicReference<StepUpCoordinator.StepUpOutcome> coordinated = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest loginPush = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> redirected.set(login(runtime, "/")));
+            StubIdentityProvider.ReceivedRequest stepUpPush = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> coordinated.set(runtime.stepUpCoordinator().coordinate(session, challenge, "/orders/42", NOW)));
+
+            assertPresentsTheBasicCredentialOnly(fixture, loginPush, "the pushed request of the login");
+            assertPresentsTheBasicCredentialOnly(fixture, stepUpPush, "the pushed request of the step-up");
+            assertPushedRedirect(redirected.get().locationOptional().orElseThrow(), fixture.clientId());
+            assertPushedRedirect(Objects.requireNonNull(coordinated.get().location(), "location"),
+                    fixture.clientId());
+            assertAll("the two pushed requests of a client-secret runtime",
+                    () -> assertEquals(fixture.clientId(), loginPush.form().get(PARAM_CLIENT_ID)),
+                    () -> assertEquals(STEP_UP_ACR, stepUpPush.form().get("acr_values"),
+                            "the step-up request is the elevated one"),
+                    () -> assertEquals(Optional.empty(), loginPush.header(DPOP_HEADER), "the login push carries no proof"),
+                    () -> assertEquals(Optional.empty(), stepUpPush.header(DPOP_HEADER),
+                            "the step-up push carries no proof"));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        /**
+         * The per-scope login flow's exchange has no production caller and is driven by hand, as in
+         * {@link #shouldProveOneKeyOnEveryFlow(KeyMode)} and for the same reason — see
+         * {@link #loginFlowExchange(BffRuntime)}.
+         */
+        @ParameterizedTest(name = "{0} sender-constraint key")
+        @EnumSource(KeyMode.class)
+        @DisplayName("Should present the Basic credential and a DPoP proof of one key on every token leg in client-secret mode")
+        void shouldBindEveryTokenLegInClientSecretMode(KeyMode mode) throws Exception {
+            SecretKeyFixture keyed = secretFixture(mode);
+            SecretFixture fixture = keyed.credential();
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+
+            StubIdentityProvider.ReceivedRequest baseExchange = drive(Leg.CODE_EXCHANGE, runtime);
+            StubIdentityProvider.ReceivedRequest loginFlowExchange = loginFlowExchange(runtime);
+            StubIdentityProvider.ReceivedRequest refresh = drive(Leg.REFRESH_GRANT, runtime);
+
+            assertPresentsTheBasicCredentialOnly(fixture, baseExchange, "the code exchange of the base flow");
+            assertPresentsTheBasicCredentialOnly(fixture, loginFlowExchange, "the code exchange of a per-scope flow");
+            assertPresentsTheBasicCredentialOnly(fixture, refresh, "the refresh grant");
+            String baseFlowKey = assertCarriesAProof(baseExchange, mode);
+            String loginFlowKey = assertCarriesAProof(loginFlowExchange, mode);
+            String refreshKey = assertCarriesAProof(refresh, mode);
+            assertAll("one proof key on every token leg of a client-secret runtime, with a " + mode + " key",
+                    () -> assertEquals(baseFlowKey, loginFlowKey,
+                            "a per-scope login flow proves possession of the base flow's key"),
+                    () -> assertEquals(baseFlowKey, refreshKey,
+                            "the refresh grant proves possession of the base flow's key"),
+                    () -> keyed.expectedProofKey().ifPresent(expected -> assertEquals(expected, baseFlowKey,
+                            "and that key is the configured sender-constraint key")));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        @ParameterizedTest(name = "{0} sender-constraint key")
+        @EnumSource(KeyMode.class)
+        @DisplayName("Should retry a DPoP-Nonce challenge once, with the nonce and the same Basic credential, in client-secret mode")
+        void shouldRetryANonceChallengeWithTheSameCredentialInClientSecretMode(KeyMode mode) throws Exception {
+            SecretFixture fixture = secretFixture(mode).credential();
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+            String nonce = token();
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, new StubIdentityProvider.Answer(400,
+                    Map.of(DPOP_NONCE_HEADER, nonce, "Content-Type", "application/json"),
+                    "{\"error\":\"use_dpop_nonce\"}"));
+
+            BffRuntime.ReservedHttpResponse callback = loginAndCallback(runtime, token());
+
+            List<StubIdentityProvider.ReceivedRequest> received =
+                    stub.received(StubIdentityProvider.Endpoint.TOKEN);
+            assertEquals(2, received.size(), "the challenge is answered by exactly one retry");
+            StubIdentityProvider.ReceivedRequest challenged = received.getFirst();
+            StubIdentityProvider.ReceivedRequest retried = received.getLast();
+            assertPresentsTheBasicCredentialOnly(fixture, challenged, "the challenged code exchange");
+            assertPresentsTheBasicCredentialOnly(fixture, retried, "the retried code exchange");
+            JsonNode challengedClaims = jwtPart(proofOf(challenged), 1);
+            JsonNode retriedClaims = jwtPart(proofOf(retried), 1);
+            assertAll("the retry of a DPoP-Nonce challenge in client-secret mode",
+                    () -> assertTrue(challengedClaims.path("nonce").isMissingNode(),
+                            "the first proof carries no nonce"),
+                    () -> assertEquals(nonce, retriedClaims.path("nonce").asText(),
+                            "the retry's proof echoes the challenged nonce"),
+                    () -> assertNotEquals(challengedClaims.path("jti").asText(), retriedClaims.path("jti").asText(),
+                            "the retry carries a fresh single-use proof"),
+                    () -> assertEquals(assertCarriesAProof(challenged, mode), assertCarriesAProof(retried, mode),
+                            "signed with the same key"),
+                    () -> assertEquals(challenged.header(AUTHORIZATION), retried.header(AUTHORIZATION),
+                            "and authenticated with the same Basic credential"),
+                    () -> assertEquals(400, callback.status(),
+                            "the stub refuses the retried grant, so the login is not completed"));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        @Test
+        @DisplayName("Should revoke with the Basic credential and no DPoP proof in client-secret mode, as in key mode")
+        void shouldRevokeWithoutAProofInClientSecretMode() {
+            SecretFixture fixture = secretFixture();
+            BffRuntime secretRuntime = stubProducer(fixture.oidc()).bffRuntime();
+            BffRuntime keyRuntime = stubProducer(stubOidc().build()).bffRuntime();
+
+            StubIdentityProvider.ReceivedRequest secretMode = drive(Leg.REVOCATION, secretRuntime);
+            StubIdentityProvider.ReceivedRequest keyMode = drive(Leg.REVOCATION, keyRuntime);
+
+            assertPresentsTheBasicCredentialOnly(fixture, secretMode, "the revocation");
+            assertAll("revocation is authenticated, never sender-constrained, in both modes",
+                    () -> assertEquals(Optional.empty(), secretMode.header(DPOP_HEADER),
+                            "client-secret mode sends no proof with a revocation"),
+                    () -> assertEquals(Optional.empty(), keyMode.header(DPOP_HEADER),
+                            "and neither does key mode"),
+                    () -> assertNotNull(keyMode.form().get(CLIENT_ASSERTION),
+                            "the control runtime did authenticate with a client assertion"));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        @ParameterizedTest(name = "{0} sender-constraint key")
+        @EnumSource(KeyMode.class)
+        @DisplayName("Should refuse, in client-secret mode, a refresh whose token response is of type Bearer as a redeemed grant")
+        void shouldRefuseAnUnboundRefreshInClientSecretMode(KeyMode mode) throws Exception {
+            SecretFixture fixture = secretFixture(mode).credential();
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+            TokenEndpointClient tokenEndpointClient =
+                    single(reachableInstancesOf(runtime, TokenEndpointClient.class), "token-endpoint client");
+            TokenRefreshCoordinator.RefreshExchange exchange = refreshExchangeOf(runtime);
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_BEARER, token()));
+            String refreshToken = token();
+            Set<String> scopes = Set.of("openid");
+
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> exchange.exchange(refreshToken, scopes));
+
+            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
+            StubIdentityProvider.ReceivedRequest refused =
+                    stub.received(StubIdentityProvider.Endpoint.TOKEN).getLast();
+            assertPresentsTheBasicCredentialOnly(fixture, refused, "the refused refresh grant");
+            assertCarriesAProof(refused, mode);
+            assertAll("the binding check of a client-secret runtime",
+                    () -> assertInstanceOf(BoundTokenEndpointClient.class, tokenEndpointClient,
+                            "the one token-endpoint client of the runtime is the refusing one"),
+                    () -> assertEquals(RefreshFailureClassification.Kind.REDEEMED,
+                            RefreshFlow.classify(failure).kind(),
+                            "the identity provider consumed the grant, so the session must not be kept"),
+                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
+                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage()).contains("on the refresh leg"),
+                            "under the leg of the refresh grant: " + refusals.getFirst().getMessage()));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        /**
+         * The positive control of the refusal above: the same client-secret runtime accepts a response of
+         * type {@code DPoP} whose access token names the proof key, so the refusal is of the unbound
+         * response and not of client-secret mode. The stub mints no token; the test supplies the body.
+         */
+        @Test
+        @DisplayName("Should accept, in client-secret mode, a refresh whose token response is bound to the proof key (control)")
+        void shouldAcceptABoundRefreshInClientSecretMode() throws Exception {
+            SecretKeyFixture keyed = secretFixture(KeyMode.PROVIDED_EC);
+            SecretFixture fixture = keyed.credential();
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+            String accessToken = accessTokenBoundTo(keyed.expectedProofKey().orElseThrow());
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_DPOP, accessToken));
+            String refreshToken = token();
+
+            RotationResult rotated = refreshExchangeOf(runtime).exchange(refreshToken, Set.of("openid"));
+
+            StubIdentityProvider.ReceivedRequest accepted =
+                    stub.received(StubIdentityProvider.Endpoint.TOKEN).getLast();
+            assertPresentsTheBasicCredentialOnly(fixture, accepted, "the accepted refresh grant");
+            assertAll("a bound token response passes the check in client-secret mode",
+                    () -> assertEquals(accessToken, rotated.accessToken().getRawToken()),
+                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN, tokenResponseNotBound()),
+                            "an accepted response is not recorded as a refusal"));
+            assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        /**
+         * Asserts that a recorded request authenticates with the {@code client_secret_basic} credential
+         * of {@code fixture} and with nothing else: no client assertion and no secret in the form body.
+         */
+        private static void assertPresentsTheBasicCredentialOnly(SecretFixture fixture,
+                StubIdentityProvider.ReceivedRequest request, String what) {
+            Map<String, String> form = request.form();
+            String authorization = request.header(AUTHORIZATION).orElse("");
+            assertTrue(authorization.startsWith(BASIC_SCHEME),
+                    what + " authenticates with an Authorization: Basic header, got: " + request.headers().keySet());
+            String credential = new String(Base64.getDecoder().decode(authorization.substring(BASIC_SCHEME.length())),
+                    StandardCharsets.UTF_8);
+            assertAll("client_secret_basic on " + what,
+                    () -> assertEquals(fixture.formEncodedCredential(), credential,
+                            "the credential is the form-encoded client id and secret, joined by one colon"),
+                    () -> assertFalse(form.containsKey(CLIENT_ASSERTION_TYPE), "no client_assertion_type is sent"),
+                    () -> assertFalse(form.containsKey(CLIENT_ASSERTION), "no client_assertion is sent"),
+                    () -> assertFalse(form.containsKey(CLIENT_SECRET_PARAMETER),
+                            "the secret travels in the header only, never as a form parameter"));
+        }
+
+        /**
+         * Asserts that a recorded token request carries a DPoP proof — a {@code dpop+jwt} that embeds
+         * its public key and is signed with the algorithm of {@code mode}.
+         *
+         * @return the RFC 7638 thumbprint of the proof key
+         */
+        private static String assertCarriesAProof(StubIdentityProvider.ReceivedRequest request, KeyMode mode)
+                throws IOException {
+            String proof = proofOf(request);
+            JsonNode header = jwtPart(proof, 0);
+            assertAll("the DPoP proof of a token request",
+                    () -> assertEquals("dpop+jwt", header.path("typ").asText()),
+                    () -> assertEquals(mode.algorithm, header.path("alg").asText(), "the algorithm follows the key type"),
+                    () -> assertTrue(header.path("jwk").isObject(), "the proof embeds its public key: " + header));
+            return proofKeyThumbprint(proof);
+        }
+
         private static BffRuntime.ReservedHttpResponse clientJwks(BffRuntime runtime, String method) {
             return runtime.dispatch(ReservedEndpoint.CLIENT_JWKS,
                     new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, method), NOW);
@@ -2839,6 +3077,25 @@ class BffRuntimeProducerTest {
             return new SecretFixture(stubOidc().clientId(clientId).clientSecret(secret).build(), clientId, secret);
         }
 
+        /**
+         * The client-secret fixture with a sender-constraint key resolved the way {@code mode} says: a
+         * key file of the mode's key type, or no {@code sender_constraint} block at all for a generated
+         * key. No {@code client_authentication} block is declared — the secret authenticates.
+         */
+        private SecretKeyFixture secretFixture(KeyMode mode) {
+            SecretFixture credential = secretFixture();
+            Supplier<KeyPair> providedKey = mode.providedKey;
+            if (providedKey == null) {
+                return new SecretKeyFixture(credential, Optional.empty());
+            }
+            KeyPair keyPair = providedKey.get();
+            Path keyFile = TestSigningKeys.writeKeyFile(keyDirectory, keyPair);
+            OidcConfig oidc = stubOidc().clientId(credential.clientId()).clientSecret(credential.secret())
+                    .senderConstraint(senderConstraintSettings(keyFile)).build();
+            return new SecretKeyFixture(new SecretFixture(oidc, credential.clientId(), credential.secret()),
+                    Optional.of(new DpopProofGenerator(keyPair, mode.algorithm).jkt()));
+        }
+
         private String keyIdOf(StubIdentityProvider.ReceivedRequest request) throws IOException {
             String assertion = request.form().get(CLIENT_ASSERTION);
             assertNotNull(assertion, "the request body carries no client_assertion");
@@ -2856,7 +3113,7 @@ class BffRuntimeProducerTest {
                 String[] nameValue = pair.split("=", 2);
                 String name = URLDecoder.decode(nameValue[0], StandardCharsets.UTF_8);
                 assertNull(parameters.put(name, nameValue.length == 2
-                        ? URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8) : ""),
+                                ? URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8) : ""),
                         "the URL names " + name + " twice: " + url);
             }
             return parameters;
