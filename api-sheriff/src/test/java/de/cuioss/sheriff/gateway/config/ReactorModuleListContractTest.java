@@ -221,10 +221,13 @@ class ReactorModuleListContractTest {
                         "a correct block must yield its module names in listed order, with the trailing"
                                 + " slash removed. A backticked token before the anchor, on a continuation"
                                 + " line, or in a later list is not a module bullet of this block"),
-                () -> assertTrue(agrees(compare(correct.orElseThrow(), CONTROL_REACTOR)),
-                        "the comparison rejected a block that lists the control reactor correctly, so the"
-                                + " document assertions would fail for a reason that has nothing to do with"
-                                + " the documents"),
+                () -> {
+                    ListComparison comparison = compare(correct.orElseThrow(), CONTROL_REACTOR);
+                    assertTrue(comparison.countsAgree() && comparison.setsAgree(),
+                            "the comparison rejected a block that lists the control reactor correctly, so the"
+                                    + " document assertions would fail for a reason that has nothing to do with"
+                                    + " the documents");
+                },
                 () -> assertEquals(3, duplicated.orElseThrow().size(),
                         "the extraction must return a duplicated bullet twice: de-duplicating here would"
                                 + " hide the one defect the count assertion exists to catch"),
@@ -305,16 +308,6 @@ class ReactorModuleListContractTest {
                         + " document: " + comparison.onlyInDocument() + "; declared only in the reactor: "
                         + comparison.onlyInReactor() + ". Correct the document — the POM is the authoritative"
                         + " source, and this assertion is not the thing to change");
-    }
-
-    /**
-     * Whether a comparison found the listed modules and the reactor in full agreement.
-     *
-     * @param comparison the comparison to judge
-     * @return {@code true} when both the count and the set agree
-     */
-    private static boolean agrees(ListComparison comparison) {
-        return comparison.countsAgree() && comparison.setsAgree();
     }
 
     /**
