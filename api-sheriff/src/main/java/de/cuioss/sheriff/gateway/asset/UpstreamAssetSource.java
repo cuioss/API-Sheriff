@@ -361,24 +361,24 @@ public final class UpstreamAssetSource implements AssetSource {
             });
             return new UpstreamFetcher.Fetched(response.statusCode(), headers, body, truncated);
         }
-    }
 
-    /**
-     * Resolves the JVM default {@link SSLContext} the asset-origin client is pinned to — the same
-     * context {@link HttpClient.Builder} would fall back to when none is set, so pinning it changes
-     * no behaviour and only makes the posture visible at the construction site.
-     *
-     * @return the JVM default TLS context
-     * @throws IllegalStateException when the JVM offers no default TLS context — a construction-time
-     *                               failure, since a client that cannot negotiate TLS must not be
-     *                               built at all
-     */
-    private static SSLContext defaultSslContext() {
-        try {
-            return SSLContext.getDefault();
-        } catch (NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException(
-                    "the JVM default TLS context is required for the asset-origin HTTP client", unavailable);
+        /**
+         * Resolves the JVM default {@link SSLContext} the asset-origin client is pinned to — the same
+         * context {@link HttpClient.Builder} would fall back to when none is set, so pinning it changes
+         * no behaviour and only makes the posture visible at the construction site.
+         *
+         * @return the JVM default TLS context
+         * @throws IllegalStateException when the JVM offers no default TLS context — a construction-time
+         *                               failure, since a client that cannot negotiate TLS must not be
+         *                               built at all
+         */
+        private static SSLContext defaultSslContext() {
+            try {
+                return SSLContext.getDefault();
+            } catch (NoSuchAlgorithmException unavailable) {
+                throw new IllegalStateException(
+                        "the JVM default TLS context is required for the asset-origin HTTP client", unavailable);
+            }
         }
     }
 
