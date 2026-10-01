@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
-# The routes that need a scope the identity provider will NOT grant (ADR-0056).
+# The routes that need a scope the identity provider will NOT grant (ADR-0057).
 # Anchored to the 'bff-session' anchor (type: bff, access: authenticated, auth: require:
 # session) declared in gateway.yaml, and routed to the same go-httpbin echo backend (the
 # UPSTREAM topology alias) as endpoints/bff-session.yaml and endpoints/bff-scoped.yaml, so an

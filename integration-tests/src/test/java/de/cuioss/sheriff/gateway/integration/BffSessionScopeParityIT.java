@@ -43,7 +43,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Proves, through the live server-mode edge and the compose Keycloak, that a session route obtains
- * the scopes it declares instead of relaying a token that lacks one (ADR-0056): a session short of a
+ * the scopes it declares instead of relaying a token that lacks one (ADR-0057): a session short of a
  * needed scope is widened when the identity provider grants the scope, and refused — never relayed
  * — when it does not.
  * <p>
