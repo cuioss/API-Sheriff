@@ -76,7 +76,8 @@ import org.jspecify.annotations.Nullable;
  *                     set normalizes to empty. Not an identity input, so a refresh may change it
  * @param grantedScopes the session's granted scope set {@code S} (see {@code SessionRecord}); an
  *                      absent set normalizes to empty. Not an identity input either: a widening
- *                      extends it, and a refresh re-seals it unchanged
+ *                      replaces it, a scope-driven refresh may reduce it, and a near-expiry refresh
+ *                      re-seals it unchanged
  * @author API Sheriff Team
  * @since 1.0
  */

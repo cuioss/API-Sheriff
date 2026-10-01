@@ -225,9 +225,12 @@ and leave the answer to the upstream: on every request it compares the session's
 (link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 Two facts about a session's tokens decide what happens when a scope is missing. The active set is
-what the current token carries, and a refresh response can narrow it. The *granted* set is every
-scope the IdP has granted this session: equal to the active set at login, extended by a widening,
-never changed by a refresh.
+what the current token carries, and a refresh response can narrow it. The *granted* set is the
+scopes the IdP is known to grant this session: equal to the active set at login, replaced by the
+grant of a widening, never added to by a refresh, and reduced only when a scope-driven refresh asks
+for a scope and the IdP does not return it. It is kept truthful on purpose: a set that still named a
+scope the IdP had stopped granting would send every request for that scope into a recovery that
+cannot succeed.
 
 * *Nothing missing.* The request continues. No call to the IdP is made.
 * *Missing, but inside the granted set.* Exactly one refresh requests the active set plus the
@@ -238,12 +241,21 @@ never changed by a refresh.
   a grant (RFC 6749 §6), so the live session is *widened* instead. A navigation is redirected into an
   authorization request for the granted set plus the `needed` set, with `prompt=none` first and
   exactly one interactive attempt if the IdP asks for one; the grant is merged into the same
-  session, which keeps its identity, its `sid`, its authentication time and its absolute expiry. Any
+  session, which keeps its identity, its authentication time and its absolute expiry, takes the
+  `sid` of the new ID token when it carries one, and sets both scope sets to the granted scope. Any
   other request is refused `403` `application/problem+json` naming the `missing_scopes` and, when
   `oidc.step_up.path` is configured, a `step_up_url` the browser can follow to start the same
   widening.
 * *The IdP refuses.* The answer is a terminal `403`. The session is unchanged and stays usable on
   every route it satisfies, and nothing redirects again.
+* *The IdP stops granting a scope the session held.* The scope leaves the granted set the first time
+  the gateway asks for it and does not get it: on the scope-driven refresh, or, when no refresh ran,
+  on the widening merge. The next widening for it ends in the terminal `403`, after at most two
+  rounds, and API calls for it cost one refresh in total rather than one each.
+
+Taking the `sid` of the grant keeps back-channel logout working across a widening. The merged tokens
+belong to the IdP session that answered, which is a different one when the user had to sign in
+again, and a logout token names that session's `sid`.
 
 The reserved `oidc.step_up.path` serves a live session only: without one it answers `401` and never
 starts a login. Its `returnUrl` is same-origin-validated like a login's.

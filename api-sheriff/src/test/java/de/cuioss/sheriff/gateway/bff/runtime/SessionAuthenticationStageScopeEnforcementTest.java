@@ -253,12 +253,14 @@ class SessionAuthenticationStageScopeEnforcementTest {
         }
 
         @Test
-        @DisplayName("a narrower grant emits its re-bind cookie, then widens the rotated session")
+        @DisplayName("a narrower grant emits its re-bind cookie, then widens the rotated session, whose S lost the scope")
         void narrowerGrantEmitsRebindThenWidens() {
             SessionBinding binding = bindingWith(session(SESSION_TOKEN, Set.of(OPENID), NEEDED));
+            // What the coordinator hands back after a processed narrower grant: rotated token material, and
+            // the scope the grant did not return gone from the granted set as well as from the active one.
             RecordingScopeRefresh scopeRefresh = new RecordingScopeRefresh((kept, requestedScopes) ->
                     RefreshResult.mediate(new SessionBinding.BoundSession(
-                            rebind(kept, SCOPED_TOKEN, Set.of(OPENID)), List.of(REBIND_COOKIE))));
+                            session(SCOPED_TOKEN, Set.of(OPENID), Set.of(OPENID)), List.of(REBIND_COOKIE))));
             RecordingWidening widening = new RecordingWidening();
             SessionAuthenticationStage stage = stage(binding, scopeRefresh, widening);
             PipelineRequest request = sessionRequest(NEEDED, navigationHeaders(), null);
@@ -266,10 +268,14 @@ class SessionAuthenticationStageScopeEnforcementTest {
             stage.process(request);
 
             assertAll("the rotated session's cookie is not lost on the widening redirect",
+                    () -> assertEquals(1, scopeRefresh.requested.size(), "the refresh is attempted exactly once"),
                     () -> assertEquals(List.of(REBIND_COOKIE, WIDENING_COOKIE), request.responseSetCookies(),
                             "the re-bind cookie precedes the widening binding cookie"),
                     () -> assertEquals(SCOPED_TOKEN, widening.liveSessions.getFirst().accessToken(),
                             "the widening starts from the rotated session"),
+                    () -> assertEquals(Set.of(OPENID), widening.liveSessions.getFirst().grantedScopes(),
+                            "the widening starts from the truthful granted set, so its callback seeks the scope "
+                                    + "beyond S and refuses a grant that lacks it again"),
                     () -> assertTrue(request.mediatedBearer().isEmpty(), "no bearer is recorded"));
         }
 

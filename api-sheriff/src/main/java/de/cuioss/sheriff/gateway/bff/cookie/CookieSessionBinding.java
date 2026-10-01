@@ -66,7 +66,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>Active and granted scope sets.</strong> The session's active scope set {@code A} and its
  * granted scope set {@code S} are sealed alongside the token material on {@link #bind}, restored on
  * {@link #resolve}, and re-sealed from the rotated record on {@link #persist}, so a refresh that
- * changes {@code A}, or a widening that extends both, is carried into the next request. The two sets
+ * changes {@code A} or reduces {@code S}, or a widening that replaces both, is carried into the next
+ * request. The same holds for the {@code sid} a widening takes from its grant's ID token. The two sets
  * are sealed as independent fields and never derived from one another. Neither is an identity input:
  * a changed {@code A} or {@code S} leaves the derived session identity untouched.
  *

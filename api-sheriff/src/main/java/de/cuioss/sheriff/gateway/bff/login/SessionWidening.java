@@ -41,8 +41,10 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>What is requested.</strong> A widening asks the IdP for the session's granted-scope set
  * {@code S} united with the route's needed scopes, never for the needed scopes alone: the callback
- * replaces the session's active set {@code A} with what this grant returns, so a request for less
- * than {@code S} would silently narrow the session. The request goes through the
+ * replaces both the session's active set {@code A} and {@code S} itself with what this grant returns,
+ * so a request for less than {@code S} would silently narrow the session. A member of {@code S} the
+ * IdP no longer grants does leave the session that way — that is the grant being truthful, not the
+ * request being short. The request goes through the
  * {@link AuthorizationWidening} seam, bound at runtime to {@link ScopedEngineFlows#widen}, which
  * builds its engine flow per call because {@code S} is IdP-derived.
  * <p>

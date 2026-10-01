@@ -250,9 +250,10 @@ is refused at boot, since scopes act only on authenticated routes.
   route, or lands on a `require: none` route, the login requests `oidc.scopes` alone.
 
 *Session-wide scope growth.* A login requests only the scope set of the route it is for; further
-scopes are requested when a route first needs them (see <<scope-enforcement>>). A session never
-gives a scope back: one that logged in through, or was widened for, a route of `orders` holds the
-`orders.read` grant for the rest of its life, and the token it relays to every other session route
+scopes are requested when a route first needs them (see <<scope-enforcement>>). A session gives a
+scope back only when the IdP itself stops granting it: one that logged in through, or was widened
+for, a route of `orders` holds the `orders.read` grant for as long as the IdP returns it, and the
+token it relays to every other session route
 carries that scope too -- per-endpoint token narrowing is not offered. Set `token_relay: false` on
 routes whose origin needs no token (see <<token-relay>>).
 
@@ -264,9 +265,12 @@ login whether requested or not, which defeats the per-endpoint request.
 *The two scope sets a session keeps.* The session remembers the scope set of its current access
 token (its *active* set): after login, the token's `scope` claim (or the requested set when the token
 carries none); after a refresh, the `scope` the token endpoint returns, or the requested set when
-the response omits it. It also remembers every scope the IdP has granted it so far (its *granted*
-set): equal to the active set at login, extended by each successful widening, and never changed by a
-refresh.
+the response omits it. It also remembers the scopes the IdP is known to grant it (its *granted*
+set). That set equals the active set at login. A successful widening replaces it with the scopes of
+the widening's grant. A near-expiry refresh never changes it, and no refresh ever adds to it. The
+one refresh that can reduce it is the scope-driven refresh of <<scope-enforcement>>: a scope it asks
+for and the IdP does not return leaves the granted set. The granted set therefore says what the IdP
+last showed it grants, not everything it ever granted (see <<scope-revoked>>).
 
 *Refresh keeps the active set.* A near-expiry refresh requests exactly the active set, never the
 static `oidc.scopes`, so a refresh does not silently narrow a session that logged in on a scoped
@@ -314,7 +318,9 @@ When every missing scope lies inside the session's granted set, the gateway make
 requests the active set plus the missing scopes. A session that then carries the `needed` set is
 relayed. A session that is kept but still lacks a scope -- the IdP granted less than requested, or
 the refresh is backing off -- is widened or refused as described below; it is never relayed short of
-a scope. A refresh that ends the session, or leaves the request without a valid token, is answered
+a scope. When the IdP granted less than requested, the scopes it did not return also leave the
+session's granted set, so later requests for them are not refreshed again (see <<scope-revoked>>).
+A refresh that ends the session, or leaves the request without a valid token, is answered
 exactly as a failed near-expiry refresh is (see
 link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table]).
 
@@ -375,9 +381,18 @@ browser navigation to the IdP. Send the browser to `step_up_url` as a top-level 
 request's own path and query -- and a repeated call is relayed.
 
 *What a granted widening changes.* The session stays the same session. It keeps its identity, its
-`sid`, its authentication time and its absolute expiry, so a widening does not extend
-`ttl_seconds`. It takes the new tokens, its active set becomes the scopes of the new grant, and its
-granted set grows by them. The gateway logs `ApiSheriff-20`, naming only the scopes added.
+authentication time and its absolute expiry, so a widening does not extend `ttl_seconds`. It takes
+the new tokens, and both its active set and its granted set become the scopes of the new grant. A
+scope of the earlier granted set that the IdP no longer returned is therefore gone from the session.
+The gateway logs `ApiSheriff-20`, naming only the scopes added.
+
+*A widening also moves the session to the IdP session that answered it.* The new tokens belong to
+the IdP session that issued the grant. That is usually the one the login used, but not always: if
+the IdP session ended and the user signed in again -- which is what the interactive attempt does --
+it is a new one. The gateway session takes the `sid` of the new ID token when the token carries one,
+and keeps its own otherwise. In server mode a back-channel logout for that IdP session, delivered
+to `oidc.logout.backchannel_path`, then destroys the gateway session. A logout token that names the
+earlier `sid` no longer matches it.
 
 *When the widening is refused.* The callback answers `403`, redirects nowhere and sets no cookie,
 and the session is left as it was: it stays usable on every route whose `needed` set it satisfies.
@@ -394,6 +409,29 @@ The first two are logged as `ApiSheriff-131` with a bounded reason, the identity
 `ApiSheriff-130` (see link:../LogMessages.adoc[Log Messages]). Because nothing redirects again, a
 scope the IdP will not grant cannot loop the browser. The gateway keeps no record of a refusal: a
 later navigation to the route starts a new attempt.
+
+[[scope-revoked]]
+=== When the IdP stops granting a scope
+
+An IdP can stop granting a scope during a session's life: a role or entitlement is removed, a
+consent is withdrawn, a client scope is unassigned. The session's granted set then still names a
+scope the IdP will not return. The gateway corrects the granted set the first time it asks:
+
+* *A refresh is answered with fewer scopes than it asked for.* The scopes the IdP did not return
+  leave the granted set. A navigation is then widened once, and when that grant lacks the scope too
+  the callback answers the terminal `403` above. An API call is refused `403`; later calls for the
+  same scope are refused without another refresh.
+* *No refresh ran* -- the session holds no refresh token, refresh is switched off, or (cookie mode)
+  the near-expiry refresh had just issued a new cookie. The widening's grant is merged, which takes
+  the scope out of the granted set, and the browser is sent back to the route once. The next
+  widening is the one that ends in the terminal `403`.
+
+Either way the session is kept and stays usable on every route it still satisfies. A navigation ends
+in the `403` after at most two round trips to the IdP, and API calls cost one refresh in total.
+
+One case is not corrected this way. An IdP that answers the refresh with an outright `invalid_scope`
+error gives the gateway nothing to learn from (see the back-off note above): the granted set is left
+as it was and the refresh is tried again once per back-off window.
 
 [[step-up-path]]
 === The step-up path

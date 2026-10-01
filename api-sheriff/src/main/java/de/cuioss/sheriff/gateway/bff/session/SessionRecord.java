@@ -74,21 +74,32 @@ import org.jspecify.annotations.Nullable;
  * them.
  * <p>
  * <strong>The granted scope set {@code S} versus the active set {@code A}.</strong>
- * {@link #grantedScopes()} is the set of scopes the IdP has granted this session over its life — the
- * ceiling a refresh may request back without a new authorization. It is set at login from the
- * granted scopes (so {@code S = A} right after login), extended on every successful widening of the
- * live session ({@code S ∪= granted}), and <strong>never changed by a refresh</strong>: a refresh may
- * narrow or restore {@code A}, but it cannot add to what the user authorized. {@code A} stays the set
- * the mediated token was granted and the refresh grant requests. A route whose needed scopes are
- * missing from {@code A} but contained in {@code S} is served by a refresh; one needing a scope
- * outside {@code S} needs a widening. Like {@code A}, the names are printed by {@link #toString()}.
+ * {@link #grantedScopes()} is the set of scopes the IdP is known to grant this session — the ceiling
+ * a refresh may request back without a new authorization. It is kept <strong>truthful</strong>: it
+ * records what the IdP last showed it grants, not everything it ever granted.
+ * <ul>
+ *   <li>At login it is the granted scope, so {@code S = A}.</li>
+ *   <li>A successful widening of the live session <em>replaces</em> it with that grant's scope
+ *       ({@code S = A = granted}); it is not united with the earlier set, so a scope the IdP stopped
+ *       granting leaves it.</li>
+ *   <li>A near-expiry refresh never changes it, even when the response narrows {@code A}.</li>
+ *   <li>A scope-driven refresh the IdP processed removes every requested scope the response did not
+ *       return, and changes nothing else.</li>
+ * </ul>
+ * No refresh ever adds to {@code S}: only a widening obtains a scope the session was not granted.
+ * {@code A} stays the set the mediated token was granted and the refresh grant requests. A route
+ * whose needed scopes are missing from {@code A} but contained in {@code S} is served by a refresh;
+ * one needing a scope outside {@code S} needs a widening. Like {@code A}, the names are printed by
+ * {@link #toString()}.
  *
  * @param sessionId    the stable per-session identity (see the identity model above)
  * @param accessToken  the mediated access token injected as the upstream bearer
  * @param refreshToken the refresh token, {@code null} when the IdP granted none
  * @param idToken      the raw ID token retained for the logout {@code id_token_hint}
  * @param sub          the subject claim (back-channel destroy-by-sub key)
- * @param sid          the IdP session id claim, {@code null} when absent (back-channel destroy-by-sid key)
+ * @param sid          the IdP session id claim, {@code null} when absent (back-channel destroy-by-sid
+ *                     key); a widening replaces it with the {@code sid} of the grant's ID token when
+ *                     that token carries one
  * @param expiresAt    the absolute session expiry (from login), independent of activity
  * @param acr          the authentication context class, {@code null} when absent
  * @param authTime     the IdP authentication instant, {@code null} when absent
@@ -96,8 +107,9 @@ import org.jspecify.annotations.Nullable;
  *                     {@code null} in server mode (see the mode split above), and never blank when present
  * @param activeScopes the active scope set {@code A} the mediated access token was granted and the
  *                     refresh grant requests (see above); an absent set normalizes to empty
- * @param grantedScopes the granted scope set {@code S} — every scope the IdP granted the session at
- *                      login or on a widening, never changed by a refresh (see above); an absent set
+ * @param grantedScopes the granted scope set {@code S} — the scopes the IdP is known to grant the
+ *                      session: set at login, replaced by a widening, and reduced by a scope-driven
+ *                      refresh that did not return a requested scope (see above); an absent set
  *                      normalizes to empty
  * @author API Sheriff Team
  * @since 1.0

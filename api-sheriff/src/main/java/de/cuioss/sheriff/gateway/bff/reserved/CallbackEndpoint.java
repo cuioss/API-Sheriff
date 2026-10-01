@@ -149,12 +149,26 @@ import org.jspecify.annotations.Nullable;
  *       widening sought beyond the session's granted set ({@code 403} otherwise, so a narrower grant
  *       can never send the browser round the widening again). The grant is then merged into the
  *       <em>live</em> session, which keeps its {@code sessionId}, {@code sessionNonce},
- *       {@code expiresAt}, {@code sid} and {@code authTime}, takes the new access, refresh and ID
- *       tokens and the new {@code acr}, sets {@code A} to the granted scope and {@code S} to
- *       {@code S ∪ granted}. It is re-bound through {@link SessionBinding#persist} — never a new
- *       session — and the browser is redirected to the recorded return URL. A persist failure
- *       answers {@code 500}, like a bind failure on login.</li>
+ *       {@code expiresAt} and {@code authTime}, takes the new access, refresh and ID tokens and the
+ *       new {@code acr}, and sets both {@code A} and {@code S} to the granted scope. It is re-bound
+ *       through {@link SessionBinding#persist} — never a new session — and the browser is
+ *       redirected to the recorded return URL. A persist failure answers {@code 500}, like a bind
+ *       failure on login.</li>
  * </ul>
+ * <strong>The merged granted set is what this grant returned.</strong> {@code S} becomes the granted
+ * scope itself, never the union with what an earlier grant returned. A scope the identity provider
+ * has stopped granting therefore leaves {@code S} on the merge, the next request needing it seeks it
+ * <em>beyond</em> {@code S}, and a grant that again lacks it is refused {@code 403} by the check
+ * above — the browser is not redirected a further time.
+ * <p>
+ * <strong>The merged session follows the identity-provider session of the grant.</strong> It takes
+ * the {@code sid} of the new ID token when that token carries one, and keeps its own otherwise. The
+ * tokens it now holds belong to the identity-provider session that answered the widening, which is
+ * not necessarily the one the gateway session was created from; indexing the session under that
+ * {@code sid} is what lets a back-channel logout for it find the session. In server mode the store
+ * re-indexes the session on the persist, so a logout token naming the previous {@code sid} no longer
+ * matches it.
+ * <p>
  * The merge is a check-then-act on the live session: a concurrent refresh may rotate its tokens
  * between the resolve and the persist. The last writer wins over two IdP-fresh token sets of the same
  * identity; the identity is re-checked on the resolved record, never taken from the pending record
@@ -351,21 +365,25 @@ public final class CallbackEndpoint {
             LOGGER.warn(BffLogMessages.WARN.SESSION_WIDENING_REFUSED, REASON_SCOPE_NOT_GRANTED);
             return CallbackOutcome.error(FORBIDDEN);
         }
-        Set<String> widenedGrant = new TreeSet<>(live.grantedScopes());
-        widenedGrant.addAll(granted);
+        // The merged tokens belong to the identity-provider session that answered this widening, so the
+        // session is indexed under that session's sid; an ID token carrying none leaves its own in place.
+        String grantSid = claim(idToken, CLAIM_SID);
         SessionRecord merged = SessionRecord.builder()
                 .sessionId(live.sessionId())
                 .accessToken(accessToken.getRawToken())
                 .refreshToken(result.refreshToken())
                 .idToken(idToken.getRawToken())
                 .sub(live.sub())
-                .sid(live.sid())
+                .sid(grantSid != null ? grantSid : live.sid())
                 .expiresAt(live.expiresAt())
                 .acr(claim(idToken, CLAIM_ACR))
                 .authTime(live.authTime())
                 .sessionNonce(live.sessionNonce())
                 .activeScopes(granted)
-                .grantedScopes(widenedGrant)
+                // S is what this grant returned, never the union with an earlier one: a scope the
+                // identity provider stopped granting leaves S here, so the next request for it seeks it
+                // beyond S and a grant lacking it again is refused above instead of merged.
+                .grantedScopes(granted)
                 .build();
         SessionBinding.BoundSession bound;
         try {

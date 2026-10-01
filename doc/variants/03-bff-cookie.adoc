@@ -63,7 +63,7 @@ and the gateway holds no per-user state.
   token set -- access token, refresh token, the raw ID token (needed as `id_token_hint` at logout --
   without it in the cookie, the stateless gateway could not drive RP-initiated logout), and minimal
   metadata, including the session's active scope set (the scopes of the current token, which every
-  near-expiry refresh requests) and its granted scope set (every scope the IdP has granted the
+  near-expiry refresh requests) and its granted scope set (the scopes the IdP is known to grant the
   session, which decides whether a missing scope costs a refresh or a new authorization) -- framed
   as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
   plus nonce and auth tag form the cookie value. Framing by declared length rather than by a

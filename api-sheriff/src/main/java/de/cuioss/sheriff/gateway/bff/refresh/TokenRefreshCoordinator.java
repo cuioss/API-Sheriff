@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -59,9 +60,8 @@ import org.jspecify.annotations.Nullable;
  * set {@code A} ({@link SessionRecord#activeScopes()}), never the static {@code oidc.scopes}, so a
  * session that logged in on a route needing extra scopes keeps them across refreshes. The rotated
  * session's {@code A} becomes the response's {@code scope} — which may narrow it — or stays unchanged
- * when the response omits {@code scope}. The session's granted scope set {@code S}
- * ({@link SessionRecord#grantedScopes()}) is carried over unchanged: a refresh never adds to or
- * removes from what the user authorized.
+ * when the response omits {@code scope}. The near-expiry leg carries the session's granted scope set
+ * {@code S} ({@link SessionRecord#grantedScopes()}) over unchanged, and no refresh ever adds to it.
  * <p>
  * <strong>The scope-driven leg.</strong> {@link #refreshForScopes} is the second trigger of the same
  * engine exchange: a session route whose needed scopes are missing from {@code A} but inside {@code S}
@@ -71,7 +71,18 @@ import org.jspecify.annotations.Nullable;
  * {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED}: the session is kept but does not carry the
  * requested set — most notably because the exchange succeeded and the rotated session was persisted,
  * but the granted {@code scope} still lacks a requested member. No back-off is recorded and nothing is
- * logged at {@code WARN}, so the caller routes to widening. An identity provider that refuses the
+ * logged at {@code WARN}, so the caller routes to widening.
+ * <p>
+ * <strong>A processed scope refresh keeps {@code S} truthful.</strong> When the identity provider
+ * processes the scope-driven grant and returns a {@code scope} lacking a requested member, every such
+ * member is removed from the rotated session's {@code S} before it is persisted: the provider has just
+ * shown it no longer grants that scope to this session. The scope then lies outside {@code S}, so the
+ * next request needing it makes no further refresh — a navigation is widened, anything else is refused
+ * — instead of presenting the refresh token again on every request. A response that omits
+ * {@code scope} refuses nothing (RFC 6749 §5.1) and leaves {@code S} as it was, as does every outcome
+ * in which the provider did not process the grant.
+ * <p>
+ * An identity provider that refuses the
  * requested scope outright ({@code invalid_scope}) is <em>not</em> told apart:
  * {@code token-sheriff-client} surfaces that answer as a bare transport failure, which
  * {@code RefreshFlow.classify} maps to {@code PRE_REDEMPTION}, so it takes the back-off disposition below
@@ -313,7 +324,9 @@ public final class TokenRefreshCoordinator {
      * The leader re-resolves the session through the binding under the single-flight exclusion and
      * re-checks the set: a session that already carries it — a concurrent refresh obtained it — is
      * returned as {@link RefreshOutcome#current(SessionRecord) current} with no engine call. A successful
-     * exchange persists the rotated session through the binding with {@code S} unchanged. A refused
+     * exchange persists the rotated session through the binding; its {@code S} is the previous one less
+     * every requested scope the response's {@code scope} did not return, so it is unchanged whenever the
+     * set was obtained or the response omitted {@code scope}. A refused
      * exchange takes exactly the near-expiry leg's disposition (see the class documentation); an
      * {@code invalid_scope} answer is among the refusals classified {@code PRE_REDEMPTION} and therefore
      * backs off (<a href="https://github.com/cuioss/TokenSheriff/issues/763">TokenSheriff#763</a>).
@@ -328,7 +341,8 @@ public final class TokenRefreshCoordinator {
      *         set, {@link RefreshOutcome#refreshed(SessionRecord, List) refreshed} carrying the rotated
      *         session that carries it, {@link RefreshOutcome#scopeRefused(SessionRecord, List) scope
      *         refused} carrying the kept session when the set was not obtained with no refusal to dispose
-     *         (a narrower grant, no refresh token, or a shared refresh that did not request it),
+     *         (a narrower grant, whose refused scopes have left the carried session's {@code S}; no
+     *         refresh token; or a shared refresh that did not request it),
      *         {@link RefreshOutcome#deferred(SessionRecord) deferred} or
      *         {@link RefreshOutcome#unavailable() unavailable} after a pre-redemption failure, or
      *         {@link RefreshOutcome#failed() failed} when the session was destroyed
@@ -413,7 +427,7 @@ public final class TokenRefreshCoordinator {
             return Disposition.of(RefreshOutcome.current(latest));
         }
         // The grant requests the session's active scope set A — never the static oidc.scopes.
-        return redeem(sessionId, latest, presentedRefreshToken, latest.activeScopes(), now);
+        return redeem(sessionId, latest, presentedRefreshToken, latest.activeScopes(), false, now);
     }
 
     private Disposition performScopeRefresh(String sessionId, @Nullable String cookieHeader, Set<String> requested,
@@ -433,13 +447,14 @@ public final class TokenRefreshCoordinator {
         if (presentedRefreshToken == null) {
             return Disposition.of(RefreshOutcome.scopeRefused(latest, List.of()));
         }
-        Disposition disposition = redeem(sessionId, latest, presentedRefreshToken, requested, now);
+        Disposition disposition = redeem(sessionId, latest, presentedRefreshToken, requested, true, now);
         RefreshOutcome outcome = disposition.outcome();
         SessionRecord rotated = outcome.session();
         if (outcome.kind() == RefreshOutcome.Kind.REFRESHED && rotated != null
                 && !rotated.activeScopes().containsAll(requested)) {
             // The provider processed the grant but granted less than requested: the rotated session is
-            // persisted and kept, nothing backs off, and the caller widens.
+            // persisted and kept — its S already without the refused scopes — nothing backs off, and
+            // the caller widens.
             return new Disposition(RefreshOutcome.scopeRefused(rotated, outcome.setCookieHeaders()),
                     disposition.liveRefreshToken());
         }
@@ -450,9 +465,12 @@ public final class TokenRefreshCoordinator {
      * The engine half both legs share, once the leader holds a live session with a refresh token: the
      * ended-token check, the back-off admission, the exchange requesting {@code scopes}, and the persist
      * of the rotated session — or the refusal's disposition.
+     *
+     * @param scopeDriven {@code true} on the scope-driven leg, where a requested scope the processed
+     *                    grant did not return leaves the rotated session's granted scope set
      */
     private Disposition redeem(String sessionId, SessionRecord latest, String presentedRefreshToken,
-            Set<String> scopes, Instant now) {
+            Set<String> scopes, boolean scopeDriven, Instant now) {
         if (endedRefreshTokens.isEnded(presentedRefreshToken, now)) {
             // A replay of a refresh token whose session this instance already ended (cookie mode keeps no
             // server-side session to destroy): refuse it locally — no engine call, no revocation, no WARN.
@@ -481,7 +499,7 @@ public final class TokenRefreshCoordinator {
         // The presented token is already redeemed here, so a persist failure cannot keep the session.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            SessionRecord rotated = rotate(latest, rotation, scopes);
+            SessionRecord rotated = rotate(latest, rotation, scopes, scopeDriven);
             // persist() re-binds in place (an upsert in server mode, a re-seal in a stateless mode), so
             // no pre-persist destroy is needed on the success path. Destroying first would open a
             // window where a concurrent resolve() misses the rotating session.
@@ -727,11 +745,18 @@ public final class TokenRefreshCoordinator {
      * response's {@code scope}, and becomes {@code requestedScopes} when the response omits or blanks it
      * (RFC 6749 §5.1 — an omitted {@code scope} is identical to the one requested). On the near-expiry
      * leg the requested set is {@code previous}'s own {@code A}, so an omitted {@code scope} leaves it
-     * unchanged. The granted scope set {@code S} is copied verbatim: a refresh never changes it, even when
-     * the response narrows {@code A} — only a widening adds to what the user authorized.
+     * unchanged.
+     * <p>
+     * The granted scope set {@code S} is never added to — only a widening obtains a scope the session
+     * was not granted. On the near-expiry leg it is copied verbatim, even when the response narrows
+     * {@code A}. On the scope-driven leg ({@code scopeDriven}) it loses every requested scope the new
+     * {@code A} lacks: the identity provider processed a grant naming that scope and did not return it,
+     * so keeping it in {@code S} would send every later request for it into the same refresh again.
      */
-    private static SessionRecord rotate(SessionRecord previous, RotationResult rotation, Set<String> requestedScopes) {
+    private static SessionRecord rotate(SessionRecord previous, RotationResult rotation, Set<String> requestedScopes,
+            boolean scopeDriven) {
         String rotatedIdToken = rotation.idToken();
+        Set<String> rotatedActiveScopes = refreshedActiveScopes(rotation.grantedScope(), requestedScopes);
         return SessionRecord.builder()
                 .sessionId(previous.sessionId())
                 .accessToken(rotation.accessToken().getRawToken())
@@ -743,9 +768,29 @@ public final class TokenRefreshCoordinator {
                 .acr(previous.acr())
                 .authTime(previous.authTime())
                 .sessionNonce(previous.sessionNonce())
-                .activeScopes(refreshedActiveScopes(rotation.grantedScope(), requestedScopes))
-                .grantedScopes(previous.grantedScopes())
+                .activeScopes(rotatedActiveScopes)
+                .grantedScopes(scopeDriven
+                        ? withoutRefused(previous.grantedScopes(), requestedScopes, rotatedActiveScopes)
+                        : previous.grantedScopes())
                 .build();
+    }
+
+    /**
+     * The granted scope set after a processed scope-driven refresh: {@code granted} less every member of
+     * {@code requested} that {@code obtained} — the rotated active scope set — does not carry. Returns
+     * {@code granted} itself when nothing was refused, which is the ordinary case.
+     */
+    private static Set<String> withoutRefused(Set<String> granted, Set<String> requested, Set<String> obtained) {
+        if (obtained.containsAll(requested)) {
+            return granted;
+        }
+        Set<String> truthful = new HashSet<>(granted);
+        for (String scope : requested) {
+            if (!obtained.contains(scope)) {
+                truthful.remove(scope);
+            }
+        }
+        return truthful;
     }
 
     /**
@@ -905,7 +950,8 @@ public final class TokenRefreshCoordinator {
             /**
              * A scope-driven refresh did not obtain the requested set and there was no refusal to dispose:
              * the identity provider granted a narrower {@code scope} (the rotated session is persisted and
-             * carried with its cookies), the session carries no refresh token, or the refresh this request
+             * carried with its cookies, its granted scope set already without the scopes the grant did not
+             * return), the session carries no refresh token, or the refresh this request
              * coalesced with did not obtain the set. The session is kept, no back-off is recorded and
              * nothing is logged at {@code WARN}; the caller routes to widening and never relays the carried
              * session short of its needed scopes. An outright {@code invalid_scope} refusal is not reported

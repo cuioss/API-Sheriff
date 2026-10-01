@@ -2008,7 +2008,7 @@ of the variants-are-route-postures rule is in link:variants/README.adoc[Variants
 | Syntax | Every entry -- here and in `oidc.scopes` -- must be an RFC 6749 §3.3 `scope-token`: one or more printable ASCII characters (`0x21`-`0x7E`) other than the double quote and the backslash, so no space, control character or non-ASCII. The bundled schemas carry the pattern, so a malformed name (`orders read`, say) is refused at load with a pointer to the entry.
 | Cascade | None. It is endpoint-level only and *additive*: every route of the endpoint needs `needed = oidc.scopes ∪ endpoint.scopes`, materialized once at boot (`endpoint.scopes` alone when the gateway declares no `oidc` block). An endpoint can add scopes but never remove an `oidc.scopes` member, and a route-level `auth` override does not affect the set.
 | `require: bearer` | The validated token must carry every member of `needed`; a shortfall is `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` (the missing names only, sorted, taken from boot config -- never from the token). An empty `needed` skips the check.
-| `require: session` | `needed` is the `scope` a login started on the route requests (and, through `oidc.login.path`, a login whose `returnUrl` lands on the route), and the set every session request is held to. The session's active scope set -- the scopes of its current access token -- must carry every member of `needed`, whatever `token_relay` says. A shortfall inside the scopes the IdP has granted the session so far costs one refresh requesting the active set plus the missing scopes; any other shortfall widens the live session for a navigation and answers every other request `403` `application/problem+json` with `missing_scopes` (the missing names only, sorted, taken from boot config -- never from the token) and, when `oidc.step_up.path` is configured, `step_up_url`. No `WWW-Authenticate` header is sent. An empty `needed` is always satisfied. The SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route is held to the same rule. See link:user/bff-session.adoc#scope-enforcement[When a session lacks a scope the route needs].
+| `require: session` | `needed` is the `scope` a login started on the route requests (and, through `oidc.login.path`, a login whose `returnUrl` lands on the route), and the set every session request is held to. The session's active scope set -- the scopes of its current access token -- must carry every member of `needed`, whatever `token_relay` says. A shortfall inside the session's granted set -- the scopes the IdP is known to grant it -- costs one refresh requesting the active set plus the missing scopes; a scope that refresh asks for and the IdP does not return leaves the granted set, so it is not asked for by a refresh again. Any other shortfall widens the live session for a navigation and answers every other request `403` `application/problem+json` with `missing_scopes` (the missing names only, sorted, taken from boot config -- never from the token) and, when `oidc.step_up.path` is configured, `step_up_url`. No `WWW-Authenticate` header is sent. An empty `needed` is always satisfied. The SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route is held to the same rule. See link:user/bff-session.adoc#scope-enforcement[When a session lacks a scope the route needs].
 | Boot rule | An enabled endpoint declaring a non-empty `scopes` whose every route resolves `require: none` is refused (`CONFIG_INVALID`) -- the scopes could never act.
 |===
 
@@ -2554,7 +2554,7 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
 | `step_up.path`
 | Gateway-served *step-up* entry point -- the reserved path a browser holding a live session
   navigates to in order to have that session *widened*: `<path>?returnUrl=<target>` asks the IdP
-  for the scopes the session has been granted so far plus the needed scope set of the route
+  for the session's granted scope set plus the needed scope set of the route
   `<target>` lands on, merges the grant into the same session, and returns the browser to
   `<target>`. It is the target of the `step_up_url` member a session route names in its `403`
   `application/problem+json` answer when a non-navigation request lacks a needed scope (see
@@ -2626,6 +2626,9 @@ near-expiry refresh, and is disposed by the table above. It adds one outcome tha
 the session is kept but still lacks the requested scope -- the IdP granted a narrower `scope`, the
 session holds no refresh token, or the request joined a concurrent refresh that did not ask for it.
 That outcome records no back-off and no warning, and the request goes on to a widening or a `403`.
+When the IdP granted a narrower `scope`, every requested scope it did not return also leaves the
+session's granted set, so a later request for that scope is widened or refused without another
+refresh.
 An IdP that answers the refresh with `invalid_scope` is *not* recognised as that outcome: the token
 engine reports it without the OAuth error code, so it is disposed as *pre-redemption* -- the session
 is kept, `ApiSheriff-127` is logged, and the session's next refresh waits out the back-off

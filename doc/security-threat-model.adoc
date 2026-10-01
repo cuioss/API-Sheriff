@@ -1724,6 +1724,13 @@ back-channel member) and `sub`/`sid`, and MUST NOT carry `nonce`; validate sig/`
 server session and rotate/clear the cookie on any logout; revoke the RT family. Cookie-mode
 disables the back-channel endpoint (`404`) -- no session to destroy.
 
+*The `sid` index names the identity-provider session the tokens belong to.* A session is indexed
+under the `sid` of its login's ID token. A widening (<<bff-17>>) merges tokens that a different
+identity-provider session may have issued, so it re-indexes the session under the `sid` of that
+grant's ID token when the token carries one. Without that, a logout token for the session that
+answered the widening would be accepted, destroy nothing (`ApiSheriff-13` with a count of `0`) and
+leave the gateway session usable.
+
 *Status:* COVERED. Both channels, the logout-token checks and the logout-`state` cookie are
 delivered, and cookie mode disables the back-channel receiver.
 
@@ -1911,14 +1918,20 @@ link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_t
 * *Refresh with the active set.* The session records the scope set of its current token (`A`) and
   every near-expiry refresh requests exactly `A`, never the static `oidc.scopes`; an omitted response
   `scope` leaves `A` unchanged (RFC 6749 §5.1), a narrowed response narrows it. The granted set `S`
-  is equal to `A` at login, grows only on a widening and is never changed by a refresh, so the
-  scope-driven refresh above can ask only for what the identity provider granted this session
+  is equal to `A` at login, no refresh ever adds to it, and a near-expiry refresh never changes it,
+  so the scope-driven refresh above can ask only for what the identity provider granted this session
   before (RFC 6749 §6).
+* *The granted set is kept truthful.* `S` records what the identity provider last showed it grants,
+  not everything it ever granted. A widening replaces `S` with the scope of its grant, and a
+  scope-driven refresh the provider processed removes every requested scope the response did not
+  return. A scope the provider has stopped granting therefore leaves `S` the first time the gateway
+  asks for it and is not asked for by a refresh again (<<bff-17>>).
 
 *Status:* PARTIAL (accepted residuals).
 
-* *Session-wide scope growth (accepted).* A session never gives a scope back; the token relayed to
-  every session route carries all of them. A session that logged in through, or was widened for, a
+* *Session-wide scope growth (accepted).* A session gives a scope back only when the identity
+  provider itself stops returning it; the token relayed to every session route carries every scope
+  the session holds. A session that logged in through, or was widened for, a
   scoped endpoint therefore presents that endpoint's scopes to every other session-route upstream,
   and a widening adds to that set during the session's life. Per-endpoint token narrowing (token
   exchange, audience-restricted tokens) is out of scope. The exposure is bounded by the IdP granting
@@ -1947,7 +1960,14 @@ byte-identical bearer and no `Set-Cookie` (`BffSessionScopeParityIT`,
 `SessionAuthenticationStageScopeEnforcementTest`). The one-refresh branch is asserted at unit level
 only (`SessionAuthenticationStageScopeEnforcementTest`, `TokenRefreshCoordinatorTest`): the two
 scope sets are equal after a login and after a widening, so the integration suite cannot produce a
-session whose `A` is narrower than its `S`.
+session whose `A` is narrower than its `S`. For the same reason the truthful granted set is asserted
+at unit level only: a scope-driven grant that does not return a requested scope removes exactly that
+scope from `S` in both session modes, an omitted response `scope` and an unprocessed grant leave `S`
+unchanged, and a near-expiry refresh that narrows `A` leaves `S` unchanged
+(`TokenRefreshCoordinatorTest`); with the stage, the coordinator and the callback assembled, API
+calls for a scope the provider no longer grants cost one refresh grant in total and are then refused
+locally, while a scope it still grants is restored by one refresh and relayed
+(`SessionScopeTruthfulnessFlowTest`).
 
 [#bff-16]
 === BFF-16 -- Authentication-branch downgrade on a dual-posture route (`session_fallback`)
@@ -2044,8 +2064,16 @@ authorization request at all.
   subject and the subject recorded when the widening started are the same. The subject is checked on
   the session the callback resolves from the request, never taken from the pending record alone. A
   mismatch is `403`, the session is unchanged, and `ApiSheriff-130` is logged with no value at all.
-  The merge keeps the session's identity, its `sid`, its authentication time and its absolute
-  expiry, so a widening neither mints a second session nor extends the first.
+  The merge keeps the session's identity, its authentication time and its absolute expiry, so a
+  widening neither mints a second session nor extends the first.
+* *The merged session follows the identity-provider session that answered.* The tokens a widening
+  merges belong to the identity-provider session that issued the grant, which is not necessarily the
+  one the gateway session was created from: the original may have ended and the user authenticated
+  again, which is what the interactive attempt produces. The merge therefore takes the `sid` of the
+  new ID token when it carries one, and keeps the session's own otherwise. In server mode the store
+  re-indexes the session on that write, so a back-channel logout for the answering session destroys
+  the gateway session (<<bff-09>>) instead of matching nothing and leaving it usable until its next
+  refresh or its absolute expiry. A logout token that names the previous `sid` no longer matches.
 * *The caller does not choose the scopes.* A widening requests `S ∪ neededScopes`: the session's
   granted set united with the boot-declared set of the target route. A cross-site navigation to a
   scoped route, or to the step-up path, can therefore make a user's browser *start* a widening, but
@@ -2076,6 +2104,21 @@ authorization request at all.
   the browser, and the request that started it is never relayed. The refusal is logged as
   `ApiSheriff-131` with a reason from a closed set; an unknown error code is logged as `other`,
   never as the text the identity provider or an attacker supplied.
+* *A scope the provider stopped granting reaches that refusal.* "Sought beyond `S`" is only a
+  terminal check if `S` is true. A scope that is still named in `S` after the provider has stopped
+  granting it -- an entitlement removed mid-session, a consent withdrawn -- would be sought by
+  nobody: the refresh would return a narrower grant, the widening would be merged without the
+  scope, and the browser would be sent back to the route and round again, one refresh grant, one
+  authorization request and one code exchange per turn. `S` is therefore kept truthful (<<bff-15>>).
+  A processed narrower scope refresh removes the scope from `S` before the widening starts, so the
+  widening seeks it beyond `S` and a grant lacking it is refused. Where no refresh ran -- the
+  session holds no refresh token, transparent refresh is off, or the near-expiry refresh had just
+  re-bound the cookie -- the widening is merged once, the merge sets `S` to what was granted, and
+  the following round is the refused one. A navigation therefore ends in the `403` after at most two
+  rounds, and API calls cost one refresh grant in total rather than one per request. The exception
+  is a provider that answers the refresh with an outright `invalid_scope`: that answer is not told
+  apart from an outage (<<bff-15>>), proves nothing about the scope and leaves `S` unchanged, so the
+  refresh is retried once per back-off window rather than once per request.
 
 *Status:* COVERED, with three accepted residuals.
 
@@ -2094,8 +2137,17 @@ scopes and return URL, and a second `login_required` is `403` with no further re
 `invalid_scope` and `access_denied` are `403` with the session unchanged; a grant for another
 subject, a widening issued for another subject, a callback without the live session and a grant
 lacking a sought scope are each `403` with no `Location` and no `Set-Cookie`; a granted widening
-keeps the session's id, `sid`, authentication time and expiry in both session modes; an unknown
-error code is logged as `other` (`CallbackEndpointTest`). On the step-up path: no session, an
+keeps the session's id, authentication time and expiry in both session modes, sets both scope sets
+to the granted scope and takes the `sid` of the new ID token; a session whose `S` names a scope the
+grant no longer returns is merged once with the scope gone from `S` and refused `403` on the next
+round, while the same session is merged round after round when the grant still returns it; after a
+widening the production back-channel receiver destroys the session for a logout token naming the
+new `sid` and matches nothing for one naming the previous `sid`, and a grant whose ID token carries
+no `sid` leaves the session reachable under the one it had; an unknown
+error code is logged as `other` (`CallbackEndpointTest`). With the stage, the refresh coordinator
+and the callback assembled, a navigation for a scope the provider no longer grants is widened once
+and its callback is `403` with no `Location`, and a session without a refresh token is merged once
+and refused on the second round (`SessionScopeTruthfulnessFlowTest`). On the step-up path: no session, an
 unknown session and an expired session are `401` with no authorization request built; an
 off-origin, scheme-relative, backslash or blank `returnUrl` lands on the configured default; a
 target whose scopes lie inside `S` is a direct `302`, decided on `S` and not on `A`; any other
@@ -2338,7 +2390,7 @@ outstanding hardening work (next section).
 | <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) | PARTIAL
 | <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, a session route compares it on every request and refreshes, widens or refuses `403`, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `SessionAuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048, ADR-0057 | PARTIAL (session-wide scope growth accepted)
 | <<bff-16>> | `session_fallback` branch chosen from `Authorization` presence only; no session fallback on a failed bearer; CSRF on the session branch only; one resolver for CSRF and authentication | Gateway (`AuthBranch`, `AuthenticationStage`, `GatewayEdgeRoute`) + configuration validator -- ADR-0055 | COVERED
-| <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
+| <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay; granted set kept truthful so a scope the provider stopped granting reaches the refusal; merged session indexed under the grant's `sid` | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `TokenRefreshCoordinator`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED

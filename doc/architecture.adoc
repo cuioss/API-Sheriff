@@ -459,12 +459,19 @@ boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `Resolv
   a login requests, and the reserved step-up path to decide whether a widening is owed.
 * *Widening.* `SessionWidening` requests `S ∪ neededScopes` from the identity provider,
   `prompt=none` first and then exactly one interactive attempt, and `CallbackEndpoint` merges the
-  grant into the live session after re-checking the subject. An identity-provider refusal is a
-  terminal `403` that leaves the session unchanged.
+  grant into the live session after re-checking the subject. The merge sets both `A` and `S` to the
+  granted scope and takes the `sid` of the grant's ID token when it carries one, so the session is
+  indexed under the identity-provider session its tokens belong to. An identity-provider refusal is
+  a terminal `403` that leaves the session unchanged.
 * *Refresh.* The session carries its active scope set `A` (the granted scope after login, the
   refresh response's `scope` after each refresh, unchanged when omitted), and every near-expiry
-  refresh requests exactly `A`, never the static `oidc.scopes`. The granted set `S` equals `A` at
-  login, grows only on a widening, and is never changed by a refresh.
+  refresh requests exactly `A`, never the static `oidc.scopes`.
+* *The granted set is kept truthful.* `S` equals `A` at login and after a widening, which replaces
+  it rather than adding to it. No refresh adds to `S` and a near-expiry refresh never changes it. A
+  scope-driven refresh the identity provider processed removes every requested scope its response
+  did not return. A scope the provider stopped granting therefore leaves `S` the first time it is
+  asked for, the next request for it is widened rather than refreshed, and a widening whose grant
+  lacks it again ends in the terminal `403`.
 
 Why a session route obtains what is missing rather than relaying, and what it does when the identity
 provider refuses, is recorded in

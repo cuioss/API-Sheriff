@@ -228,13 +228,14 @@ nothing crosses to the browser.
 *The seal also carries the session's two scope sets.* To refresh with the scopes of the current
 token -- rather than narrowing the session back to `oidc.scopes` -- the session remembers its active
 set, and to tell a scope a refresh can restore from one that needs a new authorization it remembers
-every scope the IdP has granted it so far (see link:bff-session.adoc#scopes[Scopes]). In this variant
+the scopes the IdP is known to grant it (see link:bff-session.adoc#scopes[Scopes]). In this variant
 the session is the cookie, so both travel in it, as the tenth and eleventh length-prefixed fields:
 each is its scope names sorted and joined by single spaces, so each costs 2 bytes of framing plus the
 names themselves, before deflate. For a handful of short scope names that is a few dozen bytes of the
 budget per set. Both grow with what the session was granted: a login on a route whose endpoint
 declares its own `scopes` seals `oidc.scopes` plus those names, a later widening for another
-endpoint adds that endpoint's names, and the session keeps them for the rest of its life, so a
+endpoint adds that endpoint's names, and the session keeps them for as long as the IdP keeps
+granting them, so a
 deployment with many long `endpoint.scopes` names spends the margin above faster. The budget check
 covers the fields like any other -- an oversize seal is still refused, never truncated. A widening
 whose merged session would no longer fit answers `500` on the callback and leaves the session as it

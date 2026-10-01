@@ -387,11 +387,13 @@ class TokenRefreshCoordinatorTest {
     }
 
     /**
-     * The granted scope set {@code S}: a refresh never changes it — whatever the response does to
-     * {@code A} — because only a widening adds to what the user authorized.
+     * The granted scope set {@code S} on the near-expiry leg: that leg never changes it — whatever the
+     * response does to {@code A}. Only a widening obtains a scope the session was not granted, and only
+     * the scope-driven leg takes a refused scope out of {@code S} (see {@link ScopeLeg}); the narrowing
+     * cases here are the matched control for that.
      */
     @Nested
-    @DisplayName("Granted scope set S across a refresh")
+    @DisplayName("Granted scope set S across a near-expiry refresh")
     class GrantedScopeSet {
 
         private SessionRecord refreshedWith(RotationResult rotation) {
@@ -421,7 +423,8 @@ class TokenRefreshCoordinatorTest {
 
             assertEquals(Set.of("openid"), rotated.activeScopes(), "A follows the narrowed response");
             assertEquals(GRANTED_SCOPES, rotated.grantedScopes(),
-                    "a narrowing refresh cannot take back what the user granted, so S keeps every scope");
+                    "a narrowing near-expiry refresh leaves S alone — only a scope-driven refresh that asked "
+                            + "for a scope and did not get it takes it out of S");
         }
 
         @Test
@@ -439,7 +442,7 @@ class TokenRefreshCoordinatorTest {
                     rotation("openid profile email orders:read billing:read", RotationResult.ScopeDelta.EQUAL));
 
             assertEquals(GRANTED_SCOPES, rotated.grantedScopes(),
-                    "only a widening extends S — a refresh copies it verbatim");
+                    "only a widening obtains a new scope — a refresh never adds to S");
         }
 
         @Test
@@ -1726,6 +1729,8 @@ class TokenRefreshCoordinatorTest {
      * granted set {@code S} asks for exactly the requested set, whatever its access token's remaining
      * lifetime. It shares the near-expiry leg's single-flight exclusion and refusal dispositions, and it
      * reports a grant that is still short of the set as {@code SCOPE_REFUSED} without arming the back-off.
+     * Such a processed, narrower grant also takes every requested scope it did not return out of the
+     * granted set {@code S}, so the session's next request for it starts no further refresh.
      * An outright {@code invalid_scope} refusal reaches the coordinator as the bare transport failure
      * {@code token-sheriff-client} raises for it, so it takes the pre-redemption back-off
      * (TokenSheriff#763).
@@ -1775,6 +1780,67 @@ class TokenRefreshCoordinatorTest {
             assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
             assertEquals(REQUESTED, carried(outcome).activeScopes(),
                     "an omitted scope is identical to the one requested (RFC 6749 §5.1)");
+            assertEquals(GRANTED_SCOPES, carried(outcome).grantedScopes(),
+                    "an omitted scope refuses nothing, so S is unchanged");
+        }
+
+        @Test
+        @DisplayName("Should take exactly the refused scopes out of S, leaving a granted scope the grant was not asked for")
+        void shouldDropOnlyRefusedScopesFromGrantedSet() {
+            String unrequested = "billing:read";
+            SessionRecord live = SessionRecord.builder()
+                    .sessionId(SESSION_ID)
+                    .accessToken("access-current")
+                    .refreshToken(CURRENT_REFRESH)
+                    .idToken("id-current")
+                    .sub("sub-1")
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .activeScopes(ACTIVE_SCOPES)
+                    .grantedScopes(Set.of("openid", "profile", "email", "orders:read", MISSING, unrequested))
+                    .build();
+            store.create(live, NOW);
+            // The response returns neither the missing scope nor 'orders:read', which was active before.
+            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR,
+                    (_, _) -> rotation("openid profile email", RotationResult.ScopeDelta.NARROWED));
+
+            RefreshOutcome refused = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            SessionRecord persisted = store.resolve(SESSION_ID, NOW).orElseThrow();
+            assertAll("S records what the identity provider was just shown to grant",
+                    () -> assertEquals(RefreshOutcome.Kind.SCOPE_REFUSED, refused.kind()),
+                    () -> assertEquals(Set.of("openid", "profile", "email"), persisted.activeScopes(),
+                            "A is the response's scope"),
+                    () -> assertEquals(Set.of("openid", "profile", "email", unrequested), persisted.grantedScopes(),
+                            "both requested scopes the grant did not return left S; the unrequested one stayed"));
+        }
+
+        @Test
+        @DisplayName("Should re-seal the reduced S into the cookie a narrower scope grant re-binds, in cookie mode")
+        void shouldResealReducedGrantedSetInCookieMode() {
+            byte[] keyMaterial = new byte[32];
+            Arrays.fill(keyMaterial, (byte) 0x11);
+            SecretKey key = new SecretKeySpec(keyMaterial, "AES");
+            byte[] salt = new byte[32];
+            Arrays.fill(salt, (byte) 0x22);
+            CookieSessionBinding cookieBinding = new CookieSessionBinding(new SealedSessionCookieCodec(
+                    SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                    SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, key, (byte) 1), salt);
+            String setCookie = cookieBinding.bind(session(CURRENT_REFRESH), NOW).setCookieHeaders().getFirst();
+            String cookieHeader = setCookie.substring(0, setCookie.indexOf(';'));
+            SessionRecord live = cookieBinding.resolve(cookieHeader, NOW).orElseThrow();
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NOT_NEAR,
+                    (_, _) -> rotation(SHORT_SCOPE, RotationResult.ScopeDelta.NARROWED), cookieBinding, revoked::add,
+                    DIRECT, EndedRefreshTokens.bounded());
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, cookieHeader, REQUESTED, NOW);
+
+            assertEquals(RefreshOutcome.Kind.SCOPE_REFUSED, outcome.kind());
+            String reSealed = outcome.setCookieHeaders().getFirst();
+            SessionRecord reResolved = cookieBinding.resolve(reSealed.substring(0, reSealed.indexOf(';')), NOW)
+                    .orElseThrow();
+            assertEquals(ACTIVE_SCOPES, reResolved.grantedScopes(),
+                    "the next request presents a cookie whose S no longer holds the refused scope");
+            assertEquals(live.sessionId(), reResolved.sessionId(), "S is no identity input: the same session");
         }
 
         @Test
@@ -1799,7 +1865,10 @@ class TokenRefreshCoordinatorTest {
                             "the carried session is still short of the requested scope"),
                     () -> assertEquals(ROTATED_ACCESS, persisted.accessToken(),
                             "the redeemed grant's session is persisted, not dropped"),
-                    () -> assertEquals(GRANTED_SCOPES, persisted.grantedScopes(), "S is unchanged"),
+                    () -> assertEquals(ACTIVE_SCOPES, persisted.grantedScopes(),
+                            "S lost exactly the requested scope the grant did not return"),
+                    () -> assertEquals(ACTIVE_SCOPES, carried(refused).grantedScopes(),
+                            "the carried session has the same truthful S, so the caller widens from it"),
                     () -> assertFalse(refused.isFailure(), "the session is kept"),
                     () -> assertFalse(refused.requestFailed(), "the kept session still has a token"),
                     () -> assertEquals(RefreshOutcome.Kind.REFRESHED, followUp.kind(),
@@ -1828,6 +1897,8 @@ class TokenRefreshCoordinatorTest {
             assertAll("an unclassifiable scope refusal keeps the session and backs off like any pre-redemption failure",
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, refused.kind()),
                     () -> assertEquals(live, refused.session(), "the unchanged session, still short of the scope"),
+                    () -> assertEquals(GRANTED_SCOPES, store.resolve(SESSION_ID, NOW).orElseThrow().grantedScopes(),
+                            "a grant the provider never processed proves nothing about the scope, so S is unchanged"),
                     () -> assertTrue(sessionResolvable(NOW), "the session is kept"),
                     () -> assertTrue(revoked.isEmpty(), "nothing was redeemed"),
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, insideWindow.kind()),

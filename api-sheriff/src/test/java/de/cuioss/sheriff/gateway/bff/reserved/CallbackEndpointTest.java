@@ -26,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -41,6 +43,8 @@ import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
+import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
@@ -590,6 +594,8 @@ class CallbackEndpointTest {
         private static final String WIDENED_ID_TOKEN = "widened-id-token";
         private static final String WIDENED_REFRESH_TOKEN = "widened-refresh-token";
         private static final String WIDENED_ACR = "urn:acr:widened";
+        /** The {@code sid} of the identity-provider session that answers the widening — not the live one. */
+        private static final String WIDENED_SID = "idp-sid-other";
         private static final String OTHER_SUBJECT = "user-sub-2";
         private static final Instant CALLBACK_AT = T0.plusSeconds(30);
 
@@ -602,6 +608,14 @@ class CallbackEndpointTest {
 
         /** Binds a live session for {@link #SUBJECT} through {@code binding} and remembers its cookie. */
         private void bindLive(SessionBinding binding) {
+            bindLive(binding, LIVE_SCOPES);
+        }
+
+        /**
+         * Binds a live session whose active scope set is {@link #LIVE_SCOPES} and whose granted scope set
+         * is {@code grantedScopes} — a superset models a scope granted earlier that a refresh narrowed away.
+         */
+        private void bindLive(SessionBinding binding, Set<String> grantedScopes) {
             SessionRecord login = SessionRecord.builder()
                     .sessionId(SessionRecord.newSessionId())
                     .accessToken(RAW_ACCESS_TOKEN)
@@ -613,7 +627,7 @@ class CallbackEndpointTest {
                     .acr(LIVE_ACR)
                     .authTime(LIVE_AUTH_TIME)
                     .activeScopes(LIVE_SCOPES)
-                    .grantedScopes(LIVE_SCOPES)
+                    .grantedScopes(grantedScopes)
                     .build();
             SessionBinding.BoundSession bound = binding.bind(login, T0);
             live = bound.session();
@@ -640,6 +654,14 @@ class CallbackEndpointTest {
          * {@code auth_time} than the live session, so the merge's keep-vs-take split is observable.
          */
         private static CodeExchange grant(String subject, @Nullable ClaimValue scopeClaim) {
+            return grant(subject, scopeClaim, WIDENED_SID);
+        }
+
+        /**
+         * As {@link #grant(String, ClaimValue)}, with the ID token carrying {@code sid} — or no
+         * {@code sid} claim at all when {@code null}.
+         */
+        private static CodeExchange grant(String subject, @Nullable ClaimValue scopeClaim, @Nullable String sid) {
             Map<String, ClaimValue> accessClaims = new HashMap<>();
             accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(subject));
             if (scopeClaim != null) {
@@ -648,9 +670,11 @@ class CallbackEndpointTest {
             AccessTokenContent access = new AccessTokenContent(accessClaims, WIDENED_ACCESS_TOKEN);
             Map<String, ClaimValue> idClaims = new HashMap<>(Map.of(
                     ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(subject),
-                    "sid", ClaimValue.forPlainString("idp-sid-other"),
                     "acr", ClaimValue.forPlainString(WIDENED_ACR),
                     "auth_time", ClaimValue.forPlainString("1790000000")));
+            if (sid != null) {
+                idClaims.put("sid", ClaimValue.forPlainString(sid));
+            }
             IdTokenContent id = new IdTokenContent(idClaims, WIDENED_ID_TOKEN);
             AuthorizationCodeFlow.AuthenticationResult result =
                     new AuthorizationCodeFlow.AuthenticationResult(access, id, WIDENED_REFRESH_TOKEN);
@@ -804,18 +828,18 @@ class CallbackEndpointTest {
                         () -> assertEquals(WIDENED_ID_TOKEN, merged.idToken()),
                         () -> assertEquals(WIDENED_ACR, merged.acr()),
                         () -> assertEquals(SUBJECT, merged.sub()),
-                        () -> assertEquals(IDP_SID, merged.sid(), "the session keeps its sid"),
+                        () -> assertEquals(WIDENED_SID, merged.sid(), "the session takes the sid of the grant's ID token"),
                         () -> assertEquals(LIVE_AUTH_TIME, merged.authTime(), "the session keeps its auth_time"),
                         () -> assertEquals(live.expiresAt(), merged.expiresAt(), "the absolute expiry is unchanged"),
                         () -> assertEquals(WIDENING_REQUEST, merged.activeScopes(), "A is the granted scope"),
-                        () -> assertEquals(WIDENING_REQUEST, merged.grantedScopes(), "S is S united with the grant"));
+                        () -> assertEquals(WIDENING_REQUEST, merged.grantedScopes(), "S is the granted scope"));
                 LogAsserts.assertSingleLogMessagePresent(TestLogLevel.INFO,
                         BffLogMessages.INFO.SESSION_WIDENED.format("orders:read"));
             }
 
             @Test
-            @DisplayName("Should set A to the grant and S to S united with the grant when the grant narrows A")
-            void shouldKeepGrantedScopesWhenGrantNarrows() {
+            @DisplayName("Should set both A and S to the grant when the grant no longer returns a scope of S")
+            void shouldSetGrantedScopesToTheGrantWhenItNarrows() {
                 bindLive(sessionBinding);
                 pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
 
@@ -824,7 +848,8 @@ class CallbackEndpointTest {
 
                 SessionRecord merged = resolveServerSession();
                 assertEquals(Set.of("openid", "orders:read"), merged.activeScopes(), "A is what the token carries");
-                assertEquals(WIDENING_REQUEST, merged.grantedScopes(), "S never loses a scope granted earlier");
+                assertEquals(Set.of("openid", "orders:read"), merged.grantedScopes(),
+                        "S is what the identity provider granted now — 'profile', which it no longer returned, leaves S");
             }
 
             @Test
@@ -877,6 +902,8 @@ class CallbackEndpointTest {
                         () -> assertEquals(live.sessionNonce(), merged.sessionNonce()),
                         () -> assertEquals(live.expiresAt(), merged.expiresAt()),
                         () -> assertEquals(WIDENED_ACCESS_TOKEN, merged.accessToken()),
+                        () -> assertEquals(WIDENED_SID, merged.sid(),
+                                "the re-sealed cookie carries the sid of the grant's ID token"),
                         () -> assertEquals(WIDENING_REQUEST, merged.activeScopes()),
                         () -> assertEquals(WIDENING_REQUEST, merged.grantedScopes()));
             }
@@ -959,6 +986,149 @@ class CallbackEndpointTest {
                 assertEquals(live, resolveServerSession(), "a narrower grant is never merged");
                 LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
                         BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("scope-not-granted"));
+            }
+        }
+
+        /**
+         * The granted set {@code S} after a merge is what the grant returned, never the union with an
+         * earlier grant. The live session here was granted {@code orders:read} before and a refresh
+         * narrowed it out of {@code A}, so a widening for it seeks nothing beyond {@code S}. When the
+         * identity provider no longer returns the scope, the merge takes it out of {@code S}; the round
+         * that follows then seeks it beyond {@code S} and is refused instead of merged.
+         */
+        @Nested
+        @DisplayName("Granted set S follows the grant")
+        class TruthfulGrantedSet {
+
+            /** Runs one widening round for {@link #WIDENING_REQUEST} answered by {@code exchange}. */
+            private CallbackOutcome widenWith(CodeExchange exchange) {
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+                return endpoint(exchange, sessionBinding).handle("code=widen-code&state=" + wideningState,
+                        requestCookies(), CALLBACK_AT);
+            }
+
+            @Test
+            @DisplayName("Should take a scope the grant no longer returns out of S, then refuse the next round 403")
+            void shouldDropRevokedScopeThenRefuseTheNextRound() {
+                bindLive(sessionBinding, WIDENING_REQUEST);
+                CodeExchange withoutOrdersRead = grant(SUBJECT, ClaimValue.forPlainString("openid profile"));
+
+                CallbackOutcome firstRound = widenWith(withoutOrdersRead);
+                SessionRecord afterFirstRound = resolveServerSession();
+                CallbackOutcome secondRound = widenWith(withoutOrdersRead);
+
+                assertAll("a scope the identity provider stopped granting cannot keep the browser going round",
+                        () -> assertEquals(302, firstRound.status(),
+                                "nothing was sought beyond S, so the first grant is merged"),
+                        () -> assertEquals(LIVE_SCOPES, afterFirstRound.grantedScopes(),
+                                "S lost the scope the grant did not return"),
+                        () -> assertEquals(403, secondRound.status(),
+                                "the scope now lies beyond S, so a grant lacking it again is refused"),
+                        () -> assertNull(secondRound.location(), "the refusal is terminal — no further redirect"),
+                        () -> assertTrue(secondRound.setCookieHeaders().isEmpty()),
+                        () -> assertEquals(afterFirstRound, resolveServerSession(),
+                                "the refused round leaves the session as the first round left it"));
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("scope-not-granted"));
+            }
+
+            @Test
+            @DisplayName("Should keep a scope of S the grant still returns, round after round (matched control)")
+            void shouldKeepStillGrantedScope() {
+                bindLive(sessionBinding, WIDENING_REQUEST);
+
+                CallbackOutcome firstRound = widenWith(fullGrant());
+                CallbackOutcome secondRound = widenWith(fullGrant());
+
+                SessionRecord merged = resolveServerSession();
+                assertAll("the same session and request are merged when the scope is still granted",
+                        () -> assertEquals(302, firstRound.status()),
+                        () -> assertEquals(302, secondRound.status(), "nothing left S, so nothing is refused"),
+                        () -> assertEquals(WIDENING_REQUEST, merged.grantedScopes(), "S keeps the scope"),
+                        () -> assertEquals(WIDENING_REQUEST, merged.activeScopes(), "and A carries it again"));
+                LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.resolveIdentifierString());
+            }
+        }
+
+        /**
+         * The merged session is indexed under the {@code sid} of the identity-provider session that
+         * answered the widening, so a back-channel logout for that session finds it. The receiver is the
+         * production {@link BackchannelLogoutReceiver} over the same binding the callback merged through;
+         * only its signature seam is bound to a hand-built logout token.
+         */
+        @Nested
+        @DisplayName("IdP session id follows the grant")
+        class GrantSid {
+
+            private static final String ISSUER = "https://idp.example.com";
+            private static final String CLIENT_ID = "bff-client";
+
+            private void widenWith(CodeExchange exchange) {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+                CallbackOutcome outcome = endpoint(exchange, sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+                assertEquals(302, outcome.status(), "precondition: the widening is merged");
+            }
+
+            /** Delivers a spec-shaped, sid-only back-channel logout token naming {@code sid}. */
+            private BackchannelLogoutReceiver.BackchannelResult backchannelLogout(String sid) {
+                Map<String, ClaimValue> claims = Map.of(
+                        "iss", ClaimValue.forPlainString(ISSUER),
+                        "aud", ClaimValue.forList("aud", List.of(CLIENT_ID)),
+                        "iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(CALLBACK_AT, ZoneOffset.UTC)),
+                        "events", ClaimValue.forPlainString(
+                                "{" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "={}}"),
+                        "sid", ClaimValue.forPlainString(sid));
+                return new BackchannelLogoutReceiver(raw -> new IdTokenContent(claims, raw),
+                        new LogoutTokenValidator(ISSUER, CLIENT_ID, Duration.ofMinutes(2)), sessionBinding)
+                        .receive("raw.logout.token", CALLBACK_AT);
+            }
+
+            private boolean sessionIsLive() {
+                return sessionBinding.resolve(sessionCookie, CALLBACK_AT).isPresent();
+            }
+
+            @Test
+            @DisplayName("Should be destroyed by a back-channel logout naming the sid of the grant's ID token")
+            void shouldBeDestroyedByLogoutForTheGrantSid() {
+                widenWith(fullGrant());
+
+                BackchannelLogoutReceiver.BackchannelResult result = backchannelLogout(WIDENED_SID);
+
+                assertAll("the session is found under the sid of the IdP session its tokens belong to",
+                        () -> assertTrue(result.accepted()),
+                        () -> assertEquals(1, result.destroyed(), "exactly the widened session is destroyed"),
+                        () -> assertFalse(sessionIsLive(), "the session no longer resolves"));
+            }
+
+            @Test
+            @DisplayName("Should no longer be matched by a logout naming the sid it was created under")
+            void shouldNotBeMatchedByLogoutForThePreviousSid() {
+                widenWith(fullGrant());
+
+                BackchannelLogoutReceiver.BackchannelResult result = backchannelLogout(IDP_SID);
+
+                assertAll("the store re-indexed the session on the merge, so the previous sid names nothing",
+                        () -> assertTrue(result.accepted()),
+                        () -> assertEquals(0, result.destroyed()),
+                        () -> assertTrue(sessionIsLive(), "the session is untouched"));
+            }
+
+            @Test
+            @DisplayName("Should keep its sid, and stay reachable under it, when the grant's ID token carries none (matched control)")
+            void shouldKeepSidWhenGrantCarriesNone() {
+                widenWith(grant(SUBJECT, ClaimValue.forPlainString("openid profile orders:read"), null));
+                SessionRecord merged = resolveServerSession();
+
+                BackchannelLogoutReceiver.BackchannelResult result = backchannelLogout(IDP_SID);
+
+                assertAll("without a sid on the new ID token the session stays under the one it had",
+                        () -> assertEquals(IDP_SID, merged.sid(), "the live sid is kept"),
+                        () -> assertEquals(WIDENED_ID_TOKEN, merged.idToken(), "although the new ID token was taken"),
+                        () -> assertEquals(1, result.destroyed(), "a logout naming that sid still destroys it"),
+                        () -> assertFalse(sessionIsLive()));
             }
         }
     }
