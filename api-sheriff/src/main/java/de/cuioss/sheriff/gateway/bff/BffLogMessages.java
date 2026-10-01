@@ -21,7 +21,8 @@ import lombok.experimental.UtilityClass;
 
 /**
  * DSL-style {@link LogRecord} catalogue for the Backend-for-Frontend {@code require: session}
- * surface — the session lifecycle, transparent token refresh, CSRF defence, and logout events.
+ * surface — the session lifecycle, transparent token refresh, CSRF defence, logout events, and the
+ * confidential client's own key material.
  * <p>
  * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the shared
  * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and assertable.
@@ -46,7 +47,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-16).
+     * Info-level messages (INFO range 1-99; this catalogue owns 10-16 and 20).
      */
     @UtilityClass
     public static final class INFO {
@@ -117,6 +118,19 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(16)
                 .template("Cookie-mode sealing key generated at startup (%s) — sessions do not survive a restart")
+                .build();
+
+        /**
+         * No {@code key_file} was configured for one of the confidential client's signing keys, so
+         * the key was generated at startup. The first substitution is the bounded purpose label
+         * ({@code client-authentication} / {@code sender-constraint}), the second the mode's
+         * diagnostic name. Records only those two non-sensitive facts — never key material, and
+         * never the key id.
+         */
+        public static final LogRecord SIGNING_KEY_GENERATED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(20)
+                .template("Signing key for %s generated at startup (%s) — the key is not shared with other instances and is replaced on every restart")
                 .build();
     }
 
