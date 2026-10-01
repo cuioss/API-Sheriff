@@ -650,8 +650,8 @@ path, not what the keys mean. Up to *seven* paths are carved out:
 . `oidc.logout.backchannel_path` -- the *back-channel logout* receiver (`mode: server` only);
 . `oidc.user_info.path` -- the session/*user-info* endpoint serving the curated identity view;
 . `oidc.login.path` -- the gateway-owned *login-initiation* entry point that starts a login;
-. `oidc.step_up.path` -- the *step-up* entry point that widens a live session to the scopes the
-  route behind its `returnUrl` needs.
+. `oidc.step_up.path` -- the *step-up* entry point that widens a live session for the route
+  behind its `returnUrl`.
 
 Each is registered only when its configuration key is present, so a deployment that omits
 `oidc.user_info`, `oidc.login` or `oidc.step_up.path` carves out fewer than seven. A proxy route

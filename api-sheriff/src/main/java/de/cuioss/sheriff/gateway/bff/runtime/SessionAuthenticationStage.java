@@ -122,8 +122,7 @@ import org.jspecify.annotations.Nullable;
  * the next request carries the new cookie and is refreshed normally.
  * <p>
  * The stage is framework-agnostic and driven entirely through its collaborators and seams, so it is
- * unit-testable without a container or a live IdP. The engine-side and edge-side wiring (the refresh
- * coordinator, the login initiation binding, and the reserved-endpoint plumbing) is supplied by the
+ * unit-testable without a container or a live IdP. The engine-side and edge-side wiring is supplied by the
  * session runtime; the seams keep this stage decoupled from that wiring.
  *
  * @author API Sheriff Team
@@ -393,7 +392,7 @@ public final class SessionAuthenticationStage {
     }
 
     /**
-     * The post-login return target: the canonical path plus, when the request carried a query, a
+     * The return target: the canonical path plus, when the request carried a query, a
      * {@code ?} and the raw query rebuilt from {@link PipelineRequest#queryParameters()}. The pairs
      * are the raw, still-percent-encoded wire bytes in wire order, so the rebuilt query is
      * byte-identical to the inbound one — repeated and interleaved names keep their order, a bare
@@ -498,7 +497,7 @@ public final class SessionAuthenticationStage {
     public sealed interface RefreshResult {
 
         /**
-         * @param boundSession the session to mediate from plus the re-bind's {@code Set-Cookie} values
+         * @param boundSession the kept session plus the re-bind's {@code Set-Cookie} values
          * @return the mediate result
          */
         static RefreshResult mediate(SessionBinding.BoundSession boundSession) {
@@ -520,9 +519,9 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * The session is usable: mediate its token and emit the re-bind's cookies.
+         * The session is kept: emit the re-bind's cookies.
          *
-         * @param boundSession the session to mediate from plus the re-bind's {@code Set-Cookie} values
+         * @param boundSession the kept session plus the re-bind's {@code Set-Cookie} values
          * @author API Sheriff Team
          * @since 1.0
          */

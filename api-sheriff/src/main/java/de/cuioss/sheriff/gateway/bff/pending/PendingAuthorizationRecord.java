@@ -30,7 +30,7 @@ import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The gateway-side transaction record for a browser's in-flight auth-code login (D2b).
+ * The gateway-side transaction record for a browser's in-flight auth-code flow (D2b).
  * <p>
  * The engine's {@link FlowContext} <em>is</em> the OIDC transaction DTO — it owns the
  * {@code state} (32-byte SecureRandom), {@code nonce}, PKCE verifier ({@code S256}), and
@@ -38,7 +38,7 @@ import org.jspecify.annotations.Nullable;
  * What the engine deliberately does not provide — and what this record adds — is the
  * gateway's job: <em>persistence</em>, a <em>short fixed TTL</em>, <em>single-use
  * enforcement</em> (the engine's single-use is a caller contract, not enforced by the type),
- * and a <em>same-origin-validated post-login return URL</em>. The record is therefore a thin
+ * and a <em>same-origin-validated return URL</em>. The record is therefore a thin
  * wrapper that never re-invents any engine control.
  * <p>
  * Single-use is enforced by {@link PendingAuthorizationStore} (which removes the record on
@@ -59,7 +59,7 @@ import org.jspecify.annotations.Nullable;
  *
  * @param id              the unguessable record id (store key and binding-cookie value)
  * @param flowContext     the engine transaction DTO owning {@code state}/{@code nonce}/PKCE
- * @param returnUrl       the same-origin-validated post-login redirect target
+ * @param returnUrl       the same-origin-validated redirect target
  * @param requestedScopes the scope set the authorization request carried in its {@code scope}
  *                        parameter
  * @param createdAt       the instant the record was created (TTL anchor)
@@ -171,15 +171,15 @@ Duration ttl,
     }
 
     /**
-     * Whether {@code returnUrl} is safe to redirect a browser to after login: a gateway-relative
+     * Whether {@code returnUrl} is safe to redirect a browser to: a gateway-relative
      * path ({@code /...}), or an absolute URL whose origin (scheme + host + port) matches
      * {@code gatewayOrigin}. A schema-relative ({@code //host}) value, a backslash-authority
      * ({@code /\host}, which browsers normalize to {@code //host}) value, a value carrying any
      * control character ({@code /\t/host}, which browsers strip to {@code //host}), a cross-origin
-     * absolute URL, a blank value, or an unparseable value is rejected — the post-login redirect is
+     * absolute URL, a blank value, or an unparseable value is rejected — the redirect is
      * never an open redirect.
      *
-     * @param returnUrl     the candidate post-login redirect target (may be absent/blank)
+     * @param returnUrl     the candidate redirect target (may be absent/blank)
      * @param gatewayOrigin the gateway's own origin (e.g. the {@code redirect_uri} origin)
      * @return {@code true} only when the candidate is same-origin with the gateway
      */

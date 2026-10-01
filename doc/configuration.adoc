@@ -447,9 +447,9 @@ oidc:                              # only used by the BFF variants (2 and 3)
     enabled: true                  # RFC 9470 upstream-challenge leg
     honor_upstream_challenge: true
     path: /auth/step-up            # OPTIONAL gateway-served step-up entry point (reserved path):
-                                   #   widens a LIVE session to the scopes the route behind its
-                                   #   returnUrl needs. Named as step_up_url in a session route's
-                                   #   403. Independent of the two keys above
+                                   #   widens a LIVE session for the route behind its returnUrl.
+                                   #   Named as step_up_url in a session route's 403. Independent
+                                   #   of the two keys above
 
 portal:                            # OPTIONAL application portal; omitted => off, no path reserved
                                    #   (see "portal" below and the portal guide)
@@ -2530,10 +2530,9 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   whole `refresh` block, leaves refresh on. Setting it to `false` switches off the entire path:
   the refresh token the code exchange returned is *not* retained on the session (so in cookie
   mode nothing extra is sealed into the browser cookie), and no refresh coordinator is
-  assembled, so the gateway mediates the token it was issued until `session.ttl_seconds`
-  expires and never refreshes mid-session. A session route's scope enforcement then has no
-  refresh to obtain a missing scope with: every shortfall goes straight to a widening of the live
-  session, or to `403`.
+  assembled, so the gateway never refreshes mid-session. A session route's scope enforcement
+  then has no refresh to obtain a missing scope with: every shortfall goes straight to a
+  widening of the live session, or to `403`.
 
 | `session.refresh.on_failure`
 | How the *request during which* refresh fails is answered when it is left with no token to

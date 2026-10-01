@@ -40,8 +40,8 @@ import org.jspecify.annotations.Nullable;
  * is registered exactly like the other browser-facing reserved endpoints (exact match, on the OIDC
  * host, resolved by the {@link ReservedPathRegistry} <em>before</em> the proxy route table), and it
  * is the target of the {@code step_up_url} a session route names when it refuses a non-navigation
- * request for a scope the live session does not carry. A navigation to it widens the live session to
- * the scopes the route behind the given return URL needs, then lands the browser back on that URL.
+ * request for a scope the live session does not carry. A navigation to it widens the live session for
+ * the route behind the given return URL, then lands the browser back on that URL.
  * <p>
  * <strong>Live session only.</strong> The endpoint widens an existing session; it never starts one.
  * Without a live session it answers {@code 401} {@code application/problem+json} — no IdP redirect,

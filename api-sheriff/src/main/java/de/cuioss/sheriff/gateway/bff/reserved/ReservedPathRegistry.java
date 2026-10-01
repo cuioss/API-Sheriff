@@ -80,8 +80,8 @@ public final class ReservedPathRegistry {
         LOGIN,
 
         /**
-         * The {@code oidc.step_up.path} endpoint that widens a live session to the scopes the route
-         * behind a given return URL needs — the target of a session route's {@code step_up_url}.
+         * The {@code oidc.step_up.path} session-widening entry point — the target of a session route's
+         * {@code step_up_url}.
          */
         STEP_UP
     }

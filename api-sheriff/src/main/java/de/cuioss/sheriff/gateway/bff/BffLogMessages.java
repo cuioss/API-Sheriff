@@ -32,7 +32,7 @@ import lombok.experimental.UtilityClass;
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
  * ({@code sid}), token material, and raw offending values never appear in a template: a rejection
  * records only its non-sensitive <em>disposition</em> ({@code untrusted-origin} / {@code signature}
- * / …), a lifecycle event records only a non-sensitive reason or a bounded count. Exception-bearing
+ * / …). Exception-bearing
  * {@code WARN}s pass the throwable first, per the CUI logging contract; callers must not attach a
  * raw, unsanitized IdP exception whose message could re-inject untrusted content. {@code DEBUG} /
  * {@code TRACE} diagnostics use the logger directly and are not catalogued here.

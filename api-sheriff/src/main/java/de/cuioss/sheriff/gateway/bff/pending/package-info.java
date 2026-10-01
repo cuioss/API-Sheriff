@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 /**
- * Transient pre-login state for the BFF auth-code flow (D2b).
+ * Transient state for the BFF auth-code flow (D2b).
  * <p>
  * Between the redirect to the IdP and the callback — before any session exists — the gateway
  * must hold the OIDC transaction and tie it to the browser that started it. This package owns
@@ -23,7 +23,7 @@
  *   <li>{@link de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord} wraps the
  *       engine's {@code FlowContext} (which owns {@code state}/{@code nonce}/PKCE/{@code
  *       redirect_uri}) and adds the gateway-only fields the engine leaves open: a short fixed
- *       TTL, single-use semantics, and a same-origin-validated post-login return URL.</li>
+ *       TTL, single-use semantics, and a same-origin-validated return URL.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore} is the pluggable
  *       storage seam — a bounded, single-use, TTL-expiring in-memory map for server mode, with
  *       room for the PLAN-08 cookie-sealed variant.</li>

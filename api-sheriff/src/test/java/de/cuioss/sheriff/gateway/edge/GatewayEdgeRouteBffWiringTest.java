@@ -126,7 +126,7 @@ class GatewayEdgeRouteBffWiringTest {
 
     private static final String OIDC_HOST = "gw.example.com";
     private static final String ORIGIN = "https://gw.example.com";
-    /** The fixture's configured post-login fallback — the resolved {@code oidc.login.default_return_url} when unset. */
+    /** The fixture's configured fallback — the resolved {@code oidc.login.default_return_url} when unset. */
     private static final String ROOT_RETURN_TARGET = "/";
     private static final String CALLBACK_PATH = "/auth/callback";
     private static final String LOGOUT_PATH = "/auth/logout";
@@ -165,7 +165,7 @@ class GatewayEdgeRouteBffWiringTest {
         }
 
         @Test
-        @DisplayName("Should keep the original four reserved paths alongside the two new folds")
+        @DisplayName("Should keep the original four reserved paths")
         void shouldKeepOriginalReserved() {
             assertEquals(Optional.of(ReservedEndpoint.CALLBACK), registry.match(OIDC_HOST, CALLBACK_PATH));
             assertEquals(Optional.of(ReservedEndpoint.LOGOUT), registry.match(OIDC_HOST, LOGOUT_PATH));

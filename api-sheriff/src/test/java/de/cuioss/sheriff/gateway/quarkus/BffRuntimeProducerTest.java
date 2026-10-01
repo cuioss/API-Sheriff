@@ -1142,7 +1142,7 @@ class BffRuntimeProducerTest {
             SessionBinding.BoundSession bound = assertInstanceOf(SessionAuthenticationStage.RefreshResult.Mediate.class,
                     result, "turning refresh off is a policy choice — it must not make a live session unauthenticated")
                     .boundSession();
-            assertAll("the gateway mediates the token it was issued until the absolute TTL expires",
+            assertAll("a disabled refresh leaves the session exactly as it was resolved",
                     () -> assertSame(live, bound.session(), "the resolved session is handed back verbatim"),
                     () -> assertTrue(bound.setCookieHeaders().isEmpty(),
                             "an unwired seam re-binds nothing, so it emits no Set-Cookie"));
@@ -1763,7 +1763,7 @@ class BffRuntimeProducerTest {
          */
         @Test
         @DisplayName("the assembled refresh binding requests exactly the set it is given, never the static oidc.scopes")
-        void refreshBindingRequestsActiveScopes() {
+        void refreshBindingRequestsTheSetItIsGiven() {
             RecordingProducer recording = recordingProducer();
             TokenRefreshCoordinator coordinator = single(
                     reachableInstancesOf(recording.bffRuntime(), TokenRefreshCoordinator.class), "refresh coordinator");

@@ -112,10 +112,7 @@ import org.jspecify.annotations.Nullable;
  * On the active path the producer assembles the session binding, the cookie codecs, the CSRF
  * defence, the token-refresh / step-up coordinators, the
  * reserved-endpoint handlers, and the {@code require: session} stage-4 runtime, and binds the
- * {@code token-sheriff-client} engine seams — {@link ScopedEngineFlows#authorize} for login,
- * {@code AuthorizationCodeFlow#exchange} for the callback, {@link ScopedEngineFlows#refresh} for
- * transparent refresh, and {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is
- * reached at runtime.
+ * {@code token-sheriff-client} engine seams, so the engine is reached at runtime.
  * <p>
  * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
  * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
@@ -136,7 +133,7 @@ import org.jspecify.annotations.Nullable;
  * {@code oidc.step_up.path} is handed to the stage as the path its {@code 403} answer names; when the
  * key is absent the answer names no step-up URL.
  * <p>
- * <strong>Response mode.</strong> Both authorization-URL seams are wired with the gateway-owned
+ * <strong>Response mode.</strong> The authorization-URL seams are wired with the gateway-owned
  * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
  * {@code response_mode=query} and the callback is a top-level GET the browser sends the
  * {@code SameSite=Lax} binding cookie on. See that class for the reasoning and for the accepted
@@ -146,11 +143,10 @@ import org.jspecify.annotations.Nullable;
  * the whole refresh path and is applied here, at the two points that path is constructed: the
  * {@code CodeExchange} seam retains the exchange's refresh token only when refresh is on, and the
  * {@link TokenRefreshCoordinator} is assembled only when refresh is on. With the switch off the
- * stage's refresh seam degrades to the unwired binding — session unchanged, no cookies — so the
- * gateway mediates the token it was issued until the absolute session TTL expires, and no refresh
+ * stage's refresh seam degrades to the unwired binding — session unchanged, no cookies — and no refresh
  * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
- * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: a
- * current, refreshed or deferred session is mediated; a failed refresh — the session was destroyed —
+ * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: an
+ * outcome carrying a session is mediated; a failed refresh — the session was destroyed —
  * clears the session cookie before the refresh-failure response; an unavailable refresh — the identity
  * provider was unreachable and the access token has expired, but the session is kept — answers the
  * refresh-failure response without clearing the cookie. That response is
@@ -201,7 +197,7 @@ public class BffRuntimeProducer {
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
-    /** The post-login fallback return target when {@code oidc.login.default_return_url} is omitted. */
+    /** The fallback return target when {@code oidc.login.default_return_url} is omitted. */
     private static final String ROOT_RETURN_URL = "/";
     /** The gateway key a named BFF back-channel trust profile is declared under, for error context. */
     private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
@@ -236,8 +232,8 @@ public class BffRuntimeProducer {
     /**
      * @param gatewayConfig         the bound global gateway document carrying the {@code oidc} block and
      *                              the global {@code egress_tls} block
-     * @param routeTable            the boot-built route table the login-initiation endpoint resolves a
-     *                              return target's requested scope set against
+     * @param routeTable            the boot-built route table a return target's scope set is resolved
+     *                              against
      * @param tokenValidator        a lazy handle to the gateway's shared offline validator, resolved
      *                              only on the active BFF path in either session mode (a bearer-only
      *                              gateway never triggers it)
@@ -317,7 +313,7 @@ public class BffRuntimeProducer {
         int maxSessions = declaredMaxSessions == null ? DEFAULT_MAX_SESSIONS : declaredMaxSessions;
         OidcConfig.Refresh refresh = session.refresh();
         // refresh.enabled is the switch for the WHOLE transparent-refresh path, not a hint: it governs
-        // both whether the refresh token is retained at login and whether the near-expiry coordinator
+        // both whether the refresh token is retained at login and whether the coordinator
         // is assembled at all. Both applications are below; keeping them on one resolved boolean is
         // what stops the two halves drifting into a state where a credential is stored but no
         // machinery can ever redeem it.
@@ -349,7 +345,7 @@ public class BffRuntimeProducer {
         // to be a top-level GET navigation so the SameSite=Lax browser-binding cookie is actually sent
         // on it (a Lax cookie is dropped on the cross-site POST a form_post callback performs, which
         // dead-ended every real-browser login on the "no binding cookie" 403 branch). One instance is
-        // shared with the step-up leg below, so BOTH engine seams that build an authorization URL carry
+        // shared with the step-up leg below, so the engine seams that build an authorization URL carry
         // the corrected mode. Every other collaborator here is exactly what the 4-arg
         // AuthorizationCodeFlow constructor supplies on its own — a default IssValidator and
         // CallbackHandler, and no sender constraint (DPoP is not in use) — so nothing else changes.
@@ -404,8 +400,7 @@ public class BffRuntimeProducer {
         // D7/D9 transparent refresh — near-expiry decision + engine RefreshFlow, session persistence.
         // Assembled ONLY when refresh.enabled: with the switch off no coordinator exists and the
         // stage's refresh seam degrades to sessionUnchanged() — the unwired binding
-        // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies) — so the
-        // gateway mediates the current token verbatim until the session's absolute TTL expires.
+        // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies).
         // The revocation client is built from the SAME back-channel configuration, so a refresh token
         // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
         // The refresh grant requests the set the coordinator names through ScopedEngineFlows — the
@@ -487,9 +482,9 @@ public class BffRuntimeProducer {
         LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionBinding,
                 gatewayOrigin, returnTargetScopes);
 
-        // Step-up endpoint (oidc.step_up.path) — widens the live session to the scopes the route behind a
-        // return URL needs. It reuses the runtime's ONE SessionWidening (the instance the callback
-        // re-drives through), never a second, and the same return-target resolver as the login fold.
+        // Step-up endpoint (oidc.step_up.path). It reuses the runtime's ONE SessionWidening (the instance
+        // the callback re-drives through), never a second, and the same return-target resolver as the
+        // login fold.
         // It is dispatched only when the registry reserved oidc.step_up.path, so wiring it
         // unconditionally costs nothing when the key is absent.
         StepUpEndpoint stepUpEndpoint = new StepUpEndpoint(sessionWidening, sessionBinding, returnTargetScopes,
@@ -650,9 +645,9 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Resolves {@code oidc.login.default_return_url} — the post-login target the login flow, the
-     * login-initiation endpoint and the step-up re-drive fall back to when no usable same-origin return
-     * URL is supplied. An omitted key (or an omitted {@code login} block) resolves to {@code /}. Boot
+     * Resolves {@code oidc.login.default_return_url} — the target fallen back to when no usable
+     * same-origin return URL is supplied. An omitted key (or an omitted {@code login} block) resolves
+     * to {@code /}. Boot
      * validation has already refused a declared value that is not same-origin with
      * {@code redirect_uri}, so the value is used as declared.
      *
@@ -761,8 +756,7 @@ public class BffRuntimeProducer {
     /**
      * The disabled binding of the same seam — the alternative {@link #nearExpiryRefresh} adapts to.
      * With {@code oidc.session.refresh.enabled=false} no coordinator exists, so the seam yields the
-     * resolved session verbatim and produces no {@code Set-Cookie}: the gateway keeps mediating the
-     * token it was issued at login until the absolute session TTL expires, and never reaches the
+     * resolved session verbatim, produces no {@code Set-Cookie} and never reaches the
      * engine's refresh grant.
      *
      * @return the unwired stage seam
@@ -865,7 +859,7 @@ public class BffRuntimeProducer {
 
     /**
      * Derives the gateway's own origin (scheme + host + optional non-default port) from the configured
-     * {@code redirect_uri}, used to same-origin-validate post-login return URLs and as the default
+     * {@code redirect_uri}, used to same-origin-validate return URLs and as the default
      * CSRF trusted origin.
      */
     static String originOf(String redirectUri) {

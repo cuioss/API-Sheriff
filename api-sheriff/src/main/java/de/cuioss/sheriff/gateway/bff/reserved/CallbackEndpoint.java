@@ -221,7 +221,7 @@ public final class CallbackEndpoint {
      * @param codeExchange       the engine code-exchange seam (bound to {@link AuthorizationCodeFlow#exchange})
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
-     * @param sessionBinding     the mode-neutral session binding the new session is bound through
+     * @param sessionBinding     the mode-neutral session binding
      * @param sessionTtl         the absolute session lifetime from login
      * @param sessionWidening    the widening coordinator the single interactive re-drive of a silent
      *                           widening goes through; required, because a widening pending record
@@ -422,8 +422,7 @@ public final class CallbackEndpoint {
                 // The refresh token the authorization server issued alongside the validated tokens.
                 // It is load-bearing rather than decorative: TokenRefreshCoordinator.refresh returns on
                 // its very first guard when session.refreshToken() is null, BEFORE any logging, so a
-                // session created without it can never be refreshed and — because the refresh is the
-                // only thing that re-contacts the IdP — is never re-validated either. Leaving it out is
+                // session created without it can never be refreshed. Leaving it out is
                 // what made a near-expiry refresh silently never fire and an IdP-revoked session keep
                 // answering 200. null stays a normal outcome: an authorization server legitimately
                 // grants no refresh token, and SessionRecord documents the component as nullable.
@@ -458,7 +457,7 @@ public final class CallbackEndpoint {
     }
 
     /**
-     * Derives the new session's active scope set {@code A}: the scope the access token was granted, or
+     * Derives the granted scope set: the scope the access token was granted, or
      * — when the token carries no {@code scope} claim — the set the authorization request asked for,
      * as recorded on the pending record. The granted scope is authoritative because the identity
      * provider may narrow or widen the request; the requested set is the only other honest source.
@@ -561,13 +560,13 @@ public final class CallbackEndpoint {
     }
 
     /**
-     * The framework-agnostic result of a callback: either a {@code 302} redirect carrying the
-     * post-login {@code Set-Cookie} headers, or an error status with no body semantics for the edge
+     * The framework-agnostic result of a callback: either a {@code 302} redirect carrying
+     * {@code Set-Cookie} headers, or an error status with no body semantics for the edge
      * to render. Token material never appears here — only the opaque cookie headers and the
-     * same-origin return location.
+     * redirect location.
      *
      * @param status         the HTTP status the edge returns
-     * @param location       the redirect target, {@code null} for anything but a successful login
+     * @param location       the redirect target, {@code null} for an error
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit, empty for an error
      * @author API Sheriff Team
      * @since 1.0
@@ -583,10 +582,10 @@ public final class CallbackEndpoint {
         }
 
         /**
-         * A successful-login {@code 302} redirect.
+         * A {@code 302} redirect.
          *
-         * @param location         the same-origin return URL
-         * @param setCookieHeaders the session {@code Set-Cookie} and the binding-clearing {@code Set-Cookie}
+         * @param location         the redirect target
+         * @param setCookieHeaders the {@code Set-Cookie} header values to emit
          * @return the redirect outcome
          */
         public static CallbackOutcome redirect(String location, List<String> setCookieHeaders) {
@@ -605,7 +604,7 @@ public final class CallbackEndpoint {
         }
 
         /**
-         * @return {@code true} when this outcome is a successful-login redirect
+         * @return {@code true} when this outcome is a redirect
          */
         public boolean isRedirect() {
             return status == FOUND;

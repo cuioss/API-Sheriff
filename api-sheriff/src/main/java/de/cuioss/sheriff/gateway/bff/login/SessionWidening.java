@@ -34,7 +34,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Widens a <em>live</em> session to the scopes a route needs — the sibling of {@link LoginFlow}
+ * Widens a <em>live</em> session — the sibling of {@link LoginFlow}
  * built on the same re-drive: a {@link PendingAuthorizationRecord}, the {@link BindingCookieCodec}
  * browser-binding cookie, and the {@link de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint}
  * landing.

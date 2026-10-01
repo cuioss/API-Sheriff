@@ -149,8 +149,8 @@ class CookieSessionBindingTest {
     }
 
     /**
-     * Rebuilds {@code original} with the given scope sets, carrying every other component over
-     * verbatim — the shape a refresh or a widening hands to {@code persist}.
+     * Rebuilds {@code original} with the given scope sets — the shape a refresh or a widening hands
+     * to {@code persist}.
      */
     private static SessionRecord withScopes(SessionRecord original, Set<String> activeScopes,
             Set<String> grantedScopes) {

@@ -511,7 +511,7 @@ public final class SealedSessionCookieCodec {
      * fit a single browser-safe cookie.
      * <p>
      * {@link Deflater#BEST_COMPRESSION} is chosen over the default level because the work is done
-     * once per session change (login, refresh, logout) rather than per request, so the extra CPU buys
+     * once per session change rather than per request, so the extra CPU buys
      * cookie bytes at a cost that is not on the hot path. The incompressible 43-character session
      * nonce is a fixed floor on what any level can achieve.
      */

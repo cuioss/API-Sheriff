@@ -46,8 +46,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Transparent, single-flight token refresh for a {@code require: session} route (D7/D9) — the
- * refresh coordinator bound to the {@code SessionAuthenticationStage} refresh seam (the D9 hook).
+ * Transparent, single-flight token refresh for a {@code require: session} route (D7/D9).
  * <p>
  * When the mediated access token is within {@code leeway} of expiry the coordinator refreshes it
  * <strong>through the engine</strong> ({@code token-sheriff-client}'s {@code RefreshFlow}, reached
@@ -127,7 +126,7 @@ import org.jspecify.annotations.Nullable;
  * {@code destroy} cannot invalidate — takes the session-ended disposition ({@code FAILED}, so the stage
  * clears the cookie and negotiates {@code on_failure}) with no engine call, no revocation and no
  * {@code ApiSheriff-111}, only a {@code DEBUG} line carrying neither token nor session id. The check
- * runs after near-expiry is re-confirmed and before the back-off. The marker is keyed on the token, not
+ * runs before the back-off. The marker is keyed on the token, not
  * the session, so a successor cookie still reaches the identity provider once; it is bounded, in memory
  * and per instance, and inert in server mode, where {@code destroy} already removes the session.
  * <p>
@@ -205,9 +204,8 @@ public final class TokenRefreshCoordinator {
      * bounded — one entry per tracked session plus a single instant — under any number of failing sessions.
      * <p>
      * The accepted trade: while the map is saturated, the untracked sessions share that one window, so a
-     * session that has not failed itself may also see its refresh deferred for up to the fixed back-off;
-     * its still-valid access token is mediated meanwhile, and only an access token that has actually
-     * expired leaves a request without one. With a healthy provider the same claim serialises the untracked
+     * session that has not failed itself may also see its refresh deferred for up to the fixed back-off.
+     * With a healthy provider the same claim serialises the untracked
      * refreshes to one in flight at a time — each success releases it at once — and only until the
      * saturating windows expire and are pruned.
      */
@@ -630,8 +628,8 @@ public final class TokenRefreshCoordinator {
     }
 
     /**
-     * The disposition of a session kept after a pre-redemption failure: its still-valid access token
-     * is mediated, and only an access token that has actually expired leaves the request without one.
+     * The disposition of a session kept after a pre-redemption failure: {@code DEFERRED} while its
+     * access token has not expired, otherwise {@code UNAVAILABLE}.
      */
     private RefreshOutcome keptSession(SessionRecord latest, Instant now) {
         if (now.isBefore(accessTokenExpiry.expiryOf(latest))) {
@@ -817,7 +815,7 @@ public final class TokenRefreshCoordinator {
     }
 
     /**
-     * What {@link #performRefresh} decided: the outcome to publish and, for a session that ended after a
+     * The outcome to publish and, for a session that ended after a
      * redemption, the one refresh token still live at the identity provider, revoked only after the
      * outcome has been published. {@link #toString()} never renders the token.
      */
@@ -929,13 +927,13 @@ public final class TokenRefreshCoordinator {
          * @since 1.0
          */
         public enum Kind {
-            /** No refresh was needed — the mediated token is not yet within {@code leeway} of expiry. */
+            /** No refresh was needed. */
             CURRENT,
             /** The mediated token was rotated through the engine and persisted. */
             REFRESHED,
             /**
              * The refresh failed before the identity provider processed it; the session is kept and its
-             * still-valid access token is mediated.
+             * access token has not expired.
              */
             DEFERRED,
             /**

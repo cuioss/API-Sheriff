@@ -124,7 +124,7 @@ public final class CookieSessionBinding implements SessionBinding {
 
     /**
      * Re-seals the rotated material into a fresh {@code Set-Cookie} <em>without</em> extending the
-     * session — this is the cookie-mode persistence target of a transparent token refresh.
+     * session.
      * <p>
      * There is nothing to write server-side, so the whole of "persisting" a refresh here is emitting
      * the new sealed value. The original login instant is re-derived from the record's absolute

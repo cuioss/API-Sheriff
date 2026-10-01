@@ -162,7 +162,7 @@ class TokenRefreshCoordinatorTest {
     private static RotationResult rotation() {
         // The "IdP declared no scope on the refresh response" shape — a null grantedScope with
         // UNDECLARED — is the neutral value for the scheduling, single-flight, rebinding and
-        // failure-disposition cases. The ActiveScopeSet cases below pass a declared scope explicitly.
+        // failure-disposition cases.
         return rotation(null, RotationResult.ScopeDelta.UNDECLARED);
     }
 

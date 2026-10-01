@@ -432,9 +432,8 @@ class CallbackEndpointTest {
         /**
          * The refresh token is the component whose omission made the near-expiry refresh silently
          * never fire: {@code TokenRefreshCoordinator.refresh} returns on its first guard when
-         * {@code session.refreshToken()} is null, before any logging, so a session created without it
-         * mediates its original token until the absolute TTL and is never re-validated against the
-         * IdP. Asserting it here is what keeps the exchange's third component wired into the session.
+         * {@code session.refreshToken()} is null, before any logging.
+         * Asserting it here is what keeps the exchange's third component wired into the session.
          */
         @Test
         @DisplayName("Should seed the session with the refresh token the exchange returned")

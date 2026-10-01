@@ -121,8 +121,7 @@ public final class BffRuntime {
      * @param backchannelLogoutEndpoint the OIDC back-channel logout receiver
      * @param userInfoEndpoint          the session/user-info fold handler (D11)
      * @param loginInitiationEndpoint   the login-initiation fold handler (D12)
-     * @param stepUpEndpoint            the step-up handler that widens a live session to the scopes the
-     *                                  route behind a return URL needs ({@code oidc.step_up.path})
+     * @param stepUpEndpoint            the step-up handler ({@code oidc.step_up.path})
      */
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     public BffRuntime(SessionAuthenticationStage sessionStage, CsrfDefence csrfDefence,
@@ -370,8 +369,7 @@ public final class BffRuntime {
      * optional redirect {@code Location}, an optional already-serialized JSON body (the user-info
      * fold, and the step-up endpoint's no-session problem), the fixed response headers, and the
      * {@code Set-Cookie} header values to emit. Token
-     * material never appears here — only opaque cookie headers, the redirect location, and allowlisted
-     * disclosure.
+     * material never appears here.
      *
      * @param status           the HTTP status the edge returns
      * @param location         the redirect target, present only for a redirect outcome

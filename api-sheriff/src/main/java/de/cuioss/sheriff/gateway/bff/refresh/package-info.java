@@ -27,7 +27,7 @@
  * unit-testable without a container or a live IdP:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator} refreshes the mediated
- *       token within its expiry leeway through the engine, <em>single-flighted per session</em> so
+ *       token through the engine, <em>single-flighted per session</em> so
  *       concurrent requests on one session share one refresh, and disposes a refused refresh by the
  *       engine's failure kind: a failure before the identity provider processed the grant keeps the
  *       session and backs off; a rejected credential (including a replay rejected under strict

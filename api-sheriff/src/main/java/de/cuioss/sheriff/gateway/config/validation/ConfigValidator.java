@@ -690,8 +690,7 @@ public final class ConfigValidator {
      * Rule: an endpoint declaring a non-empty {@code scopes} list must have at least one route whose
      * effective auth is not {@code require: none}.
      * <p>
-     * {@code endpoint.scopes} is consumed only by authenticated routes — a session route requests the
-     * scopes at login and a bearer route checks them on the token. On an endpoint whose every route
+     * {@code endpoint.scopes} is consumed only by authenticated routes. On an endpoint whose every route
      * resolves {@code require: none} the key would parse and act nowhere, so an operator reading it
      * would believe a scope requirement is in force that no request ever meets. The boot refuses it
      * rather than letting the declaration stand inert. Only enabled endpoints reach this rule. Every
@@ -708,9 +707,9 @@ public final class ConfigValidator {
             if (allUnauthenticated) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_SCOPES_POINTER,
                         ("endpoint '%s' declares scopes but every one of its routes resolves require: none; "
-                                + "scopes are requested at a session login and checked on a bearer token, so on "
-                                + "an unauthenticated endpoint they would never act — remove scopes, or give a "
-                                + "route of this endpoint a bearer or session posture")
+                                + "scopes are consumed only by authenticated routes, so on an unauthenticated "
+                                + "endpoint they would never act — remove scopes, or give a route of this "
+                                + "endpoint a bearer or session posture")
                                 .formatted(endpoint.id())));
             }
         }
@@ -752,7 +751,7 @@ public final class ConfigValidator {
         if (!admitted) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER,
                     ("oidc login default_return_url '%s' is not same-origin with redirect_uri; it is the "
-                            + "post-login redirect target, so it must be a gateway path starting with a single "
+                            + "fallback redirect target, so it must be a gateway path starting with a single "
                             + "'/' or an absolute URL on the redirect_uri origin")
                             .formatted(renderForMessage(declared))));
         }

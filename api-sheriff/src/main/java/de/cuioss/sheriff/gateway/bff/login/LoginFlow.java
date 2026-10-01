@@ -156,7 +156,7 @@ public final class LoginFlow {
     }
 
     /**
-     * The framework-agnostic result of a login initiation: a {@code 302} redirect to the IdP
+     * A {@code 302} redirect to the IdP
      * authorization URL, carrying the browser-binding {@code Set-Cookie} header.
      *
      * @param authorizationUrl the IdP authorization endpoint URL to redirect the browser to
