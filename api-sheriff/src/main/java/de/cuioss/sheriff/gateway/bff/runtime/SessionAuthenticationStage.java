@@ -71,8 +71,19 @@ import org.jspecify.annotations.Nullable;
  *       resolved, refreshed and required, so the unauthenticated {@code 302}/{@code 401}
  *       negotiation is unchanged, yet no bearer is recorded and the upstream receives no
  *       {@code Authorization} header. The token material is never disclosed to the browser up to
- *       this point; the forward stage renders the bearer and the session cookie never crosses.</li>
+ *       this point; the forward stage renders the bearer and the session cookie never crosses. The
+ *       token recorded here is sender-constrained, and the constraint is not forwarded — see the
+ *       next paragraph.</li>
  * </ol>
+ * <strong>The mediated access token is DPoP-bound, and the binding ends at the gateway
+ * (ADR-0057).</strong> Every token the gateway obtains is bound to its DPoP proof key, so the access
+ * token carries a {@code cnf} claim whose {@code jkt} member names that key. The gateway forwards it
+ * as {@code Authorization: Bearer} and sends no DPoP proof with it: the proof key never leaves the
+ * gateway, and a proof is valid for one request to one address. The sender constraint therefore holds
+ * between the gateway and the identity provider only. An upstream must not check {@code cnf}: it
+ * receives no proof to check it against, and one that enforces the claim rejects every request. With
+ * {@code auth.token_relay: false} the question does not arise, because no token is forwarded at all.
+ * <p>
  * An <strong>unauthenticated</strong> request is content-negotiated: a <em>navigation</em> request
  * (its {@code Accept} offers {@code text/html}) is redirected {@code 302} into the auth-code flow via
  * the {@link LoginInitiation} seam (short-circuiting the pipeline), requesting the selected route's

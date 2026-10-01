@@ -26,6 +26,7 @@ import java.util.function.Function;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
+import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackHandler;
@@ -47,9 +48,15 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * way the engine admits: it asks the injected configuration factory for a
  * {@link ClientConfiguration} carrying exactly the requested scope list and drives a flow built over
  * that configuration. Every other collaborator — the shared {@link TokenEndpointClient}, the
- * validation bridges, the gateway's response-mode-corrected {@link AuthorizationRequestBuilder} and
- * the {@link ClientAuthentication} — is the one the base configuration uses, so the only thing that
- * varies between two scoped flows is the scope list.
+ * validation bridges, the gateway's response-mode-corrected {@link AuthorizationRequestBuilder}, the
+ * {@link ClientAuthentication} and the {@link SenderConstraint} — is the one the base configuration
+ * uses, so the only thing that varies between two scoped flows is the scope list.
+ * <p>
+ * <strong>One sender constraint for every scope set (ADR-0057).</strong> The constraint is handed in
+ * once and passed to every flow this seam builds: each cached login flow carries it as its code
+ * exchange's constraint, and each refresh grant presents a DPoP proof signed with it. Two scope sets
+ * therefore present proofs from the same key, and a token obtained for one scope set is bound to the
+ * same key as a token obtained for another.
  * <p>
  * <strong>The factory owns the pinned back-channel posture.</strong> The configuration factory is the
  * producer's {@code backChannelConfiguration(oidc, scopes)}, which applies the ADR-0045 hostname and
@@ -87,6 +94,7 @@ public final class ScopedEngineFlows {
     private final IdTokenValidationBridge idBridge;
     private final AuthorizationRequestBuilder authorizationRequestBuilder;
     private final ClientAuthentication clientAuthentication;
+    private final SenderConstraint senderConstraint;
     private final ConcurrentMap<List<String>, AuthorizationCodeFlow> authorizationFlows = new ConcurrentHashMap<>();
 
     /**
@@ -99,11 +107,12 @@ public final class ScopedEngineFlows {
      * @param idBridge                    the ID-token validation bridge
      * @param authorizationRequestBuilder the gateway's {@code response_mode=query} request builder
      * @param clientAuthentication        the confidential-client authentication the refresh grant presents
+     * @param senderConstraint            the one DPoP sender constraint every flow binds its tokens with
      */
     public ScopedEngineFlows(Function<List<String>, ClientConfiguration> configurationFactory,
             TokenEndpointClient tokenEndpointClient, TokenValidationBridge tokenBridge,
             IdTokenValidationBridge idBridge, AuthorizationRequestBuilder authorizationRequestBuilder,
-            ClientAuthentication clientAuthentication) {
+            ClientAuthentication clientAuthentication, SenderConstraint senderConstraint) {
         this.configurationFactory = Objects.requireNonNull(configurationFactory, "configurationFactory");
         this.tokenEndpointClient = Objects.requireNonNull(tokenEndpointClient, "tokenEndpointClient");
         this.tokenBridge = Objects.requireNonNull(tokenBridge, "tokenBridge");
@@ -111,6 +120,7 @@ public final class ScopedEngineFlows {
         this.authorizationRequestBuilder = Objects.requireNonNull(authorizationRequestBuilder,
                 "authorizationRequestBuilder");
         this.clientAuthentication = Objects.requireNonNull(clientAuthentication, "clientAuthentication");
+        this.senderConstraint = Objects.requireNonNull(senderConstraint, "senderConstraint");
     }
 
     /**
@@ -140,7 +150,7 @@ public final class ScopedEngineFlows {
         Objects.requireNonNull(metadata, "metadata");
         Objects.requireNonNull(refreshToken, "refreshToken");
         RefreshFlow refreshFlow = new RefreshFlow(configurationFactory.apply(canonical(scopes)),
-                tokenEndpointClient, tokenBridge, clientAuthentication);
+                tokenEndpointClient, tokenBridge, clientAuthentication, senderConstraint);
         return refreshFlow.refresh(metadata, refreshToken);
     }
 
@@ -154,7 +164,7 @@ public final class ScopedEngineFlows {
     AuthorizationCodeFlow authorizationFlow(Collection<String> scopes) {
         return authorizationFlows.computeIfAbsent(canonical(scopes), canonicalScopes -> new AuthorizationCodeFlow(
                 configurationFactory.apply(canonicalScopes), tokenEndpointClient, tokenBridge, idBridge,
-                new IssValidator(), authorizationRequestBuilder, new CallbackHandler(), null));
+                new IssValidator(), authorizationRequestBuilder, new CallbackHandler(), senderConstraint));
     }
 
     /**

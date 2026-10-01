@@ -135,7 +135,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114 and 127).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127 and 131).
      */
     @UtilityClass
     public static final class WARN {
@@ -235,6 +235,34 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(127)
                 .template("Token refresh failed before the identity provider processed it — session kept, next attempt in %s seconds")
+                .build();
+
+        /**
+         * The identity provider answered a token request with success, and the gateway refused the
+         * response because the token is not bound to the gateway's DPoP proof key: the login is
+         * refused, or the session is ended.
+         * <p>
+         * The first substitution is the leg, a closed set mapped from the request's
+         * {@code grant_type} by an allow-list: {@code code-exchange}, {@code refresh} or
+         * {@code other}. The second is the reason, a closed set: {@code token-type} (the response's
+         * {@code token_type} is not {@code DPoP}), {@code unreadable-access-token} (the access token
+         * is not a compact JWS with a parsable JSON payload), {@code cnf-absent} (the access token
+         * carries no {@code cnf.jkt}) or {@code cnf-mismatch} (its {@code cnf.jkt} names another
+         * key).
+         * <p>
+         * <strong>Never carries token material.</strong> Neither the access token, the refresh
+         * token, the ID token, a claim value, the received {@code jkt} nor the received token type
+         * appears in the record — both substitutions are fixed tokens chosen by the gateway.
+         * <p>
+         * <strong>Not latched.</strong> The refusal is reached only on a success answer of the token
+         * endpoint, which takes an authorization code or a refresh token the identity provider
+         * issued. A caller without such a credential cannot reach it, so the record is no
+         * log-amplification lever and is emitted on every occurrence (ADR-0051).
+         */
+        public static final LogRecord TOKEN_RESPONSE_NOT_BOUND = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(131)
+                .template("Token response on the %s leg refused — the token is not bound to the gateway's DPoP proof key (%s)")
                 .build();
     }
 }

@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
+import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
@@ -75,6 +76,7 @@ import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
+import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackHandler;
@@ -138,6 +140,26 @@ import org.jspecify.annotations.Nullable;
  * mode there is no such key: the endpoint is the withheld form, which answers {@code 404} while the
  * path stays reserved. The authentication and the endpoint are yielded together by the one mode
  * decision, so the key the gateway signs with and the key it publishes cannot differ.
+ * <p>
+ * <strong>One DPoP sender constraint binds every token (ADR-0057).</strong> The sender-constraint key
+ * is resolved by {@link ClientSigningKey} from {@code oidc.sender_constraint.key_file}, with the same
+ * refusal translation as the client-authentication key; an absent block or an absent key selects a
+ * key generated at startup. The one {@link SenderConstraint} that key hands out is shared by every
+ * flow — the base flow's code exchange, every per-scope flow and every refresh grant — in both
+ * client-authentication modes. A generated key lives for one process: it is replaced on every
+ * restart and cannot be shared, so every instance behind one identity-provider client must be given
+ * the same key files. The DPoP proof key is never published at the client JWKS endpoint.
+ * <p>
+ * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
+ * token-endpoint client is a {@link BoundTokenEndpointClient} over the base back-channel
+ * configuration and the key id of the sender-constraint key. It is the single instance handed to the
+ * base flow and to {@link ScopedEngineFlows}, so the code exchange, every per-scope flow and every
+ * refresh grant read their token response through it; the producer does not read the
+ * client-authentication mode for it. The refusal surfaces where the response was requested: the
+ * callback answers {@code 400} and creates no session, and a refresh ends the session and follows
+ * {@code oidc.session.refresh.on_failure}. The check judges token responses only — a session whose
+ * token is bound to an earlier key is never re-checked, so replacing the key does not by itself end a
+ * session.
  * <p>
  * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
  * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
@@ -351,29 +373,39 @@ public class BffRuntimeProducer {
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
         ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);
         ClientAuthentication clientAuthentication = clientCredential.authentication();
+        // ADR-0057: one sender-constraint key, and the one SenderConstraint it hands out, for the whole
+        // runtime. The key id is the thumbprint every accepted access token must name in cnf.jkt.
+        ClientSigningKey senderConstraintKey = resolveSenderConstraintKey(oidc);
+        SenderConstraint senderConstraint = senderConstraintKey.senderConstraint();
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
         TokenValidator validator = tokenValidator.get();
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
         IdTokenValidationBridge idBridge = new IdTokenValidationBridge(validator);
-        TokenEndpointClient tokenEndpointClient = new TokenEndpointClient(clientConfiguration);
+        // The one token-endpoint client of the runtime. It refuses a token response that is not bound
+        // to the proof key, and because the base flow, every per-scope flow and every refresh grant post
+        // through this single instance, none of them can obtain a token that bypasses the check.
+        TokenEndpointClient tokenEndpointClient = new BoundTokenEndpointClient(clientConfiguration,
+                senderConstraintKey.keyId());
         // The gateway drives response_mode=query, NOT the engine's built-in form_post: the callback has
         // to be a top-level GET navigation so the SameSite=Lax browser-binding cookie is actually sent
         // on it (a Lax cookie is dropped on the cross-site POST a form_post callback performs, which
         // dead-ended every real-browser login on the "no binding cookie" 403 branch). One instance is
         // shared with the step-up leg below, so BOTH engine seams that build an authorization URL carry
-        // the corrected mode. Every other collaborator here is exactly what the 4-arg
-        // AuthorizationCodeFlow constructor supplies on its own — a default IssValidator and
-        // CallbackHandler, and no sender constraint (DPoP is not in use) — so nothing else changes.
+        // the corrected mode. The IssValidator and the CallbackHandler are the defaults the 4-arg
+        // AuthorizationCodeFlow constructor supplies on its own; the trailing argument is the shared
+        // DPoP sender constraint, so the code exchange presents a proof and its tokens are bound to the
+        // proof key.
         AuthorizationRequestBuilder authorizationRequestBuilder = new QueryResponseModeAuthorizationRequestBuilder();
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
                 tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
-                new CallbackHandler(), null);
+                new CallbackHandler(), senderConstraint);
         // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so a login that
         // requests a route's neededScopes, and a refresh that requests the session's active scope set,
         // each ride a configuration built for exactly that set.
         ScopedEngineFlows scopedFlows = new ScopedEngineFlows(scopes -> backChannelConfiguration(oidc, scopes),
-                tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication);
+                tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication,
+                senderConstraint);
 
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
@@ -628,6 +660,29 @@ public class BffRuntimeProducer {
      * @param jwksEndpoint   the client JWKS endpoint in the form that goes with that authentication
      */
     private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint) {
+    }
+
+    /**
+     * Resolves the sender-constraint key — the key the gateway signs its DPoP proofs with — from
+     * {@code oidc.sender_constraint.key_file}. An absent block or an absent key selects the generated
+     * mode. The key is resolved in both client-authentication modes: a configured client secret
+     * changes how the gateway authenticates, not whether its tokens are sender-constrained.
+     * <p>
+     * The key mode and the algorithm are named by one {@code DEBUG} line — never key material and
+     * never the key id.
+     *
+     * @param oidc the global {@code oidc} block, already cleared by the BFF-mode activation predicate
+     * @return the resolved sender-constraint key
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the configured
+     *                          sender-constraint key file is refused
+     */
+    private static ClientSigningKey resolveSenderConstraintKey(OidcConfig oidc) {
+        OidcConfig.SenderConstraintSettings settings = oidc.senderConstraint();
+        ClientSigningKey signingKey = resolveSigningKey(settings == null ? null : settings.keyFile(),
+                ClientSigningKey.Purpose.SENDER_CONSTRAINT);
+        LOGGER.debug("BFF sender constraint: DPoP (key mode=%s, algorithm=%s)",
+                signingKey.mode().diagnosticName(), signingKey.algorithm());
+        return signingKey;
     }
 
     /**

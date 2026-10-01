@@ -50,6 +50,9 @@ import org.jspecify.annotations.Nullable;
  *                             omitted
  * @param clientAuthentication the client-authentication settings — the {@code private_key_jwt}
  *                             key file and the client JWKS path — {@code null} when omitted
+ * @param senderConstraint     the sender-constraint settings — the key file of the DPoP proof key
+ *                             the gateway's tokens are bound to — {@code null} when omitted. Read
+ *                             in both client-authentication modes
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -66,7 +69,8 @@ List<String> scopes,
 @Nullable StepUp stepUp,
 @Nullable UserInfo userInfo,
 @Nullable Login login,
-@Nullable ClientAuthenticationSettings clientAuthentication) {
+@Nullable ClientAuthenticationSettings clientAuthentication,
+@Nullable SenderConstraintSettings senderConstraint) {
 
     /**
      * Canonical constructor defensively copying {@code scopes}.
@@ -114,15 +118,16 @@ List<String> scopes,
      * unredacted {@code toString()} would leak it into any log line, exception
      * message, or debugger view that captures this instance.
      * <p>
-     * {@link #clientAuthentication()} is rendered as it is: its key file is a path, not a secret.
+     * {@link #clientAuthentication()} and {@link #senderConstraint()} are rendered as they are: a
+     * key file is a path, not a secret.
      *
      * @return a string representation with {@code clientSecret} redacted
      */
     @Override
     public String toString() {
-        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s]"
+        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s]"
                 .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp, userInfo,
-                        login, clientAuthentication);
+                        login, clientAuthentication, senderConstraint);
     }
 
     /**
@@ -409,5 +414,24 @@ List<String> scopes,
         // java:S1075 — the documented default of a configuration key, not a customizable URI/filesystem path.
         @SuppressWarnings("java:S1075")
         public static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+    }
+
+    /**
+     * The {@code sender_constraint} block: the key the gateway signs its DPoP proofs with, and
+     * therefore the key every token it obtains is bound to. The block is read in both
+     * client-authentication modes — a configured {@code client_secret} changes how the gateway
+     * authenticates, not whether its tokens are sender-constrained.
+     * <p>
+     * The record is named {@code SenderConstraintSettings} so that it does not shadow the token
+     * engine's {@code SenderConstraint} type where both are in scope.
+     *
+     * @param keyFile the path of a PEM file on a mount holding the DPoP proof key, {@code null} when
+     *                omitted — a key is then generated at startup. The value is a location, not a
+     *                secret: it may be written literally and is never redacted. It may name the same
+     *                file as {@code client_authentication.key_file}; two keys are recommended
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public record SenderConstraintSettings(@Nullable String keyFile) {
     }
 }

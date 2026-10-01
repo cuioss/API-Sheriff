@@ -377,6 +377,18 @@
             }
           }
         },
+        "sender_constraint": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The key the gateway signs its DPoP proofs with. Every token the gateway obtains is bound to this key, and a token response that is not bound to it is refused. The block is read in both client-authentication modes.",
+          "properties": {
+            "key_file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path of a PEM file on a mount holding the DPoP proof key. The file must hold exactly one unencrypted PKCS#8 PRIVATE KEY block and exactly one PUBLIC KEY block, the two halves of one key, and nothing else but whitespace. Accepted key types: RSA with a modulus of at least 2048 bits, and EC on curve P-256. The signing algorithm (PS256 for RSA, ES256 for EC) and the key thumbprint the tokens are bound to (the RFC 7638 thumbprint of the public key) are derived from the key and are not configurable. The value is a location, not a secret, so it may be written literally. It may name the same file as client_authentication.key_file; two separate keys are recommended. With no key file configured, a key is generated at startup; a generated key lives in one process, so that mode suits a single node only. The DPoP proof key is never published: it is not served at the client JWKS endpoint, and its public half travels only in the proofs the gateway sends to the identity provider."
+            }
+          }
+        },
         "scopes": {
           "type": "array",
           "description": "The OIDC scopes every session login requests and every bearer route requires; an endpoint's endpoint.scopes is added on top. Each entry must be an RFC 6749 section 3.3 scope-token: one or more printable ASCII characters (0x21-0x7E) excluding the double quote and the backslash, so no space, no control character and no non-ASCII. A malformed name is refused at boot rather than being sent to the identity provider or compared against a token's scope claim. The pattern terminates with a negative lookahead rather than '$', because '$' also matches before a final line terminator.",

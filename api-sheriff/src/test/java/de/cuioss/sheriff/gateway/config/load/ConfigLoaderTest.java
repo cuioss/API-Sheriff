@@ -140,6 +140,9 @@ class ConfigLoaderTest {
         assertEquals(List.of("h2", "http/1.1"), gateway.tls().alpn());
         assertEquals(new UpstreamDefaultsConfig(true, false), gateway.upstreamDefaults());
         assertEquals("s3cr3t", gateway.oidc().clientSecret());
+        assertNotNull(gateway.oidc().senderConstraint(), "the sender_constraint block must bind from gateway.yaml");
+        assertEquals("/etc/sheriff/keys/dpop.pem", gateway.oidc().senderConstraint().keyFile(),
+                "sender_constraint.key_file is a location, bound as written and never resolved as a secret");
         assertEquals(1, gateway.tokenValidation().issuers().size());
         assertEquals("primary", gateway.tokenValidation().issuers().getFirst().name());
         assertTrue(loaded.endpoints().isEmpty());

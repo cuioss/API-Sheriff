@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.auth;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -26,13 +27,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.Signature;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
 
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
@@ -40,6 +48,7 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.commons.transport.EgressPolicy;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
@@ -155,17 +164,116 @@ class TokenValidatorProducerTest {
          */
         private TokenValidator fileIssuerValidator(TestTokenHolder holder, @Nullable String audience)
                 throws IOException {
-            Path jwks = Files.writeString(jwksDir.resolve("jwks-%s.json".formatted(audience)),
-                    InMemoryKeyMaterialHandler.createDefaultJwks());
-            IssuerConfig.IssuerConfigBuilder issuer = IssuerConfig.builder()
-                    .name("primary")
-                    .issuer(holder.getIssuer())
-                    .jwks(IssuerConfig.Jwks.builder().source("file").file(jwks.toString()).build());
-            if (audience != null) {
-                issuer.audience(audience);
-            }
-            return producerFor(issuer.build()).gatewayTokenValidator();
+            return offlineValidator(jwksDir, holder, audience);
         }
+    }
+
+    /**
+     * The gateway's validator and a DPoP-bound access token.
+     * <p>
+     * Every access token the BFF obtains carries {@code cnf.jkt}, and the gateway validates it with no
+     * DPoP proof at hand: at the code exchange, at every refresh and at every refresh decision the
+     * token arrives from the identity provider or from the session, never from a client presenting a
+     * proof. That works only while the gateway's issuers configure no DPoP validation. A later change
+     * that configures it would end every session at its next refresh decision, with nothing at
+     * assembly to say so — so the acceptance is pinned here, where that change turns a test red.
+     */
+    @Nested
+    @DisplayName("sender-constrained access token — cnf.jkt is accepted without a DPoP proof")
+    class SenderConstrainedAccessToken {
+
+        private static final ObjectMapper JSON = new ObjectMapper();
+        private static final Base64.Encoder BASE64_URL = Base64.getUrlEncoder().withoutPadding();
+        private static final String RS256 = "RS256";
+
+        @TempDir
+        Path jwksDir;
+
+        @Test
+        @DisplayName("an access token carrying cnf.jkt validates although the request carries no DPoP header")
+        void acceptsACnfCarryingAccessTokenWithoutAProof() throws Exception {
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            TokenValidator validator = offlineValidator(jwksDir, holder, null);
+            String thumbprint = new DpopProofGenerator(TestSigningKeys.ecKeyPair(), "ES256").jkt();
+            String bound = withConfirmation(holder, thumbprint);
+            AccessTokenRequest withoutProof = AccessTokenRequest.of(bound);
+
+            AccessTokenContent accepted = assertDoesNotThrow(() -> validator.createAccessToken(withoutProof),
+                    "the gateway's issuers configure no DPoP validation, so a bound token needs no proof here");
+
+            assertAll("the token that validated is the bound one, and the request carried no proof",
+                    () -> assertEquals(bound, accepted.getRawToken()),
+                    () -> assertEquals(thumbprint, claimsOf(bound).path("cnf").path("jkt").asText(),
+                            "the validated token does carry the confirmation claim"),
+                    () -> assertTrue(withoutProof.httpHeaders().isEmpty(), "no DPoP header was presented"));
+        }
+
+        /**
+         * The control for the acceptance above: the same bound claims under the original token's
+         * signature are refused, so the acceptance rests on a signature the validator verified and
+         * not on a validator that accepts anything.
+         */
+        @Test
+        @DisplayName("the same claims without a fresh signature are refused (matched control)")
+        void refusesTheBoundClaimsUnderAStaleSignature() throws Exception {
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            TokenValidator validator = offlineValidator(jwksDir, holder, null);
+            String[] original = holder.getRawToken().split("\\.");
+            String[] bound = withConfirmation(holder,
+                    new DpopProofGenerator(TestSigningKeys.ecKeyPair(), "ES256").jkt()).split("\\.");
+            AccessTokenRequest forged = AccessTokenRequest.of(bound[0] + "." + bound[1] + "." + original[2]);
+
+            assertThrows(TokenValidationException.class, () -> validator.createAccessToken(forged),
+                    "a payload the signature does not cover must not validate");
+        }
+
+        /**
+         * Re-issues the holder's access token with a {@code cnf} object naming {@code thumbprint}: the
+         * header is kept, the claim is added to the payload, and the result is signed with the test
+         * issuer's own key, so the token is one the validator's key set verifies. The test token
+         * library renders a claim as a string or a list, never as an object, which is why the claim is
+         * added here rather than through the holder.
+         */
+        private static String withConfirmation(TestTokenHolder holder, String thumbprint) throws Exception {
+            String[] segments = holder.getRawToken().split("\\.");
+            assertEquals(RS256, JSON.readTree(Base64.getUrlDecoder().decode(segments[0])).path("alg").asText(),
+                    "this helper signs with SHA256withRSA; a holder signing another algorithm needs its own");
+            ObjectNode claims = (ObjectNode) JSON.readTree(Base64.getUrlDecoder().decode(segments[1]));
+            claims.putObject("cnf").put("jkt", thumbprint);
+            String signingInput = segments[0] + "." + BASE64_URL.encodeToString(JSON.writeValueAsBytes(claims));
+            Signature signer = Signature.getInstance("SHA256withRSA");
+            signer.initSign(InMemoryKeyMaterialHandler.getPrivateKey(holder.getSigningAlgorithm(), holder.getKeyId()));
+            signer.update(signingInput.getBytes(StandardCharsets.US_ASCII));
+            return signingInput + "." + BASE64_URL.encodeToString(signer.sign());
+        }
+
+        private static JsonNode claimsOf(String compactJws) throws IOException {
+            return JSON.readTree(Base64.getUrlDecoder().decode(compactJws.split("\\.")[1]));
+        }
+    }
+
+    /**
+     * A validator whose single issuer loads its key set from an on-disk JWKS file seeded from the
+     * in-memory test key material, so validation runs fully offline.
+     *
+     * @param jwksDir  the directory the JWKS fixture is written into
+     * @param holder   the generated token whose issuer identifier and key material are mirrored
+     * @param audience the {@code audience} to declare, or {@code null} to declare none at all
+     * @return the produced gateway validator
+     * @throws IOException when the JWKS fixture cannot be written
+     */
+    private static TokenValidator offlineValidator(Path jwksDir, TestTokenHolder holder, @Nullable String audience)
+            throws IOException {
+        Path jwks = Files.writeString(jwksDir.resolve("jwks-%s.json".formatted(audience)),
+                InMemoryKeyMaterialHandler.createDefaultJwks());
+        IssuerConfig.IssuerConfigBuilder issuer = IssuerConfig.builder()
+                .name("primary")
+                .issuer(holder.getIssuer())
+                .jwks(IssuerConfig.Jwks.builder().source("file").file(jwks.toString()).build());
+        if (audience != null) {
+            issuer.audience(audience);
+        }
+        return producerFor(issuer.build()).gatewayTokenValidator();
     }
 
     @Test

@@ -48,9 +48,10 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The same fixture declares neither {@code oidc.client_secret} nor
  * {@code oidc.client_authentication.key_file}, so the boot also selects the default client
- * authentication: {@code private_key_jwt} with a key generated on startup.
- * {@link #shouldSelectGeneratedKeyClientAuthentication()} asserts the record that mode emits. The
- * record of the boot itself cannot be captured — it is emitted before any test log handler
+ * authentication: {@code private_key_jwt} with a key generated on startup. It declares no
+ * {@code oidc.sender_constraint.key_file} either, so the DPoP proof key is generated as well.
+ * {@link #shouldGenerateOneSigningKeyPerPurpose()} asserts the records those two modes emit. The
+ * records of the boot itself cannot be captured — they are emitted before any test log handler
  * attaches — so that test re-produces the runtime from the booted configuration with the handler
  * already attached, the way {@code ManagementPlainHttpAuditTest} re-fires its startup event.
  * <p>
@@ -65,6 +66,10 @@ class CookieModeBootTest {
 
     private static final String GENERATED_CLIENT_AUTHENTICATION_KEY =
             "Signing key for client-authentication generated at startup";
+    private static final String GENERATED_SENDER_CONSTRAINT_KEY =
+            "Signing key for sender-constraint generated at startup";
+    /** The part every generated signing-key record shares, whatever its purpose. */
+    private static final String GENERATED_SIGNING_KEY = "Signing key for ";
 
     @Inject
     BffRuntime runtime;
@@ -108,14 +113,18 @@ class CookieModeBootTest {
     }
 
     @Test
-    @DisplayName("Should authenticate with a generated key — the generated-key record, and no client-secret warning")
-    void shouldSelectGeneratedKeyClientAuthentication() {
+    @DisplayName("Should generate one signing key per purpose — one record each, and no client-secret warning")
+    void shouldGenerateOneSigningKeyPerPurpose() {
         BffRuntime reproduced = producer.bffRuntime();
 
-        assertAll("the cookie-boot descriptor selects private_key_jwt with a generated key",
+        assertAll("the cookie-boot descriptor configures no key file, so both signing keys are generated",
                 () -> assertTrue(reproduced.isActive(), "the descriptor still yields an active runtime"),
                 () -> assertEquals(1, recordsContaining(TestLogLevel.INFO, GENERATED_CLIENT_AUTHENTICATION_KEY),
                         "one generated-key record for the client-authentication purpose per produced runtime"),
+                () -> assertEquals(1, recordsContaining(TestLogLevel.INFO, GENERATED_SENDER_CONSTRAINT_KEY),
+                        "one generated-key record for the sender-constraint purpose per produced runtime"),
+                () -> assertEquals(2, recordsContaining(TestLogLevel.INFO, GENERATED_SIGNING_KEY),
+                        "and no third signing key: the two purposes are the only ones a runtime generates for"),
                 () -> assertEquals(0, recordsContaining(TestLogLevel.WARN,
                         ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION.resolveIdentifierString()),
                         "no client secret is configured, so client-secret authentication is not reported"));

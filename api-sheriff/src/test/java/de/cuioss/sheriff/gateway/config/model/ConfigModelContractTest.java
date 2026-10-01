@@ -451,6 +451,19 @@ class ConfigModelContractTest {
                                     new OidcConfig.ClientAuthenticationSettings("/keys/a.pem", null)).build(),
                             OidcConfig.builder().clientAuthentication(
                                     new OidcConfig.ClientAuthenticationSettings("/keys/b.pem", null)).build()),
+                    voCase("OidcConfig.SenderConstraintSettings",
+                            new OidcConfig.SenderConstraintSettings("/etc/sheriff/keys/dpop.pem"),
+                            new OidcConfig.SenderConstraintSettings("/etc/sheriff/keys/dpop.pem"),
+                            new OidcConfig.SenderConstraintSettings("/etc/sheriff/keys/other.pem")),
+                    // sender_constraint participates in identity: the unequal instance varies only that
+                    // component, so dropping it from equals() fails this case alone.
+                    voCase("OidcConfig (sender_constraint)",
+                            OidcConfig.builder().senderConstraint(
+                                    new OidcConfig.SenderConstraintSettings("/keys/a.pem")).build(),
+                            OidcConfig.builder().senderConstraint(
+                                    new OidcConfig.SenderConstraintSettings("/keys/a.pem")).build(),
+                            OidcConfig.builder().senderConstraint(
+                                    new OidcConfig.SenderConstraintSettings("/keys/b.pem")).build()),
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
@@ -1856,6 +1869,63 @@ class ConfigModelContractTest {
         void usesClientSecretIsTrueForADeclaredButBlankSecret(String blank) {
             assertTrue(OidcConfig.builder().clientSecret(blank).build().usesClientSecret(),
                     "presence selects the mode whatever the value; the blank value is refused by validation");
+        }
+    }
+
+    // --- Sender constraint ---------------------------------------------------
+
+    @Nested
+    @DisplayName("Sender constraint — the sender_constraint block")
+    class SenderConstraintBlock {
+
+        private static final String KEY_FILE = "/etc/sheriff/keys/dpop.pem";
+        private static final String SECRET = "resolved-client-secret-value";
+
+        @Test
+        void senderConstraintSettingsExposesTheKeyFileAndKeepsAnAbsentOneAbsent() {
+            assertAll("the record applies no default of its own",
+                    () -> assertEquals(KEY_FILE, new OidcConfig.SenderConstraintSettings(KEY_FILE).keyFile()),
+                    () -> assertNull(new OidcConfig.SenderConstraintSettings(null).keyFile(),
+                            "an omitted key_file stays absent; the runtime then generates a key on startup"));
+        }
+
+        @Test
+        void oidcConfigKeepsAnAbsentSenderConstraintBlockAbsent() {
+            assertNull(OidcConfig.builder().build().senderConstraint(),
+                    "an omitted sender_constraint block binds as absent");
+        }
+
+        @Test
+        void oidcConfigCarriesTheSenderConstraintBlockInBothClientAuthenticationModes() {
+            OidcConfig.SenderConstraintSettings settings = new OidcConfig.SenderConstraintSettings(KEY_FILE);
+            OidcConfig keyMode = OidcConfig.builder().senderConstraint(settings).build();
+            OidcConfig secretMode = OidcConfig.builder().clientSecret(SECRET).senderConstraint(settings).build();
+
+            assertAll("the block does not depend on the client-authentication mode, and does not select it",
+                    () -> assertEquals(settings, keyMode.senderConstraint()),
+                    () -> assertEquals(settings, secretMode.senderConstraint()),
+                    () -> assertFalse(keyMode.usesClientSecret(),
+                            "a sender-constraint key file is not a client secret"),
+                    () -> assertTrue(secretMode.usesClientSecret()));
+        }
+
+        /**
+         * The sender-constraint key file is a location, exactly as the client-authentication one is: an
+         * operator needs to see it in a diagnostic, while the neighbouring secret must never reach one.
+         */
+        @Test
+        void oidcToStringRendersTheSenderConstraintKeyFileAndStillRedactsTheSecret() {
+            String rendered = OidcConfig.builder()
+                    .clientSecret(SECRET)
+                    .senderConstraint(new OidcConfig.SenderConstraintSettings(KEY_FILE))
+                    .build().toString();
+
+            assertAll("a path is rendered, a secret is not",
+                    () -> assertTrue(rendered.contains("senderConstraint="),
+                            "toString must surface the sender_constraint block: " + rendered),
+                    () -> assertTrue(rendered.contains(KEY_FILE), "the key-file path is a location and is rendered"),
+                    () -> assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted"),
+                    () -> assertFalse(rendered.contains(SECRET), "the client-secret value must never appear"));
         }
     }
 }

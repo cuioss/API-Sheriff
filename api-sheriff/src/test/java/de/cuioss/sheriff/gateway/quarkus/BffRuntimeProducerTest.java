@@ -82,19 +82,24 @@ import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
+import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
+import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
@@ -122,13 +127,18 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
+import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
+import de.cuioss.sheriff.token.client.flow.CallbackParameters;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
+import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
+import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
@@ -137,7 +147,10 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import de.cuioss.sheriff.token.validation.test.InMemoryKeyMaterialHandler;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.sheriff.token.validation.util.JwkThumbprintUtil;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -1570,8 +1583,13 @@ class BffRuntimeProducerTest {
      * <p>
      * <strong>The three back-channel legs.</strong> The code exchange is driven through the runtime's own
      * reserved login and callback dispatch; the refresh grant and the revocation through the two seams
-     * the assembled refresh coordinator holds. The stub's token endpoint refuses every grant, so each
-     * leg ends in a refusal and every assertion is made on the request the stub recorded.
+     * the assembled refresh coordinator holds. Unless a test scripts an answer, the stub's token
+     * endpoint refuses every grant, so each leg ends in a refusal and the assertion is made on the
+     * request the stub recorded.
+     * <p>
+     * <strong>The sender constraint.</strong> Every token request carries a DPoP proof, and the tests of
+     * the binding check script the token endpoint's answer: a success answer that is not bound to the
+     * proof key is refused by the runtime, and one that is bound is accepted.
      */
     @Nested
     @EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
@@ -1588,8 +1606,13 @@ class BffRuntimeProducerTest {
         private static final String AUTHORIZATION = "Authorization";
         private static final String BASIC_SCHEME = "Basic ";
         private static final String KEY_FILE_FIELD = "oidc.client_authentication.key_file";
+        private static final String SENDER_CONSTRAINT_KEY_FILE_FIELD = "oidc.sender_constraint.key_file";
         private static final String GENERATED_CLIENT_AUTHENTICATION_KEY =
                 "Signing key for client-authentication generated at startup";
+        private static final String DPOP_HEADER = "DPoP";
+        private static final String DPOP_NONCE_HEADER = "DPoP-Nonce";
+        private static final String TYPE_DPOP = "DPoP";
+        private static final String TYPE_BEARER = "Bearer";
         /** An RFC 7638 SHA-256 thumbprint: 32 bytes, base64url without padding. */
         private static final String THUMBPRINT_SHAPE = "[A-Za-z0-9_-]{43}";
         private static final String EC_KEY_TYPE = "EC";
@@ -1612,7 +1635,7 @@ class BffRuntimeProducerTest {
             stub.close();
         }
 
-        /** The three ways the client-authentication key is resolved, each with the algorithm it signs. */
+        /** The three ways a signing key of the client is resolved, each with the algorithm it signs. */
         enum KeyMode {
 
             PROVIDED_EC("ES256", TestSigningKeys::ecKeyPair),
@@ -1986,6 +2009,250 @@ class BffRuntimeProducerTest {
                             "no client-authentication key was generated to answer it"));
         }
 
+        @ParameterizedTest(name = "{0} sender-constraint key")
+        @EnumSource(KeyMode.class)
+        @DisplayName("Should present a DPoP proof for the token endpoint on the code exchange")
+        void shouldPresentADpopProofOnTheCodeExchange(KeyMode mode) throws Exception {
+            KeyFixture fixture = senderConstraintFixture(mode);
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+
+            String proof = proofOf(drive(Leg.CODE_EXCHANGE, runtime));
+
+            JsonNode header = jwtPart(proof, 0);
+            JsonNode claims = jwtPart(proof, 1);
+            JsonNode proofKey = header.path("jwk");
+            String thumbprint = proofKeyThumbprint(proof);
+            assertAll("the DPoP proof of the code exchange with a " + mode + " key",
+                    () -> assertEquals("dpop+jwt", header.path("typ").asText()),
+                    () -> assertEquals(mode.algorithm, header.path("alg").asText(),
+                            "the algorithm follows the key type"),
+                    () -> assertTrue(proofKey.isObject(), "the proof embeds its public key: " + header),
+                    () -> assertTrue(PRIVATE_JWK_MEMBERS.stream().noneMatch(proofKey::has),
+                            "no private key member travels in the proof: " + memberNamesOf(proofKey)),
+                    () -> assertEquals("POST", claims.path("htm").asText()),
+                    () -> assertEquals(stub.url(StubIdentityProvider.Endpoint.TOKEN), claims.path("htu").asText(),
+                            "the proof is bound to the token endpoint"),
+                    () -> assertTrue(thumbprint.matches(THUMBPRINT_SHAPE),
+                            "the proof key has an RFC 7638 thumbprint: " + thumbprint),
+                    () -> fixture.expectedKeyId().ifPresent(expected -> assertEquals(expected, thumbprint,
+                            "the proof is signed with the configured sender-constraint key")));
+        }
+
+        /**
+         * One sender constraint binds every flow. The base flow's exchange and the refresh grant are
+         * driven through the runtime's own seams; the per-scope login flow's exchange has no production
+         * caller and is driven by hand — see {@link #loginFlowExchange(BffRuntime)}, which reads the
+         * cached flow from {@code ScopedEngineFlows.authorizationFlows} by name.
+         */
+        @ParameterizedTest(name = "{0} sender-constraint key")
+        @EnumSource(KeyMode.class)
+        @DisplayName("Should prove possession of one key on the code exchange, a per-scope login flow and a refresh")
+        void shouldProveOneKeyOnEveryFlow(KeyMode mode) throws Exception {
+            KeyFixture fixture = senderConstraintFixture(mode);
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+
+            String baseFlowKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
+            String loginFlowKey = proofKeyThumbprint(proofOf(loginFlowExchange(runtime)));
+            String refreshKey = proofKeyThumbprint(proofOf(drive(Leg.REFRESH_GRANT, runtime)));
+
+            assertAll("one proof key for the whole runtime, with a " + mode + " key",
+                    () -> assertEquals(baseFlowKey, loginFlowKey,
+                            "a per-scope login flow proves possession of the base flow's key"),
+                    () -> assertEquals(baseFlowKey, refreshKey,
+                            "the refresh grant proves possession of the base flow's key"),
+                    () -> fixture.expectedKeyId().ifPresent(expected -> assertEquals(expected, baseFlowKey,
+                            "and that key is the configured sender-constraint key")));
+        }
+
+        @Test
+        @DisplayName("Should answer a DPoP-Nonce challenge with exactly one retry whose proof carries the nonce")
+        void shouldRetryOnceWithTheChallengedNonce() throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            String nonce = token();
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, new StubIdentityProvider.Answer(400,
+                    Map.of(DPOP_NONCE_HEADER, nonce, "Content-Type", "application/json"),
+                    "{\"error\":\"use_dpop_nonce\"}"));
+
+            BffRuntime.ReservedHttpResponse callback = loginAndCallback(runtime, token());
+
+            List<StubIdentityProvider.ReceivedRequest> received =
+                    stub.received(StubIdentityProvider.Endpoint.TOKEN);
+            assertEquals(2, received.size(), "the challenge is answered by exactly one retry");
+            String challenged = proofOf(received.getFirst());
+            String retried = proofOf(received.getLast());
+            JsonNode challengedClaims = jwtPart(challenged, 1);
+            JsonNode retriedClaims = jwtPart(retried, 1);
+            assertAll("the retry of a DPoP-Nonce challenge",
+                    () -> assertTrue(challengedClaims.path("nonce").isMissingNode(),
+                            "the first proof carries no nonce"),
+                    () -> assertEquals(nonce, retriedClaims.path("nonce").asText(),
+                            "the retry's proof echoes the challenged nonce"),
+                    () -> assertNotEquals(challengedClaims.path("jti").asText(), retriedClaims.path("jti").asText(),
+                            "the retry carries a fresh single-use proof"),
+                    () -> assertEquals(proofKeyThumbprint(challenged), proofKeyThumbprint(retried),
+                            "signed with the same key"),
+                    () -> assertEquals(400, callback.status(),
+                            "the stub refuses the retried grant, so the login is not completed"));
+        }
+
+        /**
+         * The positive control of the binding check on an assembled runtime: a token response of type
+         * {@code DPoP}, whose access token validates against the runtime's own validator and names the
+         * proof key, is accepted. The stub mints no token, so the test supplies the response body.
+         */
+        @Test
+        @DisplayName("Should accept, on the refresh seam, a DPoP token response bound to the proof key")
+        void shouldAcceptABoundTokenResponseOnTheRefreshSeam() throws Exception {
+            KeyFixture fixture = senderConstraintFixture(KeyMode.PROVIDED_EC);
+            BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
+            String accessToken = accessTokenBoundTo(fixture.expectedKeyId().orElseThrow());
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_DPOP, accessToken));
+            String refreshToken = token();
+
+            RotationResult rotated = refreshExchangeOf(runtime).exchange(refreshToken, Set.of("openid"));
+
+            assertAll("a bound token response passes the check and the engine's validation",
+                    () -> assertEquals(accessToken, rotated.accessToken().getRawToken()),
+                    () -> assertEquals(refreshToken, rotated.refreshToken(),
+                            "the response rotated nothing, so the presented refresh token stays in use"),
+                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN, tokenResponseNotBound()),
+                            "an accepted response is not recorded as a refusal"));
+        }
+
+        @Test
+        @DisplayName("Should keep the published client key apart from the proof key when two keys are in use")
+        void shouldKeepThePublishedKeyApartFromTheProofKey() throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+
+            String publishedKeyId = publishedKeyOf(runtime).path("kid").asText();
+            String proofKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
+
+            assertNotEquals(publishedKeyId, proofKey,
+                    "the client JWKS path publishes the client-authentication key, never the DPoP proof key");
+        }
+
+        @Test
+        @DisplayName("Should publish and prove the same key when both blocks name one key file")
+        void shouldUseOneKeyForBothPurposesWhenBothBlocksNameOneFile() throws Exception {
+            Path keyFile = TestSigningKeys.writeKeyFile(keyDirectory, TestSigningKeys.ecKeyPair());
+            OidcConfig oidc = stubOidc()
+                    .clientAuthentication(keyFileSettings(keyFile))
+                    .senderConstraint(senderConstraintSettings(keyFile))
+                    .build();
+            BffRuntime runtime = stubProducer(oidc).bffRuntime();
+
+            String publishedKeyId = publishedKeyOf(runtime).path("kid").asText();
+            String proofKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
+
+            assertEquals(publishedKeyId, proofKey,
+                    "one file is one key: its thumbprint is both the published key id and the proof key");
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(RefusedKeyFile.class)
+        @DisplayName("Should abort the build with CONFIG_INVALID for a sender-constraint key file the resolver refuses")
+        void shouldAbortTheBuildOnARefusedSenderConstraintKeyFile(RefusedKeyFile refused) throws Exception {
+            Path keyFile = refused.write(keyDirectory);
+            List<String> keyMembers = Files.readAllLines(keyFile, StandardCharsets.US_ASCII).stream()
+                    .filter(line -> !line.isBlank() && !line.startsWith("-----"))
+                    .toList();
+            BffRuntimeProducer producer =
+                    stubProducer(stubOidc().senderConstraint(senderConstraintSettings(keyFile)).build());
+
+            GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime);
+
+            String message = thrown.getMessage();
+            assertAll("the refusal of a " + refused + " sender-constraint key file",
+                    () -> assertEquals(EventType.CONFIG_INVALID, thrown.getEventType()),
+                    () -> assertTrue(message.contains(SENDER_CONSTRAINT_KEY_FILE_FIELD),
+                            "the refusal must name the configuration field: " + message),
+                    () -> assertFalse(message.contains(KEY_FILE_FIELD),
+                            "and not the client-authentication one, which is not at fault: " + message),
+                    () -> assertFalse(keyMembers.isEmpty(), "the fixture must hold content that could leak"),
+                    () -> assertTrue(keyMembers.stream().noneMatch(message::contains),
+                            "no line of the key file may be echoed: " + message),
+                    () -> assertFalse(message.contains(keyFile.toString()),
+                            "the configured path is not echoed either: " + message));
+        }
+
+        /**
+         * The binding check is tied to the assembled runtime by type: whichever token-endpoint client
+         * the flows post through, it must be the refusing one, and there must be exactly one — a second
+         * client would be a second path to a token, and one the check does not sit on. The walk is
+         * type-directed, in the style of the query-mode builder assertion: a field rename does not
+         * break it, a flow built over the engine's own client does.
+         */
+        @Test
+        @DisplayName("Should hand every flow the one token-endpoint client that refuses an unbound response")
+        void shouldWireTheBoundTokenEndpointClientIntoEveryFlow() {
+            List<TokenEndpointClient> keyMode = reachableInstancesOf(
+                    stubProducer(stubOidc().build()).bffRuntime(), TokenEndpointClient.class);
+            List<TokenEndpointClient> secretMode = reachableInstancesOf(
+                    stubProducer(secretFixture().oidc()).bffRuntime(), TokenEndpointClient.class);
+
+            assertAll("the token-endpoint client of the runtime, in both client-authentication modes",
+                    () -> assertFalse(keyMode.isEmpty(),
+                            "no TokenEndpointClient was reachable from the assembled runtime — this test must "
+                                    + "never pass vacuously; if the producer's wiring moved, retarget the walk"),
+                    () -> assertEquals(1, keyMode.size(), "key mode shares exactly one client between its flows"),
+                    () -> assertInstanceOf(BoundTokenEndpointClient.class, keyMode.getFirst()),
+                    () -> assertEquals(1, secretMode.size(),
+                            "client-secret mode shares exactly one client between its flows"),
+                    () -> assertInstanceOf(BoundTokenEndpointClient.class, secretMode.getFirst(),
+                            "the check does not depend on how the client authenticates"));
+        }
+
+        @Test
+        @DisplayName("Should answer a callback 400 without a session cookie when the token response is of type Bearer")
+        void shouldRefuseALoginWhoseTokenResponseIsNotBound() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_BEARER, token()));
+
+            BffRuntime.ReservedHttpResponse callback = loginAndCallback(runtime, token());
+
+            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
+            assertAll("a login whose tokens are not bound to the proof key",
+                    () -> assertEquals(400, callback.status(), "the login is refused"),
+                    () -> assertEquals(List.of(), callback.setCookieHeaders(), "and no session cookie is set"),
+                    () -> assertEquals(Optional.empty(), callback.locationOptional(), "nor a redirect issued"),
+                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
+                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage())
+                                    .contains("on the code-exchange leg"),
+                            "under the leg of the code exchange: " + refusals.getFirst().getMessage()),
+                    () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.TOKEN).size(),
+                            "the token endpoint did answer — the refusal is the gateway's"));
+        }
+
+        /**
+         * What follows from a redeemed refusal — the session destroyed, {@code ApiSheriff-111}, the
+         * {@code on_failure} answer — is pinned by {@code TokenRefreshCoordinatorTest} and by the tests
+         * of the session stage. This test stops at the seam: the failure the coordinator is handed is
+         * one the engine classifies as redeemed.
+         */
+        @Test
+        @DisplayName("Should fail a refresh whose token response is of type Bearer as a redeemed grant")
+        void shouldFailARefreshWhoseTokenResponseIsNotBoundAsRedeemed() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            TokenRefreshCoordinator.RefreshExchange exchange = refreshExchangeOf(runtime);
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_BEARER, token()));
+            String refreshToken = token();
+            Set<String> scopes = Set.of("openid");
+
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> exchange.exchange(refreshToken, scopes));
+
+            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
+            assertAll("a refresh whose tokens are not bound to the proof key",
+                    () -> assertEquals(RefreshFailureClassification.Kind.REDEEMED,
+                            RefreshFlow.classify(failure).kind(),
+                            "the identity provider consumed the grant, so the session must not be kept"),
+                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
+                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage()).contains("on the refresh leg"),
+                            "under the leg of the refresh grant: " + refusals.getFirst().getMessage()));
+        }
+
         private static BffRuntime.ReservedHttpResponse clientJwks(BffRuntime runtime, String method) {
             return runtime.dispatch(ReservedEndpoint.CLIENT_JWKS,
                     new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, method), NOW);
@@ -2066,23 +2333,169 @@ class BffRuntimeProducerTest {
          */
         private StubIdentityProvider.ReceivedRequest codeExchange(BffRuntime runtime) {
             String code = token();
-            BffRuntime.ReservedHttpResponse login = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "/", null, null, "GET"), NOW);
-            String state = rawQueryParameter(login.locationOptional().orElseThrow(), "state");
-            String bindingCookie = login.setCookieHeaders().getFirst().split(";", 2)[0];
 
-            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN, () -> {
-                BffRuntime.ReservedHttpResponse callback = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                        new BffRuntime.ReservedHttpRequest("code=" + code + "&state=" + state, bindingCookie, null,
-                                null, null, null, "GET"),
-                        NOW);
-                assertEquals(400, callback.status(), "the stub refuses the grant, so the login is not completed");
-            });
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
+                    () -> assertEquals(400, loginAndCallback(runtime, code).status(),
+                            "the stub refuses the grant, so the login is not completed"));
 
             assertAll("the request is the code exchange",
                     () -> assertEquals("authorization_code", request.form().get("grant_type")),
                     () -> assertEquals(code, request.form().get("code")));
             return request;
+        }
+
+        /**
+         * Drives one login through the runtime's reserved dispatch — the login leg, then the callback
+         * presenting {@code code} with the login's {@code state} and browser-binding cookie — and
+         * returns the callback's answer. The token endpoint answers from the stub's script, or refuses
+         * the grant when nothing is scripted.
+         */
+        private static BffRuntime.ReservedHttpResponse loginAndCallback(BffRuntime runtime, String code) {
+            BffRuntime.ReservedHttpResponse login = runtime.dispatch(ReservedEndpoint.LOGIN,
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/", null, null, "GET"), NOW);
+            String state = rawQueryParameter(login.locationOptional().orElseThrow(), "state");
+            String bindingCookie = login.setCookieHeaders().getFirst().split(";", 2)[0];
+            return runtime.dispatch(ReservedEndpoint.CALLBACK,
+                    new BffRuntime.ReservedHttpRequest("code=" + code + "&state=" + state, bindingCookie, null,
+                            null, null, null, "GET"),
+                    NOW);
+        }
+
+        /**
+         * Drives a code exchange on the per-scope login flow the runtime cached, by hand.
+         * <p>
+         * In a running gateway that flow only renders the authorization URL: the callback's exchange
+         * runs on the base flow. So no dispatch reaches this exchange, and the flow sits in a
+         * {@link java.util.concurrent.ConcurrentHashMap} the reachable-instances walk does not enter.
+         * The cached flow is therefore read from {@code ScopedEngineFlows.authorizationFlows} by name
+         * and driven directly against the stub's token endpoint, with the client authentication the
+         * runtime itself holds. The stub refuses the grant; the request it recorded is what is asserted.
+         *
+         * @param runtime a runtime whose login leg has already been dispatched once, so that exactly
+         *                one per-scope flow is cached
+         * @return the token request the per-scope flow sent
+         */
+        private StubIdentityProvider.ReceivedRequest loginFlowExchange(BffRuntime runtime) {
+            AuthorizationCodeFlow loginFlow = cachedLoginFlowOf(runtime);
+            ClientAuthentication authentication = single(
+                    reachableInstancesOf(runtime, ClientAuthentication.class), "client authentication");
+            ProviderMetadata metadata = stubMetadata();
+            AuthorizationCodeFlow.AuthorizationRedirect redirect = loginFlow.authorize(metadata);
+            CallbackParameters callback = CallbackParameters.parse(
+                    "code=" + token() + "&state=" + redirect.context().state());
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
+                    () -> assertThrows(TransportException.class,
+                            () -> loginFlow.exchange(metadata, redirect.context(), callback, authentication),
+                            "the stub refuses the grant"));
+
+            assertEquals("authorization_code", request.form().get("grant_type"),
+                    "the request is the per-scope flow's code exchange");
+            return request;
+        }
+
+        /** The one per-scope login flow the runtime cached, read from the seam's cache field by name. */
+        private static AuthorizationCodeFlow cachedLoginFlowOf(BffRuntime runtime) {
+            ScopedEngineFlows scopedFlows = single(reachableInstancesOf(runtime, ScopedEngineFlows.class),
+                    "per-scope engine flow seam");
+            try {
+                Field cache = ScopedEngineFlows.class.getDeclaredField("authorizationFlows");
+                cache.setAccessible(true);
+                Map<?, ?> flows = (Map<?, ?>) cache.get(scopedFlows);
+                assertEquals(1, flows.size(),
+                        "the login leg cached exactly the one flow of the scope set it requested");
+                return assertInstanceOf(AuthorizationCodeFlow.class, flows.values().iterator().next());
+            } catch (ReflectiveOperationException e) {
+                throw new AssertionError("ScopedEngineFlows no longer holds an authorizationFlows field — "
+                        + "retarget this read to where the per-scope login flows are cached", e);
+            }
+        }
+
+        /** The provider metadata of the stub, hand-built: the issuer, the token endpoint and PKCE S256. */
+        private ProviderMetadata stubMetadata() {
+            ProviderMetadata metadata = new ProviderMetadata();
+            metadata.issuer = stub.issuer();
+            metadata.authorizationEndpoint = stub.issuer() + "/authorize";
+            metadata.tokenEndpoint = stub.url(StubIdentityProvider.Endpoint.TOKEN);
+            metadata.codeChallengeMethodsSupported = List.of(ProviderMetadata.CODE_CHALLENGE_METHOD_S256);
+            return metadata;
+        }
+
+        private TokenRefreshCoordinator.RefreshExchange refreshExchangeOf(BffRuntime runtime) {
+            return single(reachableInstancesOf(refreshCoordinatorOf(runtime),
+                    TokenRefreshCoordinator.RefreshExchange.class), "refresh exchange the coordinator holds");
+        }
+
+        /** The compact DPoP proof a recorded token request carried. */
+        private static String proofOf(StubIdentityProvider.ReceivedRequest request) {
+            return request.header(DPOP_HEADER).orElseThrow(
+                    () -> new AssertionError("the token request carries no DPoP header: "
+                            + request.headers().keySet()));
+        }
+
+        /** The RFC 7638 thumbprint of the public key a DPoP proof embeds in its header. */
+        private static String proofKeyThumbprint(String proof) throws IOException {
+            Map<String, Object> jwk = JSON.convertValue(jwtPart(proof, 0).path("jwk"),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+            return JwkThumbprintUtil.computeThumbprint(jwk);
+        }
+
+        /** A success answer of the token endpoint carrying {@code accessToken} under {@code tokenType}. */
+        private static StubIdentityProvider.Answer tokenAnswer(String tokenType, String accessToken) {
+            ObjectNode body = JSON.createObjectNode()
+                    .put("access_token", accessToken)
+                    .put("token_type", tokenType)
+                    .put("expires_in", 300);
+            return StubIdentityProvider.Answer.json(200, body.toString());
+        }
+
+        /**
+         * An access token the runtime's validator accepts, carrying a {@code cnf} object that names
+         * {@code thumbprint}. The stub mints no token, so the test issues one: the claims of a
+         * generated test token plus the confirmation claim, signed with the test issuer's own key.
+         * The test token library renders a claim as a string or a list, never as an object, which is
+         * why the claim is added here rather than through the holder.
+         */
+        private static String accessTokenBoundTo(String thumbprint) throws Exception {
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            String issued = holder.getRawToken();
+            String[] segments = issued.split("\\.");
+            assertEquals("RS256", jwtPart(issued, 0).path("alg").asText(),
+                    "this helper signs with SHA256withRSA; a holder signing another algorithm needs its own");
+            ObjectNode claims = (ObjectNode) jwtPart(issued, 1);
+            claims.putObject("cnf").put("jkt", thumbprint);
+            String signingInput = segments[0] + "."
+                    + Base64.getUrlEncoder().withoutPadding().encodeToString(JSON.writeValueAsBytes(claims));
+            Signature signer = Signature.getInstance("SHA256withRSA");
+            signer.initSign(InMemoryKeyMaterialHandler.getPrivateKey(holder.getSigningAlgorithm(), holder.getKeyId()));
+            signer.update(signingInput.getBytes(StandardCharsets.US_ASCII));
+            return signingInput + "." + Base64.getUrlEncoder().withoutPadding().encodeToString(signer.sign());
+        }
+
+        /**
+         * A key-mode configuration whose {@code sender_constraint} block follows {@code mode}, together
+         * with the proof-key thumbprint every proof must then carry — known for a provided key, whose
+         * thumbprint the test computes itself, and unknown for a generated one.
+         */
+        private KeyFixture senderConstraintFixture(KeyMode mode) {
+            Supplier<KeyPair> providedKey = mode.providedKey;
+            if (providedKey == null) {
+                return new KeyFixture(stubOidc().build(), Optional.empty());
+            }
+            KeyPair keyPair = providedKey.get();
+            Path keyFile = TestSigningKeys.writeKeyFile(keyDirectory, keyPair);
+            OidcConfig oidc = stubOidc().senderConstraint(senderConstraintSettings(keyFile)).build();
+            return new KeyFixture(oidc, Optional.of(new DpopProofGenerator(keyPair, mode.algorithm).jkt()));
+        }
+
+        /** A {@code sender_constraint} block naming {@code keyFile}. */
+        private static OidcConfig.SenderConstraintSettings senderConstraintSettings(Path keyFile) {
+            return new OidcConfig.SenderConstraintSettings(keyFile.toString());
+        }
+
+        private static String tokenResponseNotBound() {
+            return BffLogMessages.WARN.TOKEN_RESPONSE_NOT_BOUND.resolveIdentifierString();
         }
 
         private StubIdentityProvider.ReceivedRequest refreshGrant(BffRuntime runtime) {
