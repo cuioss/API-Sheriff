@@ -1,4 +1,4 @@
-= ADR-0056: Session routes obtain their declared scopes by refreshing inside the grant and widening the live session outside it
+= ADR-0057: Session routes obtain their declared scopes by refreshing inside the grant and widening the live session outside it
 :toc: left
 :toclevels: 2
 :sectnums:
