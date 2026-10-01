@@ -326,7 +326,7 @@ class ReactorModuleListContractTest {
      * @param onlyInReactor  the names the reactor declares and the document does not list, sorted
      */
     private record ListComparison(int listedCount, int reactorCount, Set<String> onlyInDocument,
-            Set<String> onlyInReactor) {
+    Set<String> onlyInReactor) {
 
         boolean countsAgree() {
             return listedCount == reactorCount;
