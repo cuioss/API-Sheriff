@@ -1,0 +1,477 @@
+= Änderungen an API Sheriff
+:toc:
+:toclevels: 2
+:sectnums:
+
+Was das KIDICAP Gateway von API Sheriff braucht, über Version 0.2.1 hinaus. API Sheriff wird von uns
+selbst gestaltet; dieses Dokument ist die Anforderungsquelle, bis die Punkte im API-Sheriff-Repository als
+Issue oder ADR stehen. Dann verweist der jeweilige Abschnitt dorthin.
+
+[IMPORTANT]
+====
+*Stand 2026-09-15.* Das Gateway baut auf API Sheriff 0.2.1 auf und bildet die UI-Einstiege in einer
+ersten Iteration ohne diese Änderungen ab (link:ui-einstiege.adoc#iteration-1[UI-Einstiege]). Mit einer
+API-Sheriff-Version, die die Änderungen enthält, wird migriert (link:ui-einstiege.adoc#migration[Migration]).
+Jedes Anheben der Parent-Version ist ein Review.
+====
+
+Aufbau je Punkt: *Ausgangslage* in 0.2.1 (gemessen oder im Code belegt), *Bedarf* im Gateway,
+*Vorschlag* für Konfiguration und Verhalten, *Abgrenzung* und Sicherheit, *Abnahme*, *Migration* in diesem
+Repository. Die Konfigurationsbeispiele sind Entwürfe; Schlüsselnamen entscheidet API Sheriff.
+
+*API Sheriff ist vor 1.0:* Änderungen werden direkt eingeführt — keine Aliase, Warnungen, Shims oder
+Übergangsphasen in API Sheriff. „Migration“ meint allein die Anpassung dieses Repositorys beim Anheben der
+Parent-Version.
+
+[[uebersicht]]
+== Übersicht
+
+[cols="1,3,1,1", options="header"]
+|===
+| Nr. | Änderung | Art | Priorität
+
+| <<as-1,AS-1>> | Anwendungskatalog und Übersichtsseite mit Vorlage | Feature | hoch
+| <<as-2,AS-2>> | HTML-Fehlerseiten für Seitenaufrufe | Feature | mittel
+| <<as-3,AS-3>> | Umleitungsaktion und Routen mit exaktem Pfad | Feature | hoch
+| <<as-4,AS-4>> | `base_url` optional für Endpunkte ohne Upstream | Feature | mittel
+| <<as-5,AS-5>> | Session prüfen, ohne den Bearer weiterzugeben | Feature | hoch
+| <<as-6,AS-6>> | Rückkehradresse des Logins mit Query; konfigurierbare Vorgabe | Fehler/Feature | mittel
+| <<as-7,AS-7>> | Userinfo gibt strukturierte Claims als JSON aus | Fehler | *blockierend*
+| <<as-8,AS-8>> | `security_headers` je Anchor wirksam, CSP-Schlüssel, Vorrang-Modus | Fehler/Feature | mittel
+| <<as-9,AS-9>> | `upstream.path` und Alias-Basispfad: Verhalten und Doku angleichen | Fehler | niedrig
+| <<as-10,AS-10>> | Readiness bei gescheitertem JWKS-Abruf (API-Sheriff#194) | Fehler | mittel
+| <<as-11,AS-11>> | `Location` des Ursprungs auf Proxy-Routen umschreiben | Feature | niedrig
+| <<as-12,AS-12>> | Index- und Fallback-Datei für Asset-Routen | Feature | niedrig
+| <<as-13,AS-13>> | Query-Werte nach der Dekodierung prüfen: Leerzeichen, Umlaute, `:`, `/` zulassen | Fehler | *blockierend*
+| <<as-14,AS-14>> | Scopes global plus Endpunkt als Minimalmenge; fehlende per Scope-Step-up nachfordern | Feature | hoch
+|===
+
+[[as-1]]
+== AS-1: Anwendungskatalog und Übersichtsseite
+
+*Ausgangslage.* API Sheriff kennt keine „Anwendung“, nur Endpunkte; das Endpunkt-Schema verbietet
+zusätzliche Schlüssel, Titel oder Einstiegsadressen lassen sich nicht hinterlegen (Code: Schema mit
+`additionalProperties: false`). Es gibt keine Vorlagen-Engine und keine gateway-eigenen HTML-Seiten außer
+Asset-Routen. Die Kontextwurzel `/KIDICAP.Gateway/` antwortet `404` und lässt sich nicht belegen, ohne mit
+einer Präfix-Route jede unbekannte Adresse abzufangen (gemessen). `enabled` eines Endpunkts ist je
+Deployment über einen `${ENDPOINT_<ID>_ENABLED}`-Platzhalter umschaltbar (API-Sheriff-Doku
+`environment-variable-overrides.adoc`) — eine beim Build erzeugte Übersicht kann davon abweichen.
+
+*Bedarf.* Eine Startseite, die alle aktiven Anwendungen zeigt, zugleich Ziel nach der Abmeldung ist und
+unter einer festen, kurzen Adresse liegt — idealerweise der Kontextwurzel.
+
+*Vorschlag.*
+
+[source,yaml]
+----
+# gateway.yaml
+portal:
+  path: /KIDICAP.Gateway/            # exakt geprüft, reserviert wie die OIDC-Pfade
+  title: KIDICAP
+  template_dir: /app/sheriff-config/portal   # optional; ohne: eingebaute Vorlage
+  cache_seconds: 0
+
+# endpoints/<kürzel>-app.yaml
+endpoint:
+  id: k-beispiel-app
+  enabled: ${ENDPOINT_K_BEISPIEL_APP_ENABLED:-true}
+  catalog:
+    title: K.Beispiel
+    description: Kurzbeschreibung für die Übersicht
+    entry: /KIDICAP.Gateway/app/K.Beispiel/
+    order: 10
+----
+
+* *Reservierter Pfad.* `portal.path` wird exakt und vor der Routentabelle geprüft, wie die OIDC-Pfade
+  (`ReservedPathRegistry`). Damit ist die Kontextwurzel belegbar, ohne Catch-all.
+* *Katalog.* Ein `catalog`-Block an einem Endpunkt macht ihn zu einem Eintrag; aktiv ist der Eintrag, wenn
+  der Endpunkt nach Auflösung der Platzhalter `enabled` ist. Sortierung nach `order`, dann `title`.
+* *Vorlage.* Eingebaute Vorlage; optional ein Verzeichnis mit eigener Vorlage und statischen Dateien. Werte
+  werden immer HTML-escaped. Festes Datenmodell (ist ein Vertrag):
++
+[cols="1,3", options="header"]
+|===
+| Feld | Inhalt
+
+| `title` | `portal.title`
+| `apps[]` | `title`, `description`, `entry`
+| `session.authenticated`, `session.username` | aus der Session, `username` aus `preferred_username`
+| `links.login`, `links.logout` | die reservierten `oidc`-Pfade, `login` mit `returnUrl` auf die Übersicht
+| `notice` | Hinweis aus einer festen Liste, z. B. `logged-out` (siehe unten), nie Freitext aus der Anfrage
+| `context_path` | der gebaute Kontextpfad
+|===
+* *Abmeldung.* `oidc.logout.final_redirect` darf auf `portal.path` mit `?notice=logged-out` zeigen; die
+  Seite zeigt dann „abgemeldet“.
+* *Antwort.* `text/html; charset=utf-8`, eigene `Content-Security-Policy` (`default-src 'self'`, keine
+  Inline-Skripte), `nosniff`, `Cache-Control: no-store`, sobald Sitzungsdaten im HTML stehen. Nur `GET`
+  und `HEAD`.
+
+*Abgrenzung.* Zweite Stufe, nicht Teil der ersten Umsetzung: Sichtbarkeit je Nutzer
+(`catalog.visible_when` über Claims oder Rollen, setzt <<as-7>> voraus) und Zustand der Anwendung aus dem
+Circuit Breaker (Vorsicht: gibt Interna preis).
+
+*Abnahme.* Boot-Fehler bei Überschneidung von `portal.path` mit anderen reservierten Pfaden oder bei
+`entry` außerhalb der eigenen Origin. Übersicht listet genau die aktiven Einträge, auch nach Umschalten per
+`ENDPOINT_<ID>_ENABLED`. Escaping-Test mit Sonderzeichen im Titel. CSP-Header vorhanden. Natives Image.
+
+*Migration.* Statische Startseite `static/index.html` entfällt; `catalog`-Blöcke in die
+`<kürzel>-app.yaml`; `final_redirect` auf `portal.path`; die alte Adresse der Startseite leitet per
+<<as-3>> auf die Übersicht.
+
+[[as-2]]
+== AS-2: HTML-Fehlerseiten für Seitenaufrufe
+
+*Ausgangslage.* Fehler des Gateways kommen immer als `application/problem+json`, auch bei einem
+Seitenaufruf im Browser (gemessen: unbekannte Route im Kontext). Eine fehlende Datei auf einer
+Verzeichnis-Asset-Route antwortet `404` sogar ganz ohne Rumpf und `Content-Type` (gemessen). Scheitert der Login-Rückweg,
+sieht die Nutzerin oder der Nutzer JSON.
+
+*Bedarf.* Für Seitenaufrufe eine verständliche Seite mit Weg zurück zur Übersicht.
+
+*Vorschlag.* `portal.error_pages: true`: Antwortet das *Gateway selbst* mit einem Fehler (keine Route,
+`403`, `413`, `502`/`503`/`504` aus dem Circuit Breaker, gescheiterter Callback) und bietet `Accept`
+`text/html` an, rendert es die Vorlage aus <<as-1>> mit `error.status` und `error.title`. Alle anderen
+Anfragen behalten `problem+json`. Fehlerantworten eines Ursprungs werden *nicht* ersetzt.
+
+*Abgrenzung.* Keine Details aus dem Problem (Stacktrace, Upstream-Adresse) im HTML.
+
+*Abnahme.* Gleiche Anfrage mit `Accept: text/html` → HTML, mit `Accept: application/json` →
+`problem+json`; Status bleibt gleich.
+
+*Migration.* Keine Konfiguration im Gateway außer dem Schalter.
+
+[[as-3]]
+== AS-3: Umleitungsaktion und Routen mit exaktem Pfad
+
+*Ausgangslage.* Routen kennen nur `path_prefix`; es gibt keine Aktion, die eine Umleitung antwortet (Code:
+Schema der Route). Eine statische HTML-Seite kann keinen `Location`-Header setzen — sie kommt als `200`
+(gemessen); möglich ist nur `meta refresh`. `/app/<Kürzel>` und `/app/<Kürzel>/` gehen an verschiedene
+Ziele (gemessen); ohne Schrägstrich lösen relative Adressen außerhalb der Anwendung auf.
+
+*Bedarf.* Einstieg ohne Schrägstrich auf die Form mit Schrägstrich lenken, Kurzadressen, Umzüge von
+Adressen ohne Bruch.
+
+*Vorschlag.*
+
+[source,yaml]
+----
+routes:
+  - id: k-beispiel-einstieg
+    match:
+      path: /KIDICAP.Gateway/app/K.Beispiel      # exakt; schließt path_prefix aus
+    redirect:
+      location: /KIDICAP.Gateway/app/K.Beispiel/
+      status: 308                                # 301, 302, 303, 307, 308
+      keep_query: true
+----
+
+* *`match.path`* vergleicht exakt; bei gleicher Adresse hat eine exakte Route Vorrang vor einer
+  Präfix-Route.
+* *`redirect`* ist eine Endaktion wie `upstream` oder `asset` und unter jedem Anchor-Typ zulässig.
+* `location` ist ein Pfad derselben Origin; absolute URLs nur mit ausdrücklichem `allow_external: true`
+  (keine offene Weiterleitung). Keine Platzhalter aus der Anfrage außer der Query bei `keep_query`.
+
+*Abnahme.* Exakte Route gewinnt gegen Präfix-Route; Query bleibt; Boot-Fehler bei externer `location`
+ohne Freigabe.
+
+*Migration.* Je Anwendung eine Einstiegsroute ohne Schrägstrich; alte Adressen (z. B. Startseite der
+Iteration 1) als Umleitung.
+
+[[as-4]]
+== AS-4: `base_url` optional für Endpunkte ohne Upstream
+
+*Ausgangslage.* Jeder Endpunkt braucht eine auflösbare `base_url`, auch wenn keine Route dorthin geht
+(Code: Schema, Pflichtfeld). `gateway-pages.yaml` leiht sich deshalb den Alias einer Anwendung.
+
+*Vorschlag.* `base_url` nur Pflicht, wenn eine Route des Endpunkts einen Upstream braucht (Proxy). Asset-
+mit Verzeichnisquelle und Umleitungsrouten kommen ohne aus.
+
+*Migration.* `base_url` aus `gateway-pages.yaml` entfernen; Abweichung in
+link:anwendungen.adoc#abweichungen[Anwendungen im Gateway] entfällt.
+
+[[as-5]]
+== AS-5: Session prüfen, ohne den Bearer weiterzugeben
+
+*Ausgangslage.* Auf einer Route mit `require: session` injiziert das Gateway immer den mediierten Bearer,
+auch zu einem Ursprung, der nur Dateien ausliefert; `forward.headers_deny: ["Authorization"]` verhindert
+das nicht (gemessen).
+
+*Bedarf.* Oberflächen, die sich die Anmeldung vom Gateway erzwingen lassen, ohne dem Ursprung des
+Frontends ein Token zu geben.
+
+*Vorschlag.*
+
+[source,yaml]
+----
+auth:
+  require: session
+  token_relay: false        # Vorgabe true
+----
+
+Die Session wird geprüft (inklusive Umleitung zum Login bei Seitenaufrufen), aber kein `Authorization`
+gesetzt; ein eingehender `Authorization`-Header wird wie bisher nicht weitergereicht.
+
+*Abnahme.* Echo-Ursprung sieht kein `Authorization`; ohne Session unverändert `302` bzw. `401`.
+
+*Migration.* Oberflächen-Routen mit `require: session` bekommen `token_relay: false`.
+
+[[as-6]]
+== AS-6: Rückkehradresse des Logins mit Query, konfigurierbare Vorgabe
+
+*Ausgangslage.* Der Seitenaufruf einer Session-Route ohne Session kehrt nach dem Login auf den Pfad
+*ohne Query* zurück (gemessen). Die Vorgabe-`returnUrl` ist fest `/` und damit außerhalb des Kontextpfads
+(Code: `LoginFlow.DEFAULT_RETURN_URL`).
+
+*Vorschlag.* Die gemerkte Rückkehradresse enthält die Query (weiter nur dieselbe Origin);
+`oidc.login.default_return_url` konfigurierbar, beim Boot auf dieselbe Origin geprüft, sinnvoll auf
+`portal.path`.
+
+*Abnahme.* `…/liste/1?tab=a` ohne Session → nach dem Login `…/liste/1?tab=a`; Login ohne `returnUrl` →
+Vorgabe.
+
+*Migration.* `default_return_url` setzen; Aufrufer müssen keine `returnUrl` mehr erzwingen.
+
+[[as-7]]
+== AS-7: Userinfo gibt strukturierte Claims als JSON aus
+
+*Ausgangslage.* Strukturierte Claims kommen als Javas `toString`, Listen als `"[A, B]"` (gemessen,
+link:open-issues.adoc#userinfo-format[Offene Punkte]).
+
+*Vorschlag.* Claims in ihrer JSON-Form aus dem ID-Token übernehmen (Objekt, Array, Zahl, Wahrheitswert).
+
+*Abnahme.* Die bestehende `HINWEIS`-Prüfung im Integrationstest wird zur harten Prüfung.
+
+*Migration.* `HINWEIS` in `integration-tests/checks.sh` in eine Prüfung umwandeln.
+
+[[as-8]]
+== AS-8: `security_headers` je Anchor, CSP und Vorrang
+
+*Ausgangslage.* `security_headers` am Anchor ist laut Dokumentation wirksam, tatsächlich wird nur der
+globale Block angewendet (gemessen). Global überschreibt er gleichnamige Header des Ursprungs (gemessen).
+Es gibt keinen Schlüssel für `Content-Security-Policy`.
+
+*Vorschlag.* Anchor-Block wirksam machen (Rangfolge Anchor vor global). Schlüssel
+`content_security_policy`. Je Header ein Modus `set` (überschreiben) oder `default` (nur setzen, wenn der
+Ursprung ihn nicht gesetzt hat) — damit können Frontends ihre eigene CSP behalten und das Gateway
+trotzdem einen Boden setzen.
+
+*Abnahme.* Anchor-`frame_deny` wirkt nur unter dem Anchor; `default` lässt einen Header des Ursprungs
+stehen.
+
+*Migration.* Gemeinsame Header aus dem globalen Block je Anchor verfeinern; `api` und `app` getrennt.
+
+[[as-9]]
+== AS-9: `upstream.path` und Alias-Basispfad
+
+*Ausgangslage.* `upstream.path` *ersetzt* den Basispfad des Alias (Code:
+`RouteTableBuilder.applyRouteUpstreamPath`); die Dokumentation beschreibt ein Anhängen. Ohne Basispfad im
+Alias arbeitet `upstream.path` wie erwartet (gemessen).
+
+*Vorschlag.* Entscheiden und angleichen. Empfehlung: Verhalten wie dokumentiert (`base_url`-Pfad +
+`upstream.path` + Rest), weil Aliase dann Umgebungen tragen und Routen Pfade.
+
+*Migration.* Keine: das Gateway verwendet `upstream.path` nicht (Regel 7 in `CLAUDE.md`); die Regel kann
+danach gelockert werden.
+
+[[as-10]]
+== AS-10: Readiness bei gescheitertem JWKS-Abruf
+
+*Ausgangslage.* Readiness meldet `UP`, obwohl der erste JWKS-Abruf gescheitert ist; ein neuer Versuch
+folgt erst nach dem Refresh-Intervall (API-Sheriff#194). Der Integrationstest umgeht das mit der
+Startreihenfolge.
+
+*Vorschlag.* Readiness `DOWN`, solange für einen konfigurierten Issuer kein Schlüsselsatz geladen ist;
+schnellerer Wiederholungsversuch mit Backoff.
+
+*Migration.* Startreihenfolge im Test kann bleiben; `wait-for-ready.sh` wird aussagekräftiger.
+
+[[as-11]]
+== AS-11: `Location` auf Proxy-Routen umschreiben
+
+*Ausgangslage.* Ein `Location` des Ursprungs wird unverändert weitergereicht (gemessen); leitet ein
+Frontend auf seinen eigenen absoluten Pfad um, verlässt der Browser das Gateway.
+
+*Vorschlag.* Optional je Route `upstream.rewrite_location: true`: ein `Location`, der mit dem Basispfad des
+Upstreams beginnt, wird auf das Routenpräfix abgebildet.
+
+*Priorität niedrig:* der Vertrag für Oberflächen verlangt ohnehin, dass Frontends nicht auf eigene absolute
+Pfade umleiten (link:ui-einstiege.adoc#vertrag[Vertrag]).
+
+[[as-12]]
+== AS-12: Index- und Fallback-Datei für Asset-Routen
+
+*Ausgangslage.* Asset-Routen kennen weder Directory-Index noch SPA-Fallback; ohne Dateiendung wird
+`application/octet-stream` ausgeliefert (gemessen).
+
+*Vorschlag.* `asset.index: index.html` für Verzeichnisadressen, `asset.fallback: index.html` für
+unbekannte Pfade ohne Dateiendung.
+
+*Priorität niedrig:* Oberflächen laufen per Proxy; gebraucht erst, wenn eine Oberfläche aus dem Image
+oder ohne eigenen Server ausgeliefert werden soll.
+
+[[as-13]]
+== AS-13: Query-Werte nach der Dekodierung prüfen
+
+*Ausgangslage.* Das Filterprofil `strict` weist in Query-Werten Leerzeichen (`%20` und `+`), Umlaute
+(`%C3%BC`), `:`, `/`, `"`, `%`, `#`, `<` und `>` mit `400` ab (gemessen, `INVALID_CHARACTER` bzw.
+`INVALID_ENCODING at PARAMETER_VALUE`). `lenient` lässt zusätzlich nur Umlaute durch — dafür aber auch
+Steuerzeichen, CR/LF und Doppelkodierung (gemessen). Ursache (Code):
+
+* API Sheriff übergibt die *dekodierten* Werte (`GatewayEdgeRoute.java:1197`, Vert.x `raw.params()`) an die
+  Parameter-Pipeline von `cui-http`.
+* `cui-http` prüft zuerst die Zeichen (`URLParameterValidationPipeline`: Länge → Zeichen → Dekodierung →
+  Normalisierung → Muster) gegen `CharacterValidationConstants.RFC3986_QUERY_CHARS` — den Zeichensatz der
+  *kodierten* Form: unreserved plus `?&=!$'()*+,;`. Darin fehlen selbst `:`, `@` und `/`, die RFC 3986
+  im Query-Teil erlaubt, und `%` für kodierte Zeichen.
+
+`minimal` lässt alles durch, ist auf authentifizierten Routen aber verboten.
+
+*Bedarf.* Browser-Anwendungen tragen Freitext und strukturierte Werte in Query-Parametern: Suchbegriffe
+(„Max Müller“), Zeitstempel, JSON-Arrays des Routers. Heute scheitert damit die Freitextsuche jedes
+Backends unter `/api`; das Gateway umgeht das nur auf dem öffentlichen Anchor `app` mit `minimal`.
+
+*Vorschlag.*
+
+* API Sheriff übergibt die Query *roh* (kodiert) an die Pipeline, oder `cui-http` prüft den Zeichensatz der
+  kodierten Form nur auf kodierter Eingabe.
+* Nach der Dekodierung gelten Prüfungen auf *Bedeutung* statt auf Zeichenklassen: Nullbyte, Steuerzeichen
+  (außer ggf. Tab), CR/LF, Doppelkodierung, ungültiges UTF-8 — abgewiesen; druckbare Unicode-Zeichen,
+  Leerzeichen und die RFC-3986-`pchar` (`:`, `@`, `/`) — zugelassen.
+* `RFC3986_QUERY_CHARS` um `:`, `@`, `/` und `%` (für Prozent-Kodierung) ergänzen.
+
+*Abnahme.* Unter `strict`: `q=Max%20M%C3%BCller`, `q=2026-09-15T10%3A00%3A00Z`, `q=a%2Fb`,
+`q=%5B%22a%22%5D` → durchgelassen und kodiert weitergereicht; `%00`, `%01`, `%0D%0A`, `%252F` →
+abgewiesen.
+
+*Migration.* Anchor `app` zurück auf das globale Profil (`security_filter` entfernen); die Prüfung
+„Backend-Query mit Leerzeichen (AS-13)“ im Integrationstest auf `401` umstellen. Voraussetzung dafür, dass
+Oberflächen-Routen `require: session` bekommen (FE-8 der Anwendung K.Organisation).
+
+[[as-14]]
+== AS-14: Scopes global plus Endpunkt, Scope-Step-up
+
+*Ausgangslage (Code).*
+
+* `oidc.scopes` ist *eine* Liste für das ganze Gateway. Sie geht unverändert in die
+  Client-Konfiguration (`BffRuntimeProducer.java:232`, `.scopes(oidc.scopes())`) und damit in *jeden*
+  Autorisierungs-Request, egal welche Anwendung den Login auslöst.
+* Am Endpunkt und an der Route gibt es nur `auth.required_scopes`. Das *prüft* ein vorhandenes Token
+  (`SessionAuthenticationStage.java:158-163` für Session-Routen, `AuthenticationStage.java:148` für
+  Bearer-Routen) und lehnt mit `SCOPE_MISSING` ab; *angefordert* wird damit nichts.
+* Step-up (`session.step_up`, RFC 9470, `StepUpCoordinator`) fordert nur einen höheren
+  Authentifizierungskontext (`acr_values`, `max_age`) nach, keine Scopes.
+
+Folge im KIDICAP Gateway: die Scopes jeder Anwendung stehen in der gemeinsamen `gateway.yaml`
+(K.Organisation: `roles`, `kidicap_token_*`, `kidicap_userinfo_permissions`). Jede Anwendung ändert die
+gemeinsame Datei, und jeder Login fordert die Scopes *aller* Anwendungen an.
+
+*Begriff.* `oidc.scopes` sind keine „vorab genehmigten“ Scopes im OAuth-Sinn, sondern die Scopes, die das
+Gateway beim Login *anfordert*. Was der IdP ohne Anforderung immer ausstellt, legt der Client beim IdP fest
+(Keycloak: *Default Client Scopes*; *Optional Client Scopes* nur auf Anforderung). Für eine echte
+Minimierung müssen anwendungsspezifische Scopes am Client *optional* sein — sonst stehen ihre Claims
+unabhängig von dieser Änderung in jedem Token.
+
+*Bedarf.* Global nur das Anwendungsneutrale (`openid`, `profile`, `email`); die Scopes einer Anwendung in
+ihrer Endpunktdatei. Beim Login wird *nicht* abgefragt, was alle Anwendungen brauchen, sondern die
+Minimalmenge für die Anfrage, die den Login auslöst. Braucht eine spätere Anfrage mehr, greift ein
+*Scope-Step-up*.
+
+*Vorschlag.* Zwei Ebenen, nicht mehr:
+
+[source,yaml]
+----
+# gateway.yaml — Basis jeder authentifizierten Anfrage
+oidc:
+  scopes: [openid, profile, email]
+
+# endpoints/k-beispiel-api.yaml
+endpoint:
+  id: k-beispiel-api
+  anchor: api
+  scopes: [roles, k_beispiel_token_permissions]   # neu: gilt für alle Routen dieses Endpunkts
+  routes:
+    - id: k-beispiel-api
+      match: { path_prefix: /KIDICAP.Gateway/api/K.Beispiel/api }
+----
+
+*Nötige Scopes einer Anfrage* — die Minimalmenge, aus der getroffenen Route ermittelt:
+
+----
+nötig(Anfrage) = oidc.scopes ∪ endpoint.scopes   (Endpunkt der getroffenen Route)
+----
+
+Beide Ebenen gelten *zugleich* — die globalen UND die des Endpunkts; als Menge ist das die Vereinigung.
+*Additiv:* der Endpunkt ergänzt die globalen Scopes, er ersetzt sie nie. Das weicht von `auth` ab (Rangfolge
+Route → Endpunkt → Anchor, blockweise ersetzt) und steht deshalb bewusst *nicht* im `auth`-Block, sondern als
+eigener Schlüssel `endpoint.scopes`; die Dokumentation von API Sheriff muss die Additivität ausdrücklich
+nennen.
+
+*Warum nur zwei Ebenen.* Die Anchors sind anwendungsübergreifend (`app`, `api`) — ein Scope dort wäre
+faktisch global. Scopes je Route würden nur Sinn ergeben, wenn Scopes Rechte je Operation tragen; die
+Autorisierung liegt aber in den Claims, die das Backend auswertet. Der Endpunkt gehört genau einer Anwendung
+und einem Zweck. `endpoint.scopes` ersetzt `auth.required_scopes`; der alte Schlüssel entfällt ersatzlos
+(vor 1.0 ohne Übergang), damit Anfordern und Prüfen nicht auseinanderlaufen.
+
+*Ablauf.*
+
+[cols="1,3", options="header"]
+|===
+| Situation | Verhalten
+
+| Login
+| Angefordert wird `nötig(Anfrage)` der Anfrage, die den Login auslöst — beim Seitenaufruf ohne Session die
+  aufgerufene Route, bei `/auth/login` die Route hinter der `returnUrl`; führt sie auf keine
+  authentifizierte Route (Startseite), nur `oidc.scopes`.
+
+| Session-Route, Token deckt `nötig(Anfrage)`
+| Durchgelassen.
+
+| Session-Route, Scopes fehlen — *Scope-Step-up*
+| Seitenaufruf: Autorisierung mit `gewährt ∪ nötig(Anfrage)`, zuerst still (`prompt=none`), ohne
+  SSO-Session des IdP interaktiv; danach Rückkehr auf die Anfrage — derselbe Pfad wie der bestehende
+  Step-up (`StepUpCoordinator`), nur mit Scopes statt `acr_values`. API-Aufruf: `403` mit
+  `WWW-Authenticate: Bearer error="insufficient_scope", scope="<fehlende>"` (RFC 6750); die Oberfläche
+  navigiert, damit der Step-up greift.
+
+| Bearer-Route
+| Nur Prüfung von `nötig(Anfrage)` gegen das eingehende Token, `403 insufficient_scope`; nachfordern kann
+  das Gateway hier nicht.
+|===
+
+Typischer Fall: der Login über die Oberfläche einer Anwendung fordert die Scopes des Oberflächen-Endpunkts
+an; der erste Aufruf ihres Backends löst einmal je Session den Step-up auf die Scopes des Backend-Endpunkts
+aus. Das ist gewollt — die Session wächst genau um das, was gebraucht wird.
+
+*Folge der Additivität für die Session.* Gewährte Scopes bleiben bis zum Ende der Session, und die Session
+gilt für alle Anwendungen: nach dem Besuch von Anwendung B trägt das mediierte Token auch deren Scopes, wenn
+danach Anwendung A aufgerufen wird. Das muss in der Dokumentation stehen. Wer das nicht will, braucht die
+zweite Stufe.
+
+*Stufen.*
+
+. *Minimalmenge und Scope-Step-up* wie oben.
+. *Token je Endpunkt auf `nötig(Anfrage)` eingeschränkt (zu bewerten).* Der mediierte Bearer trägt nur die
+  nötigen Scopes — per Refresh mit eingeschränktem `scope` (RFC 6749 §6) oder Token Exchange (RFC 8693),
+  je Scope-Satz zwischengespeichert. Erst das verhindert, dass das Backend der Anwendung A Claims der
+  Anwendung B sieht; ob Keycloak das mit dem gemeinsamen Client trägt, ist zu prüfen.
+
+*Abgrenzung.* `oidc.user_info.allowed_claims` bleibt global; eine Allowlist je Anwendung wäre ein eigener
+Punkt (die Userinfo kennt keine auslösende Route). Endpunkte, deren Routen alle `require: none` haben,
+lösen weder Login noch Step-up aus; `endpoint.scopes` dort ist ein Boot-Fehler.
+
+*Abnahme.*
+
+* Login über einen Seitenaufruf: `scope`-Parameter genau `oidc.scopes ∪ endpoint.scopes` des getroffenen
+  Endpunkts; über `/auth/login` mit `returnUrl` auf die Startseite genau `oidc.scopes`.
+* Ein Endpunkt kann globale Scopes nicht entfernen.
+* Session ohne die Scopes eines anderen Endpunkts: Seitenaufruf → Step-up, still, danach `200`; API-Aufruf →
+  `403 insufficient_scope` mit den fehlenden Scopes; nach dem Step-up `200`.
+* Bearer-Route ohne nötigen Scope → `403 insufficient_scope`.
+* Boot-Fehler bei `endpoint.scopes` an einem Endpunkt ohne authentifizierte Route; `auth.required_scopes`
+  ist kein gültiger Schlüssel mehr (Schema).
+
+*Migration.* `oidc.scopes` auf `openid`, `profile`, `email`; `roles` und `kidicap_token_*` als
+`endpoint.scopes` in `k-organisation-api.yaml`; `kidicap_userinfo_permissions` in `k-organisation-app.yaml`,
+sobald die Oberfläche `require: session` hat (FE-8). In Keycloak die `kidicap_*`-Scopes am Gateway-Client
+als *optional* führen, sonst stehen sie trotzdem in jedem Token. Dokumentation: `doc/anwendungen.adoc`
+(Grenzen, Checkliste) auf Scopes je Endpunkt umstellen, mit Hinweis auf die Additivität.

@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-15",
+  "slug": "routing-and-headers",
+  "workstream": "WS-02",
+  "status": "shipped",
+  "plan_marshall_plan_id": "routing-and-response-headers",
+  "pr": "#320",
+  "landing": "landings/PLAN-15.md",
+  "seq": 3
+}
