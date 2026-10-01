@@ -154,11 +154,11 @@ class BffSessionScopeParityIT {
 
         /** The {@code require: session} routes; the login returns to a {@code require: none} asset. */
         SESSION_ROUTE("require: session route",
-                "/assets/static/index.html",
-                "/bff-session/scoped/get",
-                "/auth/step-up?returnUrl=%2Fbff-session%2Fscoped%2Fget",
-                "/bff-session/unassigned/get",
-                "/auth/step-up?returnUrl=%2Fbff-session%2Funassigned%2Fget"),
+            "/assets/static/index.html",
+            "/bff-session/scoped/get",
+            "/auth/step-up?returnUrl=%2Fbff-session%2Fscoped%2Fget",
+            "/bff-session/unassigned/get",
+            "/auth/step-up?returnUrl=%2Fbff-session%2Funassigned%2Fget"),
 
         /** The SESSION branch of the {@code session_fallback} routes; the login returns to the portal. */
         SESSION_FALLBACK_ROUTE("session_fallback route, session established through the portal",

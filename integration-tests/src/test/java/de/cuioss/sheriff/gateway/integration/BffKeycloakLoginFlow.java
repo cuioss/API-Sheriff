@@ -231,7 +231,7 @@ final class BffKeycloakLoginFlow {
      *                        silent ({@code prompt=none}) session widening depends on. Immutable
      */
     record Session(Map<String, String> gatewayCookies, Cookies callbackCookies, String callbackLocation,
-            Map<String, String> keycloakCookies) {
+    Map<String, String> keycloakCookies) {
     }
 
     /**
