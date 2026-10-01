@@ -1762,7 +1762,7 @@ class BffRuntimeProducerTest {
          * endpoint, so the grant itself is refused — the factory call happens before the post.
          */
         @Test
-        @DisplayName("the assembled refresh binding requests the session's active scope set A, never the static oidc.scopes")
+        @DisplayName("the assembled refresh binding requests exactly the set it is given, never the static oidc.scopes")
         void refreshBindingRequestsActiveScopes() {
             RecordingProducer recording = recordingProducer();
             TokenRefreshCoordinator coordinator = single(

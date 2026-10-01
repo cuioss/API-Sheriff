@@ -104,7 +104,7 @@ import org.jspecify.annotations.Nullable;
  *       path;</li>
  *   <li><strong>a missing scope lies outside {@code S}</strong>, or the refresh did not obtain the
  *       set — a <em>navigation</em> is redirected {@code 302} through the {@link WideningInitiation}
- *       seam, which widens the live session to {@code S ∪ neededScopes} (a silent attempt first)
+ *       seam, which widens the live session, requesting {@code S ∪ neededScopes} (a silent attempt first)
  *       and returns to the requested URL; anything else gets {@code 403}
  *       {@code application/problem+json} via {@link EventType#SCOPE_MISSING}, carrying the problem
  *       extension members {@value #MISSING_SCOPES_MEMBER} (the missing scope names, sorted) and — only
@@ -259,7 +259,7 @@ public final class SessionAuthenticationStage {
             widenOrRefuse(request, route, session, missing, now);
             return;
         }
-        // Everything missing was granted before: one refresh requesting A ∪ missing restores it.
+        // Everything missing lies inside S: one refresh requesting A ∪ missing.
         Set<String> requested = new TreeSet<>(session.activeScopes());
         requested.addAll(missing);
         RefreshResult scoped = scopeRefresh.refreshForScopes(session, cookieHeader, requested, now);

@@ -122,8 +122,8 @@ to declare endpoint scopes and one derivation that reads it.
 
 === Risks
 
-* *Session-wide scope growth is accepted.* Scopes requested when a session is established stay with
-  the session for its whole life, and the token relayed to every session route carries all of them.
+* *Session-wide scope growth is accepted.* The token relayed to every session route carries every
+  scope the session holds.
   A session that logged in through a scoped endpoint therefore presents that endpoint's scopes to
   every other session-route upstream. The exposure is limited by the identity provider granting only
   the requested scopes and by `token_relay: false` on origins that need no token. It is tracked as

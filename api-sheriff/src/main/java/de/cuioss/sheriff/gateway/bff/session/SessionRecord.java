@@ -67,7 +67,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>The active scope set {@code A}.</strong> {@link #activeScopes()} is the scope set the
  * session's mediated access token was granted. After login it is the access token's {@code scope}
  * claim, or the scope set the login requested when the token carries none; after a refresh it is
- * the refresh response's {@code scope}, or unchanged when the response omits it (RFC 6749 §5.1:
+ * the refresh response's {@code scope}, or the requested set when the response omits it (RFC 6749 §5.1:
  * omitted means identical to what was requested). It is the {@code scope} the near-expiry refresh
  * grant sends, so a refresh never narrows the session back to the static {@code oidc.scopes} and
  * never widens it past what was granted (ADR-0048). Scope names are not credentials, so

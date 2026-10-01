@@ -64,7 +64,7 @@ so the decision also has to say when a scope leaves `S`.
 == Decision
 
 *A session route never relays a session that lacks a scope the route needs. It compares on every
-request, obtains what is missing -- by one refresh when the user already granted it, by widening the
+request, obtains what is missing -- by one refresh when it lies inside `S`, by widening the
 live session when not -- and refuses when the identity provider does.*
 
 * *The comparison runs on every session request.* After the session is resolved and the near-expiry
@@ -177,8 +177,7 @@ session back unchanged, and the stage goes straight to widening.
   authenticated caller of its routes, and no token lacking it reaches the upstream.
 * A satisfied route costs nothing. The comparison is a set containment check on values the session
   already holds: no identity-provider call, no rotated token, no `Set-Cookie`.
-* A mismatch is recoverable. A user reaches a scoped route from any session with at most one consent,
-  and with none when the scope was granted before.
+* A mismatch is recoverable. A user reaches a scoped route from any session with at most one consent.
 * The session stays the same session across a widening. Its identifier, authentication time and
   absolute expiry are kept, so a widening neither creates a second session to track nor extends how
   long the session lives.

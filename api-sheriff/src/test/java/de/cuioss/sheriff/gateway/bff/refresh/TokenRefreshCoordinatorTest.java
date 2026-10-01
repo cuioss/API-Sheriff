@@ -162,8 +162,7 @@ class TokenRefreshCoordinatorTest {
     private static RotationResult rotation() {
         // The "IdP declared no scope on the refresh response" shape — a null grantedScope with
         // UNDECLARED — is the neutral value for the scheduling, single-flight, rebinding and
-        // failure-disposition cases: it leaves the session's active scope set unchanged. The
-        // ActiveScopeSet cases below pass a declared scope explicitly.
+        // failure-disposition cases. The ActiveScopeSet cases below pass a declared scope explicitly.
         return rotation(null, RotationResult.ScopeDelta.UNDECLARED);
     }
 
@@ -293,11 +292,11 @@ class TokenRefreshCoordinatorTest {
     }
 
     /**
-     * The active scope set {@code A}: the refresh grant requests it, and the rotated session's {@code A}
-     * follows the response's {@code scope}, or stays unchanged when the response omits it.
+     * The active scope set {@code A} on the near-expiry leg: the refresh grant requests it, and the rotated
+     * session's {@code A} follows the response's {@code scope}, or stays unchanged when the response omits it.
      */
     @Nested
-    @DisplayName("Active scope set A across a refresh")
+    @DisplayName("Active scope set A across a near-expiry refresh")
     class ActiveScopeSet {
 
         private RefreshOutcome refreshReturning(RotationResult rotation, List<Set<String>> requested) {

@@ -58,7 +58,7 @@ import org.jspecify.annotations.Nullable;
  *       redirected into the auth-code flow (navigation) or challenged 401
  *       {@code application/problem+json} (everything else). The session's active scope set is
  *       compared against the route's {@link RouteRuntime#getNeededScopes() needed scopes} on every
- *       request, whatever {@code token_relay} says: a missing scope the session was granted before is
+ *       request, whatever {@code token_relay} says: a missing scope inside the session's granted scope set is
  *       obtained by one refresh; any other missing scope redirects a navigation into a widening of
  *       the live session and answers everything else 403 {@link EventType#SCOPE_MISSING} as
  *       {@code application/problem+json} naming the missing scopes and, when

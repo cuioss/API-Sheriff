@@ -168,7 +168,7 @@ endpoint:
 | Served exactly as on a `require: session` route. The session's scopes are compared with the set
   the route needs. A session that carries them is relayed: its token goes upstream (unless
   `token_relay: false`) and is refreshed near expiry, and the session cookie is stripped. A session
-  lacking one is not relayed: a scope it was granted before is obtained by one refresh, any other is
+  lacking one is not relayed: a scope inside its granted set is obtained by one refresh, any other is
   obtained by widening the session on a navigation, and an XHR or API call gets `403`
   `application/problem+json` naming the `missing_scopes` and, when `oidc.step_up.path` is
   configured, a `step_up_url` (see <<scope-enforcement>>). Both branches enforce the same set; the
@@ -304,10 +304,10 @@ upstream, not the check from the request.
 
 | Nothing is missing
 | The request continues. The comparison is local: no call to the IdP, no rotated token, no cookie.
-| Something is missing, and the IdP granted it to this session before
+| Every missing scope lies inside the session's granted set
 | Exactly one refresh, requesting the active set plus the missing scopes. Navigations and API calls
   take this path alike.
-| Something is missing that the session was never granted, or the refresh did not obtain it
+| A missing scope lies outside the session's granted set, or the refresh did not obtain it
 | The session has to be *widened*. A navigation is redirected to the IdP; any other request is
   refused `403`.
 |===

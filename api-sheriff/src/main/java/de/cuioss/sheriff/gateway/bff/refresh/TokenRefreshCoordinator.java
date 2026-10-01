@@ -56,10 +56,10 @@ import org.jspecify.annotations.Nullable;
  * stateless mode — so the browser never sees a token and never drives a leg. The gateway re-implements
  * <strong>no</strong> OAuth leg: the engine owns the refresh grant and refresh-token rotation.
  * <p>
- * <strong>The refresh keeps the session's scope.</strong> The grant requests the session's active scope
- * set {@code A} ({@link SessionRecord#activeScopes()}), never the static {@code oidc.scopes}, so a
- * session that logged in on a route needing extra scopes keeps them across refreshes. The rotated
- * session's {@code A} becomes the response's {@code scope} — which may narrow it — or stays unchanged
+ * <strong>The refresh keeps the session's scope.</strong> The near-expiry grant requests the session's
+ * active scope set {@code A} ({@link SessionRecord#activeScopes()}), never the static {@code oidc.scopes},
+ * so a session that logged in on a route needing extra scopes keeps them across refreshes. The rotated
+ * session's {@code A} becomes the response's {@code scope} — which may narrow it — or the requested set
  * when the response omits {@code scope}. The near-expiry leg carries the session's granted scope set
  * {@code S} ({@link SessionRecord#grantedScopes()}) over unchanged, and no refresh ever adds to it.
  * <p>
@@ -731,8 +731,7 @@ public final class TokenRefreshCoordinator {
     }
 
     /**
-     * Rebuilds the session with the rotated token material, carrying every non-token component over
-     * from {@code previous} unchanged.
+     * Rebuilds the session with the rotated token material.
      * <p>
      * Because this reconstructs the record component-by-component, any component NOT copied here is
      * silently dropped from the rotated session. That is load-bearing for
@@ -741,11 +740,10 @@ public final class TokenRefreshCoordinator {
      * single-flight coalescing this coordinator depends on. Add a copy line here for every component
      * added to {@link SessionRecord}.
      * <p>
-     * The active scope set is the one component the rotation may change: it becomes the refresh
-     * response's {@code scope}, and becomes {@code requestedScopes} when the response omits or blanks it
-     * (RFC 6749 §5.1 — an omitted {@code scope} is identical to the one requested). On the near-expiry
-     * leg the requested set is {@code previous}'s own {@code A}, so an omitted {@code scope} leaves it
-     * unchanged.
+     * The active scope set becomes the refresh response's {@code scope}, and becomes
+     * {@code requestedScopes} when the response omits or blanks it (RFC 6749 §5.1 — an omitted
+     * {@code scope} is identical to the one requested). On the near-expiry leg the requested set is
+     * {@code previous}'s own {@code A}, so an omitted {@code scope} leaves it unchanged.
      * <p>
      * The granted scope set {@code S} is never added to — only a widening obtains a scope the session
      * was not granted. On the near-expiry leg it is copied verbatim, even when the response narrows

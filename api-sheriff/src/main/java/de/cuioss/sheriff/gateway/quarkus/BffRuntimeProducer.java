@@ -385,7 +385,7 @@ public class BffRuntimeProducer {
 
         // Session widening — the live-session sibling of the login flow, on the same pending store,
         // binding cookie and callback landing. Its authorization leg is built per call on
-        // ScopedEngineFlows because the widened set S ∪ needed is IdP-derived. Exactly one instance
+        // ScopedEngineFlows because the requested set S ∪ needed is IdP-derived. Exactly one instance
         // exists per runtime: the callback's interactive re-drive goes through it.
         SessionWidening sessionWidening = new SessionWidening(
                 (scopes, silent) -> scopedFlows.widen(metadata.get(), scopes, silent),

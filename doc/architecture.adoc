@@ -464,7 +464,7 @@ boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `Resolv
   indexed under the identity-provider session its tokens belong to. An identity-provider refusal is
   a terminal `403` that leaves the session unchanged.
 * *Refresh.* The session carries its active scope set `A` (the granted scope after login, the
-  refresh response's `scope` after each refresh, unchanged when omitted), and every near-expiry
+  refresh response's `scope` after each refresh, the requested set when omitted), and every near-expiry
   refresh requests exactly `A`, never the static `oidc.scopes`.
 * *The granted set is kept truthful.* `S` equals `A` at login and after a widening, which replaces
   it rather than adding to it. No refresh adds to `S` and a near-expiry refresh never changes it. A

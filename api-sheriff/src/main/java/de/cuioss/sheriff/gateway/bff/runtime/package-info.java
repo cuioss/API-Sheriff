@@ -31,7 +31,7 @@
  * is challenged {@code 401} {@code application/problem+json}.
  * <p>
  * The stage enforces the scopes a session route needs on every request. A scope missing from the
- * session's active set but granted to it before is obtained by one refresh; any other missing scope
+ * session's active set but inside its granted set is obtained by one refresh; any other missing scope
  * redirects a navigation into a widening of the live session and answers everything else
  * {@code 403} {@code application/problem+json} naming the missing scopes. A session short of a
  * needed scope is never relayed.

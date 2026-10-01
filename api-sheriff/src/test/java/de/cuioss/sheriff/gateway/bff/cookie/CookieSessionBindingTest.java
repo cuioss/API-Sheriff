@@ -128,9 +128,8 @@ class CookieSessionBindingTest {
 
     /**
      * Rebuilds {@code original} with a rotated access token, carrying every other component —
-     * notably the session nonce — over verbatim, exactly as the refresh coordinator's
-     * {@code rotate()} does. A re-seal test must carry the nonce forward this way: {@code persist}
-     * refuses a record without one rather than re-minting it.
+     * notably the session nonce — over verbatim. A re-seal test must carry the nonce forward this
+     * way: {@code persist} refuses a record without one rather than re-minting it.
      */
     private static SessionRecord withRotatedAccessToken(SessionRecord original, String rotatedAccessToken) {
         return SessionRecord.builder()
@@ -151,8 +150,7 @@ class CookieSessionBindingTest {
 
     /**
      * Rebuilds {@code original} with the given scope sets, carrying every other component over
-     * verbatim — the shape a refresh (new {@code A}, same {@code S}) or a widening (both widened)
-     * hands to {@code persist}.
+     * verbatim — the shape a refresh or a widening hands to {@code persist}.
      */
     private static SessionRecord withScopes(SessionRecord original, Set<String> activeScopes,
             Set<String> grantedScopes) {

@@ -71,8 +71,8 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * only); the network cost is the refresh grant itself.
  * <p>
  * <strong>Widening leg — never cached.</strong> {@link #widen} builds an {@link AuthorizationCodeFlow}
- * per call for the same reason: the set a live session widens to is its granted-scope set plus the
- * route's needed scopes, and the granted set is IdP-derived, so caching it would break the
+ * per call for the same reason: the set a widening requests is the session's granted-scope set plus
+ * the route's needed scopes, and the granted set is IdP-derived, so caching it would break the
  * "bounded by boot configuration" property of the login-flow cache. A silent widening additionally
  * carries {@code prompt=none}, added by a parameter-aware rewrite of the rendered URL in the same
  * style as {@link QueryResponseModeAuthorizationRequestBuilder#withQueryResponseMode}.
@@ -146,7 +146,7 @@ public final class ScopedEngineFlows {
     }
 
     /**
-     * Builds the authorization URL and transaction context for widening a live session to exactly
+     * Builds the authorization URL and transaction context for a widening requesting exactly
      * {@code scopes}, over an {@link AuthorizationCodeFlow} built for this call alone.
      * <p>
      * The flow is never cached: the widening set contains the session's IdP-derived granted scopes,
