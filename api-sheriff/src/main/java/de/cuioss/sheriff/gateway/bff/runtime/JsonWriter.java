@@ -23,8 +23,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * A minimal, dependency-free JSON serializer for the small, gateway-controlled bodies the gateway
- * authors itself: the curated user-info disclosure the {@link BffRuntime} renders (D11), and the
- * RFC 9457 problem extension members the edge appends to an {@code application/problem+json} body.
+ * authors itself.
  * It serializes only the value shapes those bodies produce — an insertion-ordered {@link Map} whose
  * leaves are {@link String}, {@link Number}, {@link Boolean}, {@link Collection}, nested {@link Map},
  * or {@code null} — with RFC 8259 string escaping. It is deliberately not a general-purpose JSON

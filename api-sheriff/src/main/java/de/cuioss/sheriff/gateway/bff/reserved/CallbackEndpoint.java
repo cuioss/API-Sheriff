@@ -98,7 +98,7 @@ import org.jspecify.annotations.Nullable;
  * binding cookie) is rejected {@code 403} even with a valid {@code state}. The returned
  * {@code state} must additionally match the resolved record's {@code state} (constant-time), so a
  * callback is honoured only when <em>both</em> the binding cookie resolves the record <em>and</em>
- * the {@code state} matches — the pre-session analogue of the session cookie.
+ * the {@code state} matches.
  * <p>
  * <strong>Engine-driven exchange.</strong> The endpoint hands the record's engine
  * {@code FlowContext} and the parsed parameters to the {@link CodeExchange} seam — the session

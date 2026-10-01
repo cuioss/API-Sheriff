@@ -113,13 +113,13 @@ import org.jspecify.annotations.Nullable;
  *       relayed.</li>
  * </ul>
  * Every name in {@value #MISSING_SCOPES_MEMBER} is drawn from the route's boot-configured
- * {@code neededScopes}, never from a token, so the response carries no token material.
+ * {@code neededScopes}, never from a token.
  * <p>
  * One case skips the refresh although everything missing lies inside {@code S}: when the near-expiry
  * leg has just re-bound the session with a new cookie, the request's own {@code Cookie} header still
  * names the binding that leg rotated away, so a second exchange started from it would present a
- * refresh token the identity provider has already retired. Such a request takes the widening branch;
- * the next request carries the new cookie and is refreshed normally.
+ * refresh token the identity provider has already retired. Such a request is treated like a scope
+ * outside {@code S}; the next request carries the new cookie and is refreshed normally.
  * <p>
  * The stage is framework-agnostic and driven entirely through its collaborators and seams, so it is
  * unit-testable without a container or a live IdP. The engine-side and edge-side wiring is supplied by the
@@ -173,7 +173,7 @@ public final class SessionAuthenticationStage {
      *                           the session's granted scope set
      * @param loginInitiation    the auth-code-flow initiation seam for a navigation redirect
      * @param wideningInitiation the session-widening seam a navigation is redirected through when a
-     *                           needed scope cannot be obtained by a refresh
+     *                           needed scope is not obtained by a refresh
      * @param onFailure          the resolved {@code oidc.session.refresh.on_failure} policy applied when
      *                           a refresh leaves the request without a token to mediate
      * @param stepUpPath         the configured {@code oidc.step_up.path} named as
@@ -204,7 +204,7 @@ public final class SessionAuthenticationStage {
      * @throws GatewayException {@code 401} when an unauthenticated non-navigation request is
      *                          challenged or a refresh failure is rejected under
      *                          {@link OnFailure#REJECT}; {@code 403} when a non-navigation request's
-     *                          session lacks a needed scope it cannot obtain by a refresh
+     *                          session lacks a needed scope it did not obtain by a refresh
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
@@ -292,7 +292,7 @@ public final class SessionAuthenticationStage {
     }
 
     /**
-     * Answers a request whose session lacks a needed scope no refresh can obtain. A navigation is
+     * Answers a request whose session lacks a needed scope no refresh obtained. A navigation is
      * redirected into a widening of the live session; anything else is refused {@code 403}. Either way
      * no bearer is recorded and the request never reaches the upstream.
      */
@@ -424,8 +424,7 @@ public final class SessionAuthenticationStage {
     /**
      * The single-flight near-expiry refresh seam (the D9 hook). The session runtime binds it to the
      * refresh coordinator, which owns the near-expiry decision, single-flight coalescing per session,
-     * and refresh-token rotation. The unwired binding returns the session unchanged with no cookies,
-     * so a gateway without the refresh coordinator injects the current mediated token verbatim.
+     * and refresh-token rotation. The unwired binding returns the session unchanged with no cookies.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -601,7 +600,7 @@ public final class SessionAuthenticationStage {
 
     /**
      * The session-widening seam for a navigation whose live session lacks a needed scope no refresh
-     * can obtain. The session runtime binds it to the runtime's widening coordinator, starting with a
+     * obtained. The session runtime binds it to the runtime's widening coordinator, starting with a
      * silent attempt: the identity provider is asked for the session's granted scopes united with
      * {@code neededScopes}, and the callback merges the grant into the live session and returns the
      * browser to {@code returnUrl}. A test binds it to a hand-built challenge.

@@ -37,7 +37,7 @@ import de.cuioss.tools.logging.CuiLogger;
  * server-side, so a session ended for {@code credential-rejected}, {@code redeemed-response-refused} or
  * {@code persist-failure} is ended only by the clearing {@code Set-Cookie}. A client that retains or
  * replays the sealed cookie would otherwise drive a fresh refresh grant to the identity provider, and a
- * {@code WARN ApiSheriff-111} with stack trace, on every near-expiry request until the absolute session
+ * {@code WARN ApiSheriff-111} with stack trace, until the absolute session
  * TTL. {@link TokenRefreshCoordinator} marks the presented refresh token when it ends such a session and
  * refuses a marked token locally, with no engine call, no revocation and no warning record.
  * <p>

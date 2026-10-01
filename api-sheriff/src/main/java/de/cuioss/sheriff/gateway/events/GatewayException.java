@@ -36,10 +36,10 @@ import org.jspecify.annotations.Nullable;
  * <strong>Problem extension members.</strong> A failure may additionally carry RFC 9457 extension
  * members ({@link #getProblemExtensions()}), which the edge writes into the
  * {@code application/problem+json} body after the standard members, in insertion order. Unlike the
- * message they <em>are</em> disclosed to the client, so a member must never carry token material, a
- * session identifier, or free text taken from the request: only values the gateway itself controls —
- * a name from its boot configuration, a URL it built from its own configured path — belong here.
- * A failure without extension members renders exactly the standard body.
+ * message they <em>are</em> disclosed to the client, so a member must never carry token material or a
+ * session identifier, and may carry text taken from the request, whatever that text contains, only
+ * percent-encoded inside a URL the gateway builds, never raw. A failure without extension members
+ * renders exactly the standard body.
  * <p>
  * <strong>Thread safety.</strong> Immutable once constructed; the extension members are held in an
  * unmodifiable map.
@@ -99,8 +99,8 @@ public class GatewayException extends RuntimeException {
      * @param problemExtensions the extension members rendered into the problem body after the standard
      *                          members, in iteration order; each value is a JSON-shaped value — a
      *                          {@link String}, {@link Number}, {@link Boolean}, {@link Collection} or
-     *                          {@link Map}. Must never carry token material or free text from the
-     *                          request (see the class documentation)
+     *                          {@link Map}. Must never carry token material or a session identifier,
+     *                          nor raw text from the request (see the class documentation)
      * @throws NullPointerException     when the map, a member name or a member value is {@code null}
      * @throws IllegalArgumentException when a member redefines a standard problem member
      *                                  ({@code type}, {@code title}, {@code status}, {@code detail},

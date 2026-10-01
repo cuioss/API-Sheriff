@@ -34,16 +34,14 @@ import de.cuioss.sheriff.gateway.routing.RouteMatcher;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Resolves the scope set a {@code /auth/login?returnUrl=} login requests, from the route the
- * browser will land on after the callback.
+ * Resolves the scope set for a return target, from the route the browser will land on.
  * <p>
  * A login started through the login-initiation endpoint has no selected route of its own — the
  * only hint of what the session is for is the post-login {@code returnUrl}. This resolver maps that
  * target onto the boot-built route table: when the same-origin, canonicalized path of the target
- * selects a route whose effective auth is not {@code none}, the login requests that route's
+ * selects a route whose effective auth is not {@code none}, the target resolves to that route's
  * {@link ResolvedRoute#neededScopes() neededScopes} — the same single derivation the session stage
- * requests for a navigation on that route and the bearer check enforces. In every other case the
- * login requests {@code oidc.scopes} only:
+ * and the bearer check enforce. In every other case it resolves to {@code oidc.scopes}:
  * <ul>
  *   <li>no {@code returnUrl}, a blank one, or one that fails the same-origin check
  *       ({@link PendingAuthorizationRecord#sameOrigin}) — cross-origin, schema-relative, backslash
@@ -62,10 +60,9 @@ import org.jspecify.annotations.Nullable;
  * matcher cannot be evaluated for a request that has not happened yet — it is treated as
  * non-matching rather than guessed.
  * <p>
- * The resolved set only decides what the login <em>requests</em>; it is never an authorization
- * decision. That decision is the session route's own: a session established from a target that
- * resolved to {@code oidc.scopes} is compared against the route's {@code neededScopes} when it
- * arrives there, and is refreshed or widened until it carries them — it is not relayed short of one.
+ * The resolved set is never an authorization decision. That decision is the session route's own:
+ * a session established from a target that resolved to {@code oidc.scopes} is compared against the
+ * route's {@code neededScopes} when it arrives there — it is not relayed short of one.
  * <p>
  * <strong>Thread safety.</strong> Immutable once built at boot; safe for concurrent use.
  *
@@ -90,8 +87,7 @@ public final class ReturnTargetScopes {
      * @param routeTable    the boot-built route table, in selection order
      * @param gatewayOrigin the gateway's own origin (the {@code redirect_uri} origin) — both the
      *                      same-origin reference and the host a target is matched on
-     * @param oidcScopes    the configured {@code oidc.scopes}, the set every non-route-specific login
-     *                      requests
+     * @param oidcScopes    the configured {@code oidc.scopes}
      */
     public ReturnTargetScopes(RouteTable routeTable, String gatewayOrigin, Collection<String> oidcScopes) {
         Objects.requireNonNull(routeTable, "routeTable");
@@ -102,9 +98,9 @@ public final class ReturnTargetScopes {
     }
 
     /**
-     * Resolves the scope set a login returning to {@code returnUrl} requests.
+     * Resolves the scope set for the return target {@code returnUrl}.
      *
-     * @param returnUrl the post-login return target the browser asked for, may be absent
+     * @param returnUrl the return target the browser asked for, may be absent
      * @return the matched authenticated route's {@code neededScopes}, or {@code oidc.scopes} in
      *         every other case; never {@code null}
      */

@@ -73,7 +73,7 @@ import org.jspecify.annotations.Nullable;
  *                     cannot collide. Re-sealed verbatim — never re-minted — so the identity is
  *                     stable for the life of the session
  * @param activeScopes the session's active scope set {@code A} (see {@code SessionRecord}); an absent
- *                     set normalizes to empty. Not an identity input, so a refresh may change it
+ *                     set normalizes to empty. Not an identity input
  * @param grantedScopes the session's granted scope set {@code S} (see {@code SessionRecord}); an
  *                      absent set normalizes to empty. Not an identity input either: a widening
  *                      replaces it, a scope-driven refresh may reduce it, and a near-expiry refresh

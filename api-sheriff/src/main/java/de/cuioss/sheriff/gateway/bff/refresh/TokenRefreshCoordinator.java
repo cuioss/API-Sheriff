@@ -70,7 +70,7 @@ import org.jspecify.annotations.Nullable;
  * {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED}: the session is kept but does not carry the
  * requested set — most notably because the exchange succeeded and the rotated session was persisted,
  * but the granted {@code scope} still lacks a requested member. No back-off is recorded and nothing is
- * logged at {@code WARN}, so the caller routes to widening.
+ * logged at {@code WARN}.
  * <p>
  * <strong>A processed scope refresh keeps {@code S} truthful.</strong> When the identity provider
  * processes the scope-driven grant and returns a {@code scope} lacking a requested member, every such
@@ -149,7 +149,7 @@ import org.jspecify.annotations.Nullable;
  * already-rotated token and makes no engine call. The scope-driven leg leads through the same map, so a
  * near-expiry refresh and a scope refresh on one session never present its refresh token twice; a
  * request that coalesces with a refresh of the other leg shares that refresh's result, and a scope
- * request whose shared result does not carry its requested set receives
+ * request whose shared current or refreshed session does not carry its requested set receives
  * {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED} with the shared session and cookies rather
  * than a second exchange. The pre-redemption back-off is read and written
  * under the same exclusion, so for one session only the leader decides whether an attempt is due.
@@ -396,9 +396,9 @@ public final class TokenRefreshCoordinator {
 
     /**
      * What a scope request that coalesced with another refresh receives: the shared outcome, except that
-     * a kept session which does not carry the requested set becomes {@code SCOPE_REFUSED} with the shared
-     * session and cookies. A second exchange is never started from here: in a stateless mode the request's
-     * own cookie still names the refresh token the shared refresh just rotated away.
+     * a current or refreshed session which does not carry the requested set becomes {@code SCOPE_REFUSED}
+     * with the shared session and cookies. A second exchange is never started from here: in a stateless
+     * mode the request's own cookie still names the refresh token the shared refresh just rotated away.
      */
     private static RefreshOutcome sharedForScopes(RefreshOutcome shared, Set<String> requested) {
         SessionRecord sharedSession = shared.session();
@@ -451,8 +451,7 @@ public final class TokenRefreshCoordinator {
         if (outcome.kind() == RefreshOutcome.Kind.REFRESHED && rotated != null
                 && !rotated.activeScopes().containsAll(requested)) {
             // The provider processed the grant but granted less than requested: the rotated session is
-            // persisted and kept — its S already without the refused scopes — nothing backs off, and
-            // the caller widens.
+            // persisted and kept — its S already without the refused scopes — and nothing backs off.
             return new Disposition(RefreshOutcome.scopeRefused(rotated, outcome.setCookieHeaders()),
                     disposition.liveRefreshToken());
         }
@@ -909,7 +908,7 @@ public final class TokenRefreshCoordinator {
      * representation, which is opaque in server mode and authenticated-encrypted in a stateless mode.
      *
      * @param kind             which of the refresh outcomes occurred
-     * @param session          the session to mediate from, present for {@link Kind#CURRENT},
+     * @param session          the carried session, present for {@link Kind#CURRENT},
      *                         {@link Kind#REFRESHED}, {@link Kind#DEFERRED} and {@link Kind#SCOPE_REFUSED},
      *                         {@code null} for {@link Kind#UNAVAILABLE} and {@link Kind#FAILED}
      * @param setCookieHeaders the {@code Set-Cookie} header values the re-bind produced, empty when
@@ -949,7 +948,7 @@ public final class TokenRefreshCoordinator {
              * carried with its cookies, its granted scope set already without the scopes the grant did not
              * return), the session carries no refresh token, or the refresh this request
              * coalesced with did not obtain the set. The session is kept, no back-off is recorded and
-             * nothing is logged at {@code WARN}; the caller routes to widening and never relays the carried
+             * nothing is logged at {@code WARN}; the caller never relays the carried
              * session short of its needed scopes. An outright {@code invalid_scope} refusal is not reported
              * here — it arrives classified {@code PRE_REDEMPTION} (TokenSheriff#763). Produced by
              * {@link TokenRefreshCoordinator#refreshForScopes}, and received by a near-expiry

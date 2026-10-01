@@ -83,8 +83,8 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@code code_challenge_method}, {@code acr_values}, {@code max_age}), and it is idempotent — a URL
  * that already carries {@code response_mode=query} comes back unchanged.
  * <p>
- * The same instance is wired into <em>both</em> engine seams that build an authorization URL — the
- * {@code AuthorizationCodeFlow} login leg and the {@code StepUpHandler} RFC 9470 re-drive leg — so
+ * The same instance is wired into <em>both</em> engine seams that build an authorization URL —
+ * {@code AuthorizationCodeFlow} and the {@code StepUpHandler} RFC 9470 re-drive leg — so
  * the step-up leg cannot keep emitting the broken mode.
  *
  * @author API Sheriff Team

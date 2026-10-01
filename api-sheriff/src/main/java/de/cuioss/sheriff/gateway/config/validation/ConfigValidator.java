@@ -719,8 +719,8 @@ public final class ConfigValidator {
      * Rule: a declared {@code oidc.login.default_return_url} must be same-origin with
      * {@code oidc.redirect_uri}.
      * <p>
-     * The value is where a browser is sent after login whenever the login carried no usable return
-     * target, so a cross-origin value would make every such login an open redirect to a foreign
+     * The value is where a browser is sent whenever no usable return target was supplied, so a
+     * cross-origin value would make every such redirect an open redirect to a foreign
      * origin. The check reuses {@link PendingAuthorizationRecord#sameOrigin}, the single predicate
      * the runtime applies to a request-supplied return target, so the boot review and the request
      * path can never disagree about what counts as same-origin: a gateway-relative path is admitted,

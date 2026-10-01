@@ -47,9 +47,9 @@ import org.jspecify.annotations.Nullable;
  * cookie ({@link BindingCookieCodec}); a callback is valid only when both the returned
  * {@code state} matches and the binding cookie resolves to this same record.
  * <p>
- * The record also carries the scope set the authorization request asked for. The callback uses it as
- * the session's active scope set when the issued access token carries no {@code scope} claim, so a
- * session always knows which scope set to refresh with.
+ * The record also carries the scope set the authorization request asked for. The callback falls back
+ * to it when the issued access token carries no {@code scope} claim, so a session always knows which
+ * scope set to refresh with.
  * <p>
  * <strong>Login versus widening.</strong> A record created by {@link #create} is a plain login: its
  * {@link #widening()} is {@code null} and its callback mints a new session. A record created by

@@ -117,7 +117,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
  * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
  * resolves for a {@code /auth/login?returnUrl=} target — and the refresh leg requests the session's
- * active scope set {@code A}, plus the missing scopes on a scope-driven refresh, both through
+ * active scope set {@code A}, plus the missing scopes on a scope-driven refresh, through
  * {@link ScopedEngineFlows}, which drives a flow over a
  * {@link ClientConfiguration} built for exactly that set by
  * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, step-up and revocation
@@ -128,7 +128,7 @@ import org.jspecify.annotations.Nullable;
  * active scope set against the route's {@code neededScopes} on every request, and the producer binds
  * the two seams it obtains a missing scope through: the scope-driven refresh seam to the same
  * {@link TokenRefreshCoordinator} the near-expiry seam drives (or, with refresh switched off, to a
- * pass-through that hands the session back unchanged, which leads straight to widening), and the
+ * pass-through that hands the session back unchanged), and the
  * widening seam to the runtime's one {@link SessionWidening}, always starting with a silent attempt.
  * {@code oidc.step_up.path} is handed to the stage as the path its {@code 403} answer names; when the
  * key is absent the answer names no step-up URL.
@@ -143,7 +143,7 @@ import org.jspecify.annotations.Nullable;
  * the whole refresh path and is applied here, at the two points that path is constructed: the
  * {@code CodeExchange} seam retains the exchange's refresh token only when refresh is on, and the
  * {@link TokenRefreshCoordinator} is assembled only when refresh is on. With the switch off the
- * stage's refresh seam degrades to the unwired binding — session unchanged, no cookies — and no refresh
+ * stage's refresh seams degrade to the unwired binding — session unchanged, no cookies — and no refresh
  * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
  * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: an
  * outcome carrying a session is mediated; a failed refresh — the session was destroyed —
@@ -313,7 +313,7 @@ public class BffRuntimeProducer {
         int maxSessions = declaredMaxSessions == null ? DEFAULT_MAX_SESSIONS : declaredMaxSessions;
         OidcConfig.Refresh refresh = session.refresh();
         // refresh.enabled is the switch for the WHOLE transparent-refresh path, not a hint: it governs
-        // both whether the refresh token is retained at login and whether the coordinator
+        // both whether the refresh token is retained and whether the coordinator
         // is assembled at all. Both applications are below; keeping them on one resolved boolean is
         // what stops the two halves drifting into a state where a credential is stored but no
         // machinery can ever redeem it.
@@ -371,7 +371,7 @@ public class BffRuntimeProducer {
 
         // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
         // widening, the step-up endpoint and the step-up re-drive all fall back to the same configured
-        // post-login target.
+        // target.
         String defaultReturnUrl = defaultReturnUrl(oidc);
 
         // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime, requesting
@@ -389,7 +389,7 @@ public class BffRuntimeProducer {
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
         // then hands the result to the refresh policy, which is where the exchange's refresh token is
-        // retained or dropped. See applyRefreshPolicy for why the drop happens at login rather than
+        // retained or dropped. See applyRefreshPolicy for why the drop happens at the exchange rather than
         // at storage time.
         CallbackEndpoint.CodeExchange codeExchange = (context, params) -> applyRefreshPolicy(
                 authorizationCodeFlow.exchange(metadata.get(), context, params, clientAuthentication),
@@ -424,7 +424,7 @@ public class BffRuntimeProducer {
                 ? sessionUnchanged()
                 : nearExpiryRefresh(refreshCoordinator);
         // With refresh switched off no grant can restore a scope, so the scope seam hands the session
-        // back unchanged and the stage goes straight to widening.
+        // back unchanged.
         SessionAuthenticationStage.ScopeRefresh scopeRefresh = refreshCoordinator == null
                 ? scopesUnobtainable()
                 : scopeRefresh(refreshCoordinator);
@@ -692,8 +692,8 @@ public class BffRuntimeProducer {
      * set: {@code SCOPE_REFUSED} (a narrower grant, no refresh token, or a shared refresh that did not
      * request it) and {@code DEFERRED} (a refresh that is backing off — which is also how an identity
      * provider's outright {@code invalid_scope} refusal arrives, TokenSheriff#763) both hand the kept
-     * session back. The stage compares the returned session against the route's needed scopes again
-     * and widens when it is still short, so neither is ever relayed under-scoped.
+     * session back. The stage compares the returned session against the route's needed scopes again,
+     * so neither is ever relayed under-scoped.
      *
      * @param coordinator the assembled refresh coordinator
      * @return the stage seam driving {@code coordinator}'s scope-driven leg
@@ -721,7 +721,7 @@ public class BffRuntimeProducer {
     /**
      * Selects the coordinator's ended-refresh-token marker by session mode. Cookie mode binds the bounded
      * in-memory marker, because {@code destroy} holds nothing server-side there and a retained sealed
-     * cookie would otherwise drive a fresh refresh grant on every near-expiry request; server mode binds
+     * cookie would otherwise drive a fresh refresh grant; server mode binds
      * the inert one, because {@code destroy} already removes the session from the store.
      *
      * @param session the resolved {@code oidc.session} block
@@ -769,9 +769,8 @@ public class BffRuntimeProducer {
     /**
      * The disabled binding of the scope-driven seam — the alternative {@link #scopeRefresh} adapts to.
      * With {@code oidc.session.refresh.enabled=false} no coordinator exists and no refresh token is
-     * retained, so no grant can restore a scope: the seam yields the session verbatim, never reaches the
-     * engine, and the stage — finding the session still short of a needed scope — goes straight to
-     * widening.
+     * retained, so no grant can restore a scope: the seam yields the session verbatim and never reaches
+     * the engine.
      *
      * @return the unwired stage seam
      */

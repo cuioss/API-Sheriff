@@ -16,9 +16,9 @@
 /**
  * Transient state for the BFF auth-code flow (D2b).
  * <p>
- * Between the redirect to the IdP and the callback — before any session exists — the gateway
- * must hold the OIDC transaction and tie it to the browser that started it. This package owns
- * that concern without re-inventing any engine control:
+ * Between the redirect to the IdP and the callback the gateway must hold the OIDC transaction and
+ * tie it to the browser that started it. This package owns that concern without re-inventing any
+ * engine control:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord} wraps the
  *       engine's {@code FlowContext} (which owns {@code state}/{@code nonce}/PKCE/{@code

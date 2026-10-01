@@ -24,13 +24,12 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Encodes and reads the short-lived browser-binding cookie that ties a
- * {@link PendingAuthorizationRecord} to the browser that started the login (D2b).
+ * {@link PendingAuthorizationRecord} to the browser that started it (D2b).
  * <p>
  * The cookie carries only the unguessable record id (server mode). It is set at redirect time
  * and consulted at callback time: a callback is valid only when both the returned {@code state}
  * matches and this cookie resolves to the same record, so a callback replayed in a different
- * browser (which carries no binding cookie) is rejected even with a valid {@code state} — the
- * pre-session analogue of the session cookie.
+ * browser (which carries no binding cookie) is rejected even with a valid {@code state}.
  * <p>
  * The cookie is hardened by construction: the {@code __Host-} prefix (which the browser only
  * honours with {@code Secure} + {@code Path=/} + no {@code Domain}), plus {@code HttpOnly} (no

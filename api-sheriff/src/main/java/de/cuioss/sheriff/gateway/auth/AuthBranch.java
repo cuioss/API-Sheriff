@@ -59,7 +59,7 @@ public enum AuthBranch {
     /** Offline bearer-token validation of the inbound {@code Authorization} header. */
     BEARER("bearer"),
 
-    /** The server-session runtime: session cookie, login redirect or 401, mediated bearer. */
+    /** The server-session runtime: session cookie, mediated bearer. */
     SESSION("session");
 
     private static final String AUTHORIZATION = "Authorization";

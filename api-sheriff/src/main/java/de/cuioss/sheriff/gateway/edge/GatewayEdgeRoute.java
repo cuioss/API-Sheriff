@@ -901,11 +901,9 @@ public class GatewayEdgeRoute {
             }
             authenticationStage.process(request);
             // Honor an auth-stage short-circuit before forwarding: the BFF SessionAuthenticationStage
-            // challenges an unauthenticated require:session navigation by setting shortCircuit(302) plus a
-            // Location header that redirects the browser into the auth-code flow. Without this gate the
-            // request would fall through to the upstream (200) instead of being challenged — both a broken
-            // login redirect and a security defect (an unauthenticated require:session request reaching the
-            // upstream). Mirrors the post-framing short-circuit gate above.
+            // redirects a navigation by setting shortCircuit(302) plus a Location header. Without this gate
+            // the request would fall through to the upstream (200) instead of being redirected — a
+            // security defect. Mirrors the post-framing short-circuit gate above.
             if (request.shortCircuitStatus().isPresent()) {
                 writeShortCircuit(ctx, request);
                 return;
