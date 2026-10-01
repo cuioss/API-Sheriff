@@ -41,6 +41,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
 import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
@@ -50,6 +51,7 @@ import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
 import de.cuioss.sheriff.token.client.flow.RedeemedResponseException;
 import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.token.TokenResponse;
 import de.cuioss.sheriff.token.commons.transport.ParserConfig;
 import de.cuioss.sheriff.token.validation.json.MapRepresentation;
@@ -62,6 +64,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -86,9 +89,15 @@ import org.junit.jupiter.params.provider.ValueSource;
  * that fails with an unchecked exception. They are driven through the two package-private seams of the
  * class — the judgement of a hand-built response, and the parser seam — each next to a control that
  * passes the same seam and is accepted.
+ * <p>
+ * The disclosure assertions read every captured record down to {@code DEBUG}. The root level alone
+ * does not open the loggers of the gateway and of the token library for that — see
+ * {@link SheriffDebugCapture} — so the extension is registered here, and each disclosure assertion
+ * first proves that a {@code DEBUG} record of the two loggers involved is captured.
  */
 @EnableGeneratorController
 @EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
+@ExtendWith(SheriffDebugCapture.class)
 @DisplayName("BoundTokenEndpointClient — a token response must be bound to the proof key")
 class BoundTokenEndpointClientTest {
 
@@ -431,7 +440,7 @@ class BoundTokenEndpointClientTest {
     /**
      * Asserts the whole refusal contract: the failure is classified as a redeemed grant, exactly one
      * {@code WARN} record names the leg and the reason, the exception names the reason, and neither a
-     * record of any level nor the exception carries one of {@code secrets}.
+     * captured record, down to {@code DEBUG}, nor the exception carries one of {@code secrets}.
      */
     private void assertRefusal(RedeemedResponseException refused, List<String> secrets, String leg, String reason) {
         List<LogRecord> refusals = refusalRecords();
@@ -448,11 +457,15 @@ class BoundTokenEndpointClientTest {
     }
 
     /**
-     * Asserts that no captured record, at any level, and no message of the refusal or of a cause it
-     * chains carries one of {@code secrets} — the scripted access token, refresh token, ID token and
-     * {@code jkt}, and whatever else a test adds.
+     * Asserts that no captured record, down to {@code DEBUG}, and no message of the refusal or of a
+     * cause it chains carries one of {@code secrets} — the scripted access token, refresh token, ID
+     * token and {@code jkt}, and whatever else a test adds.
+     * <p>
+     * The control comes first: a {@code DEBUG} record of the class under test and of the engine client
+     * it extends is captured, so the records read below include the {@code DEBUG} output of both.
      */
     private static void assertNothingScriptedIsDisclosed(Throwable refused, List<String> secrets) {
+        SheriffDebugCapture.assertDebugIsCaptured(BoundTokenEndpointClient.class, TokenEndpointClient.class);
         List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
         List<Executable> checks = new ArrayList<>();
