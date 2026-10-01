@@ -1,0 +1,550 @@
+= ADR-0056: The BFF authenticates with private_key_jwt, pushes every authorization request and binds its tokens with DPoP
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The BFF implements the FAPI 2.0 controls (DPoP route) by authenticating every back-channel call with private_key_jwt, pushing every authorization request through PAR and binding its tokens to one DPoP key; each of the two signing keys is either generated at startup or read from a two-block PEM file that gateway.yaml names by path, the key id is always the RFC 7638 thumbprint, the client-authentication public key is published at an unauthenticated JWKS endpoint, oidc.client_secret is removed and refused at boot, and the DPoP binding ends at the gateway.
+// tags: bff, oidc, fapi, client-authentication, private-key-jwt, par, dpop, sender-constraint, key-material, jwks, configuration-surface, secrets-handling, engine-seam
+// affects: api-sheriff, integration-tests, documentation
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+The BFF is a confidential OAuth client. It holds a credential the browser never sees, it starts
+authorization requests on the browser's behalf, and it keeps the tokens the identity provider
+issues. Each of those three duties has a weak form, and the weak forms are the ones that need no
+key material:
+
+* *A shared client secret.* It is a symmetric credential. The identity provider stores it, the
+  gateway's configuration carries it, and whoever reads either one can authenticate as the client.
+* *Authorization parameters on the front channel.* A request that travels through the browser as a
+  URL can be read and altered there, and nothing ties the request the browser delivers to the
+  client that composed it.
+* *Bearer tokens.* An access token that is not bound to a key is usable by whoever holds a copy.
+
+The FAPI 2.0 Security Profile closes the three with asymmetric client authentication, pushed
+authorization requests (PAR) and sender-constrained tokens. It leaves two routes open for the first
+and the third -- mutual TLS, or `private_key_jwt` with DPoP -- and it says nothing about where a
+client's keys come from, how the identity provider learns the public half, or how far behind the
+client a token binding reaches.
+
+Those open questions are what this ADR settles. The route decides which engine seams the gateway
+wires. The key source decides whether `gateway.yaml` stays a document an operator can commit, and
+whether ADR-0011's ruling on trust material applies to a signing key. The distribution path decides
+whether replacing a key is one edit or two. The reach of the binding decides what an upstream may
+assume about the token it receives.
+
+The gateway implements the FAPI 2.0 controls (DPoP route). That wording is deliberate: the
+profile's conformance test suite has not been run against the gateway, and this record claims the
+controls it lists and nothing more.
+
+== Decision
+
+*The BFF authenticates every back-channel call with `private_key_jwt`, pushes every authorization
+request through PAR, and binds the tokens it obtains to one DPoP key. Each of the two signing keys
+is either generated at startup or read from a PEM file that `gateway.yaml` names by path. The
+secret-based, front-channel, bearer-token mode is removed outright.*
+
+Eighteen decisions realise this. Each names what it rejects.
+
+=== 1. The route is DPoP with private_key_jwt
+
+The gateway takes the DPoP route: client authentication by a signed assertion, token binding by a
+DPoP proof. Both are wired on the pinned confidential-client engine, `token-sheriff-client` 0.9.6,
+through its own types `PrivateKeyJwtAuth` and `SenderConstraint`.
+
+Rejected: *the mutual-TLS route.* It is not constructible at the pinned engine -- `MtlsClientAuth`
+throws in its constructor.
+
+Rejected: *a gateway-side abstraction over the two routes.* The engine's `SenderConstraint` type is
+the only seam a binding passes through, so a second abstraction above it would have one
+implementation and nothing to select between.
+
+=== 2. Two optional key blocks replace the client secret
+
+The `oidc` block gains two sub-blocks, `client_authentication` and `sender_constraint`, each with one
+optional `key_file`. The two may name the same file. Two distinct keys are recommended, because
+FAPI 2.0 section 6.8 asks for single-purpose keys.
+
+`oidc.client_secret` is removed. A descriptor that still declares it is refused at boot -- as a
+literal, as a placeholder whose variable is set and as one whose variable is unset alike -- with a
+message that names `oidc.client_authentication.key_file` and the generated default as the
+replacement and never echoes the value.
+
+Rejected: *keeping the secret as a selectable mode.* A gateway that can still be configured into
+the weak form carries both code paths and both sets of documentation, and the weak one is the one a
+copied descriptor selects.
+
+=== 3. A key is either provided or generated
+
+Each purpose has exactly one key, in one of two modes:
+
+* *Provided* -- `key_file` names a PEM file on a mount.
+* *Generated* -- no key is configured. The gateway generates an EC P-256 key from `SecureRandom` at
+  boot and emits one INFO record that states the purpose and the mode, never the material.
+
+The generated mode is this project's own choice and is not common practice. It is modelled on the
+gateway's cookie sealing key, so that a single-node gateway starts without key provisioning. The
+client implementations surveyed for this decision provision or persist their client-authentication
+key. A key generated at startup was found in one product only, on low-confidence sources, and is
+therefore not cited as precedent.
+
+The mode has a caveat that follows from its construction: a generated key lives in one process and
+cannot be shared across replicas. A multi-replica deployment must provide a key file, and every
+instance behind one identity-provider client must be given the same files.
+
+Rejected: *a retiring companion key.* A second key published next to the current one would let a
+replacement overlap. One key per purpose keeps the published key set, the assertion signer and the
+proof signer in step by construction; replacement is a clean break.
+
+=== 4. A key is referenced by a file path in gateway.yaml
+
+`key_file` is a file path, written literally or through a `+${VAR}+` or `+${VAR:-default}+`
+placeholder. The gateway reads the file itself, once, at boot.
+
+ADR-0011 rejected carrying trust material in `gateway.yaml`, and it is not engaged here. Its ruling
+rests on three grounds, and none of them holds for an unencrypted PEM path:
+
+* A trust-store path came with a password. An unencrypted PEM path carries no password and is not a
+  secret, so the document stays committable.
+* Naming a runtime TLS-registry construct was rejected on layering grounds. A file path names no
+  runtime construct.
+* Reading stores in the gateway would have re-implemented key-store loading, formats and rotation
+  that the runtime already provides. The runtime offers no facility for a JWS signing key, so
+  nothing is re-implemented beyond one bounded read of one format through the JDK key factories --
+  no key store, no encrypted PEM, no reload.
+
+What this decision does change is recorded as a change. `gateway.yaml` gains a second class of
+path-carrying keys next to `tls.mtls.client_ca`, `jwks.file` and `portal.template_dir`. And the
+gateway now reads private key material itself, which it did not do before.
+
+Rejected: *a Quarkus TLS-registry profile name.* It is the operator's stated non-preference, it
+would name a runtime construct for a key that is not TLS material, and it would add a second
+two-place edit of the kind ADR-0011 already lists as a cost.
+
+Rejected: *a `+${VAR}+` carrying the key itself.* It would make the configured value itself the
+secret, which the configuration loader would have to classify and redact, where a path discloses
+only a location.
+
+=== 5. A key-file pointer is a location, not a secret
+
+The pointer is treated exactly as a topology value is. It is not added to the configuration loader's
+secret pointers, and it may be written literally. The secret is the file content, and that never
+enters a descriptor, a log line or an error message. Refusals name the configuration field of the
+purpose and the defect, and never the configured path.
+
+Rejected: *classifying the pointer as a secret.* It would forbid the literal form and the
+defaulted placeholder, for a value that discloses nothing but a mount location.
+
+Rejected: *a per-message judgement on naming the path.* A path is not a secret, but one rule for
+every refusal of this type is simpler to hold than a decision per message.
+
+=== 6. One file holds a private block and a public block
+
+For every key type, a provided key file holds exactly one unencrypted PKCS#8 `PRIVATE KEY` block
+and exactly one `PUBLIC KEY` block, and nothing else but whitespace. The file is read bounded to
+16 KiB. At boot the gateway proves by one sign-and-verify round that the two halves belong together,
+and it refuses to start on a mismatch.
+
+The public half is asked for because the JWKS endpoint, the DPoP proof header and the key id all
+need it, and the JDK's public API yields the public key from a PKCS#8 private key for RSA only. For
+EC P-256 the derivation exists in the JDK but sits in packages the platform does not export, and the
+one public entry point to it is a preview API.
+
+The same rule holds for RSA, where the gateway could derive. One file shape gives one documentation
+paragraph and one test matrix. The cost is that an RSA operator supplies a block the gateway could
+have computed.
+
+Rejected: *deriving the EC public key in the gateway's own code.* It removes the second block at
+the price of point multiplication on P-256 written in a security gateway -- as hand-written,
+variable-time curve arithmetic, or as an unusual use of key agreement against the curve generator.
+Either is code the project would own and review as cryptography.
+
+Rejected: *provided keys are RSA only.* One block and a derivation through public API, but provided
+deployments would sign `PS256` only, with larger assertions and proofs, while the generated mode
+stays EC -- two key types depending on the mode.
+
+Rejected: *a library that derives.* It needs a new dependency.
+
+Rejected: *two files instead of one.* It doubles the configuration keys to four and adds a way to
+mount the halves apart or mix them between purposes. The boot check is needed either way.
+
+=== 7. The key id is the RFC 7638 thumbprint
+
+The `kid` is always the RFC 7638 thumbprint of the public key. A PEM file carries none.
+
+An identity provider is documented to cache a client key by `kid` and to fetch again only when it
+meets an unknown one. The id therefore has to change exactly when the key does, and a thumbprint is
+the one id that cannot do otherwise.
+
+Rejected: *a configurable key id.* An id an operator sets can stay the same across a key
+replacement, and a provider that caches by `kid` would then keep verifying against the old key.
+
+=== 8. The algorithm follows the key type
+
+The gateway holds both modes to the floors of FAPI 2.0 section 5.4.1 at boot. An RSA key of at
+least 2048 bits signs `PS256`. An EC key on P-256 signs `ES256`. The `RS256` family is unreachable
+by construction.
+
+Rejected: *an algorithm setting.* A setting can be set wrong. Without one, the cost is that an
+operator cannot pick `PS384` or `ES384`.
+
+Rejected: *offering `EdDSA`.* The engine's `PrivateKeyJwtAuth` does not sign it, and supporting it
+for the proof key alone would add a third key type for one purpose.
+
+=== 9. The client-assertion audience is the issuer identifier
+
+The `aud` of the client assertion is the authorization server's issuer identifier, as a single
+string (FAPI 2.0 section 5.3.3.1 item 5). The engine renders `aud` as one JSON string, and the
+gateway passes the configured issuer. One authentication instance serves the pushed request, the
+code exchange, the refresh grant and RFC 7009 revocation, so every leg carries the same audience.
+
+Rejected: *the endpoint URL of each leg as audience, or an array of audiences.* Both are forms the
+profile excludes, and a per-leg audience would need one authentication instance per leg.
+
+=== 10. The client key is published at an unauthenticated JWKS endpoint
+
+The gateway always publishes the client-authentication public key, for a generated and for a
+provided key alike. The endpoint is the single distribution path: the identity provider is
+configured with its URL, and static registration of the key at the identity provider is not the
+documented route.
+
+* *Path.* `oidc.client_authentication.jwks_path`, default `/auth/jwks`. The boot refuses a path that
+  collides with another reserved path.
+* *Host.* The path is matched on every host, as the back-channel logout path of ADR-0018 is,
+  because the identity provider dials it server-to-server at an address that is routinely an
+  internal name.
+* *Method.* `GET` only.
+* *Content.* Exactly one key, carrying `use: sig` and no `key_ops`. The DPoP proof key is never
+  published there; it travels in every proof.
+* *TLS.* FAPI 2.0 section 5.4.2 asks for the `jwks_uri` endpoint to be served over TLS only. The
+  gateway does not refuse the path on a plain listener, because a deployment behind a TLS terminator
+  is supported and cannot see how the request reached the terminator. The documentation requires an
+  `https` URL at the identity provider.
+
+Rejected: *static registration as the documented route.* It makes every key replacement a second
+edit at the identity provider, and it cannot serve the generated mode at all.
+
+Rejected: *a fixed path.* Every other gateway-owned path is a key of the `oidc` block, and a path
+the operator cannot move could shadow a proxied path that happens to be equal.
+
+Rejected: *`/.well-known/jwks.json` as the default.* It is conventionally an upstream's or an
+identity provider's own key set.
+
+=== 11. Every authorization request is pushed
+
+Both authorization-request seams -- login and step-up -- go through one adapter,
+`PushedAuthorizationRequests`, over the engine's flow-agnostic `ParClient`. The adapter composes no
+authorization parameter itself. It pushes what the engine's builder rendered, so
+`response_mode=query` (ADR-0018) and the per-request scope set (ADR-0048) travel inside the pushed
+request. The browser is redirected with exactly two parameters, `client_id` and `request_uri`. The
+push is dialled under the back-channel posture of ADR-0045.
+
+The failure contract is one rule. A provider that advertises no PAR endpoint and a push that fails
+both refuse the login with `502`. Nothing is stored and no cookie is set. The refusal is recorded
+under the ADR-0051 discipline, because the login path is reachable without a credential.
+
+Rejected: *falling back to a front-channel request when the push is unavailable.* A fallback that
+an attacker or a misconfigured provider can trigger is the weak form with an extra step.
+
+Rejected: *a new event type for a failed push.* It answers through the existing upstream-error
+event. The cost is that the metric counts it in the upstream category; the log record carries the
+attribution.
+
+=== 12. The step-up re-drive is pushed but has no live caller
+
+The RFC 9470 step-up re-drive has no caller at the edge. PAR on that leg is wired at the seam and
+proven at unit level, and it is not reachable in a running gateway. The record states this so that
+"every authorization request" is read as a property of the two seams, not as an observed property of
+two running flows.
+
+Rejected: *leaving the step-up seam on a front-channel request until it has a caller.* The first
+caller would then ship the weak form unnoticed.
+
+=== 13. The binding ends at the gateway
+
+The access token the BFF obtains carries `cnf.jkt`. The gateway forwards it upstream as
+`Authorization: Bearer`, with no proof. The contract for upstreams follows from that: an upstream
+must not check `cnf`, and `auth.token_relay: false` is the per-route opt-out that forwards no token
+at all.
+
+Not built: *a proof made by the gateway for each upstream call.* The gateway presents its DPoP key
+to the identity provider only.
+
+[CAUTION]
+====
+Nothing downstream of the identity provider enforces the DPoP binding. The binding protects the
+token between the identity provider and the gateway. A copy of the token taken on the upstream hop
+is as usable there as a bearer token is.
+====
+
+=== 14. A key rotates by restart, with no overlap
+
+A generated key rotates on every restart. A provided key rotates by replacing the file and
+restarting, with no change at the identity provider, which is expected to fetch the new key from the
+JWKS endpoint when it meets the new `kid`. There is no overlapping-key support.
+
+What a key change does to live sessions is not known when this record is written. The expectation
+-- from RFC 9449 section 5 and Keycloak's DPoP guide -- is that the refresh succeeds and the new
+access token is bound to the new key. The documented worst case is that a session whose tokens were
+bound to the old key fails its next refresh and follows `oidc.session.refresh.on_failure`. The
+verdict belongs to <<observed-on-the-integration-stack,Observed on the integration stack>>.
+
+Rejected: *overlapping-key support.* It is the companion key of decision 3 seen from the lifecycle
+side, and it is rejected for the same reason.
+
+=== 15. The DPoP server nonce is supported through the engine's single retry
+
+FAPI 2.0 section 5.3.3.1 item 8 requires a client to support the server-provided nonce. The engine
+retries a token request once when a non-success response carries `DPoP-Nonce`. Two gaps are named:
+
+* The retry resends the same form body, the same client assertion included. An authorization server
+  that enforces single use of an assertion refuses the retry.
+* A nonce delivered on a successful response is not carried into later requests (RFC 9449 section
+  8.2), so the next request pays the retry again.
+
+Not built: *nonce handling in the gateway.* Both gaps sit inside the engine's token client, below
+the seam the gateway wires.
+
+=== 16. The authorization code is not bound to the DPoP key
+
+The gateway sends no `dpop_jkt`. FAPI 2.0 section 5.3.3.1 NOTE 2 does not require it of clients,
+and the engine's PAR transport attaches no proof.
+
+=== 17. Findings and unverified premises are accepted residuals
+
+Each of the following was read from the sources of the pinned engine, the JDK the build uses and
+the identity provider's documentation. None was observed on a running stack, and each is accepted
+as a residual:
+
+* *`EdDSA`.* The engine's client-assertion signer supports the `RS`, `PS` and `ES` families only.
+* *No PAR path in the engine's flows.* Neither `AuthorizationCodeFlow.authorize` nor
+  `StepUpHandler.initiate` pushes. `ParClient` is a free-standing transport, which is why the
+  adapter of decision 11 exists.
+* *Proofs on the token legs only.* The engine's PAR and revocation clients attach no DPoP proof.
+* *The gateway's own validation ignores `cnf`.* The validation pipeline runs DPoP checks only for an
+  issuer that carries a DPoP configuration, and the gateway configures none. The same fact means
+  that the gateway's bearer routes accept a bound token presented without a proof.
+* *Plain HTTP stays refused.* The engine refuses a non-`https` issuer and a non-`https` back-channel
+  endpoint unless its insecure-HTTP flag is set. The gateway never sets it and gains no key that
+  would, in line with ADR-0022.
+* *An omitted `oidc.issuer`.* It resolves to the gateway's own origin for discovery and for the
+  assertion audience alike, which cannot authenticate against any identity provider. This is
+  existing behaviour and is unchanged.
+* *Identity-provider support.* PAR, `private_key_jwt` and DPoP-bound tokens are documented for
+  Keycloak 26.4 and later. The integration realm sets its client attributes explicitly and does not
+  apply Keycloak's FAPI 2.0 client profiles; what those profiles enforce was not established.
+* *The key-id re-fetch.* Keycloak is documented to cache a client key by `kid` and to fetch again on
+  an unknown one, at most once per ten seconds.
+* *The JDK public-key derivation.* The statement of decision 6 was established by reading the JDK
+  sources, not by execution.
+* *The native image.* That it reaches PEM decoding, the RSA and EC key factories, EC key generation
+  and the signature algorithms was not verified by reading.
+* *No key-file permission check.* The file is read without one. The gateway image runs as its own
+  user and bind mounts differ per platform, so the documentation asks for a restricted mount.
+* *Test fixtures.* The unit-level identity-provider fixture serves TLS from test dependencies that
+  are already declared. If it cannot be made to complete a verified dial with those, that is
+  reported as a finding and no dependency is added.
+
+Not established, and not observable from the stack as designed: whether Keycloak's token endpoint
+ever issues `DPoP-Nonce`; whether Keycloak's FAPI 2.0 client profiles enforce the issuer-only
+audience and the algorithm list; and the status of the JDK's PEM API on the newer JDK of the build
+matrix.
+
+=== 18. Facts only the running stack can show are kept apart
+
+Six facts cannot be read from any source and are not decisions. They are held in
+<<observed-on-the-integration-stack,Observed on the integration stack>>, each marked until the stack
+has shown it. No other section of this record states a stack behaviour as observed.
+
+[[observed-on-the-integration-stack]]
+== Observed on the integration stack
+
+Each entry is a fact that only the running integration stack can show. An entry stays marked as
+unobserved, and carries no verdict, until the named deliverable of the implementing plan records it.
+
+. Whether Keycloak accepts the issuer identifier as the client-assertion audience.
+  `not yet observed` -- recorded by deliverable 7.
+. The realm client settings actually used, and whether the JWKS URL attributes survive a realm
+  import.
+  `not yet observed` -- recorded by deliverable 7.
+. Whether the native image reaches PEM decoding, the RSA and EC key factories and the `PS256` and
+  `ES256` signatures with provided keys.
+  `not yet observed` -- recorded by deliverable 7.
+. Whether the native image generates an EC key for both purposes when none is configured.
+  `not yet observed` -- recorded by deliverable 8.
+. Whether Keycloak fetches a replaced client key when it meets the unknown key id.
+  `not yet observed` -- recorded by deliverable 8.
+. What a key change does to a live session.
+  `not yet observed` -- recorded by deliverable 8.
+
+== Consequences
+
+=== Positive
+
+* No symmetric client credential exists. The identity provider holds a public key only, and
+  `gateway.yaml` holds a path only, so the document operators edit, review and commit carries no
+  secret for client authentication.
+* The browser carries no authorization parameter. A request cannot be read or altered on the front
+  channel, and the redirect discloses a client id and an opaque reference.
+* A token taken between the identity provider and the gateway is not usable without the proof key.
+* A key replacement is one action at the gateway. The key id changes with the key, and the
+  endpoint, not a second registration, is where the identity provider is pointed for the new key.
+* A single-node gateway starts with no key provisioned.
+* The weak form is not configurable. A descriptor that asks for it does not boot.
+
+=== Negative
+
+* The change is breaking. Every descriptor that declares `oidc.client_secret` is refused at boot.
+* The identity provider must offer a PAR endpoint and must be able to reach the gateway's JWKS
+  endpoint server-to-server. A provider without PAR refuses every login with `502`.
+* A multi-replica deployment must provision key files and keep them identical across instances.
+* An operator cannot choose the signature algorithm, and cannot use an `EdDSA` key.
+* A provided RSA key file carries a public block the gateway could have derived.
+* `gateway.yaml` gains a second class of path-carrying keys, and the gateway reads private key
+  material itself.
+
+=== Risks
+
+* *The binding stops at the gateway.* An upstream that receives the forwarded token cannot tell it
+  from a bearer token and must not try. The control is transport security on the upstream hop, not
+  DPoP.
+* *An unauthenticated endpoint on every host.* It publishes a public key and nothing else, reads no
+  input and logs nothing above `DEBUG`. The residual is that a proxied path equal to the JWKS path is
+  shadowed; the path is a key so that an operator can move it.
+* *A restart changes a generated key.* Logins after a restart depend on the identity provider
+  fetching the new key when it meets the unknown `kid`.
+* *A key file is as protected as its mount.* The gateway checks the file's content, not its
+  permissions.
+* *The nonce gaps of decision 15.* An authorization server that issues nonces and enforces single
+  use of client assertions would refuse the engine's retry.
+
+== Alternatives Considered
+
+The alternatives are recorded with the decision each one was weighed against. In summary:
+
+[cols="1,2,3", options="header"]
+|===
+| Decision | Alternative | Why it is rejected
+
+| Route
+| Mutual TLS
+| Not constructible at the pinned engine.
+
+| Route
+| A gateway-side abstraction over both routes
+| One implementation, nothing to select between.
+
+| Configuration shape
+| The client secret as a selectable mode
+| Keeps the weak form configurable.
+
+| Key modes
+| A retiring companion key, overlapping keys
+| Breaks the one-key-per-purpose property that keeps signer and published key in step.
+
+| Key reference
+| A Quarkus TLS-registry profile name
+| Names a runtime construct for a non-TLS key and adds a two-place edit.
+
+| Key reference
+| A variable carrying the key itself
+| Turns the configured value into a secret.
+
+| Public half
+| Derivation in the gateway's own code
+| Cryptographic code the project would own.
+
+| Public half
+| RSA-only provided keys
+| Two key types depending on the mode, larger assertions and proofs.
+
+| Public half
+| A library that derives
+| A new dependency.
+
+| Public half
+| Two files instead of one
+| Twice the keys, and halves that can be mounted apart.
+
+| Key id
+| A configurable key id
+| Can stay the same across a key replacement.
+
+| Algorithm
+| An algorithm setting
+| A setting that can be set wrong, for a choice the key type already makes.
+
+| Client-assertion audience
+| A per-leg endpoint URL, or an array
+| Excluded by the profile.
+
+| JWKS endpoint
+| Static registration as the documented route
+| A second edit per key replacement; cannot serve the generated mode.
+
+| JWKS endpoint
+| A fixed path, or `/.well-known/jwks.json`
+| Can shadow a proxied path; conventionally someone else's key set.
+
+| PAR
+| A front-channel fallback
+| The weak form, reachable by making the push fail.
+|===
+
+The alternatives fall in one class. Each either keeps a weak form reachable by configuration or by
+failure, or it moves work into the gateway that the key, the engine or the identity provider
+already settles. The decision leaves the operator one thing to supply -- a key file, or nothing --
+and derives the rest from it.
+
+== References
+
+* xref:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]:
+  the ruling on trust material in `gateway.yaml`, which decision 4 does not engage
+* xref:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]:
+  the reserved-path model the JWKS endpoint joins, and the `response_mode=query` trade-off that
+  travels inside the pushed request
+* xref:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]:
+  the posture on upstream security defaults, under which the engine's refusal of plain HTTP stays in
+  force
+* xref:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]:
+  the back-channel hostname and trust posture, which the pushed authorization request joins as a
+  further leg
+* xref:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]:
+  the per-request scope set, which rides the pushed request, and the per-scope flows that share one
+  authentication and one sender constraint
+* xref:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]:
+  the logging discipline a refused push is recorded under
+
+This record supersedes none of them.
+
+* xref:../fapi_status.adoc[FAPI status]: the control-by-control state of the profile
+* xref:../configuration.adoc[Configuration reference]: the `oidc.client_authentication` and
+  `oidc.sender_constraint` key contracts
+* xref:../security-threat-model.adoc[Security threat model]: the BFF threats these controls answer
+* xref:../quality-report/code-correctness.adoc[Code correctness report]: BFF-1, the step-up re-drive
+  without a caller
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/client/ClientSigningKey.java`: the two
+  key modes, the file format, the key id and the algorithm rule
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/ClientJwksEndpoint.java`: the
+  published key set
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/PushedAuthorizationRequests.java`:
+  the PAR adapter and its failure contract
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java`: the one
+  place the authentication, the sender constraint and the PAR client are assembled
