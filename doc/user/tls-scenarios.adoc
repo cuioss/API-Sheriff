@@ -50,8 +50,8 @@ documentation section it was copied from instead.
 | Dial an upstream or an IdP whose certificate does not name the address you dial
 | <<_scenario_relax_hostname_verification>>
 
-| Reach the BFF's identity provider (discovery, code exchange, refresh, revocation) through a private CA or a
-  name its certificate does not carry
+| Reach the BFF's identity provider (discovery, pushed authorization request, code exchange, refresh,
+  revocation) through a private CA or a name its certificate does not carry
 | <<_scenario_bff_oidc_back_channel>>
 |===
 
@@ -432,9 +432,9 @@ Both doors land on `quarkus.management.tls-configuration-name`. The policy door 
 === Goal
 
 The gateway fetches the identity provider's signing keys (JWKS) over a TLS connection it verifies
-against *your* CA, and, when the BFF is enabled, reaches the same provider for discovery, the code
-exchange, refresh and refresh-token revocation. Those are two independent legs with two different trust levers, and a private-CA
-provider needs both. Do not pick the JWKS lever when you also need `egress_tls.jwks_verify_hostname:
+against *your* CA, and, when the BFF is enabled, reaches the same provider for discovery, the pushed
+authorization request, the code exchange, refresh and refresh-token revocation. Those are two
+independent legs with two different trust levers, and a private-CA provider needs both. Do not pick the JWKS lever when you also need `egress_tls.jwks_verify_hostname:
 false` -- the two are mutually exclusive
 (link:../adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]);
 see <<_scenario_relax_hostname_verification>>.
@@ -524,7 +524,9 @@ command:
   building, the key set never loads, and every bearer request is rejected `401` -- a trust problem that
   looks like a token problem.
 * *The BFF back-channel store is missing, or supplied through `JAVA_TOOL_OPTIONS`.* A native executable
-  ignores that variable, so discovery and the code exchange fail PKIX and login answers `500`.
+  ignores that variable, so the leg has no anchor for the provider. Discovery is the first call a
+  login makes: it fails PKIX and the login answers `500`. The pushed authorization request and the
+  code exchange are never reached.
 * *Which store is actually in force.* `DefaultTrustSourceAudit` logs `INFO ApiSheriff-17` on every boot,
   naming the raw-`TrustManager` tier and the Quarkus TLS registry tier separately, and
   `WARN ApiSheriff-122` whenever an operator-supplied store replaces the platform bundle on either tier.
@@ -718,7 +720,8 @@ override (see link:../configuration.adoc#_egress_tls_hostname_scope[What disabli
 verification does and does not do]).
 
 The two keys below cover proxied upstreams and the JWKS fetch. The BFF's own back-channel to the
-identity provider -- discovery, the code exchange, refresh and refresh-token revocation -- is a separate leg with a separate key,
+identity provider -- discovery, the pushed authorization request, the code exchange, refresh and
+refresh-token revocation -- is a separate leg with a separate key,
 `egress_tls.oidc_verify_hostname`, and relaxing the JWKS leg does not relax it. It is covered next,
 in <<_scenario_bff_oidc_back_channel>>.
 
@@ -770,9 +773,10 @@ egress_tls:
 
 === Goal
 
-A gateway running a BFF variant dials its identity provider for discovery, the authorization-code
-exchange, refresh and refresh-token revocation. That leg carries the client secret and the authorization codes, and it has two
-keys of its own in `egress_tls`
+A gateway running a BFF variant dials its identity provider for discovery, the pushed authorization
+request, the authorization-code exchange, refresh and refresh-token revocation. That leg carries the
+client credential -- the signed client assertion by default, the client secret when one is
+configured -- and the authorization codes, and it has two keys of its own in `egress_tls`
 (link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]),
 each answering a different problem:
 
@@ -780,8 +784,9 @@ each answering a different problem:
   does not carry. It turns off hostname matching on this leg only; the chain is still verified, so it
   does not admit a self-signed or untrusted provider. The default is `true`.
 * `egress_tls.oidc_tls_profile` -- the provider presents a certificate from a private CA. The named
-  profile *replaces* the JVM default trust store on discovery, the code exchange, refresh and refresh-token revocation: public
-  certificate authorities stop being trusted for the provider unless the profile carries them too. It
+  profile *replaces* the JVM default trust store on discovery, the pushed authorization request, the
+  code exchange, refresh and refresh-token revocation: public certificate authorities stop being
+  trusted for the provider unless the profile carries them too. It
   is the same replacement semantic `ApiSheriff-119` states for `upstream_tls_profile`, applied to this
   leg.
 
@@ -851,7 +856,9 @@ quarkus.tls.corporate-idp.trust-store.p12.password=${TRUSTSTORE_PASSWORD}
 * *The profile is not bound, carries no anchors, sets `trust-all`, or its material cannot be loaded.*
   The boot fails, naming `egress_tls.oidc_tls_profile`. It never falls back to default trust.
 * *Login stops working against a publicly trusted provider after you name a profile.* The profile
-  replaced the public roots on this leg, so discovery and the code exchange fail PKIX and login answers
-  `500`; add the roots to the profile's store, or omit the profile.
+  replaced the public roots on this leg. Discovery is the first call a login makes: it fails PKIX and
+  the login answers `500`, before the pushed authorization request or the code exchange is attempted.
+  Add the roots to the profile's store, or omit the profile.
 * *Tokens validate but login fails.* The JWKS leg and this leg are configured separately: a
-  `jwks.tls_profile` or `jwks_verify_hostname` does not reach discovery, the code exchange, refresh or refresh-token revocation.
+  `jwks.tls_profile` or `jwks_verify_hostname` does not reach discovery, the pushed authorization
+  request, the code exchange, refresh or refresh-token revocation.
