@@ -201,12 +201,11 @@ No gateway code decides whether a token is a replay: the replay path *is* the cr
 Detection stays the provider's, but the gateway does not re-ask a question it has already had
 answered. In cookie mode the ended session's sealed cookie still unseals, so without a guard every
 near-expiry request carrying it would drive another refresh grant to the provider and another
-`ApiSheriff-111` warning until the absolute TTL. When `TokenRefreshCoordinator` ends a session as
-`credential-rejected`, `redeemed-response-refused` or `persist-failure`, it marks the *presented*
-refresh token in `EndedRefreshTokens` -- a salted, non-reversible SHA-256 digest keyed with a
-per-instance random salt, never the token or the cookie -- until the session's absolute lifetime.
-Those three are every reason a cookie-mode session is ended for: `session-terminated` arises in
-server mode only, where the marker is inert.
+`ApiSheriff-111` warning until the absolute TTL. When `TokenRefreshCoordinator` ends a cookie-mode
+session, for whichever reason link:../LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] records, it
+marks the *presented* refresh token in `EndedRefreshTokens` -- a salted, non-reversible SHA-256
+digest keyed with a per-instance random salt, never the token or the cookie -- until the session's
+absolute lifetime.
 A later request presenting a marked token is disposed as session-ended (cookie cleared, `on_failure`
 negotiated) with no engine call, no revocation and only a `DEBUG` line.
 

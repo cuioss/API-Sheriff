@@ -168,11 +168,10 @@ effect is a rare forced re-login.
 destroys nothing server-side -- only the clearing `Set-Cookie` ends it -- so a client that keeps or
 replays the sealed cookie would otherwise drive a fresh refresh grant to the IdP, and a
 `WARN ApiSheriff-111`, on every near-expiry request until the absolute TTL. When the refresh
-coordinator ends a session as `credential-rejected`, `redeemed-response-refused` or `persist-failure`
--- the three reasons a cookie-mode session is ended for; the record's fourth reason,
-`session-terminated`, arises in the session-based variant only --
-it therefore marks the presented refresh token -- as a salted, non-reversible digest, never the token
-or the cookie -- until the session's absolute lifetime. A later request presenting that token takes
+coordinator ends a cookie-mode session, for whichever reason
+link:../LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] records, it therefore marks the presented
+refresh token -- as a salted, non-reversible digest, never the token or the cookie -- until the
+session's absolute lifetime. A later request presenting that token takes
 the session-ended disposition (cleared cookie, `on_failure`) with no IdP call, no revocation and no
 warning record. The marker is keyed on the refresh token, not the session, so a *successor* cookie of
 the same session still reaches the IdP once, is refused there, and is then marked itself. It is a

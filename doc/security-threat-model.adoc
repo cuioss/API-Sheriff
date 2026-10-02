@@ -1697,11 +1697,11 @@ detection signal rotation exists to provide -- an operator decision, never a gat
   otherwise re-drive a refresh grant and a `WARN ApiSheriff-111` on every near-expiry request until
   the absolute TTL -- amplification and log flooding, not an authentication bypass. The refresh
   coordinator therefore marks the presented refresh token (a per-instance salted digest, never the
-  token or cookie) when it ends a session as `credential-rejected`, `redeemed-response-refused` or
-  `persist-failure` -- every reason a cookie-mode session is ended for, since `session-terminated`
-  arises in server mode only -- until the session's absolute lifetime, and refuses a marked token
-  locally with no IdP call, no revocation and no warning. Keyed on the token, a successor cookie still reaches the
-  provider once. *Residual:* the marker is per instance (each other instance makes one IdP call before
+  token or cookie) when it ends a cookie-mode session, for whichever reason
+  link:LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] records, until the session's absolute
+  lifetime, and refuses a marked token locally with no IdP call, no revocation and no warning.
+  Keyed on the token, a successor cookie still reaches the provider once. *Residual:* the marker is
+  per instance (each other instance makes one IdP call before
   marking), in memory (a restart forgets it, one IdP call again), bounded (a full store records
   nothing, so replays degrade to one IdP call per request), not set by RP logout, and unused in
   server mode.

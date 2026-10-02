@@ -151,18 +151,12 @@ public final class BffLogMessages {
 
         /**
          * A transparent token refresh ended with its session destroyed; the caller
-         * re-authenticates. The record carries exactly one of four bounded, non-sensitive reasons:
-         * the identity provider rejected the presented refresh token ({@code credential-rejected},
-         * which includes a replayed token rejected under strict rotation), the gateway refused a
-         * response the provider had already redeemed ({@code redeemed-response-refused}), the
-         * binding could not hold the rotated session ({@code persist-failure}), or the session was
-         * terminated — by a logout or a back-channel logout — while the refresh was in flight, so
-         * the rotated session was not written ({@code session-terminated}; server mode only, since
-         * a stateless binding cannot observe a termination). In the first three the refresh
-         * coordinator destroys the session; in the fourth the termination already had. A failure
-         * before the provider processed the grant never destroys the session and is recorded as
-         * {@link #SESSION_REFRESH_DEFERRED} instead. Never records the presented refresh token or
-         * session id.
+         * re-authenticates. The record carries exactly one bounded, non-sensitive reason. The
+         * reasons are defined by {@code de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator}
+         * and described in the {@code ApiSheriff-111} entry of {@code doc/LogMessages.adoc}. A
+         * failure before the provider processed the grant never destroys the session and is
+         * recorded as {@link #SESSION_REFRESH_DEFERRED} instead. Never records the presented
+         * refresh token or session id.
          */
         public static final LogRecord SESSION_REFRESH_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
@@ -252,16 +246,11 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A session widening was refused and its grant was not merged into a session: the identity
-         * provider refused it, its grant did not carry the scopes the widening asked for, or the
-         * session was terminated — by a logout or a back-channel logout — while the widening's
-         * callback was in flight. The refusal is terminal. In the first two cases the session is
-         * left as it was; in the third it stays terminated. The template carries only a bounded
-         * reason token: a known OAuth / OIDC {@code error} code ({@code invalid_scope},
-         * {@code access_denied}, {@code login_required}, …), {@code other} for any code outside
-         * that closed set, {@code scope-not-granted}, or {@code session-terminated} (server mode
-         * only, since a stateless binding cannot observe a termination). Never the raw IdP error
-         * description, a token, the session id or the subject.
+         * A session widening was refused and its grant was not merged into a session. The refusal
+         * is terminal. The template carries only a bounded reason token — never the raw IdP error
+         * description, a token, the session id or the subject. The reason tokens are defined by
+         * {@code de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint} and described in the
+         * {@code ApiSheriff-131} entry of {@code doc/LogMessages.adoc}.
          */
         public static final LogRecord SESSION_WIDENING_REFUSED = LogRecordModel.builder()
                 .prefix(PREFIX)
