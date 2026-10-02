@@ -608,6 +608,7 @@ class PushedAuthorizationRequestsTest {
         FlowContext refusedContext = FlowContext.create(REDIRECT_URI);
         FlowContext pushedContext = FlowContext.create(REDIRECT_URI);
         String refusedUrl = REQUEST_BUILDER.build(configuration, metadata, refusedContext);
+        String undecodableUrl = InvalidRequest.UNDECODABLE_PAIR.corrupt(refusedUrl);
         String pushedUrl = REQUEST_BUILDER.build(configuration, metadata, pushedContext);
         String requestUri = REQUEST_URI_PREFIX + Generators.letterStrings(16, 24).next();
         PushedAuthorizationRequests adapter = adapter(configuration);
@@ -617,7 +618,7 @@ class PushedAuthorizationRequestsTest {
         GatewayException failed = assertThrows(GatewayException.class,
                 () -> adapter.push(metadata, CLIENT_ID, refusedUrl));
         GatewayException invalid = assertThrows(GatewayException.class,
-                () -> adapter.push(metadata, CLIENT_ID, InvalidRequest.UNDECODABLE_PAIR.corrupt(refusedUrl)));
+                () -> adapter.push(metadata, CLIENT_ID, undecodableUrl));
         String redirect = adapter.push(metadata, CLIENT_ID, pushedUrl);
 
         assertEquals(requestUri, queryOf(redirect).get(PARAM_REQUEST_URI), "the second push was accepted");

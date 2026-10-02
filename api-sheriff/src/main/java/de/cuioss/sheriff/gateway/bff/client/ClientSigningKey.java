@@ -312,7 +312,7 @@ public final class ClientSigningKey {
         Path path;
         try {
             path = Path.of(keyFile);
-        } catch (InvalidPathException malformed) {
+        } catch (InvalidPathException _) {
             // The exception text echoes the configured value — name the field, never chain the cause.
             throw refusal(purpose, "does not name a usable file path");
         }
@@ -328,7 +328,7 @@ public final class ClientSigningKey {
                 throw refusal(purpose, "names a file larger than the %d byte limit".formatted(MAX_KEY_FILE_BYTES));
             }
             return new String(bytes, StandardCharsets.ISO_8859_1);
-        } catch (IOException unreadable) {
+        } catch (IOException _) {
             // The exception text carries the path — name the field, never chain the cause.
             throw refusal(purpose, "names a file that cannot be read");
         }
@@ -408,7 +408,7 @@ public final class ClientSigningKey {
         }
         try {
             return Base64.getDecoder().decode(bodies.getFirst());
-        } catch (IllegalArgumentException notBase64) {
+        } catch (IllegalArgumentException _) {
             // The offending text is key material — name the field and the block, never chain the cause.
             throw refusal(purpose, "holds a %s block that is not valid base64".formatted(label));
         }
@@ -421,7 +421,9 @@ public final class ClientSigningKey {
     private static <K extends Key> Optional<K> decode(String keyType, KeySpec encoded, KeyDecoding<K> decoding) {
         try {
             return Optional.of(decoding.decode(KeyFactory.getInstance(keyType), encoded));
-        } catch (InvalidKeySpecException notThisKeyType) {
+        } catch (InvalidKeySpecException _) {
+            // Not this key type: the factory's refusal is the answer, and its text is derived from the
+            // key encoding — it is dropped here, never chained or logged.
             return Optional.empty();
         } catch (NoSuchAlgorithmException unavailable) {
             throw new IllegalStateException("The JDK offers no %s key factory".formatted(keyType), unavailable);
@@ -488,7 +490,7 @@ public final class ClientSigningKey {
             verifier.initVerify(publicKey);
             verifier.update(probe);
             verified = verifier.verify(signature);
-        } catch (GeneralSecurityException unusable) {
+        } catch (GeneralSecurityException _) {
             // The failure is derived from the file's content — name the field, never chain the cause.
             throw refusal(purpose, "holds a key that cannot produce and verify a %s signature".formatted(
                     algorithm.getJwaName()));

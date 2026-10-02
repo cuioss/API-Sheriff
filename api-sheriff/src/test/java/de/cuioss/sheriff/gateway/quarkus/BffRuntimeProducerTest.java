@@ -144,6 +144,7 @@ import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackParameters;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
+import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.flow.ParClient;
 import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
@@ -2161,6 +2162,15 @@ class BffRuntimeProducerTest {
         private record SecretKeyFixture(SecretFixture credential, Optional<String> expectedProofKey) {
         }
 
+        /**
+         * A widening brought to its callback: the request the widening pushed, the authorization code
+         * the callback presented, the code exchange the token endpoint recorded for it and the
+         * callback's answer.
+         */
+        private record WideningCallback(StubIdentityProvider.ReceivedRequest pushed, String code,
+                StubIdentityProvider.ReceivedRequest exchange, BffRuntime.ReservedHttpResponse answered) {
+        }
+
         static Stream<Arguments> keyModesOnEveryLeg() {
             return Stream.of(KeyMode.values())
                     .flatMap(mode -> Stream.of(Leg.values()).map(leg -> Arguments.of(mode, leg)));
@@ -2543,40 +2553,25 @@ class BffRuntimeProducerTest {
         /**
          * The code exchange of a widening callback runs on the base flow, through the runtime's one
          * token-endpoint client, exactly as the exchange of a login does. So it carries the client
-         * credential of the widening's own push and a proof of the key a login's exchange proves, and a
-         * token response of type {@code Bearer} is refused: nothing is merged into the live session.
+         * credential of the widening's own push and a proof of the key a login's exchange proves.
          */
         @Test
-        @DisplayName("Should present the client credential and a DPoP proof on the code exchange of a widening callback, and refuse a token response of type Bearer without touching the session")
-        void shouldRefuseAWideningWhoseTokenResponseIsNotBound() throws Exception {
+        @DisplayName("Should present the client credential and a DPoP proof on the code exchange of a widening callback")
+        void shouldPresentTheClientCredentialAndAProofOnTheCodeExchangeOfAWidening() throws Exception {
             BffRuntime runtime = scopedRuntime();
-            Set<String> granted = Set.of("openid", "profile");
-            String sessionCookie = bind(runtime, sessionGranted(granted));
-            String accessTokenBefore = liveSessionOf(runtime, sessionCookie).accessToken();
+            String sessionCookie = bind(runtime, sessionGranted(Set.of("openid", "profile")));
             String loginProofKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
-            AtomicReference<BffRuntime.ReservedHttpResponse> redirected = new AtomicReference<>();
-            StubIdentityProvider.ReceivedRequest pushed = receivedBy(
-                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
-                    () -> redirected.set(stepUp(runtime, sessionCookie, SCOPED_ROUTE_PREFIX + "/list")));
-            String code = token();
-            String query = "code=" + code + "&state=" + encoded(pushed.form().get(PARAM_STATE));
-            String cookies = bindingCookieOf(redirected.get()) + "; " + sessionCookie;
-            stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_BEARER, token()));
-            AtomicReference<BffRuntime.ReservedHttpResponse> answered = new AtomicReference<>();
 
-            StubIdentityProvider.ReceivedRequest exchange = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
-                    () -> answered.set(callback(runtime, query, cookies)));
+            WideningCallback widening = wideningAnsweredWithABearerToken(runtime, sessionCookie);
 
+            StubIdentityProvider.ReceivedRequest exchange = widening.exchange();
             String proof = proofOf(exchange);
             JsonNode proofClaims = jwtPart(proof, 1);
             String proofKey = proofKeyThumbprint(proof);
-            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
-                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
-            SessionRecord after = liveSessionOf(runtime, sessionCookie);
             assertAll("the code exchange of a widening callback",
                     () -> assertEquals("authorization_code", exchange.form().get("grant_type")),
-                    () -> assertEquals(code, exchange.form().get("code")),
-                    () -> assertEquals(keyIdOf(pushed), keyIdOf(exchange),
+                    () -> assertEquals(widening.code(), exchange.form().get("code")),
+                    () -> assertEquals(keyIdOf(widening.pushed()), keyIdOf(exchange),
                             "the exchange presents the client credential the widening's push presented"),
                     () -> assertEquals("dpop+jwt", jwtPart(proof, 0).path("typ").asText(),
                             "the exchange carries a DPoP proof"),
@@ -2584,10 +2579,30 @@ class BffRuntimeProducerTest {
                             "bound to the token endpoint"),
                     () -> assertEquals(loginProofKey, proofKey,
                             "of the one proof key the exchange of a login proves"));
+        }
+
+        /**
+         * The exchange of the test above is judged as the exchange of a login is: a token response of
+         * type {@code Bearer} is refused, and nothing is merged into the live session.
+         */
+        @Test
+        @DisplayName("Should refuse a token response of type Bearer on the code exchange of a widening callback without touching the session")
+        void shouldRefuseAWideningWhoseTokenResponseIsNotBound() {
+            BffRuntime runtime = scopedRuntime();
+            Set<String> granted = Set.of("openid", "profile");
+            String sessionCookie = bind(runtime, sessionGranted(granted));
+            String accessTokenBefore = liveSessionOf(runtime, sessionCookie).accessToken();
+
+            BffRuntime.ReservedHttpResponse answered =
+                    wideningAnsweredWithABearerToken(runtime, sessionCookie).answered();
+
+            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
+            SessionRecord after = liveSessionOf(runtime, sessionCookie);
             assertAll("a widening whose tokens are not bound to the proof key",
-                    () -> assertEquals(400, answered.get().status(), "the widening is refused"),
-                    () -> assertEquals(List.of(), answered.get().setCookieHeaders(), "no cookie is set"),
-                    () -> assertEquals(Optional.empty(), answered.get().locationOptional(), "and no redirect issued"),
+                    () -> assertEquals(400, answered.status(), "the widening is refused"),
+                    () -> assertEquals(List.of(), answered.setCookieHeaders(), "no cookie is set"),
+                    () -> assertEquals(Optional.empty(), answered.locationOptional(), "and no redirect issued"),
                     () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
                     () -> assertTrue(String.valueOf(refusals.getFirst().getMessage())
                                     .contains("on the code-exchange leg"),
@@ -3676,6 +3691,29 @@ class BffRuntimeProducerTest {
         }
 
         /**
+         * Starts a widening of the session {@code sessionCookie} presents at the step-up path and drives
+         * its callback with an authorization code, the widening's {@code state} and both cookies. The
+         * token endpoint is scripted to answer the exchange with a token response of type
+         * {@code Bearer}, which the stub would otherwise refuse as a grant.
+         */
+        private WideningCallback wideningAnsweredWithABearerToken(BffRuntime runtime, String sessionCookie) {
+            AtomicReference<BffRuntime.ReservedHttpResponse> redirected = new AtomicReference<>();
+            StubIdentityProvider.ReceivedRequest pushed = receivedBy(
+                    StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
+                    () -> redirected.set(stepUp(runtime, sessionCookie, SCOPED_ROUTE_PREFIX + "/list")));
+            String code = token();
+            String query = "code=" + code + "&state=" + encoded(pushed.form().get(PARAM_STATE));
+            String cookies = bindingCookieOf(redirected.get()) + "; " + sessionCookie;
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_BEARER, token()));
+            AtomicReference<BffRuntime.ReservedHttpResponse> answered = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest exchange = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
+                    () -> answered.set(callback(runtime, query, cookies)));
+
+            return new WideningCallback(pushed, code, exchange, answered.get());
+        }
+
+        /**
          * Drives a code exchange on the per-scope login flow the runtime cached, by hand.
          * <p>
          * In a running gateway that flow only renders the authorization URL: the callback's exchange
@@ -3694,13 +3732,12 @@ class BffRuntimeProducerTest {
             ClientAuthentication authentication = single(
                     reachableInstancesOf(runtime, ClientAuthentication.class), "client authentication");
             ProviderMetadata metadata = stubMetadata();
-            AuthorizationCodeFlow.AuthorizationRedirect redirect = loginFlow.authorize(metadata);
-            CallbackParameters callback = CallbackParameters.parse(
-                    "code=" + token() + "&state=" + redirect.context().state());
+            FlowContext context = loginFlow.authorize(metadata).context();
+            CallbackParameters callback = CallbackParameters.parse("code=" + token() + "&state=" + context.state());
 
             StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
                     () -> assertThrows(TransportException.class,
-                            () -> loginFlow.exchange(metadata, redirect.context(), callback, authentication),
+                            () -> loginFlow.exchange(metadata, context, callback, authentication),
                             "the stub refuses the grant"));
 
             assertEquals("authorization_code", request.form().get("grant_type"),
@@ -3814,10 +3851,11 @@ class BffRuntimeProducerTest {
 
         private StubIdentityProvider.ReceivedRequest refreshGrant(BffRuntime runtime) {
             String refreshToken = token();
+            Set<String> scopes = Set.of("openid");
             TokenRefreshCoordinator.RefreshExchange exchange = refreshExchangeOf(runtime);
 
             StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
-                    () -> assertThrows(RuntimeException.class, () -> exchange.exchange(refreshToken, Set.of("openid")),
+                    () -> assertThrows(RuntimeException.class, () -> exchange.exchange(refreshToken, scopes),
                             "the stub refuses the grant"));
 
             assertAll("the request is the refresh grant",

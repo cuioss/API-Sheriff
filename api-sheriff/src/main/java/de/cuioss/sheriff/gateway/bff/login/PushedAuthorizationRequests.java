@@ -170,7 +170,7 @@ public final class PushedAuthorizationRequests {
             try {
                 name = decode(separator < 0 ? pair : pair.substring(0, separator));
                 value = separator < 0 ? "" : decode(pair.substring(separator + 1));
-            } catch (IllegalArgumentException undecodable) {
+            } catch (IllegalArgumentException _) {
                 // The decoder's message echoes the offending pair — name the reason, never chain it.
                 throw refusal(Reason.INVALID_REQUEST, null);
             }

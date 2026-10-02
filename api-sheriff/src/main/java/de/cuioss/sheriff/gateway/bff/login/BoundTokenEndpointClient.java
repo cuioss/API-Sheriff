@@ -160,13 +160,15 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
      */
     BoundTokenEndpointClient(ClientConfiguration configuration, String expectedThumbprint,
             PayloadParser payloadParser) {
-        super(configuration);
+        // Validated before the engine client is built: a refused argument constructs nothing.
         Objects.requireNonNull(expectedThumbprint, "expectedThumbprint");
         if (expectedThumbprint.isBlank()) {
             throw new IllegalArgumentException("expectedThumbprint must not be blank");
         }
+        Objects.requireNonNull(payloadParser, "payloadParser");
+        super(configuration);
         this.expectedThumbprint = expectedThumbprint;
-        this.payloadParser = Objects.requireNonNull(payloadParser, "payloadParser");
+        this.payloadParser = payloadParser;
     }
 
     /**

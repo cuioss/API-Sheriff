@@ -494,9 +494,8 @@ class BoundTokenEndpointClientTest {
     }
 
     private static Map<String, String> form(String grantType) {
-        return AUTHORIZATION_CODE.equals(grantType)
-                ? Map.of(GRANT_TYPE, grantType, "code", Generators.letterStrings(16, 24).next())
-                : Map.of(GRANT_TYPE, grantType, REFRESH_TOKEN, Generators.letterStrings(16, 24).next());
+        return Map.of(GRANT_TYPE, grantType,
+                AUTHORIZATION_CODE.equals(grantType) ? "code" : REFRESH_TOKEN, Generators.letterStrings(16, 24).next());
     }
 
     /** Scripts one success answer of the token endpoint and returns the values it carries. */

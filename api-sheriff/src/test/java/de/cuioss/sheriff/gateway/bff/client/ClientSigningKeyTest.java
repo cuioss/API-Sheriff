@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
+import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.MGF1ParameterSpec;
@@ -180,9 +181,10 @@ class ClientSigningKeyTest {
         List<String> contentLines = Files.readAllLines(keyFile, StandardCharsets.US_ASCII).stream()
                 .filter(line -> !line.isBlank() && !line.startsWith("-----"))
                 .toList();
+        String configured = keyFile.toString();
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> ClientSigningKey.resolve(keyFile.toString(), purpose),
+                () -> ClientSigningKey.resolve(configured, purpose),
                 "the key file should be refused");
 
         String message = thrown.getMessage();
@@ -190,7 +192,7 @@ class ClientSigningKeyTest {
                 () -> assertTrue(message.startsWith(field + " "),
                         "the refusal should name the field: " + message),
                 () -> assertTrue(message.contains(defect), "the refusal should name the defect: " + message),
-                () -> assertFalse(message.contains(keyFile.toString()), "the configured path should never be echoed"),
+                () -> assertFalse(message.contains(configured), "the configured path should never be echoed"),
                 () -> assertFalse(contentLines.isEmpty(), "the fixture should hold content that could leak"),
                 () -> assertTrue(contentLines.stream().noneMatch(message::contains),
                         "no line of the key file should be echoed: " + message),
@@ -569,6 +571,7 @@ class ClientSigningKeyTest {
         @DisplayName("Should refuse an Ed25519 key for either purpose, naming the purpose's field and no signer")
         void shouldRefuseAnEd25519KeyForEitherPurpose(Purpose purpose) throws Exception {
             Path keyFile = TestSigningKeys.writeKeyFile(directory, TestSigningKeys.ed25519KeyPair());
+            String configured = keyFile.toString();
             String field = switch (purpose) {
                 case CLIENT_AUTHENTICATION -> CLIENT_AUTHENTICATION_FIELD;
                 case SENDER_CONSTRAINT -> SENDER_CONSTRAINT_FIELD;
@@ -578,7 +581,7 @@ class ClientSigningKeyTest {
                     + "keys are held to the same two key types, RSA signing PS256 and EC on curve P-256 signing "
                     + "ES256 — provide an RSA key of at least 2048 bits or an EC key on curve P-256");
             IllegalStateException refused = assertThrows(IllegalStateException.class,
-                    () -> ClientSigningKey.resolve(keyFile.toString(), purpose));
+                    () -> ClientSigningKey.resolve(configured, purpose));
             assertFalse(refused.getMessage().contains("signer"),
                     "the reason names no signer, because no one signer is the reason for both keys: "
                             + refused.getMessage());
@@ -593,6 +596,7 @@ class ClientSigningKeyTest {
         @DisplayName("Should find the engine signing EdDSA for a DPoP proof and refusing it for a client assertion")
         void shouldFindTheEngineSigningEdDsaForProofsOnly() {
             KeyPair ed25519 = TestSigningKeys.ed25519KeyPair();
+            PrivateKey ed25519Private = ed25519.getPrivate();
             String clientId = Generators.letterStrings(8, 24).next();
 
             assertAll("EdDSA at the two engine signers",
@@ -600,7 +604,7 @@ class ClientSigningKeyTest {
                             "the engine's proof signer accepts an Ed25519 key"),
                     () -> assertThrows(IllegalArgumentException.class,
                             () -> new PrivateKeyJwtAuth(clientId, "https://idp.example/realms/main",
-                                    ed25519.getPrivate(), "kid", "EdDSA"),
+                                    ed25519Private, "kid", "EdDSA"),
                             "the engine's client-assertion signer refuses EdDSA"));
         }
 
