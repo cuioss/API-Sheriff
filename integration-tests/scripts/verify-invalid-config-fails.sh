@@ -132,7 +132,7 @@ assert_fails_to_boot() {
         # runs. A fixture that declares oidc.client_secret (cases 9 and 11) therefore needs the
         # variable bound, or the case would pass on the missing-variable refusal instead of the one it
         # exists to prove. The value is a fixture placeholder that never reaches an IdP, and supplying
-        # it to the fixtures that declare no oidc block is inert: no reference, no lookup.
+        # it to the fixtures that do not reference it is inert: no reference, no lookup.
         -e OIDC_CLIENT_SECRET=invalid-config-fixture-secret
         -v "${PROJECT_DIR}/src/main/docker/certificates:/app/certificates:ro"
         -v "${config_dir}:/app/sheriff-config:ro"

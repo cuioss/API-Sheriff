@@ -124,7 +124,8 @@ Two terms are used throughout:
   URL registered at the identity provider must therefore be an `https` URL.
 |===
 
-In key mode every row above is met or, for the nonce, partially met with the gaps named. In
+In key mode every row above is met as qualified in its row or, for the nonce, partially met with
+the gaps named. In
 client-secret mode the client-authentication row is not met, and that row is disqualifying on its
 own.
 

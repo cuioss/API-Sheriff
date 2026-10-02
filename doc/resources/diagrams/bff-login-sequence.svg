@@ -109,6 +109,6 @@
   <text x="300" y="662" class="arrow-lbl">302 &#8594; app · Set-Cookie (HttpOnly, Secure)</text>
 
   <!-- footer -->
-  <text x="450" y="724" class="caption">The token never reaches JavaScript, and no authorization parameter travels through the browser.</text>
+  <text x="450" y="724" class="caption">The token never reaches JavaScript; the authorization request is pushed over the back channel.</text>
   <text x="450" y="742" class="caption">Code exchange is server-to-server; tokens must be bound to the gateway's proof key and are validated before they are trusted.</text>
 </svg>
