@@ -303,6 +303,15 @@ The `integration` realm declares five clients:
   are disabled on them, and a token request without a DPoP proof is refused.
 |===
 
+*The two endpoint scopes.* The realm defines two client scopes for the suites.
+`sheriff_it_endpoint` is an *optional* client scope of all five clients, so Keycloak issues it only
+when a request names it; `endpoints/bff-scoped.yaml` declares it. `sheriff_it_unassigned` exists in
+the realm and is assigned to no client, so no client may request it; `endpoints/bff-unassigned-scope.yaml`
+declares it, and `BffSessionScopeParityIT` drives the refusal. Both endpoint files sit in the shared
+`endpoints/` directory, so every gateway instance loads their routes. `oidc.step_up.path` is declared
+by the base document and its `passthrough-empty` mirror only; under every other overlay a session
+route's `403` names the missing scopes and no `step_up_url`.
+
 *Which instance publishes the key.* The two key-authenticated clients of the compose instances name
 the same JWKS URL, `https://api-sheriff:8443/auth/jwks` -- the primary instance, under the name
 Keycloak already dials for back-channel logout. All eleven key-authenticated instances mount the same client-authentication

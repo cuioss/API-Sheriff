@@ -674,7 +674,9 @@ grant into the *same* session. What the gateway answers depends on whether the c
 redirect to the IdP.
 
 *A navigation* (its `Accept` offers `text/html`) is redirected `302` into that authorization request
-and comes back to the URL it asked for, path and raw query (see <<return-url>>). The first attempt
+and comes back to the URL it asked for, path and raw query (see <<return-url>>). The request is
+pushed like a login's, so the redirect carries `client_id` and `request_uri` only; the scopes and
+`prompt` travel in the pushed request. The first attempt
 carries `prompt=none`, so an IdP that can answer from its own SSO session does so without showing
 the user anything. If the IdP answers `login_required`, `interaction_required`,
 `consent_required` or `account_selection_required`, the gateway starts exactly one interactive
@@ -738,6 +740,12 @@ The first two are logged as `ApiSheriff-131` with a bounded reason, the identity
 `ApiSheriff-130` (see link:../LogMessages.adoc[Log Messages]). Because nothing redirects again, a
 scope the IdP will not grant cannot loop the browser. The gateway keeps no record of a refusal: a
 later navigation to the route starts a new attempt.
+
+Two refusals are not answered by that `403`. An IdP that refuses the *pushed* request -- some refuse
+a scope there that the client may not request -- never sees the browser: the navigation, or the
+request to the step-up path, is answered `502` and `ApiSheriff-132` is logged (see <<key-material>>).
+A grant whose token is not bound to the proof key is answered `400` on the callback and logged as
+`ApiSheriff-134`. In both cases the session is left as it was.
 
 *A logout during a widening wins.* If the user logs out, or the IdP delivers a back-channel logout,
 after the callback has found the live session and before it stores the merged one, the grant is not
@@ -809,12 +817,10 @@ link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_insid
 
 === What the integration realm showed
 
-The project's integration suite runs these paths against Keycloak 26.5.7 with one realm. Three
+The project's integration suite runs these paths against Keycloak 26.5.7 with one realm. Two
 observations from it, each about that version and that realm and not a statement about identity
 providers in general:
 
-* An authorization request naming a scope the realm assigns to no client is answered
-  `invalid_scope`, so the widening ends in the terminal `403`.
 * A `prompt=none` authorization request from a browser that holds the realm's SSO cookies is
   answered with a code, without a page.
 * A refresh that asks again for a scope of the original grant, after an earlier refresh narrowed it

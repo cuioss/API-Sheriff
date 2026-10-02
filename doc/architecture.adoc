@@ -462,10 +462,13 @@ boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `Resolv
   a login requests, and the reserved step-up path to decide whether a widening is owed.
 * *Widening.* `SessionWidening` requests `S ∪ neededScopes` from the identity provider,
   `prompt=none` first and then exactly one interactive attempt, and `CallbackEndpoint` merges the
-  grant into the live session after re-checking the subject. The merge sets both `A` and `S` to the
+  grant into the live session after re-checking the subject. Each attempt is a pushed authorization
+  request, so the scope set and `prompt=none` travel in the push and not on the browser redirect
+  (<<_bff_client_controls>>). The merge sets both `A` and `S` to the
   granted scope and takes the `sid` of the grant's ID token when it carries one, so the session is
-  indexed under the identity-provider session its tokens belong to. An identity-provider refusal is
-  a terminal `403` that leaves the session unchanged.
+  indexed under the identity-provider session its tokens belong to. An identity-provider refusal
+  answered on the callback is a terminal `403` that leaves the session unchanged; a push the
+  identity provider refuses is a `502` before any redirect, and leaves it unchanged as well.
 * *Refresh.* The session carries its active scope set `A` (the granted scope after login, the
   refresh response's `scope` after each refresh, the requested set when omitted), and every near-expiry
   refresh requests exactly `A`, never the static `oidc.scopes`.
@@ -668,8 +671,9 @@ and it carries no request body at all.
 
 This is not the engine default. `token-sheriff-client`'s `AuthorizationRequestBuilder` emits
 `response_mode=form_post`; the gateway overrides it with its own
-`QueryResponseModeAuthorizationRequestBuilder`, wired into *both* engine seams that build an
-authorization URL -- the auth-code login leg and the RFC 9470 step-up re-drive. The override
+`QueryResponseModeAuthorizationRequestBuilder`, wired into *every* engine seam that builds an
+authorization URL -- the auth-code login leg, the session widening and the RFC 9470 step-up
+re-drive. The override
 rewrites only the `response_mode` parameter and preserves every other authorization parameter
 verbatim.
 
@@ -1100,7 +1104,8 @@ Two exits of the BFF login belong to this contract and are easy to misread from 
   The metric counts the refusal in the upstream category; `WARN` `ApiSheriff-132` carries the
   attribution, once per reason.
 * *`400` -- the token response is not bound to the proof key.* The callback answers `400`, creates no
-  session and sets no session cookie when the token response of the code exchange is not of type
+  session and sets no session cookie -- and on a widening callback merges nothing into the live
+  session -- when the token response of the code exchange is not of type
   `DPoP` or its access token does not carry the `cnf.jkt` of the gateway's proof key. It is the
   answer the callback gives to every `TokenSheriffException` of the token engine. `WARN` `ApiSheriff-134` records the
   leg and the reason. At a

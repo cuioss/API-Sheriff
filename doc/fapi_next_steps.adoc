@@ -91,8 +91,17 @@ widening.
 A session widening pushes its authorization request -- the silent attempt and the interactive
 re-drive alike -- and its code exchange and the scope-driven refresh carry the DPoP proof and pass
 the binding check. That is proven at unit level against a stub identity provider. The integration
-suite of the widening has not been run against a realm client that requires pushed requests and
-binds its tokens since the two features were combined.
+suite of the widening, `BffSessionScopeParityIT`, drives the silent attempt against a realm client
+that requires pushed requests and binds its tokens. Three things it does not reach, each proven at
+unit level only:
+
+* the interactive re-drive -- the browser that just logged in holds a live SSO session, so the
+  silent attempt always succeeds;
+* a widening callback whose token response is not bound to the proof key -- Keycloak binds every
+  access token of these clients;
+* the terminal `403` of a widening callback that carries an identity-provider error -- Keycloak
+  refuses a scope it will not grant when the request is pushed, which the gateway answers `502`, so
+  no such callback is made.
 
 == Gaps in the Engine
 

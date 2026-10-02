@@ -87,7 +87,8 @@ and shared with the cookie-based variant:
   channel.
 * *The sender constraint.* Every token request carries a DPoP proof signed with one key, and every
   access token is bound to that key by its `cnf.jkt` claim. The gateway refuses a token response that
-  is not bound: a login ends with `400` and no session, and a refresh ends the session.
+  is not bound: a login ends with `400` and no session, a widening with `400` and the session
+  unchanged, and a refresh ends the session.
 * *Key-based client authentication, by default.* The gateway authenticates to the IdP with
   `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
   gateway path, `/auth/jwks` by default, answered on every host -- and the IdP fetches it from there.
@@ -301,14 +302,17 @@ cannot succeed.
 * *Missing, and outside the granted set* -- or the refresh did not obtain it. A refresh cannot widen
   a grant (RFC 6749 §6), so the live session is *widened* instead. A navigation is redirected into an
   authorization request for the granted set plus the `needed` set, with `prompt=none` first and
-  exactly one interactive attempt if the IdP asks for one; the grant is merged into the same
+  exactly one interactive attempt if the IdP asks for one. Each attempt is pushed like a login's, so
+  the redirect carries `client_id` and `request_uri` only. The grant is merged into the same
   session, which keeps its identity, its authentication time and its absolute expiry, takes the
   `sid` of the new ID token when it carries one, and sets both scope sets to the granted scope. Any
   other request is refused `403` `application/problem+json` naming the `missing_scopes` and, when
   `oidc.step_up.path` is configured, a `step_up_url` the browser can follow to start the same
   widening.
-* *The IdP refuses.* The answer is a terminal `403`. The session is unchanged and stays usable on
-  every route it satisfies, and nothing redirects again.
+* *The IdP refuses.* A refusal on the callback is answered with a terminal `403`. An IdP that
+  refuses the pushed request is answered `502` before the browser is redirected at all. Either way
+  the session is unchanged and stays usable on every route it satisfies, and nothing redirects
+  again.
 * *The IdP stops granting a scope the session held.* The scope leaves the granted set the first time
   the gateway asks for it and does not get it: on the scope-driven refresh, or, when no refresh ran,
   on the widening merge. The next widening for it ends in the terminal `403`, after at most two

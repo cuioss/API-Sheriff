@@ -184,7 +184,7 @@ class BffGeneratedKeysIT {
 
     /**
      * INFO — a signing key was generated at startup; names the purpose, never the key. The trailing
-     * colon keeps the match off the identifiers from 200 to 209.
+     * colon keeps the match off the identifiers from 210 to 219.
      */
     private static final String KEY_GENERATED_RECORD = "ApiSheriff-21:";
 

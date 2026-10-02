@@ -48,12 +48,13 @@ All BFF code is in the `api-sheriff` module under `de.cuioss.sheriff.gateway`:
 | `LoginFlow` -- auth-code initiation over the engine's authorization seam;
   `PushedAuthorizationRequests` -- the adapter that pushes every authorization request;
   `BoundTokenEndpointClient` -- the token-endpoint client that refuses an unbound token response;
-  `ScopedEngineFlows` -- the per-scope-set engine flows.
+  `ScopedEngineFlows` -- the per-scope-set engine flows;
+  `SessionWidening` -- the widening of a live session, silent attempt and interactive re-drive.
 
 | `bff.reserved`
 | The reserved-endpoint handlers and the `ReservedPathRegistry`: `CallbackEndpoint`,
-  `LoginInitiationEndpoint`, `UserInfoEndpoint` (+ `ClaimAllowlistFilter`), `LogoutEndpoint`,
-  `BackchannelLogoutEndpoint`, `ClientJwksEndpoint`.
+  `LoginInitiationEndpoint`, `StepUpEndpoint`, `UserInfoEndpoint` (+ `ClaimAllowlistFilter`),
+  `LogoutEndpoint`, `BackchannelLogoutEndpoint`, `ClientJwksEndpoint`.
 
 | `bff.csrf` / `bff.refresh` / `bff.logout`
 | `CsrfDefence`; the `TokenRefreshCoordinator` / `StepUpCoordinator`; the logout token validator and

@@ -44,7 +44,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Proves, through the live server-mode edge and the compose Keycloak, that a session route obtains
  * the scopes it declares instead of relaying a token that lacks one (ADR-0057): a session short of a
  * needed scope is widened when the identity provider grants the scope, and refused — never relayed
- * — when it does not.
+ * — when it does not. Every authorization request a widening makes is pushed, and its code exchange
+ * is bound to the gateway's DPoP proof key, exactly as a login's is (ADR-0058).
  * <p>
  * <strong>The fixtures.</strong> Two endpoints add a scope to the gateway's {@code oidc.scopes}, and
  * each declares a {@code require: session} route and a {@code require: bearer} route with
@@ -75,10 +76,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><em>A grantable scope, XHR.</em> The request is refused {@code 403 application/problem+json}
  *       naming the missing scope and a same-origin {@code step_up_url}; a navigation to that URL
  *       widens the session, and the retried XHR is relayed with a token carrying the scope.</li>
- *   <li><em>A scope the identity provider will not grant.</em> The navigation's widening is answered
- *       {@code invalid_scope} and ends in a terminal {@code 403} with no redirect and no cookie; the
- *       XHR is refused {@code 403}; and in both cases the same session is still served on
- *       {@code /bff-session/get} with the scopes it had.</li>
+ *   <li><em>A scope the identity provider will not grant.</em> The widening's authorization request
+ *       is pushed before the browser is redirected, and Keycloak refuses a pushed request that names a
+ *       scope the client is not assigned. The navigation is therefore answered {@code 502} with no
+ *       redirect and no cookie, and the instance log carries the refused-push record
+ *       ({@value #PUSH_REFUSED_RECORD}) with the reason {@code push-failed}; the XHR is refused
+ *       {@code 403}; and in both cases the same session is still served on {@code /bff-session/get}
+ *       with the scopes it had.</li>
  *   <li><em>A satisfied route.</em> Two consecutive calls relay a byte-identical bearer and set no
  *       cookie, so the comparison alone costs no identity-provider round trip.</li>
  *   <li><em>The step-up path.</em> An off-origin {@code returnUrl} falls back to the default return
@@ -93,23 +97,37 @@ import org.junit.jupiter.params.provider.ValueSource;
  * and {@code TokenRefreshCoordinatorTest}. What it rests on is a property of the identity provider:
  * that a refresh grant may ask again for a scope of the original grant after an earlier refresh
  * narrowed it away. {@link #refreshRestoresAScopeOfTheGrantAfterANarrowedRefresh()} asserts exactly
- * that against the realm's token endpoint. The probe asserts the hypothesis rather than reporting on
- * it, so its verdict is the test's own: it passes only when the integration realm restores the
- * scope, and fails naming what the realm answered instead.
+ * that against the realm's token endpoint, on a grant minted through {@code token-mint-client}. The
+ * probe cannot be made as a gateway client: direct access grants are disabled on every one of them,
+ * and the key-authenticated ones hold no secret a test could present. {@code token-mint-client} is
+ * assigned {@code sheriff_it_endpoint} as an optional client scope, as the gateway clients are. The
+ * probe asserts the hypothesis rather than reporting on it, so its verdict is the test's own: it
+ * passes only when the integration realm restores the scope, and fails naming what the realm
+ * answered instead.
  * <p>
- * <strong>The probe's recorded outcome: confirmed.</strong> On Keycloak 26.5.7, the narrowed refresh
- * drops {@code sheriff_it_endpoint}, and the refresh that requests it again is issued an access
- * token carrying it. That is the whole of the observation: one optional client scope, restored
- * once, on this realm. It does not show that every scope of a grant can be restored, and it is no
- * evidence about another identity provider. The version is the one the outcome was first recorded
- * on; for whichever image {@code integration-tests/docker-compose.yml} pins, the verdict is this
- * test's own result.
+ * <strong>The probe's recorded outcome.</strong> On Keycloak 26.5.7 the outcome was recorded as
+ * confirmed for a grant of {@code integration-client}, while that client still authenticated with a
+ * secret and allowed direct access grants: the narrowed refresh drops {@code sheriff_it_endpoint},
+ * and the refresh that requests it again is issued an access token carrying it. That is the whole of
+ * the observation: one optional client scope, restored once, on this realm. It does not show that
+ * every scope of a grant can be restored, and it is no evidence about another identity provider. For
+ * the client the probe mints through now, and for whichever image
+ * {@code integration-tests/docker-compose.yml} pins, the verdict is this test's own result.
  * <p>
- * <strong>What this suite does NOT prove.</strong> The single interactive re-drive a silent widening
- * is owed when the identity provider needs interaction is not exercised: the browser that just
- * logged in holds a live SSO session, so the silent attempt always succeeds here. Like every
- * {@code Bff*IT}, the suite replays cookie maps and asserts nothing about browser cookie policy (see
- * {@link BffKeycloakLoginFlow}).
+ * <strong>What this suite does NOT prove.</strong>
+ * <ul>
+ *   <li>The single interactive re-drive a silent widening is owed when the identity provider needs
+ *       interaction is not exercised: the browser that just logged in holds a live SSO session, so
+ *       the silent attempt always succeeds here.</li>
+ *   <li>The terminal {@code 403} a widening callback answers an identity-provider error with is not
+ *       reached: Keycloak refuses the scope when the request is pushed, so no such callback is ever
+ *       made on this stack. That answer is proven at unit level ({@code CallbackEndpointTest}).</li>
+ *   <li>A widening callback whose token response is not bound to the proof key is not produced:
+ *       Keycloak binds every access token of these clients. That refusal, and what a widening's
+ *       pushed request carries, are proven at unit level ({@code BffRuntimeProducerTest}).</li>
+ * </ul>
+ * Like every {@code Bff*IT}, the suite replays cookie maps and asserts nothing about browser cookie
+ * policy (see {@link BffKeycloakLoginFlow}).
  */
 class BffSessionScopeParityIT {
 
@@ -135,9 +153,17 @@ class BffSessionScopeParityIT {
     private static final String NAVIGATION = "text/html";
     private static final String XHR = "application/json";
 
-    /** The seeded confidential client and its fixture secret, as in {@code integration-realm.json}. */
-    private static final String CLIENT_ID = "integration-client";
-    private static final String CLIENT_SECRET = "integration-secret";
+    /** The client the primary gateway instance authenticates as (see {@code sheriff-config/gateway.yaml}). */
+    private static final String GATEWAY_CLIENT_ID = "integration-client";
+
+    /** The primary instance's container log, written by compose into {@code test.log.dir}. */
+    private static final String PRIMARY_INSTANCE_LOG = "quarkus.log";
+
+    /** WARN — an authorization request could not be pushed, so no redirect was issued. */
+    private static final String PUSH_REFUSED_RECORD = "ApiSheriff-132";
+
+    /** The reason the refused-push record names when the identity provider answered the push with a refusal. */
+    private static final String PUSH_FAILED_REASON = "refused: push-failed";
 
     private static final String TOKEN_ENDPOINT = "https://" + BffKeycloakLoginFlow.KEYCLOAK_HOST_AUTHORITY
             + "/realms/integration/protocol/openid-connect/token";
@@ -267,24 +293,35 @@ class BffSessionScopeParityIT {
 
     @ParameterizedTest(name = "{0}")
     @EnumSource(Surface.class)
-    @DisplayName("a navigation needing a scope the IdP refuses ends in a terminal 403 and leaves the session unchanged")
-    void navigationNeedingARefusedScopeEndsInATerminal403(Surface surface) {
+    @DisplayName("a navigation needing a scope the IdP refuses is answered 502 at the pushed request and leaves the session unchanged")
+    void navigationNeedingARefusedScopeIsRefusedAtThePush(Surface surface) {
         Session session = loginWithOidcScopesOnly(surface);
         Set<String> before = activeScopes(session);
-        Map<String, String> browser = new HashMap<>(session.gatewayCookies());
 
-        Response initiation = navigate(browser, surface.refusedPath);
-        WideningRoundTrip widening = followWidening(initiation, browser, session.keycloakCookies());
+        Response refused = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header(ACCEPT, NAVIGATION)
+                .redirects().follow(false)
+                .when().get(surface.refusedPath)
+                .then().extract().response();
 
-        assertPushedWideningRequest(initiation);
-        assertEquals(List.of("invalid_scope"), widening.idpParameter("error"),
-                "the realm assigns " + UNASSIGNED_SCOPE + " to no client, so it must refuse the authorization "
-                        + "request with invalid_scope");
-        Response callback = widening.callback();
-        assertEquals(403, callback.statusCode(), "an IdP refusal of a widening is terminal");
-        assertNull(callback.getHeader("Location"),
-                "a refused widening must not redirect again — not into a second attempt, not back to the route");
-        assertNoSetCookie(callback, "a refused widening must set no cookie, so the session is left as it was");
+        // The redirect target stays out of the message: a request_uri identifies a pending authorization.
+        assertEquals(502, refused.statusCode(), () -> "the realm assigns " + UNASSIGNED_SCOPE + " to no client, so "
+                + "it must refuse the pushed authorization request, and the gateway answers a refused push 502 "
+                + "before any redirect"
+                + (refused.getHeader("Location") == null ? ""
+                        : "; the gateway redirected instead, so the identity provider accepted the pushed request"));
+        assertNull(refused.getHeader("Location"),
+                "a widening whose push is refused must not redirect — not into the identity provider, not back "
+                        + "to the route");
+        assertNoSetCookie(refused,
+                "a refused push stores no pending authorization, so no binding cookie is set and the session "
+                        + "cookie is left as it was");
+        // The record is latched per reason: the first refused push of this gateway process is a WARN,
+        // every later one a DEBUG line. So the log must carry the record, not gain one per request.
+        BffFapiControlsIT.assertRecordCountAbove(PRIMARY_INSTANCE_LOG, PUSH_REFUSED_RECORD, 0,
+                "the 502 must be the answer to a refused push, not to an unreachable upstream");
+        assertTrue(BffFapiControlsIT.recordCount(PRIMARY_INSTANCE_LOG, PUSH_FAILED_REASON) > 0,
+                "the push reached the identity provider and was refused there, so the record names push-failed");
         assertEquals(before, activeScopes(session),
                 "the session must still be served on " + PLAIN_SESSION_PATH + " with the scopes it had");
     }
@@ -332,6 +369,7 @@ class BffSessionScopeParityIT {
     @Test
     @DisplayName("probe: a refresh asking again for a scope of the grant restores it after a narrowed refresh")
     void refreshRestoresAScopeOfTheGrantAfterANarrowedRefresh() {
+        // Minted through token-mint-client: the one realm client that allows the password grant.
         Response grant = tokenRequest(Map.of(
                 "grant_type", "password",
                 "username", BffKeycloakLoginFlow.USERNAME,
@@ -489,9 +527,12 @@ class BffSessionScopeParityIT {
      * Follows a widening redirect the way the browser does: to the identity provider with the realm
      * SSO cookies of the login, then to the gateway callback the identity provider answers with.
      * <p>
-     * The authorization request is not expected to render anything. It carries {@code prompt=none},
-     * so the identity provider answers it with a redirect either way — carrying a code when the SSO
-     * session grants the request, an error when it does not.
+     * The authorization request is not expected to render anything. The pushed request the redirect
+     * names carries {@code prompt=none}, so the identity provider answers the navigation with a
+     * redirect to the gateway callback either way — carrying a code when the SSO session grants the
+     * request, an error when it does not. No intermediate redirect is followed: unlike the login
+     * helper, which follows Keycloak into its own authentication flow, this method requires the first
+     * answer to be the redirect to the gateway callback.
      *
      * @param initiation      the gateway's {@code 302} into the identity provider
      * @param gatewayCookies  the browser's gateway cookie jar; the binding cookie the redirect set is
@@ -527,8 +568,10 @@ class BffSessionScopeParityIT {
 
     /**
      * Asserts that the gateway started the widening with a pushed authorization request (RFC 9126):
-     * the redirect carries {@code client_id} and {@code request_uri} and neither {@code prompt} nor
-     * {@code scope}.
+     * the redirect targets the authorization endpoint and carries exactly {@code client_id} and
+     * {@code request_uri} — the contract every login redirect of the stack is held to
+     * ({@link BffLoginInitiationIT#assertPushedRequestRedirect}), so neither {@code prompt} nor
+     * {@code scope} nor {@code state} appears on it.
      * <p>
      * The parameters of the request itself — {@code prompt=none} and the scope set, the session's
      * scopes united with the route's — travel in the pushed request and are not readable from the
@@ -541,15 +584,7 @@ class BffSessionScopeParityIT {
      * @param initiation the gateway's {@code 302} into the identity provider
      */
     private static void assertPushedWideningRequest(Response initiation) {
-        String location = BffKeycloakLoginFlow.location(initiation);
-        assertEquals(1, rawQueryValues(location, "request_uri").size(),
-                "a widening must be started with a pushed authorization request: exactly one request_uri");
-        assertEquals(1, rawQueryValues(location, "client_id").size(),
-                "the pushed-request redirect names the client");
-        assertEquals(List.of(), rawQueryValues(location, "prompt"),
-                "prompt=none travels in the pushed request, never on the redirect");
-        assertEquals(List.of(), rawQueryValues(location, "scope"),
-                "the scope set travels in the pushed request, never on the redirect");
+        BffLoginInitiationIT.assertPushedRequestRedirect(initiation, GATEWAY_CLIENT_ID);
     }
 
     private static void assertGranted(WideningRoundTrip widening) {
@@ -597,12 +632,20 @@ class BffSessionScopeParityIT {
                 "scope", scope));
     }
 
+    /**
+     * A token request of {@code token-mint-client}, the realm client the fixtures mint from. The
+     * gateway clients cannot serve: none allows a direct access grant, and the key-authenticated ones
+     * hold no secret.
+     *
+     * @param parameters the grant parameters, beside the client credential
+     * @return the token-endpoint response, whatever its status
+     */
     private static Response tokenRequest(Map<String, String> parameters) {
         return given()
                 .relaxedHTTPSValidation()
                 .contentType(ContentType.URLENC)
-                .formParam("client_id", CLIENT_ID)
-                .formParam("client_secret", CLIENT_SECRET)
+                .formParam("client_id", BearerValidationIT.TOKEN_MINT_CLIENT_ID)
+                .formParam("client_secret", BearerValidationIT.TOKEN_MINT_CLIENT_SECRET)
                 .formParams(parameters)
                 .when().post(TOKEN_ENDPOINT)
                 .then().extract().response();

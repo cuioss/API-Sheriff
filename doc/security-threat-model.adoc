@@ -2281,7 +2281,9 @@ authorization request at all.
   the browser, and the request that started it is never relayed. An identity-provider error and a
   grant lacking a sought scope are logged as `ApiSheriff-131` with a reason from a closed set; an
   unknown error code is logged as `other`, never as the text the identity provider or an attacker
-  supplied.
+  supplied. A refusal can also come one step earlier: the request of a widening is pushed
+  (<<bff-20>>), and a push the identity provider refuses is answered `502` before any redirect,
+  with no pending record and no cookie. That answer does not redirect either.
 * *A terminated session is not brought back by the merge.* The callback resolves the live session
   and writes the merge later in the same call. In server mode a logout or a validated back-channel
   logout that destroys the session in between wins: the merge is the seam's updating write, which
@@ -2343,10 +2345,16 @@ unknown session and an expired session are `401` with no authorization request b
 off-origin, scheme-relative, backslash or blank `returnUrl` lands on the configured default; a
 target whose scopes lie inside `S` is a direct `302`, decided on `S` and not on `A`; any other
 target starts one silent widening for `S ∪ neededScopes` (`StepUpEndpointTest`). Against the live
-edge and Keycloak: a navigation needing a grantable scope is widened with `prompt=none` and lands
-back on the route; an XHR is `403` with a `step_up_url` and is relayed after that URL was followed;
-a scope the realm assigns to no client ends in a terminal `403` with the session still served; the
-step-up path without a session is `401` and never redirects (`BffSessionScopeParityIT`).
+edge and Keycloak: a navigation needing a grantable scope is redirected with `client_id` and
+`request_uri` only, is answered from the realm SSO session without a login form, and lands back on
+the route with a token carrying the scope; an XHR is `403` with a `step_up_url` and is relayed after
+that URL was followed; a navigation needing a scope the realm assigns to no client is answered `502`
+with no redirect and no cookie, because Keycloak refuses the pushed request (<<bff-20>>), and the
+session is still served; the step-up path without a session is `401` and never redirects
+(`BffSessionScopeParityIT`). The request is pushed, so that suite cannot read `prompt=none` or the
+scope set; both are asserted on the pushed request at unit level (`BffRuntimeProducerTest`). The
+terminal `403` of a callback that carries an identity-provider error is therefore asserted at unit
+level only.
 
 [#bff-18]
 === BFF-18 -- Client authentication: the signing keys, and the client secret an operator can still select
@@ -2584,11 +2592,12 @@ five minutes, as before (<<bff-02>>).
 seam the control is proven at unit level only (<<bff-15>>). It is not the step-up *path*
 (`oidc.step_up.path`, <<bff-17>>), which is live and starts a session widening.
 
-*Residual risk (accepted) -- the pushed widening is proven at unit level only.* That a widening's
-silent attempt and interactive re-drive are pushed, and that a refused push stores nothing, is
-asserted against a stub identity provider. Whether the integration stack's widening suite
-(`BffSessionScopeParityIT`) passes against a realm client that requires pushed requests has not been
-run since the two features were combined.
+*Residual risk (accepted) -- parts of the pushed widening are proven at unit level only.* What the
+pushed request of a widening carries, the interactive re-drive, and that a refused push stores
+nothing are asserted against a stub identity provider. The integration stack's widening suite
+(`BffSessionScopeParityIT`) drives the silent attempt against a realm client that requires pushed
+requests; it cannot read the pushed request, and it never reaches the interactive re-drive
+(<<bff-17>>).
 
 *Assertion.* The redirect carries exactly `client_id` and `request_uri`; a provider without a
 pushed-authorization endpoint, an unsplittable rendered request and a failed push each raise the
@@ -2600,7 +2609,9 @@ only; a refused push on either attempt is the `502` event with no pending record
 session unchanged (`BffRuntimeProducerTest`). Against Keycloak 26.5.7, a hand-built
 front-channel authorization request for the gateway's client that carries its parameters in the URL
 is refused while the gateway's own redirect completes a login (`BffFapiControlsIT`), and the same
-holds for a client authenticated with a secret (`BffClientSecretModeIT`).
+holds for a client authenticated with a secret (`BffClientSecretModeIT`). `BffSessionScopeParityIT`
+asserts the same redirect shape on a widening started by a session route and by the step-up path,
+completes both, and asserts the `502` and the `ApiSheriff-132` record of a push Keycloak refuses.
 
 [[_html_surface_failure_catalogue]]
 == HTML surface failure catalogue

@@ -269,7 +269,7 @@ token_validation:
 #     both modes — and the realm requires both of refresh-client.
 #   * No client_authentication block is declared. A key file next to a secret is refused at
 #     boot, and without one there is no client-authentication key at all.
-#   * The gateway logs the client-secret warning (ApiSheriff-130) at every boot.
+#   * The gateway logs the client-secret warning (ApiSheriff-133) at every boot.
 #   * The client JWKS path /auth/jwks stays reserved and answers 404: there is no key to
 #     publish, and the path is not handed to the route table.
 oidc:

@@ -316,8 +316,8 @@ companion note link:cookie-deliverability-blindness.adoc[Cookie-Deliverability B
   (`integration-tests/.../BffKeycloakLoginFlow.java`).
 | *Deliverability leg closed*
 | The per-cookie budget is now asserted at the single seam every `Bff*IT` login funnels through --
-  `assertCookiesFitBrowserBudget` at `BffKeycloakLoginFlow.java:309`, against the test's own
-  `BROWSER_COOKIE_BUDGET_BYTES` constant at `:158`. The attribute-policy legs remain open and belong
+  `BffKeycloakLoginFlow.assertCookiesFitBrowserBudget`, against the test's own
+  `BROWSER_COOKIE_BUDGET_BYTES` constant. The attribute-policy legs remain open and belong
   to the browser lane.
 
 | (e)-2

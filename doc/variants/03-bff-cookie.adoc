@@ -52,7 +52,8 @@ and shared with the session-based variant:
   channel.
 * *The sender constraint.* Every token request carries a DPoP proof signed with one key, and every
   access token is bound to that key by its `cnf.jkt` claim. The gateway refuses a token response that
-  is not bound: a login ends with `400` and no session, and a refresh ends the session.
+  is not bound: a login ends with `400` and no session, a widening with `400` and the session
+  unchanged, and a refresh ends the session.
 * *Key-based client authentication, by default.* The gateway authenticates to the IdP with
   `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
   gateway path, `/auth/jwks` by default, answered on every host -- and the IdP fetches it from there.
