@@ -81,8 +81,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link PushedAuthorizationRequests}: the parameters of an engine-built authorization
  * request are pushed to the identity provider exactly as the engine rendered them, the browser is
- * sent to the authorization endpoint with {@code client_id} and {@code request_uri} only, and every
- * way the push can fail refuses the login with the {@code 502} event, recorded once per reason.
+ * sent to the authorization endpoint with {@code client_id} and {@code request_uri} only, and each
+ * failure staged here refuses the login with the {@code 502} event, recorded once per reason.
  * <p>
  * The adapter is driven with the engine's own collaborators: the authorization URL is built by the
  * gateway's request builder over an engine {@link FlowContext}, and the push goes through a real
@@ -340,7 +340,7 @@ class PushedAuthorizationRequestsTest {
         Map<String, String> form = pushed.form();
         assertAll("the pushed request of a login",
                 () -> assertEquals(engineParameters(authorizationUrl), withoutClientAuthentication(form),
-                        "the body is the engine-built parameter set, nothing added and nothing dropped"),
+                        "apart from the client authentication, the body is the engine-built parameter set"),
                 () -> assertEquals(Set.copyOf(SCOPES), scopeSet(form.get("scope")), "the requested scope set"),
                 () -> assertEquals("query", form.get("response_mode")),
                 () -> assertEquals("S256", form.get("code_challenge_method")),
@@ -574,7 +574,7 @@ class PushedAuthorizationRequestsTest {
     }
 
     @Test
-    @DisplayName("Should disclose neither a parameter value nor the request_uri in any record or refusal")
+    @DisplayName("Should disclose neither state, nonce, PKCE challenge and client assertion nor the request_uri")
     void shouldDiscloseNothingOfTheRequest(URIBuilder uriBuilder) {
         ClientConfiguration configuration = configuration(READ_TIMEOUT_SECONDS);
         ProviderMetadata metadata = metadata(parEndpoint(uriBuilder));

@@ -45,8 +45,8 @@ import org.junit.jupiter.api.Test;
  * request to the identity provider over the back channel (RFC 9126) and answers a {@code 302} into the
  * IdP authorization endpoint that carries {@code client_id} and the {@code request_uri} Keycloak
  * issued for the pushed request, and nothing else: the scope, the {@code state}, the {@code nonce},
- * the {@code redirect_uri} and the PKCE challenge travel in the pushed request and are never shown to
- * the browser. What the pushed request contains is therefore not observable from this suite; it is
+ * the {@code redirect_uri} and the PKCE challenge travel in the pushed request and do not appear in
+ * that redirect. What the pushed request contains is therefore not observable from this suite; it is
  * asserted at unit level against the request body a stub identity provider records
  * ({@code BffRuntimeProducerTest}, {@code PushedAuthorizationRequestsTest}).
  * <p>

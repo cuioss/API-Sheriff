@@ -54,13 +54,13 @@ import org.junit.jupiter.api.Test;
 /**
  * Fast, no-Docker <em>surefire</em> guard over the client-key wiring of the integration stack: it
  * reads the committed compose file, the gateway descriptors, the realm import, the signing-key files
- * and the release workflow, and asserts that the five agree. It starts no container and reaches no
+ * and the release workflow, and asserts that they agree. It starts no container and reaches no
  * network.
  * <p>
  * <strong>Why the wiring needs a guard of its own.</strong> No realm client carries a registered key.
  * A key-authenticated client names a JWKS URL, and Keycloak fetches the public key from the gateway
  * instance that URL names. A gateway that signs its client assertion with any other key than the one
- * that instance publishes is refused at the token endpoint — on the first login, several minutes into
+ * that instance publishes is refused by Keycloak — on the first login, several minutes into
  * a native build, with an identity-provider error that names neither file. Every statement that makes
  * the fetch work lives in a different file, so each can be changed on its own and still parse.
  * <p>

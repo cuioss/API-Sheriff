@@ -84,8 +84,8 @@ This is the default setup. The gateway signs with two keys, one per purpose:
 | Configuration key | What the key signs | Who needs the public half
 
 | `oidc.client_authentication.key_file`
-| The client assertion the gateway authenticates with on every call to the identity provider
-  (`private_key_jwt`).
+| The client assertion the gateway authenticates with on every authenticated call to the identity
+  provider (`private_key_jwt`).
 | The identity provider. It fetches it from the gateway's JWKS endpoint.
 
 | `oidc.sender_constraint.key_file`
@@ -107,8 +107,9 @@ Each key is in one of two modes. Both are supported in production.
 * *Provided* -- name a key file. The key survives a restart and can be given to every instance. Use
   this mode as soon as *more than one instance* serves the same identity-provider client. Every
   replica must be given the *same* key files. A replica with a different client key fails
-  authentication on some requests and not on others, and a replica with a different proof key cannot
-  refresh a session another replica logged in.
+  authentication on some requests and not on others, and a replica with a different proof key
+  refreshes a session another replica logged in with a proof of another key, which an identity
+  provider may refuse.
 
 The two keys choose their mode independently. A common single-node setup provides neither.
 
@@ -128,7 +129,8 @@ block, and nothing else but whitespace:
 ----
 
 *The `PUBLIC KEY` block is mandatory for every key type, RSA included.* The gateway publishes the
-public half and embeds it in its proofs, and it does not derive it from the private key. At startup
+public half of the client-authentication key and embeds that of the proof key in its proofs, and it
+derives neither from the private key. At startup
 it checks that the two blocks belong together.
 
 Produce the file with OpenSSL. For an RSA key:
@@ -251,10 +253,10 @@ gateway's JWKS URL at the client; do not paste the public key into the identity 
   works. It publishes the public half of the client-authentication key and nothing else.
 * *The identity provider dials the gateway.* It must reach that URL server-to-server and must trust
   the gateway's certificate for the name it dials.
-* *The DPoP key needs no registration.* It is never published.
+* *The DPoP key needs no registration.* A separate DPoP key is never published.
 
-On Keycloak 26.5.7 the clients of this project's integration stack carry these settings (shown as
-they appear in a realm export):
+On Keycloak 26.5.7 the key-authenticated clients of this project's integration stack carry these
+settings (shown as they appear in a realm export):
 
 [cols="2,3", options="header"]
 |===
@@ -269,14 +271,14 @@ they appear in a realm export):
 |===
 
 The identity provider needs the public key only. Keycloak nevertheless generates and stores a secret
-for every client that is imported without one. With the authenticator above it refuses that secret
+for a client that is imported without one. With the authenticator above it refuses that secret
 at the token endpoint. This was seen on Keycloak 26.5.7; no test asserts it.
 
 === What the browser sees at login
 
 The gateway pushes the authorization request to the identity provider and redirects the browser with
 two parameters only, `client_id` and `request_uri`. No scope, no `state` and no redirect URI travel
-through the browser. Keycloak 26.5.7 answers that redirect with a further `302` to its own
+in that redirect. Keycloak 26.5.7 answers that redirect with a further `302` to its own
 `login-actions/authenticate` page before it shows the login form.
 
 If the identity provider offers no pushed-authorization-request endpoint, or the push fails, the
@@ -311,7 +313,8 @@ so at most once per fetch interval -- ten seconds by default in Keycloak -- so a
 inside that interval can fail. There is no overlap: the old key is not published or accepted next to
 the new one.
 
-*What a replacement does to live sessions.* On Keycloak 26.5.7 a session survives it. The integration
+*What a replacement does to live sessions.* On Keycloak 26.5.7 a session survived it in the one case
+observed. The integration
 suite restarts a gateway whose two keys are generated, under a live session. The next refresh of
 that session succeeds, and the new access token is bound to the new proof key.
 
@@ -356,7 +359,7 @@ oidc:
 *What changes, and what does not.*
 
 * Only the client credential changes. The gateway sends the secret as `client_secret_basic` on every
-  call to the identity provider.
+  authenticated call to the identity provider.
 * Pushed authorization requests stay on.
 * DPoP stays on. `oidc.sender_constraint.key_file` is handled exactly as in key mode, and a token
   response that is not bound to the proof key is still refused.

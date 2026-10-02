@@ -416,7 +416,7 @@ jobs:
       # moved to 8444 or the two collide; and management is HTTPS once the certificate pair is
       # supplied, so the probe speaks TLS. The mounted material is the workspace fixture the
       # integration-test run above already used — the certificates, the configuration directory and
-      # the signing-keys directory, whose two key files the IT gateway.yaml names (one by literal path
+      # the signing-keys directory, two of whose key files the IT gateway.yaml names (one by literal path
       # under /app/signing-keys, one through OIDC_DPOP_KEY_FILE) — no new fixture is introduced.
       #
       # The probe is the management interface's /health/live, not its aggregate /health, and it is

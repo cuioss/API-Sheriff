@@ -63,7 +63,7 @@ import org.junit.jupiter.api.Test;
  * published client key, and the DPoP sender constraint. Every key in play here is <em>provided</em> —
  * read from the committed files under {@code signing-keys/}.
  * <p>
- * <strong>One test per control, each with a control of its own.</strong>
+ * <strong>Each control is tested with a control of its own.</strong>
  * <ul>
  *   <li><em>Pushed request.</em> A hand-built front-channel authorization request for
  *       {@code integration-client} that carries its parameters in the URL and no {@code request_uri}
@@ -98,7 +98,7 @@ import org.junit.jupiter.api.Test;
  * and it must carry no record of a refused token response ({@value #TOKEN_NOT_BOUND_RECORD}).
  * <p>
  * <strong>What this suite does NOT prove.</strong> It does not show a token response being
- * <em>refused</em>: Keycloak binds every token of these clients, so the refusal is proven at unit level
+ * <em>refused</em>: Keycloak binds every access token of these clients, so the refusal is proven at unit level
  * against a scripted identity provider ({@code BoundTokenEndpointClientTest},
  * {@code BffRuntimeProducerTest}). It does not prove that an upstream ignores {@code cnf} — the echo
  * upstream checks nothing. The client-secret mode is {@code BffClientSecretModeIT}'s, and generated

@@ -913,7 +913,7 @@ can both redirect the gateway's back-channel *and* present a certificate chainin
 gateway trusts receives that credential and can answer the token exchange -- and a discovery
 document it serves can name the endpoints the gateway dials next. What the captured credential is
 worth differs by mode: a client secret is reusable until the operator rotates it, while a client
-assertion is signed for one request, expires sixty seconds after it was issued and never carries the
+assertion expires sixty seconds after it was issued and never carries the
 key that signed it (<<bff-17>>). The exposure is bounded by the same
 properties as its siblings: the default is `true` and an omitted key or an omitted block resolves to
 `true`; the relaxed posture is reported at boot by `WARN ApiSheriff-125`; the key is a peer of
@@ -1922,7 +1922,7 @@ produce it. One case never reaches the check: a response that carries no access 
 refused one step earlier by the engine, with the same outcome and without the `ApiSheriff-131`
 record.
 
-*Control -- where the binding ends.* The binding is checked at the identity provider's token
+*Control -- where the binding ends.* A proof is checked at the identity provider's token
 endpoint and nowhere else:
 
 * *The forwarded token.* A `require: session` route forwards the mediated access token upstream as
@@ -1931,7 +1931,7 @@ endpoint and nowhere else:
   DPoP-aware upstream would have to reject it for want of a proof. `auth.token_relay: false` forwards
   no token at all (<<bff-10>>).
 * *Nothing downstream of the identity provider checks a proof when the token is used.* The binding
-  protects the token between the identity provider and the gateway. A copy taken on the upstream hop
+  is established and checked between the identity provider and the gateway. A copy taken on the upstream hop
   is as usable against that upstream as a bearer token is, so the control on that hop is transport
   security.
 * *The gateway's own bearer routes accept a bound token without a proof.* A `require: bearer` route
@@ -1971,7 +1971,7 @@ gateway's proof key and arrives as `Authorization: Bearer` with no proof beside 
 for an RSA proof key, and a token rotated by a refresh carries the same `jkt`
 (`BffFapiControlsIT`); in client-secret mode the token of the code exchange and the token of the
 refresh grant both carry that `jkt` (`BffClientSecretModeIT`). A *refused* response is not observed on the
-stack -- Keycloak binds every token of these clients -- so the refusal is proven at unit level only.
+stack -- Keycloak binds every access token of these clients -- so the refusal is proven at unit level only.
 
 [#bff-15]
 === BFF-15 -- Scope over-request, under-check and session-wide scope growth
@@ -2095,7 +2095,7 @@ without any `Origin` is admitted (`BffSessionFallbackIT`, `AuthBranchTest`, `Aut
 
 The gateway is a confidential client, and whatever it authenticates with at the identity provider
 is the gateway's own identity there. A shared secret is a reusable bearer credential: it crosses the
-back channel on every call, and whoever sees it once -- in a log, an environment dump, an
+back channel on every authenticated call, and whoever sees it once -- in a log, an environment dump, an
 intercepted connection -- can act as the client until it is rotated. An asymmetric credential keeps
 the private key inside the client and sends only signed, short-lived assertions, which moves the
 risk from the wire to wherever the key is stored.
@@ -2108,7 +2108,7 @@ algorithms).
 *Control -- key mode, the default.* With no `oidc.client_secret` configured the gateway
 authenticates with `private_key_jwt`. One `PrivateKeyJwtAuth` instance serves the pushed
 authorization request, the code exchange, the refresh grant and RFC 7009 revocation. Each assertion
-is signed for one request, carries a unique `jti`, expires after sixty seconds and names the
+carries a unique `jti`, expires after sixty seconds and names the
 configured issuer as its only audience. The signing algorithm follows the key and cannot be set: an
 RSA key of at least 2048 bits signs `PS256`, an EC key on curve P-256 signs `ES256`; no key type
 reaches the `RS256` family, and an Ed25519 key is refused.
@@ -2146,7 +2146,7 @@ What holds in that mode, and what does not:
   authorization requests (<<bff-19>>) and the DPoP sender constraint (<<bff-14>>) stay in effect, and
   `oidc.sender_constraint.key_file` is handled exactly as in key mode.
 * The secret stays an asset and its exposure stays a threat of this mode. It is sent as an HTTP Basic
-  credential on every back-channel call, so the hostname and trust posture of that leg carries it
+  credential on every authenticated back-channel call, so the hostname and trust posture of that leg carries it
   (<<gw-06>>). The secrets rule still applies -- a literal value is refused at boot, the value must
   arrive through an environment placeholder -- and the configuration model redacts it (<<gw-12>>).
 * The gateway announces the mode at every boot with `WARN ApiSheriff-130`. The record names the mode
@@ -2218,7 +2218,7 @@ an answer came from the gateway; only the transport can. The registered URL must
 `https` URL, and the identity provider must trust the gateway's certificate *by name*. The gateway
 does not enforce TLS on the path: it cannot see how a request reached a terminator in front of it.
 And the URL is set by the identity provider's administrator, not by the gateway -- the gateway
-cannot check what was registered. On the gateway side two things keep the path the gateway's own. A
+cannot check what was registered. On the gateway side two things keep the path the gateway's own. The
 reserved path is answered by the gateway itself, on every host, so a route whose match covers the
 path does not answer it and no proxied upstream can. And a `jwks_path` -- declared, or the default
 it resolves to -- that another reserved OIDC endpoint already claims is refused at boot, naming
@@ -2285,8 +2285,8 @@ authorization requests). The amplification is recorded from the mechanism; no CV
 
 *Control.* `PushedAuthorizationRequests` sits on both authorization-request seams, the login and the
 RFC 9470 step-up re-drive. It pushes the parameters the engine's request builder rendered and
-redirects the browser with `client_id` and `request_uri` only -- scope, `state`, the PKCE challenge
-and the redirect URI never appear in a browser URL, a `Referer` header or a front-channel log. The
+redirects the browser with `client_id` and `request_uri` only -- on that leg scope, `state`, the PKCE
+challenge and the redirect URI appear in no browser URL, `Referer` header or front-channel log. The
 push is authenticated with the gateway's client credential: a signed assertion in key mode, the
 client secret in client-secret mode (<<bff-17>>). It rides the pinned back-channel posture
 (<<gw-06>>). There is no front-channel fallback, so a caller cannot force the parameters back onto
@@ -2298,7 +2298,7 @@ the URL:
   the push itself -- a transport failure, a timeout, a non-success answer, an unparsable answer, an
   answer without a `request_uri` (`push-failed`);
 * the refusal happens *before* the pending-authorization record is stored and before the binding
-  cookie is set, so a failed push leaves no state behind in the gateway;
+  cookie is set, so a failed push leaves no login state behind in the gateway;
 * the refusal is recorded as `WARN ApiSheriff-132` with that bounded reason on its first occurrence
   only. Every repeat of a reason is a `DEBUG` line for the rest of the process, so a stream of
   failing anonymous logins does not flood the log. Neither the record nor the refusal carries the

@@ -533,7 +533,7 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   url-parameter *value* pipeline is deliberately not applied to it -- its parameters are validated
   by the reserved handler itself, which knows their grammar (ADR-0019).
 
-* *Engine boundary.* The gateway re-implements no OAuth leg. Every reserved handler (login
+* *Engine boundary.* The gateway re-implements no OAuth leg. Each handler that runs one (login
   initiation, callback code-exchange, RP-initiated + back-channel logout, transparent refresh,
   RFC 9470 step-up) drives the `token-sheriff-client` engine across a small set of seams and adds
   only the browser-facing concern on top (binding/session cookies, CSRF, curated user-info view,
@@ -579,7 +579,7 @@ Three controls sit between the BFF and the identity provider
   and yields the redirect URL: the authorization endpoint with `client_id` and `request_uri` and
   nothing else. It composes no parameter itself and has no front-channel fallback. The step-up seam
   has no caller at the edge, so on that seam the push is proven at unit level only.
-* *One DPoP sender constraint binds every token.* `ClientSigningKey` resolves the sender-constraint
+* *One DPoP sender constraint binds every access token.* `ClientSigningKey` resolves the sender-constraint
   key from `oidc.sender_constraint.key_file`, or generates one, in both client-authentication modes.
   The one `SenderConstraint` it hands out is shared by the base flow's code exchange, every
   per-scope flow and every refresh grant.

@@ -99,8 +99,8 @@ import org.jspecify.annotations.Nullable;
  * (ADR-0051).
  * <p>
  * <strong>The check holds in both client-authentication modes.</strong> It reads neither the mode
- * nor the client credential. A call made without a sender constraint is refused the same way: it
- * carries no DPoP proof, so its response cannot be bound.
+ * nor the client credential. A call made without a sender constraint is judged the same way: it
+ * carries no DPoP proof, and its unbound response is refused.
  * <p>
  * <strong>Token responses only.</strong> The check judges a token response when it arrives. A
  * session whose token is bound to an earlier key is never re-checked, so replacing the key does not
@@ -176,8 +176,8 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
      * @param formParameters   the form-encoded request body parameters; {@code grant_type} selects
      *                         the leg a refusal is recorded under
      * @param requestHeaders   additional request headers
-     * @param senderConstraint the DPoP sender constraint to apply; a call without one is refused,
-     *                         because its response cannot be bound
+     * @param senderConstraint the DPoP sender constraint to apply; the response of a call without
+     *                         one is judged the same way
      * @return the engine's token response, unchanged
      * @throws RedeemedResponseException when the response is not of type {@code DPoP} or its access
      *                                   token does not carry the expected {@code cnf.jkt}; the

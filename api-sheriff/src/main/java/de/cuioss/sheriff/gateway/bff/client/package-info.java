@@ -23,9 +23,10 @@
  * generating one at startup. It derives the key id and the signing algorithm from the key and hands
  * the key to the token engine without disclosing it.
  * <p>
- * <strong>Nothing in this package logs or renders a key.</strong> No type here has an accessor that
- * returns private key material, no {@code toString()} carries a key member, and every refusal names
- * a configuration field and a defect — never the content of a key file nor its configured path.
+ * <strong>Nothing in this package logs a key or renders a private one.</strong> No type here has an
+ * accessor that returns private key material, no {@code toString()} carries a key member, and every
+ * refusal names a configuration field and a defect — never the key material of a key file nor its
+ * configured path.
  * <p>
  * The package is framework-agnostic (no CDI, no JAX-RS/Vert.x coupling) and introduces no new
  * dependency — key decoding, key generation and signing use the JDK's own providers.

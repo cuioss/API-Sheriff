@@ -337,7 +337,7 @@ algorithm and the key id from the key.
 
 The DPoP key file is named in the descriptors through the variable `OIDC_DPOP_KEY_FILE`, which each
 service sets, so both ways of naming a key file run in the native image. Regenerating any of the
-three needs no realm change: Keycloak holds no copy of the client key, and a DPoP proof carries its
+three needs no realm change: the realm holds no copy of the client key, and a DPoP proof carries its
 own public key.
 
 *The realm settings, and what Keycloak does with them.* The three key-authenticated clients declare
@@ -857,15 +857,16 @@ verification artifacts and are not committed.
 This change *does* alter facts the diagram depicts: it adds one gateway instance and one published
 port pair. The diagram was therefore redrawn rather than left alone.
 
-The collapsed variant group is relabelled `variant instances (10)` and grows by one row --
-`api-sheriff-cookie-refresh` at `10455 · 19011` -- on the group's existing 18-pixel row pitch. The
+The collapsed variant group is relabelled `variant instances (11)` and grows by two rows --
+`api-sheriff-no-certificate` at `10453 · 10454 · 19010` and `api-sheriff-cookie-refresh` at
+`10455 · 19011` -- and its row pitch tightens from 18 to 16 pixels. The
 growth is taken *upwards* rather than downwards, and that direction is the one number worth stating
 because it is what could have gone wrong quietly: the group's bottom edge at `826` already sits only
 `10` pixels inside the compose-network rectangle's bottom edge at `836`, so growing downwards by a
 row pitch would have pushed the group through its own enclosure. The rectangle's top edge therefore
 moves from `600` to `582` and its height from `226` to `244`, leaving the bottom edge unmoved at
-`826`; every text row inside the group moves up by the same `18`, so the appended row lands on the
-coordinate the previous last row vacated, and the own-bar's top edge moves with them while its
+`826`; the group's label and its first row move up by the same `18`, the last row sits at `810`,
+and the own-bar's top edge moves with them while its
 bottom edge stays at `818` with the rectangle's. Above the
 group, the mounted-material pills end at `566`, so the gap there narrows from `34` to `16` pixels
 and no element overlaps. The `viewBox` is unchanged. The `<desc>` accessibility narrative carries

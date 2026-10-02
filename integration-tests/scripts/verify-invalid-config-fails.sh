@@ -781,7 +781,7 @@ assert_fails_to_boot "${SECRET_AND_KEY_FILE_DIR}" "oidc.client_secret together w
 # "did a port open first?" is a real question.
 #
 # The fixture is otherwise complete and valid, and oidc.sender_constraint is omitted so that key is
-# generated: the unreadable client-authentication key is the ONLY violation.
+# generated: the unusable client-authentication key file is the ONLY violation.
 KEY_FILE_WITHOUT_PEM_DIR="$(mktemp -d)"
 CONFIG_DIRS+=("${KEY_FILE_WITHOUT_PEM_DIR}")
 mkdir -p "${KEY_FILE_WITHOUT_PEM_DIR}/endpoints"

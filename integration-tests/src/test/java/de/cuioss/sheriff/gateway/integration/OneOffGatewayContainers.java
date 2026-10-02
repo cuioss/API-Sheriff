@@ -177,7 +177,7 @@ final class OneOffGatewayContainers {
      * Starts a one-off BFF gateway, mounted as a compose variant instance is: the shared
      * {@code sheriff-config} directory with one overlay descriptor, the certificates, the assets and
      * the demo directory. Nothing else is mounted — in particular no signing-key directory, so the
-     * container holds no key file a descriptor could name.
+     * container holds no signing-key file a descriptor could name.
      * <p>
      * The three trust-store arguments are the ones every compose gateway passes: the confidential-client
      * engine dials Keycloak with the JVM default trust manager, and Keycloak serves the stack's

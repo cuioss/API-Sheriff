@@ -158,7 +158,7 @@ import org.jspecify.annotations.Nullable;
  * drop the key-set endpoint without a diagnostic. The same rule refuses a path that is not a
  * canonical gateway path — held to the canonical-path review of {@link PortalRules}, and carrying
  * neither a matrix parameter nor a percent-encoded character — because the path is matched by exact
- * equality with the canonical request path and such a value would never be reserved.
+ * equality with the canonical request path and such a value would never be matched.
  * <p>
  * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
  * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect

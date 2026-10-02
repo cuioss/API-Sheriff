@@ -98,8 +98,7 @@ The whole leg is navigations the browser performs; your application starts it an
 . The application navigates to `/auth/login?returnUrl=/some/page`. The gateway pushes the
   authorization request to the identity provider over its own back channel, sets a short-lived,
   `HttpOnly` browser-binding cookie and `302`s to the identity provider. *That first redirect carries
-  only `client_id` and `request_uri`*: no scope, no `state` and no redirect URI travel through the
-  browser.
+  only `client_id` and `request_uri`*: no scope, no `state` and no redirect URI travel in it.
 . The user authenticates at the identity provider. Keycloak 26.5.7 answers the redirect above with a
   further `302` to its own `login-actions/authenticate` page, and that page is the login form. The
   browser follows it; your application does not see it.

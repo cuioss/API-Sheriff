@@ -96,7 +96,7 @@
 
   <!-- 11. IdP -> gateway tokens -->
   <line class="arrow-return" x1="745" y1="560" x2="455" y2="560" marker-end="url(#arrow)"/>
-  <text x="600" y="552" class="arrow-lbl">DPoP-bound access + refresh + id tokens</text>
+  <text x="600" y="552" class="arrow-lbl">DPoP-bound access token + refresh + id tokens</text>
 
   <!-- gateway notes: bound-token check, validate, bind -->
   <text x="466" y="586" class="note">refuse unless token type is DPoP and</text>
@@ -109,6 +109,6 @@
   <text x="300" y="662" class="arrow-lbl">302 &#8594; app · Set-Cookie (HttpOnly, Secure)</text>
 
   <!-- footer -->
-  <text x="450" y="724" class="caption">The token never reaches JavaScript; the authorization request is pushed over the back channel.</text>
-  <text x="450" y="742" class="caption">Code exchange is server-to-server; tokens must be bound to the gateway's proof key and are validated before they are trusted.</text>
+  <text x="450" y="724" class="caption">The token never reaches JavaScript; the authorization request is pushed over the back channel; code exchange is server-to-server.</text>
+  <text x="450" y="742" class="caption">The access token must be bound to the gateway's proof key, and tokens are validated before they are trusted.</text>
 </svg>

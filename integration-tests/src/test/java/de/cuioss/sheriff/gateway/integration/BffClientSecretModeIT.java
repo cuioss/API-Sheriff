@@ -49,7 +49,7 @@ import org.junit.jupiter.api.Test;
  * gateway whose descriptor declares {@code oidc.client_secret}.
  * <p>
  * <strong>What the mode changes, and what it does not.</strong> A configured client secret selects
- * {@code client_secret_basic} for every back-channel call. Nothing else follows from it: the
+ * {@code client_secret_basic} for every authenticated back-channel call. The
  * authorization request is still pushed, every token request still carries a DPoP proof, and a token
  * response that is not bound to the proof key is still refused. Each test below states one of those
  * facts and carries the control that keeps it from passing for another reason.

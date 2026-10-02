@@ -36,9 +36,9 @@ import org.jspecify.annotations.Nullable;
  * the client-authentication key. {@code GET} answers {@code 200} with exactly that one JWK under
  * {@code keys}; every other method answers {@code 405} with {@code Allow: GET} and no body.
  * <ul>
- *   <li><em>What it publishes.</em> The client-authentication public key, and nothing else. The key
- *       that signs the gateway's DPoP proofs is never published here: it travels inside every proof
- *       it signs, so an identity provider needs no out-of-band copy of it.</li>
+ *   <li><em>What it publishes.</em> The client-authentication public key, and nothing else. A
+ *       separate key that signs the gateway's DPoP proofs is never published here: it travels inside
+ *       every proof it signs, so an identity provider needs no out-of-band copy of it.</li>
  *   <li><em>Why {@code Cache-Control: no-store}.</em> The key changes when the operator replaces the
  *       key file, and on every restart when the key is generated. After a key change no cache may
  *       keep serving the previous document, or the identity provider would go on verifying against a

@@ -62,7 +62,7 @@ import org.jspecify.annotations.Nullable;
  * yields carries {@code client_id} and {@code request_uri} and nothing else. The runtime pushes the
  * request the engine rendered through {@link PushedAuthorizationRequests} before this flow sees it,
  * so the requested scope set, {@code state}, {@code nonce}, the PKCE challenge and
- * {@code response_mode=query} travel in the pushed request and never through the browser. A failed
+ * {@code response_mode=query} travel in the pushed request and not in that redirect. A failed
  * push propagates out of the seam as a {@code 502} refusal: {@link #initiate} calls the seam first,
  * so the failure is raised before the pending record is stored and before the binding cookie is set,
  * and no login is left half-started.

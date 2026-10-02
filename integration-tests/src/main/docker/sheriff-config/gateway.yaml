@@ -296,7 +296,7 @@ oidc:
   # fetches it as https://api-sheriff:8443/auth/jwks, the jwks.url of the realm client.
   client_authentication:
     key_file: /app/signing-keys/client-auth-rsa.pem
-  # The DPoP proof key every token of this instance is bound to. Named THROUGH A VARIABLE, so that
+  # The DPoP proof key every access token of this instance is bound to. Named THROUGH A VARIABLE, so that
   # both reference forms — the literal path above and this ${VAR} — run in the native image.
   sender_constraint:
     key_file: ${OIDC_DPOP_KEY_FILE}

@@ -47,8 +47,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * public key it was built with and every other method with {@code 405}; the withheld form answers
  * every method with {@code 404}; and no form can be made to publish a private key member.
  * <p>
- * The published key is the real public JWK of a {@link ClientSigningKey} — generated for EC, read
- * from a key file {@link TestSigningKeys} writes for RSA — so what is asserted is the document an
+ * The published key is the real public JWK of a {@link ClientSigningKey} — read from a key file
+ * {@link TestSigningKeys} writes, for EC and for RSA — so what is asserted is the document an
  * identity provider would actually fetch, not a hand-built map.
  */
 @EnableGeneratorController

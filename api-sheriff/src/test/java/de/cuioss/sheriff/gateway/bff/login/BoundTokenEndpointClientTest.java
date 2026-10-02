@@ -81,8 +81,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * certificate through its SSL context, and plain HTTP is not enabled. The access tokens are compact
  * JWS strings composed here: the class under test verifies no signature, so none is needed.
  * <p>
- * The refusals are matched controls over one fixture — each differs from the accepted response in a
- * single property.
+ * The refusals of {@code unboundResponsesOnBothLegs} are matched controls over one fixture — each
+ * differs from the accepted response in a single property.
  * <p>
  * Two inputs cannot be produced through the stub, because the engine and the library parser never
  * yield them: a token response without an access token, which the engine refuses itself, and a read
@@ -301,7 +301,7 @@ class BoundTokenEndpointClientTest {
     }
 
     @Test
-    @DisplayName("Should refuse a call made without a sender constraint — its response cannot be bound")
+    @DisplayName("Should refuse the Bearer response of a call made without a sender constraint")
     void shouldRefuseACallMadeWithoutASenderConstraint() {
         Scripted scripted = script(TYPE_BEARER, AccessTokenShape.WITHOUT_CNF);
         String tokenEndpoint = stub.url(StubIdentityProvider.Endpoint.TOKEN);

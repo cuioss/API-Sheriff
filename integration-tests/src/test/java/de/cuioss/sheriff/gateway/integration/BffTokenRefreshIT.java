@@ -59,9 +59,10 @@ import org.junit.jupiter.api.Test;
  * requires {@code refresh-client} to push its authorization requests and to have its tokens bound to
  * a DPoP proof key, like the key-authenticated clients. Every login of this suite therefore drives
  * the pushed request and the code exchange, and every {@code REFRESHED} leg the refresh grant, with
- * {@code client_secret_basic} and a DPoP proof. A green run is the evidence that Keycloak accepts a
- * pushed request and a DPoP-carrying code exchange and refresh from a secret-authenticated client;
- * the proofs that name those properties one by one are {@code BffClientSecretModeIT}'s.
+ * {@code client_secret_basic}, and the two token requests with a DPoP proof. A green run is the
+ * evidence that Keycloak accepts a pushed request and a DPoP-carrying code exchange and refresh from
+ * a secret-authenticated client; the proofs that name those properties one by one are
+ * {@code BffClientSecretModeIT}'s.
  * <p>
  * <strong>What this suite proves.</strong> Each of the three terminal outcomes is reached through the
  * real edge and asserted by an observable that would differ had the branch not been taken:

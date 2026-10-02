@@ -45,9 +45,9 @@ import org.jspecify.annotations.Nullable;
  * prefix route never sees it.
  * <p>
  * The client JWKS path is the one reserved path that needs no declaration: an {@code oidc} block
- * that names none reserves the default path. It is reserved in both client-authentication modes —
- * the registry does not read the mode; what the endpoint answers in each mode is
- * {@link ClientJwksEndpoint}'s concern.
+ * with a {@code redirect_uri} that names none reserves the default path. It is reserved in both
+ * client-authentication modes — the registry does not read the mode; what the endpoint answers in
+ * each mode is {@link ClientJwksEndpoint}'s concern.
  * <p>
  * The registry is built once at boot from the frozen {@link OidcConfig}. When no {@code oidc}
  * block (or no {@code redirect_uri}) is configured the registry is {@linkplain #isEmpty() empty}
@@ -234,7 +234,7 @@ public final class ReservedPathRegistry {
      * <p>
      * <strong>{@link ReservedEndpoint#BACKCHANNEL_LOGOUT} and {@link ReservedEndpoint#CLIENT_JWKS} are
      * matched on every host, and that asymmetry is the contract rather than a relaxation of
-     * it.</strong> They are the two reserved endpoints no browser ever reaches: the identity provider
+     * it.</strong> They are the two reserved endpoints no browser needs to reach: the identity provider
      * dials both server-to-server, at whatever address the relying party registered — its
      * {@code backchannel_logout_uri} for the one, its client key-set URL for the other — and that
      * address is routinely an internal one, a container or service name on the network the two share,

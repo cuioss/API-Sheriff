@@ -1596,17 +1596,17 @@ class BffRuntimeProducerTest {
      * controls is what shows it: the same dial is refused without the profile, and a plain-HTTP issuer
      * is refused before anything is sent.
      * <p>
-     * <strong>The four back-channel legs.</strong> The pushed authorization request is driven through the
-     * runtime's own reserved login dispatch, and the code exchange through that login followed by the
-     * callback dispatch; the refresh grant and the revocation through the two seams the assembled
-     * refresh coordinator holds. Unless a test scripts an answer, the stub accepts every push and its
-     * token endpoint refuses every grant, so each token leg ends in a refusal and the assertion is made
-     * on the request the stub recorded.
+     * <strong>The four back-channel legs that present the client credential.</strong> The pushed
+     * authorization request is driven through the runtime's own reserved login dispatch, and the code
+     * exchange through that login followed by the callback dispatch; the refresh grant and the
+     * revocation through the two seams the assembled refresh coordinator holds. Unless a test scripts
+     * an answer, the stub accepts every push and its token endpoint refuses every grant, so each token
+     * leg ends in a refusal and the assertion is made on the request the stub recorded.
      * <p>
      * <strong>The pushed authorization request.</strong> A login redirect carries {@code client_id} and
-     * {@code request_uri} and nothing else, so nothing about the authorization request can be read from
-     * it. Whatever a test asserts about that request — its scope set, its {@code state} — is read from
-     * the form body the stub's pushed-authorization-request endpoint recorded.
+     * {@code request_uri} and nothing else, so nothing else about the authorization request can be read
+     * from it. Whatever a test asserts about that request — its scope set, its {@code state} — is read
+     * from the form body the stub's pushed-authorization-request endpoint recorded.
      * <p>
      * <strong>The sender constraint.</strong> Every token request carries a DPoP proof, and the tests of
      * the binding check script the token endpoint's answer: a success answer that is not bound to the
@@ -1700,7 +1700,7 @@ class BffRuntimeProducerTest {
             PUSHED_REQUEST, CODE_EXCHANGE, REFRESH_GRANT, REVOCATION
         }
 
-        /** The three key files the producer must refuse, each written the way an operator gets it wrong. */
+        /** Three key files the producer must refuse, each written the way an operator gets it wrong. */
         enum RefusedKeyFile {
 
             MISMATCHED_HALVES {
@@ -1844,7 +1844,7 @@ class BffRuntimeProducerTest {
                     () -> assertNotNull(form.get("nonce"), "and the nonce"),
                     () -> assertNotNull(form.get("code_challenge"), "and the PKCE challenge"),
                     () -> assertFalse(location.contains(String.valueOf(form.get(PARAM_STATE))),
-                            "none of which the browser is shown"),
+                            "none of which the redirect shows the browser"),
                     () -> assertFalse(form.containsKey("dpop_jkt"), "the gateway adds no dpop_jkt"),
                     () -> assertEquals(Optional.empty(), pushed.header(DPOP_HEADER), "and the push carries no proof"));
         }
@@ -2367,7 +2367,7 @@ class BffRuntimeProducerTest {
             String proofKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
 
             assertNotEquals(publishedKeyId, proofKey,
-                    "the client JWKS path publishes the client-authentication key, never the DPoP proof key");
+                    "the client JWKS path publishes the client-authentication key, not the separate DPoP proof key");
         }
 
         @Test

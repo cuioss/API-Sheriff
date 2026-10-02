@@ -318,7 +318,7 @@ class ReservedPathRegistryTest {
             assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(OIDC_HOST, DEFAULT_JWKS_PATH),
                     "the OIDC host");
             assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(FOREIGN_HOST, DEFAULT_JWKS_PATH),
-                    "the identity provider dials the key set by an internal name, never the OIDC host");
+                    "the identity provider may dial the key set by an internal name, not the OIDC host");
             assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(null, DEFAULT_JWKS_PATH),
                     "the endpoint compares no host, so an absent Host is admitted too");
         }

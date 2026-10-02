@@ -66,7 +66,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * One signing key of the confidential client (ADR-0057), resolved at boot into one of two
- * first-class, fully supported production modes. The gateway holds one such key per
+ * first-class, fully supported production modes. The gateway holds at most one such key per
  * {@link Purpose}: the key that signs the {@code private_key_jwt} client assertion, and the key that
  * signs the DPoP proofs its tokens are bound to.
  * <p>
@@ -89,12 +89,12 @@ import org.jspecify.annotations.Nullable;
  * <strong>The key id is derived, never configured.</strong> It is the RFC 7638 thumbprint of the
  * public key, so it changes exactly when the key does.
  * <p>
- * Exactly one key per purpose is ever active — there is no retiring companion key. The type never
- * logs, serialises, or {@link #toString()}s key material and has no accessor that returns the
- * private key; the material is reachable only through {@link #clientAuthentication(String, String)}
+ * At most one key per purpose is ever active — there is no retiring companion key. The type never
+ * logs or {@link #toString()}s key material and has no accessor that returns the
+ * private key; that key is reachable only through {@link #clientAuthentication(String, String)}
  * and {@link #senderConstraint()}, both of which hand it to the token engine without disclosing it.
- * Every refusal names the configuration field of the purpose and the defect, and never the file
- * content nor the configured path.
+ * Every refusal names the configuration field of the purpose and the defect, and never the key
+ * material nor the configured path.
  * <p>
  * Instances are immutable and safe for concurrent use.
  *
@@ -584,8 +584,7 @@ public final class ClientSigningKey {
     }
 
     /**
-     * What a signing key is used for. Each purpose has its own configuration block, its own key and
-     * its own key id.
+     * What a signing key is used for. Each purpose has its own configuration block.
      *
      * @author API Sheriff Team
      * @since 1.0

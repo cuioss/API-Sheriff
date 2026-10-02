@@ -398,13 +398,13 @@ oidc:                              # only used by the BFF variants (2 and 3)
   # client_secret: ${SHERIFF_CLIENT_SECRET}   # selects client-secret authentication, which is
                                    #   not FAPI 2.0 conformant and may weaken security. Refused
                                    #   at boot together with client_authentication.key_file
-  sender_constraint:               # DPoP: every token is bound to this key, in both
+  sender_constraint:               # DPoP: every access token is bound to this key, in both
                                    #   client-authentication modes; a token response that is not
                                    #   bound to it is refused
     key_file: /etc/sheriff/keys/dpop.pem   # PEM file on a mount, same format and key types as
                                    #   client_authentication.key_file. OPTIONAL -- omit to
-                                   #   generate a key on startup (single node only). This key is
-                                   #   never published at jwks_path
+                                   #   generate a key on startup (single node only). A separate
+                                   #   key here is never published at jwks_path
   scopes: [openid, profile]        # REQUESTED on every login and joined into every route's
                                    #   needed set (bearer routes check them too); endpoints add
                                    #   their own via endpoint.scopes, never remove these.
@@ -1500,7 +1500,7 @@ the behaviour assertions above are what settle that the control acts.
 
 A gateway running a BFF variant talks to its identity provider directly: it resolves the discovery
 document, pushes every authorization request, exchanges the authorization code for tokens, refreshes
-them, and revokes a refresh token it can no longer use. That is leg 6 in
+them, and revokes, best-effort, a refresh token left live when a refresh ends the session. That is leg 6 in
 link:#_egress_tls_legs[the enumeration above]. It carries the client credential -- the signed client
 assertion by default, the client secret when `oidc.client_secret` is configured -- and the
 authorization codes the gateway establishes sessions from. Two keys bind it
@@ -2312,8 +2312,8 @@ Three things hold for every BFF gateway, whatever else the block declares
 * *Every authorization request is pushed* (RFC 9126). The browser is redirected with `client_id` and
   `request_uri` only. The identity provider must offer a pushed-authorization-request endpoint; without
   one every login is refused with `502`.
-* *Every token is bound to one DPoP key* (RFC 9449), and a token response that is not bound to that
-  key is refused -- see link:#_oidc_sender_constraint[The sender constraint and the token-binding
+* *Every access token is bound to one DPoP key* (RFC 9449), and a token response that is not bound to
+  that key is refused -- see link:#_oidc_sender_constraint[The sender constraint and the token-binding
   check].
 * *The client authenticates with `private_key_jwt`*, unless `client_secret` is configured -- see
   link:#_oidc_client_authentication[Client authentication].
@@ -2358,11 +2358,11 @@ Three things hold for every BFF gateway, whatever else the block declares
 
 | `sender_constraint.key_file`
 | *Optional* string, at least one character. The path of a PEM file on a mount that holds the key
-  the gateway signs its DPoP proofs with -- the key every token it obtains is bound to. Same file
+  the gateway signs its DPoP proofs with -- the key every access token it obtains is bound to. Same file
   format, key types and boot refusals as `client_authentication.key_file`; omitted, a key is
   generated at startup. Read in *both* client-authentication modes. It may name the same file as
   `client_authentication.key_file`; two separate keys are recommended, one per purpose (FAPI 2.0
-  §6.8). This key is never published. See link:#_oidc_signing_keys[Signing keys] and
+  §6.8). A separate key is never published. See link:#_oidc_signing_keys[Signing keys] and
   link:#_oidc_sender_constraint[The sender constraint and the token-binding check].
 
 | `client_secret`
@@ -2628,8 +2628,8 @@ See link:#_oidc_client_authentication[Client authentication].
 [[_oidc_client_authentication]]
 ==== Client authentication: key mode and client-secret mode
 
-The gateway presents one client credential on every back-channel call to the identity provider: the
-pushed authorization request, the authorization-code exchange, the refresh grant and RFC 7009
+The gateway presents one client credential on every authenticated back-channel call to the identity
+provider: the pushed authorization request, the authorization-code exchange, the refresh grant and RFC 7009
 revocation. Which credential it is follows from the document alone. There is no mode key.
 
 [cols="2,2,3", options="header"]
@@ -2659,11 +2659,11 @@ and the key id derived from that key (see link:#_oidc_signing_keys[Signing keys]
 The identity provider verifies the assertion with the public key it fetches from
 link:#_oidc_client_jwks[the client JWKS endpoint]. The identity provider needs the public key only.
 What it stores beside that key is not in the gateway's hands. Keycloak 26.5.7 generates and stores a
-secret for every client imported without one, and refuses that secret at the token endpoint for a
+secret for a client imported without one, and refuses that secret at the token endpoint for a
 client registered for signed-assertion authentication. That was seen on the integration stack; no
 test asserts it.
 
-*Client-secret mode.* The secret travels as an HTTP Basic credential on every leg.
+*Client-secret mode.* The secret travels as an HTTP Basic credential on each of those calls.
 
 [WARNING]
 ====
@@ -2703,8 +2703,7 @@ A `client_secret` whose variable is not set at all fails earlier, at load, under
 [[_oidc_signing_keys]]
 ==== Signing keys: `client_authentication.key_file` and `sender_constraint.key_file`
 
-The gateway holds up to two signing keys, one per purpose. Each has its own configuration key, its
-own key material and its own key id.
+The gateway holds up to two signing keys, one per purpose. Each has its own configuration key.
 
 [cols="2,2,2,2", options="header"]
 |===
@@ -2716,9 +2715,9 @@ own key material and its own key id.
 | published at the client JWKS endpoint
 
 | `sender_constraint.key_file`
-| the DPoP proofs, so every token is bound to it
+| the DPoP proofs, so every access token is bound to it
 | both modes
-| never published; it travels in each proof
+| travels in each proof; not published unless it is also the client-authentication key
 |===
 
 ===== Two modes per key
@@ -2751,8 +2750,8 @@ oidc:
 
 The value is not a secret-classified field. It names a location on a mount and discloses nothing
 else, so the secrets rule -- bare `${VAR}` only, no literal, no default -- does not apply to it, and
-`gateway.yaml` stays a document that can be committed. The secret is the *content* of the file. That
-content never enters `gateway.yaml`, a log line or an error message, and a boot refusal names the
+`gateway.yaml` stays a document that can be committed. The secret is the *key material* in the file.
+It never enters `gateway.yaml`, a log line or an error message, and a boot refusal names the
 configuration key and the defect, never the configured path.
 
 The gateway does not check the file's permissions. Mount the file read-only, readable by the
@@ -2774,8 +2773,8 @@ block, the two halves of one key, and nothing else but whitespace. The file is l
 ----
 
 *The `PUBLIC KEY` block is mandatory for every key type, RSA included.* The gateway publishes the
-public half at the JWKS endpoint and embeds it in every DPoP proof, and it does not derive that half
-from the private key. At boot it proves by one sign-and-verify round that the two blocks belong
+public half of the client-authentication key at the JWKS endpoint and embeds that of the proof key in
+every DPoP proof, and it derives neither from the private key. At boot it proves by one sign-and-verify round that the two blocks belong
 together, and it refuses to start when they do not.
 
 These commands produce such a file. Each set writes a PKCS#8 private key and appends its public
@@ -2951,7 +2950,7 @@ link:user/bff-cookie.adoc#replacing-a-key[Cookie-Based BFF -- Replacing a signin
 ==== The client JWKS endpoint (`client_authentication.jwks_path`)
 
 In key mode the gateway publishes the public half of the client-authentication key at a reserved
-path. It is the one way the identity provider learns the key: register the `https` URL of this path
+path. It is the supported way the identity provider learns the key: register the `https` URL of this path
 as the client's key-set URL. Registering the public key itself at the identity provider is not the
 supported route -- it would have to be repeated at every key replacement, and it cannot serve a
 generated key at all.
@@ -2981,13 +2980,13 @@ generated key at all.
   RSA; `crv`, `x` and `y` for EC).
 
 | Never published
-| A private member; `key_ops`; the DPoP proof key.
+| A private member; `key_ops`; a separate DPoP proof key.
 
 | Client-secret mode
 | The path stays reserved and answers *`404`* to every method. The answer is the one a path no route
   matches receives -- the same `application/problem+json` body and the same headers, and the same
-  HTML error page where `portal.error_pages` negotiates one -- so the path does not disclose the
-  client-authentication mode. It is not released to the route table, so no proxied upstream can
+  HTML error page where `portal.error_pages` negotiates one -- so the answer does not tell a
+  client-secret gateway from one without the endpoint. It is not released to the route table, so no proxied upstream can
   answer under a key-set URL an identity provider may still hold for this client.
 
 | TLS

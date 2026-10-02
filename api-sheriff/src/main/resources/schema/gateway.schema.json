@@ -380,12 +380,12 @@
         "sender_constraint": {
           "type": "object",
           "additionalProperties": false,
-          "description": "The key the gateway signs its DPoP proofs with. Every token the gateway obtains is bound to this key, and a token response that is not bound to it is refused. The block is read in both client-authentication modes.",
+          "description": "The key the gateway signs its DPoP proofs with. Every access token the gateway obtains is bound to this key, and a token response that is not bound to it is refused. The block is read in both client-authentication modes.",
           "properties": {
             "key_file": {
               "type": "string",
               "minLength": 1,
-              "description": "Path of a PEM file on a mount holding the DPoP proof key. The file must hold exactly one unencrypted PKCS#8 PRIVATE KEY block and exactly one PUBLIC KEY block, the two halves of one key, and nothing else but whitespace. Accepted key types: RSA with a modulus of at least 2048 bits, and EC on curve P-256. The signing algorithm (PS256 for RSA, ES256 for EC) and the key thumbprint the tokens are bound to (the RFC 7638 thumbprint of the public key) are derived from the key and are not configurable. The value is a location, not a secret, so it may be written literally. It may name the same file as client_authentication.key_file; two separate keys are recommended. With no key file configured, a key is generated at startup; a generated key lives in one process, so that mode suits a single node only. The DPoP proof key is never published: it is not served at the client JWKS endpoint, and its public half travels only in the proofs the gateway sends to the identity provider."
+              "description": "Path of a PEM file on a mount holding the DPoP proof key. The file must hold exactly one unencrypted PKCS#8 PRIVATE KEY block and exactly one PUBLIC KEY block, the two halves of one key, and nothing else but whitespace. Accepted key types: RSA with a modulus of at least 2048 bits, and EC on curve P-256. The signing algorithm (PS256 for RSA, ES256 for EC) and the key thumbprint the tokens are bound to (the RFC 7638 thumbprint of the public key) are derived from the key and are not configurable. The value is a location, not a secret, so it may be written literally. It may name the same file as client_authentication.key_file; two separate keys are recommended. With no key file configured, a key is generated at startup; a generated key lives in one process, so that mode suits a single node only. A separate DPoP proof key is never published: it is not served at the client JWKS endpoint, and its public half travels only in the proofs the gateway sends to the identity provider."
             }
           }
         },

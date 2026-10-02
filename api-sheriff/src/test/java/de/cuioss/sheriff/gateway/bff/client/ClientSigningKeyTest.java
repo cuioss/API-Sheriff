@@ -72,7 +72,7 @@ import org.junit.jupiter.params.provider.EnumSource;
  * recording it without any key member; the provided mode deriving the algorithm from the key type;
  * the key id being the thumbprint the token engine computes for the same key, so the gateway's JWK
  * rendering and the engine's cannot drift; the published JWK carrying public signature members only;
- * the key reaching the engine's client assertion and DPoP proof; every refusal naming the
+ * the key reaching the engine's client assertion and DPoP proof; every refusal staged here naming the
  * configuration field while echoing neither the configured path nor a line of the file; and the
  * absence of any key member from {@link ClientSigningKey#toString()}.
  * <p>

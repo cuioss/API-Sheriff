@@ -76,7 +76,7 @@ import org.jspecify.annotations.Nullable;
  *       next paragraph.</li>
  * </ol>
  * <strong>The mediated access token is DPoP-bound, and the binding ends at the gateway
- * (ADR-0057).</strong> Every token the gateway obtains is bound to its DPoP proof key, so the access
+ * (ADR-0057).</strong> Every access token the gateway obtains is bound to its DPoP proof key, so that
  * token carries a {@code cnf} claim whose {@code jkt} member names that key. The gateway forwards it
  * as {@code Authorization: Bearer} and sends no DPoP proof with it: the proof key never leaves the
  * gateway, and a proof is valid for one request to one address. The sender constraint therefore holds

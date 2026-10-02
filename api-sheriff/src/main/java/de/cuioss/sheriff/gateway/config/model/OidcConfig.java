@@ -418,7 +418,7 @@ List<String> scopes,
 
     /**
      * The {@code sender_constraint} block: the key the gateway signs its DPoP proofs with, and
-     * therefore the key every token it obtains is bound to. The block is read in both
+     * therefore the key every access token it obtains is bound to. The block is read in both
      * client-authentication modes — a configured {@code client_secret} changes how the gateway
      * authenticates, not whether its tokens are sender-constrained.
      * <p>

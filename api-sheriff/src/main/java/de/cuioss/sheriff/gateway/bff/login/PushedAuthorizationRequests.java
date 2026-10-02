@@ -41,7 +41,7 @@ import org.jspecify.annotations.Nullable;
  * URL the browser is sent to instead: the authorization endpoint with {@code client_id} and
  * {@code request_uri}, and nothing else (ADR-0057).
  * <p>
- * The gateway composes no authorization parameter itself. What is pushed is exactly what the
+ * This class composes no authorization parameter itself. What is pushed is exactly what the
  * engine's request builder rendered into the authorization URL — {@code response_type},
  * {@code redirect_uri}, {@code scope}, {@code state}, {@code nonce}, the PKCE challenge,
  * {@code response_mode=query} and, on the step-up leg, {@code acr_values} and {@code max_age}. The
@@ -52,7 +52,7 @@ import org.jspecify.annotations.Nullable;
  * This is an adapter over the engine's {@link ParClient} and the runtime's shared
  * {@link ClientAuthentication}. Both are handed to the constructor; the class constructs neither,
  * so the push dials the identity provider under the same pinned TLS posture and presents the same
- * client credential as every other back-channel leg.
+ * client credential as every other authenticated back-channel leg.
  * <p>
  * <strong>Every failure refuses the login with {@code 502}.</strong> A provider that advertises no
  * {@code pushed_authorization_request_endpoint} is refused without a network call; an authorization
@@ -93,8 +93,8 @@ public final class PushedAuthorizationRequests {
     /**
      * @param parClient            the engine's pushed-authorization-request client, built over the
      *                             runtime's back-channel configuration
-     * @param clientAuthentication the confidential-client authentication every back-channel leg
-     *                             presents
+     * @param clientAuthentication the confidential-client authentication every authenticated
+     *                             back-channel leg presents
      */
     public PushedAuthorizationRequests(ParClient parClient, ClientAuthentication clientAuthentication) {
         this.parClient = Objects.requireNonNull(parClient, "parClient");

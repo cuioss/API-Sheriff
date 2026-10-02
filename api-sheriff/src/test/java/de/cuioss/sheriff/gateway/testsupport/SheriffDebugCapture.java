@@ -113,8 +113,7 @@ public final class SheriffDebugCapture implements BeforeEachCallback, AfterEachC
 
     /**
      * @param captured a captured log record
-     * @return its message followed by the message of every throwable it chains — everything of the
-     *         record that could carry a configured value
+     * @return its message followed by the message of every throwable it chains
      */
     public static String rendered(LogRecord captured) {
         StringBuilder rendered = new StringBuilder(String.valueOf(captured.getMessage()));

@@ -227,8 +227,8 @@ architecture makes it uniquely able to close all three.
 | *PAR-driven confidential-client flow with DPoP-bound tokens*
 | A *major* differentiator. The BFF drives the authorization-code flow through *Pushed
   Authorization Requests* (PAR, RFC 9126): it pushes the authorization parameters over the back
-  channel and redirects with the returned `request_uri`, so the parameters are neither exposed nor
-  tamperable in the browser. It binds every token it obtains to one DPoP key (RFC 9449) and refuses
+  channel and redirects with the returned `request_uri`, so the pushed request is neither exposed nor
+  tamperable in the browser. It binds every access token it obtains to one DPoP key (RFC 9449) and refuses
   a token response that is not bound to that key. It authenticates with `private_key_jwt` by
   default. PKCE `S256`, the exact `redirect_uri` and the `iss` mix-up defence complete the posture.
 +

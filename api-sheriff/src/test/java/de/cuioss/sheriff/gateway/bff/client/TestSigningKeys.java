@@ -34,8 +34,8 @@ import java.util.Base64;
  * PEM file into a directory the test supplies, so no key material is committed for unit tests.
  * <p>
  * The helper writes the one accepted file shape — an unencrypted PKCS#8 {@code PRIVATE KEY} block
- * followed by a {@code PUBLIC KEY} block — and one variant per way a provided key file can be
- * refused: a single block, a duplicated block, a relabelled block, two halves that do not belong
+ * followed by a {@code PUBLIC KEY} block — and variants of it a provided key file is refused
+ * for: a single block, a duplicated block, a relabelled block, two halves that do not belong
  * together, two halves of different key types, an undersized RSA key, an EC key on another curve
  * and an Ed25519 key.
  */

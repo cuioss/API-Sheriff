@@ -82,8 +82,9 @@ Three properties of the confidential client are fixed by
 link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]
 and shared with the cookie-based variant:
 
-* *Pushed authorization requests.* Every authorization request is pushed. The browser never carries
-  an authorization parameter, so none can be read or altered on the front channel.
+* *Pushed authorization requests.* Every authorization request is pushed. The browser carries only
+  `client_id` and `request_uri` to the IdP, so the request cannot be read or altered on the front
+  channel.
 * *The sender constraint.* Every token request carries a DPoP proof signed with one key, and every
   access token is bound to that key by its `cnf.jkt` claim. The gateway refuses a token response that
   is not bound: a login ends with `400` and no session, and a refresh ends the session.
@@ -291,7 +292,7 @@ oidc:
   client_id: api-sheriff
   client_authentication:         # private_key_jwt, the default; no client_secret is declared
     key_file: /etc/sheriff/keys/client-auth.pem   # optional: omit to generate a key on startup
-  sender_constraint:             # DPoP proof key; every token is bound to it
+  sender_constraint:             # DPoP proof key; every access token is bound to it
     key_file: /etc/sheriff/keys/dpop.pem          # optional: omit to generate a key on startup
   redirect_uri: https://gw.example.com/auth/callback
   scopes: [openid, profile]      # requested on every login; endpoints add their own (additive)
@@ -336,8 +337,8 @@ endpoint:
 * *Stateful* -- requires a server-side token store.
 * *Strong isolation* -- the token never leaves the server in any form.
 * *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
-* *Pushed requests and bound tokens* -- every authorization request is pushed, every token is bound
-  to one DPoP key, and the client authenticates with a key unless a client secret is configured.
+* *Pushed requests and bound tokens* -- every authorization request is pushed, every access token is
+  bound to one DPoP key, and the client authenticates with a key unless a client secret is configured.
 
 == Performance baseline
 

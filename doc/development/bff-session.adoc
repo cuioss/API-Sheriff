@@ -96,7 +96,7 @@ The type derives the algorithm from the key (`PS256` for RSA from 2048 bits, `ES
 and the key id from the public key (RFC 7638 thumbprint). It has no accessor for the private key:
 the material leaves only through `clientAuthentication(...)` and `senderConstraint()`, which hand it
 to the engine. Every refusal is an `IllegalStateException` whose message names the configuration
-field and the defect, never the path and never file content; the producer translates it into
+field and the defect, never the path and never key material; the producer translates it into
 `CONFIG_INVALID`. Keep that property when you add a refusal: do not chain a JDK cause whose message
 carries the path.
 

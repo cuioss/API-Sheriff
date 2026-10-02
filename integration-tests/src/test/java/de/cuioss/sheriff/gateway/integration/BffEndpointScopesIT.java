@@ -153,9 +153,7 @@ class BffEndpointScopesIT {
     // ---------------------------------------------------------------- shared helpers
 
     /**
-     * The scope members of the token a session mediates on {@code path}. The route must admit the
-     * session as it is: a session lacking a scope the route needs is answered with a step-up
-     * redirect, and this call then fails on the status instead of reading a token.
+     * The scope members of the token a session mediates on {@code path}.
      *
      * @param session the established gateway session
      * @param path    a {@code require: session} path on the primary instance

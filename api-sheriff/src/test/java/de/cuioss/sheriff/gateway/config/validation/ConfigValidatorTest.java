@@ -3801,8 +3801,8 @@ class ConfigValidatorTest {
      * request path. A path that is not itself canonical is therefore never answered, and its canonical
      * spelling is left to the route table; the rule refuses it at boot instead.
      * <p>
-     * Every case runs in both client-authentication modes, because the path is reserved in both. The
-     * refused spellings are literals on purpose: each is one specific shape the rule exists to refuse,
+     * The parameterized cases run in both client-authentication modes, because the path is reserved in
+     * both. The refused spellings are literals on purpose: each is one specific shape the rule exists to refuse,
      * so the exact string is the contract under test. Each row also names the reason it must be
      * refused for, so a spelling that one check stopped catching cannot pass on another's account.
      */

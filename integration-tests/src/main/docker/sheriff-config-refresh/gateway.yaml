@@ -265,7 +265,7 @@ token_validation:
 # the stack that declares oidc.client_secret, and it exists in that form to prove the
 # client-secret mode on the running stack. What follows from the secret:
 #   * Only the client authentication differs. Every authorization request is still pushed
-#     and every token is still DPoP-bound — the sender_constraint block below is read in
+#     and every access token is still DPoP-bound — the sender_constraint block below is read in
 #     both modes — and the realm requires both of refresh-client.
 #   * No client_authentication block is declared. A key file next to a secret is refused at
 #     boot, and without one there is no client-authentication key at all.

@@ -182,7 +182,7 @@ public class PortalRules {
      * <p>
      * It is the one review {@link #validatePortalPathCanonical} applies to {@code portal.path} and
      * the configuration validator applies to the client JWKS path, so the two exact-match paths
-     * cannot be held to two definitions of canonical. It judges a path and canonicalizes nothing.
+     * cannot be held to two versions of this review. It judges a path and canonicalizes nothing.
      * The returned reason is fixed text and never echoes the reviewed value.
      *
      * @param path the configured path to review, never {@code null}

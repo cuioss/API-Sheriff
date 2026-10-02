@@ -246,7 +246,7 @@ its assertions. Read all three before treating a green suite as proof of a speci
 
 The FAPI 2.0 controls hold in key mode only, and no conformance-suite run exists::
 In key mode the BFF implements the FAPI 2.0 controls (DPoP route). It pushes every authorization
-request (PAR), binds every token it obtains to one DPoP key, refuses a token response that is not
+request (PAR), binds every access token it obtains to one DPoP key, refuses a token response that is not
 bound to that key, and authenticates to the identity provider with `private_key_jwt`. Two limits
 belong to that statement:
 +

@@ -12,8 +12,8 @@ is met, or says plainly that it is not.
 [IMPORTANT]
 ====
 *Verdict: the BFF implements the FAPI 2.0 controls (DPoP route).* It pushes every authorization
-request (PAR), binds every token it obtains to one DPoP key, refuses a token response that is not
-bound to that key, and authenticates with `private_key_jwt`.
+request (PAR), binds every access token it obtains to one DPoP key, refuses a token response that is
+not bound to that key, and authenticates with `private_key_jwt`.
 
 Two statements belong to that verdict and are not optional reading:
 
@@ -195,7 +195,7 @@ The profile permits two routes for sender-constraining and for client authentica
 DPoP together with `private_key_jwt`. The gateway takes the second.
 
 * *DPoP with `private_key_jwt` is the route.* Both are wired on the engine's own types,
-  `SenderConstraint` and `PrivateKeyJwtAuth`. Each of the two purposes has its own key, and the
+  `SenderConstraint` and `PrivateKeyJwtAuth`. Each of the two purposes has its key, and the
   algorithm of each follows its key: `PS256` for an RSA key, `ES256` for an EC P-256 key. The
   gateway hands that algorithm name to the engine's proof generator and to its assertion signer;
   there is no setting an operator could set to `RS256`.
@@ -218,7 +218,7 @@ forwarding contract follows from it:
   DPoP-aware upstream would have to reject it for want of a proof.
 * `auth.token_relay: false` is the per-route opt-out that forwards no token at all.
 * Nothing downstream of the identity provider checks a proof when the token is used. The binding
-  protects the token between the identity provider and the gateway. A copy taken on the upstream
+  is established and checked between the identity provider and the gateway. A copy taken on the upstream
   hop is as usable there as a bearer token is, so the control on that hop is transport security.
 
 The gateway's own `require: bearer` routes behave the same way: its validation runs DPoP checks only
@@ -284,7 +284,7 @@ gateway that refuses an unbound response -- the test cannot compute the thumbpri
 never published.
 
 Not shown by any of the three: a token response being *refused* on the stack (Keycloak binds every
-token of these clients, so the refusal is proven at unit level, in `BoundTokenEndpointClientTest` and
+access token of these clients, so the refusal is proven at unit level, in `BoundTokenEndpointClientTest` and
 `BffRuntimeProducerTest`), and what Keycloak's FAPI 2.0 client profiles enforce (the realm sets its
 client attributes explicitly and does not apply those profiles).
 

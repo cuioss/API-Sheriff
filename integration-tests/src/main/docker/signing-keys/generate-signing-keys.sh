@@ -11,8 +11,8 @@
 # nothing else. The gateway derives the algorithm and the key id from the key, so neither is
 # configured anywhere.
 #
-#   client-auth-rsa.pem  RSA-2048. The client-authentication key of every key-authenticated gateway
-#                        instance (clients integration-client and cookie-refresh-client). It signs
+#   client-auth-rsa.pem  RSA-2048. The client-authentication key of every key-authenticated compose
+#                        gateway (clients integration-client and cookie-refresh-client). It signs
 #                        the private_key_jwt client assertion with PS256. All of those instances
 #                        mount the same file, so the one JWKS the primary instance publishes at
 #                        https://api-sheriff:8443/auth/jwks carries the key each of them signs with.

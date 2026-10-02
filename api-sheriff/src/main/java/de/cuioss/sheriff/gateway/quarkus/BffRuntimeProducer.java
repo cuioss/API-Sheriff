@@ -144,14 +144,14 @@ import org.jspecify.annotations.Nullable;
  * path stays reserved. The authentication and the endpoint are yielded together by the one mode
  * decision, so the key the gateway signs with and the key it publishes cannot differ.
  * <p>
- * <strong>One DPoP sender constraint binds every token (ADR-0057).</strong> The sender-constraint key
+ * <strong>One DPoP sender constraint binds every access token (ADR-0057).</strong> The sender-constraint key
  * is resolved by {@link ClientSigningKey} from {@code oidc.sender_constraint.key_file}, with the same
  * refusal translation as the client-authentication key; an absent block or an absent key selects a
  * key generated at startup. The one {@link SenderConstraint} that key hands out is shared by every
  * flow — the base flow's code exchange, every per-scope flow and every refresh grant — in both
  * client-authentication modes. A generated key lives for one process: it is replaced on every
  * restart and cannot be shared, so every instance behind one identity-provider client must be given
- * the same key files. The DPoP proof key is never published at the client JWKS endpoint.
+ * the same key files. A separate DPoP proof key is never published at the client JWKS endpoint.
  * <p>
  * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
  * token-endpoint client is a {@link BoundTokenEndpointClient} over the base back-channel
@@ -636,8 +636,8 @@ public class BffRuntimeProducer {
 
     /**
      * Selects the confidential-client credential once, for the single build this {@link Singleton}
-     * runtime performs: the authentication every back-channel leg presents, and the form of the
-     * client JWKS endpoint that goes with it. The authentication instance is shared by the pushed
+     * runtime performs: the authentication every authenticated back-channel leg presents, and the form
+     * of the client JWKS endpoint that goes with it. The authentication instance is shared by the pushed
      * authorization request, the code exchange, the refresh grant and RFC 7009 revocation.
      * <p>
      * <strong>Client-secret mode</strong> — {@link OidcConfig#usesClientSecret()} is {@code true}. The
@@ -648,8 +648,8 @@ public class BffRuntimeProducer {
      * <p>
      * <strong>Key mode</strong> — no secret is configured. The key is resolved from
      * {@code oidc.client_authentication.key_file}; an absent block or an absent key selects the
-     * generated mode. The key hands out the {@code private_key_jwt} authentication itself, so the
-     * private key never leaves {@link ClientSigningKey}, and its public JWK is what the JWKS endpoint
+     * generated mode. The key hands out the {@code private_key_jwt} authentication itself, so this
+     * producer never handles the private key, and its public JWK is what the JWKS endpoint
      * publishes. Both come from the one resolved key, so the published key is the signing key.
      * <p>
      * The mode is named by one {@code DEBUG} line, in key mode together with the key mode and the
@@ -685,7 +685,7 @@ public class BffRuntimeProducer {
      * agree: the endpoint publishes the key the authentication signs with, or withholds when the
      * authentication is a secret.
      *
-     * @param authentication the client authentication every back-channel leg presents
+     * @param authentication the client authentication every authenticated back-channel leg presents
      * @param jwksEndpoint   the client JWKS endpoint in the form that goes with that authentication
      */
     private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint) {
