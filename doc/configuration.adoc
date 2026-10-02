@@ -2572,9 +2572,9 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   `match.headers` routes never selected, `oidc.scopes` alone otherwise). When that route's needed
   set already lies inside the session's granted scope set, the answer is a `302` straight to
   `<target>`; otherwise the widening starts with a `prompt=none` authorization request, followed by
-  exactly one interactive attempt when the IdP answers `login_required`, `interaction_required` or
-  `consent_required`. Any other IdP refusal ends in a terminal `403` that leaves the session
-  unchanged. See link:user/bff-session.adoc#step-up-path[Server-Session BFF -- The step-up path] and
+  exactly one interactive attempt when the IdP answers `login_required`, `interaction_required`,
+  `consent_required` or `account_selection_required`. Any other IdP refusal ends in a terminal
+  `403` that leaves the session unchanged. See link:user/bff-session.adoc#step-up-path[Server-Session BFF -- The step-up path] and
   link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
 |===
 

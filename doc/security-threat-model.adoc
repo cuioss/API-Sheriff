@@ -2047,7 +2047,8 @@ on demand, `oidc.step_up.path`, is a new reserved path with a URL parameter of i
 recorded from the mechanism. The classes are established ones: session fixation and identity
 confusion (CWE-384), open redirect through a return parameter (CWE-601, as in <<bff-02>>), and log
 injection through an error parameter (CWE-117). OpenID Connect Core §3.1.2.1 defines `prompt=none`
-and §3.1.2.6 the `login_required`, `interaction_required` and `consent_required` answers to it.
+and §3.1.2.6 the `login_required`, `interaction_required`, `consent_required` and
+`account_selection_required` answers to it.
 RFC 6749 §6 forbids a refresh grant from widening the original grant, which is why a widening is an
 authorization request at all.
 
@@ -2094,8 +2095,9 @@ authorization request at all.
   values never reach the per-route url-parameter pipeline
   (link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]).
   The pre-route floor still applies to the request.
-* *A refusal is terminal.* A silent attempt answered `login_required`, `interaction_required` or
-  `consent_required` is followed by exactly one interactive attempt. Every other outcome short of a
+* *A refusal is terminal.* A silent attempt answered `login_required`, `interaction_required`,
+  `consent_required` or `account_selection_required` is followed by exactly one interactive attempt.
+  Every other outcome short of a
   full grant -- another identity-provider error, any error on the interactive attempt, a grant that
   lacks a scope sought beyond `S`, a subject mismatch, a callback without the live session -- is
   `403` with no `Location` and no `Set-Cookie`. The session stays usable on every route it
@@ -2129,9 +2131,10 @@ authorization request at all.
   that just logged in holds a live SSO session, so the silent attempt always succeeds there.
 
 *Assertion.* On the widening callback: an error response without the binding cookie or with a
-foreign `state` is `403` and re-drives nothing; `login_required`, `interaction_required` and
-`consent_required` on the silent attempt re-drive exactly one interactive attempt with the same
-scopes and return URL, and a second `login_required` is `403` with no further redirect;
+foreign `state` is `403` and re-drives nothing; `login_required`, `interaction_required`,
+`consent_required` and `account_selection_required` on the silent attempt each re-drive exactly one
+interactive attempt with the same scopes and return URL, and the same error on that interactive
+attempt is `403` with no further redirect;
 `invalid_scope` and `access_denied` are `403` with the session unchanged; a grant for another
 subject, a widening issued for another subject, a callback without the live session and a grant
 lacking a sought scope are each `403` with no `Location` and no `Set-Cookie`; a granted widening

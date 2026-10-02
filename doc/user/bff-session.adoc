@@ -347,9 +347,9 @@ redirect to the IdP.
 *A navigation* (its `Accept` offers `text/html`) is redirected `302` into that authorization request
 and comes back to the URL it asked for, path and raw query (see <<return-url>>). The first attempt
 carries `prompt=none`, so an IdP that can answer from its own SSO session does so without showing
-the user anything. If the IdP answers `login_required`, `interaction_required` or
-`consent_required`, the gateway starts exactly one interactive attempt for the same scopes and the
-same return URL.
+the user anything. If the IdP answers `login_required`, `interaction_required`,
+`consent_required` or `account_selection_required`, the gateway starts exactly one interactive
+attempt for the same scopes and the same return URL.
 
 *Any other request* (XHR / `fetch`, an API client) is refused `403` `application/problem+json`. The
 body carries two RFC 9457 extension members (shown formatted; the gateway writes it compact):
@@ -398,7 +398,7 @@ earlier `sid` no longer matches it.
 and the session is left as it was: it stays usable on every route whose `needed` set it satisfies.
 That is the answer to:
 
-* an IdP error on the silent attempt other than the three named above, and any IdP error on the
+* an IdP error on the silent attempt other than the four named above, and any IdP error on the
   interactive attempt;
 * a grant that still lacks a scope the widening sought beyond the granted set;
 * a grant for a different user (`sub`) than the session's -- a session is never moved to another

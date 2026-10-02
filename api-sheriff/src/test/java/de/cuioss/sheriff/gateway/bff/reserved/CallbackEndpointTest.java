@@ -709,7 +709,8 @@ class CallbackEndpointTest {
             }
 
             @ParameterizedTest(name = "{0} re-drives exactly one interactive attempt")
-            @ValueSource(strings = {"login_required", "interaction_required", "consent_required"})
+            @ValueSource(strings = {"login_required", "interaction_required", "consent_required",
+                    "account_selection_required"})
             @DisplayName("Should re-drive exactly one interactive attempt when the silent attempt needs interaction")
             void shouldRedriveOneInteractiveAttempt(String interactionNeeded) {
                 CallbackOutcome outcome = error(interactionNeeded);
@@ -729,21 +730,23 @@ class CallbackEndpointTest {
                 assertEquals(live, resolveServerSession(), "the re-drive leaves the live session unchanged");
             }
 
-            @Test
-            @DisplayName("Should refuse a second login_required terminally: 403, no further redirect, session unchanged")
-            void shouldRefuseSecondLoginRequired() {
-                CallbackOutcome redrive = error("login_required");
+            @ParameterizedTest(name = "a second {0} is terminal")
+            @ValueSource(strings = {"login_required", "interaction_required", "consent_required",
+                    "account_selection_required"})
+            @DisplayName("Should refuse the same error on the interactive attempt: 403, no further redirect, session unchanged")
+            void shouldRefuseSameErrorOnInteractiveAttempt(String interactionNeeded) {
+                CallbackOutcome redrive = error(interactionNeeded);
                 String interactiveBinding = cookiePair(redrive.setCookieHeaders().getFirst());
                 String interactiveState = wideningCalls.getFirst().context().state();
 
-                CallbackOutcome second = endpoint.handle("error=login_required&state=" + interactiveState,
+                CallbackOutcome second = endpoint.handle("error=" + interactionNeeded + "&state=" + interactiveState,
                         interactiveBinding + "; " + sessionCookie, CALLBACK_AT);
 
                 assertRefused(second);
                 assertEquals(1, wideningCalls.size(), "the interactive attempt is never re-driven — no loop");
                 assertEquals(live, resolveServerSession());
                 LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
-                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("login_required"));
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format(interactionNeeded));
             }
 
             @ParameterizedTest(name = "{0} is terminal")

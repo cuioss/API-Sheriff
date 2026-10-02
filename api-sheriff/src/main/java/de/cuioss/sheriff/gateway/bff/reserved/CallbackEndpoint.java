@@ -136,10 +136,10 @@ import org.jspecify.annotations.Nullable;
  * <strong>Widening callbacks.</strong> A pending record created by {@link SessionWidening} belongs to
  * a live session widening its scopes, and its callback is answered differently from a login:
  * <ul>
- *   <li><strong>Error, silent attempt.</strong> {@code login_required}, {@code interaction_required}
- *       or {@code consent_required} re-drives exactly one interactive attempt through
- *       {@link SessionWidening#redriveInteractive}, with the same return URL and scopes, answered as a
- *       {@code 302} carrying a new binding cookie.</li>
+ *   <li><strong>Error, silent attempt.</strong> {@code login_required}, {@code interaction_required},
+ *       {@code consent_required} or {@code account_selection_required} re-drives exactly one
+ *       interactive attempt through {@link SessionWidening#redriveInteractive}, with the same return
+ *       URL and scopes, answered as a {@code 302} carrying a new binding cookie.</li>
  *   <li><strong>Any other error, or any error on the interactive attempt</strong>, is terminal:
  *       {@code 403}, no {@code Set-Cookie}, the live session unchanged and no further redirect.</li>
  *   <li><strong>Success.</strong> The live session is resolved from the request {@code Cookie}
@@ -192,9 +192,13 @@ public final class CallbackEndpoint {
     private static final String CLAIM_SCOPE = "scope";
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
-    /** The IdP errors on a silent widening attempt that owe exactly one interactive re-drive. */
+    /**
+     * The IdP errors on a silent widening attempt that owe exactly one interactive re-drive: the four
+     * errors OpenID Connect Core 1.0 §3.1.2.6 defines for a {@code prompt=none} request that cannot
+     * complete without the user.
+     */
     private static final Set<String> INTERACTION_NEEDED = Set.of("login_required", "interaction_required",
-            "consent_required");
+            "consent_required", "account_selection_required");
 
     /**
      * The closed set of OAuth 2.0 / OIDC authorization-error codes a widening refusal may name in its

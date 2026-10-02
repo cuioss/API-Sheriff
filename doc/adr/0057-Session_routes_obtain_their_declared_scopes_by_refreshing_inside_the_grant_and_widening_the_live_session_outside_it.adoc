@@ -22,6 +22,16 @@
 
 Proposed
 
+[NOTE]
+====
+*Amended 2026-10-02.* The identity-provider errors that are followed by the one interactive attempt
+are four, not three: `account_selection_required` joined `login_required`, `interaction_required`
+and `consent_required`. It was added on review (CodeRabbit, PR #369) by operator decision. OpenID
+Connect Core 1.0 §3.1.2.6 defines these four for a `prompt=none` request that cannot complete
+without the user. The rest of the decision is unchanged: there is exactly one interactive attempt,
+and any error on that attempt is terminal.
+====
+
 == Context
 
 A session outlives the route that started it. The login that established it requested one route's
@@ -95,8 +105,8 @@ needs, and the first scope-driven refresh that does ask settles the question.
   refresh did not obtain the set, the answer depends on what the caller can do with it:
 ** A *navigation* (its `Accept` offers `text/html`) is redirected `302` into an authorization request
    for `S ∪ neededScopes` that returns to the requested URL. The first attempt carries `prompt=none`.
-   If the identity provider answers `login_required`, `interaction_required` or `consent_required`,
-   exactly one interactive attempt follows.
+   If the identity provider answers `login_required`, `interaction_required`, `consent_required` or
+   `account_selection_required`, exactly one interactive attempt follows.
 ** Every other request is refused `403` `application/problem+json`, with two RFC 9457 extension
    members. `missing_scopes` lists the missing names, sorted and taken from the route's
    boot-configured set, never from a token. `step_up_url` is the same-origin URL a browser follows to
