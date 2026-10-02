@@ -24,12 +24,13 @@ Proposed
 
 [NOTE]
 ====
-*Amended 2026-10-02.* The identity-provider errors that are followed by the one interactive attempt
-are four, not three: `account_selection_required` joined `login_required`, `interaction_required`
-and `consent_required`. It was added on review (CodeRabbit, PR #369) by operator decision. OpenID
-Connect Core 1.0 §3.1.2.6 defines these four for a `prompt=none` request that cannot complete
-without the user. The rest of the decision is unchanged: there is exactly one interactive attempt,
-and any error on that attempt is terminal.
+*Amended.* The set of identity-provider errors that earn the one interactive re-drive of a silent
+widening now also includes `account_selection_required`, alongside `login_required`,
+`interaction_required` and `consent_required`. It is the fourth "interaction needed" error OpenID
+Connect Core 1.0 §3.1.2.6 defines for a `prompt=none` request, and it calls for the same recovery.
+
+Unchanged and still in force: there is exactly one interactive attempt, and any error on that attempt
+is terminal.
 ====
 
 == Context
