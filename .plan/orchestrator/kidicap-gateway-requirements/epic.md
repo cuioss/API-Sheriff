@@ -105,6 +105,18 @@ decision.
 
 ## Decisions
 
+- 2026-10-02 — **PLAN-20 re-scoped rather than retired.** PLAN-23 (#369) shipped the gateway-declared half
+  of scope step-up — a reserved `StepUpEndpoint`, silent-then-one-interactive widening, and a
+  `403 problem+json` carrying `step_up_url` — which is nearly the shape of PLAN-20's deliverable 3, and
+  **ADR-0057 explicitly rejects merging the two legs**. So PLAN-20 keeps its subject (the leg an UPSTREAM
+  `insufficient_scope` signals, which still has no caller at all) with deliverables 2, 4 and 5 narrowed to
+  what PLAN-23 did not build: the intercept-and-replay against a live upstream `403`, for which
+  `ResponseStage` and the request-body buffer are still untouched. Deliverable 9 (the ADR-0053 renumber)
+  is DROPPED — #367 did it. Alternative considered: retire PLAN-20 entirely as superseded — rejected,
+  because the upstream-signalled trigger is the downstream's original request (`-006` / `-009`) and no
+  shipped mechanism answers it. The re-scope banner sits at the top of its deliverable list so the plan
+  cannot be started on the pre-PLAN-23 premise.
+
 - 2026-09-15 — Epic created from the KIDICAP Gateway requirements document (German source,
   14 items AS-1..AS-14). All ledger artifacts are authored in English; the source document is
   archived verbatim under `archive/` and removed from the kidicap-gateway repository once its
@@ -320,6 +332,14 @@ decision.
   proxies, base-URL alias, websocket origins, anchor prefixes), and roughly forty older comment
   inaccuracies sit in the BFF files. Hygiene, not correctness — fold into whichever plan next enters those
   files. — source: `landings/PLAN-23.md`
+
+- **A breaking BFF change landed from OUTSIDE this epic: #377 (e8db85bf) requires PAR and DPoP and
+  defaults to `private_key_jwt`** — 91 files, +14052/−725, ADR-0058. Not an AS item and not staged by this
+  epic, but it reshapes the login surface every WS-04 spec targets. Re-grounded against it 2026-10-02:
+  PLAN-21's claims all survive (PAR pushes the authorization request before the pending record is stored,
+  but the store-then-mint-cookie order its claims 4-5 rest on is unchanged), and PLAN-20's claims survive
+  too. ⚠ Treat it as a live input for PLAN-24 and PLAN-26: a DPoP-bound token changes what "relay the
+  token" and "revoke at the IdP" mean. — observed 2026-10-02 by the orchestrator
 
 ## Watches
 

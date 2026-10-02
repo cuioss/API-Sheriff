@@ -73,6 +73,27 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 
 ## Deliverables
 
+> ⚠ **RE-SCOPED 2026-10-02 (cleanup, re-grounded at `e8db85bf`). Read this before the list.** PLAN-23
+> (#369) shipped the gateway-declared half of scope step-up, and **ADR-0057 explicitly rejects merging the
+> two legs** — so several deliverables below are narrowed, one is realized for a different trigger, and
+> the ADR-renumber fold is dropped. Per-deliverable state as measured:
+>
+> | # | State | What changed |
+> |---|---|---|
+> | 1 | unaffected | `StepUpCoordinator` still has no caller for an upstream challenge. PLAN-23 did add `step_up.path` as a sibling key explicitly decoupled from the RFC 9470 leg, which answers this deliverable's open config-key question |
+> | 2 | **narrowed** | PLAN-23 ships a scope-refresh seam requesting `A ∪ missing` — the shape this wanted — but it runs pre-flight against boot-declared `neededScopes`, never against a live upstream `403`. `ResponseStage` and the request-body buffer are untouched, so the novel work (intercept + replay) is still unbuilt |
+> | 3 | **realized for a DIFFERENT leg** | PLAN-23 shipped a reserved step-up path (`StepUpEndpoint`), silent-then-one-interactive widening, and a `403 problem+json` carrying `step_up_url` — almost this exact shape, but triggered only by the gateway's own boot-declared comparison, with no `postMessage`-to-opener protocol. ⛔ ADR-0057 rejects extending it in place, so this is a sibling mechanism, not a re-use |
+> | 4 | **narrowed** | terminal-refusal-leaves-session-untouched already exists for a widening's interactive attempt; reuse the pattern rather than re-deriving it |
+> | 5 | **narrowed** | a one-silent-plus-one-interactive-then-terminal guard now exists as precedent, but not the dual refresh-then-browser guard keyed to one upstream-challenged request |
+> | 6 | unaffected | the `Optional.empty()` binding is untouched, and ADR-0057's rejection is a ready citation for the document-why-it-stays option |
+> | 7 | unaffected | no test infra for the upstream-challenge scenario; PLAN-23's `BffSessionScopeParityIT` and `OneOffGatewayContainers` may offer reusable Keycloak realm/scope fixtures — check at outline |
+> | 8 | unaffected, **but harder** | the misdescribing `step_up.*` rows now sit beside PLAN-23's genuinely-shipped `step_up.path` row in the same table, so the correction must disambiguate two legs rather than one; `bff-session.adoc` and the threat model also grew substantially |
+> | 9 | ⛔ **DROPPED** | the ADR-0053 renumber was done independently by #367 (header-matcher ADR → 0056, plus contract guards). Doing it again would re-do settled work |
+>
+> ⛔ **Do not start this plan without reading ADR-0057 first.** The question it answers is no longer "build
+> scope step-up" but "what does the UPSTREAM-SIGNALLED leg still need, given the gateway-declared leg
+> shipped and the two are deliberately separate?"
+
 1. Edge integration: evaluate the upstream `WWW-Authenticate` on session routes for `insufficient_scope`
    and `insufficient_user_authentication`, and route it into `StepUpCoordinator` — the caller that does
    not exist today. Decide and record whether the existing `session.step_up` (RFC 9470) configuration
@@ -96,36 +117,27 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
    exist today), `doc/user/bff-session.adoc` (the backend contract and the UI's part), the backend-facing
    contract for `403 insufficient_scope` before any side effect, `doc/security-threat-model.adoc` (replay
    and step-up surface), `doc/LogMessages.adoc`, and an ADR for the step-up model.
-9. **Folded 2026-09-24 — renumber the duplicate ADR-0053.** `main` carries TWO files claiming ADR-0053:
-   `0053-A_header_matchers_name_is_normalised_once_at_the_route-compile_seam_and_its_fields_compose_with_AND.adoc`
-   (added by #346 / PLAN-18) and
-   `0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc`
-   (renamed there from 0050 by #348, after #341 had taken 0050). Renumber ONE of them to the next free
-   ordinal, repoint every reference to the renumbered file (search `doc/**` and `api-sheriff/src/**` for
-   the old number), and keep the other where it is. This plan is the carrier because it already authors an
-   ADR and already declares `doc/adr/` — the fold therefore **adds no file surface**. It is bookkeeping,
-   not step-up work, so it is listed last and must not be allowed to grow: if the renumber turns out to
-   need more than a rename plus reference repointing, stop and report it instead of absorbing it.
-   ⚠ Do not use `manage-adr scan`'s success payload to confirm the corpus is clean afterwards — it omits
-   the duplicate population entirely (plan-marshall lesson `2026-09-24-07-001`). Confirm by listing
-   `doc/adr/` and checking the ordinals directly.
+9. ⛔ **DROPPED 2026-10-02** — the ADR-0053 renumber this deliverable carried was resolved by PR #367
+   (`fix(adr): resolve ordinal 0053 collision and add contract guards`). `doc/adr/` carries one 0053 and a
+   contract test against a repeat. Nothing to do; left in place as a numbered record of the fold and its
+   retirement rather than silently deleted.
 
 ## Claim Labels
 
 - OBSERVED: `BffRuntime.stepUpCoordinator()` has no production caller — the only references are `BffRuntimeProducerTest`; grep over `api-sheriff/src/main` at 93a4b3e finds the accessor's declaration and nothing else — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java` § `stepUpCoordinator`
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntime.java unchanged; stepUpCoordinator() still referenced only from BffRuntimeProducerTest
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntime unchanged; zero stepUpCoordinator() call sites in main at e8db85bf
 - OBSERVED: `StepUpCoordinator` is RFC 9470 shaped, driven by a parsed upstream challenge — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java` § `coordinate`
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: StepUpCoordinator gained scope/defaultReturnUrl ctor params but coordinate() still RFC 9470 only, no insufficient_scope path
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: StepUpCoordinator.coordinate still RFC9470-only via StepUpChallengeParser; no insufficient_scope branch
 - HYPOTHESIS: the silent-satisfaction seam is bound to `(sessionRecord, challenge, now) -> Optional.empty()` at the construction site — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § step-up construction (verify-at-outline)
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer silent-satisfaction seam (sessionRecord, challenge, now) -> Optional.empty() unchanged verbatim
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer:558 silent-satisfaction binding -> Optional.empty() verbatim
 - HYPOTHESIS: `doc/configuration.adoc`'s `step_up.*` rows describe the honouring of an upstream challenge as present behaviour — confirm/refute at `doc/configuration.adoc` § `step_up` (verify-at-outline)
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/configuration.adoc step_up rows untouched 3abc370..3e3addc
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/configuration.adoc step_up.enabled / honor_upstream_challenge rows unchanged; still describe RFC9470 as present
 - HYPOTHESIS: the upstream response path can reach a step-up decision before the response is relayed, and the request body can be buffered for a replay within the route's filter body cap — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java` and the dispatch path (verify-at-outline)
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: ResponseStage.java and GatewayEdgeRoute.java unchanged; interception point exists, no body-buffering seam
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: ResponseStage byte-identical to 3e3addc; no body-buffer-for-replay seam
 - HYPOTHESIS: the Keycloak behaviours the flow rests on (a refresh never adds a scope outside the grant; a narrowed refresh keeps the grant in the refresh token) hold for the integration realm as measured downstream — confirm/refute with an IT against the integration Keycloak (verify-at-outline)
-  - verdict: unverifiable | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: live Keycloak 26.7.4 behaviour cannot be settled by reading this repository
+  - verdict: unverifiable | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: live Keycloak 26.7.4 behaviour not settleable by reading this repository
 - Verify-first clause: settle the replay seam first (deliverable 2) — where in the response path a challenge can be intercepted, and whether a body can be buffered and re-sent without breaking streaming or the body cap. If a replay cannot be done safely for all methods, loop back and re-scope: the flow degrades to the browser step-up with no replay, which changes the acceptance rows.
-  - verdict: unverifiable | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: body-buffer-for-replay still a forward design question; PLAN-14 added a distinct gateway-own 403 insufficient_scope in AuthenticationStage
+  - verdict: unverifiable | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: body-buffer-for-replay still open; ADR-0057 now rejects reusing StepUpCoordinator for a sibling leg
 
 ## Expected Surface
 
@@ -137,6 +149,16 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/SessionRecord.java`
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/` — the step-up URL endpoint (verify-at-outline)
+- OBSERVED (added 2026-10-02, re-grounding at `e8db85bf`):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/StepUpEndpoint.java` — PLAN-23's
+  reserved step-up endpoint. The HYPOTHESIS above is now REALIZED, but by the gateway-declared-scope leg,
+  not this plan's upstream-challenge leg. ⚠ Naming and placement collision risk if this plan adds a second
+  reserved step-up endpoint; settle at outline whether the two legs share one endpoint with two triggers or
+  stay separate paths
+- OBSERVED (added 2026-10-02):
+  `doc/adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc`
+  — ADR-0057 explicitly rejects reusing `StepUpCoordinator` for the widening leg, so the two legs stay
+  separate by design. Bears directly on deliverables 1 and 6 and must be read before either
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` — authorization request with `S ∪ {s}` (verify-at-outline)
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/ScopedEngineFlows.java` — PLAN-14's per-scope-set engine seam (authorize / refresh, ADR-0048) that the refresh with `A ∪ {s}` and the browser step-up with `S ∪ {s}` ride (added 2026-09-22 re-grounding at 3e3addc)
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/ReturnTargetScopes.java` — PLAN-14's return-target scope resolver, adjacent to the step-up authorization request's scope construction (added 2026-09-22; confirm/refute at `ReturnTargetScopes.java` § its resolve method, verify-at-outline)

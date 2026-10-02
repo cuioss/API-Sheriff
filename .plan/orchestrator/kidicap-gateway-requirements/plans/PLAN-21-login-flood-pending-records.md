@@ -61,23 +61,28 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 ## Claim Labels
 
 - HYPOTHESIS: `PendingAuthorizationStore.InMemory` bounds at `DEFAULT_MAX_PENDING = 10_000` and evicts the oldest beyond capacity — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/` § pending-authorization store and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § store construction (verify-at-outline)
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java unchanged; DEFAULT_MAX_PENDING=10_000 still in BffRuntimeProducer
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer:443 DEFAULT_MAX_PENDING=10_000 construction unchanged
 - HYPOTHESIS: eviction is global rather than per-client, so a flood from one client evicts another client's live record — confirm/refute at the same store's eviction method (verify-at-outline)
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java unchanged; eviction still walks one shared map
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore byte-unchanged since 3e3addc; single shared map eviction
 - HYPOTHESIS: `rate_limit` is reserved in the schema with no reader — confirm/refute at `api-sheriff/src/main/resources/schema/gateway.schema.json` § `rate_limit` and a grep for its config accessor (verify-at-outline)
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: gateway.schema.json rate_limit unchanged; still reserved with no consumer
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: rate_limit still only RateLimitConfig model; no consumer anywhere in main
 - OBSERVED: `LoginFlow.initiate` creates the pending record and validates the return URL's origin — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate gained a scopes param but still creates the pending record and sameOrigin-validates the return URL
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate still creates the pending record then sameOrigin-validates the return URL
 - OBSERVED (cleanup re-grounding, 3abc370): the binding cookie is minted from the newly created record's own id — `PendingAuthorizationRecord.create(...)` → `pendingStore.store(pending)` → `bindingCookieCodec.toSetCookieHeader(pending.id())` — so no inbound binding identity exists at record-creation time — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate still mints the binding cookie from pending.id() after pendingStore.store(pending)
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate still stores the record then mints the cookie from pending.id(); PAR (#377) added no reorder
 - OBSERVED: `PendingAuthorizationStore.InMemory` keys one shared insertion-ordered map on `pending.id()` with no per-client partition, and `evictOldestBeyondCapacity` walks that single map — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` § `InMemory`, `evictOldestBeyondCapacity`
-  - verdict: corroborated | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java unchanged; single map keyed on pending.id(), no per-client partition
+  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore unchanged; single map keyed on pending.id() with no per-client partition
 - Verify-first clause (SETTLED and absorbed 2026-09-21): the clause's own "if not" branch fired — a per-binding cap keyed on an existing cookie is not viable, and deliverable 1 now carries the three re-scoped options. What remains open for outline is only WHICH option, and the cost of option (a)'s pre-login cookie on the unauthenticated path.
-  - verdict: contradicted | checked_at: 3e3addc | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: binding cookie still minted after record creation from pending.id(); per-binding cap on an existing cookie still not viable - spec already re-scoped
+  - verdict: contradicted | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: still rescoped; a per-binding cap on an existing cookie remains unviable - unchanged since 3e3addc
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` — the store and its eviction (corrected 2026-09-21: it lives in `bff/pending/`, not `bff/login/`)
+- OBSERVED (added 2026-10-02, re-grounding at `e8db85bf`):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationRecord.java` — grew
+  ~110 lines for PLAN-23's session widening (a `Widening` record kind with sub/attempt). It is a SIBLING
+  record kind sharing the same pending store, so this plan's capacity and eviction work bounds it too —
+  size the cap against both kinds, not just logins
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/BindingCookieCodec.java` — the binding cookie minted per record
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` — `initiate`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` — store construction
