@@ -71,9 +71,9 @@ import org.junit.jupiter.api.Test;
  * <ul>
  *   <li><em>Key-authenticated</em> — the client the descriptor names is registered for signed-JWT
  *       authentication with a JWKS URL, with no secret and no statically registered key, and requires
- *       pushed authorization requests and DPoP-bound tokens; the host of that URL is a gateway service
- *       of the compose model and its path is that service's effective JWKS path; the service signs
- *       with the same key file as the service the URL names.</li>
+ *       pushed authorization requests and DPoP-bound access tokens; the host of that URL is a gateway
+ *       service of the compose model and its path is that service's effective JWKS path; the service
+ *       signs with the same key file as the service the URL names.</li>
  *   <li><em>Secret-authenticated</em> — exactly {@value #SECRET_AUTHENTICATED_SERVICE}: its descriptor
  *       declares no {@code client_authentication} block, it is the only compose service that sets
  *       {@value #CLIENT_SECRET_VARIABLE}, and its realm client authenticates with that secret,

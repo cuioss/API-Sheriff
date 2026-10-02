@@ -140,7 +140,7 @@ What an attacker wants, ranked by blast radius:
   cookie encryption key(s). Forgery or replay = impersonation.
 
 | Client credential and signing keys (BFF variants)
-| What the gateway proves its own identity with at the identity provider, and what its tokens are
+| What the gateway proves its own identity with at the identity provider, and what its access tokens are
   bound to. Two private keys: the client-authentication key and the DPoP proof key. Each is read by
   the gateway itself from a PEM file on a mount, or generated at startup and held in process memory
   only. In client-secret mode -- selected by configuring `oidc.client_secret` -- the secret takes
@@ -963,7 +963,7 @@ recorded here as a scope limit with a countable remainder: it verified hostnames
 identity-provider client library defaulted to doing so, and nothing in this repository would have gone
 red had that default moved. Both entries are closed rather than carried. The `ClientConfiguration`
 built in `BffRuntimeProducer` -- what `DiscoveryResolver`, `ParClient`, the token-endpoint client and
-`RefreshFlow` dial with, presenting the client credential (a signed assertion under `private_key_jwt`
+`RefreshFlow` dial with, every one but discovery presenting the client credential (a signed assertion under `private_key_jwt`
 by default, the client secret under `client_secret_basic` when one is configured) -- now receives
 `egress_tls.oidc_verify_hostname` on every build, so the posture is the gateway's and an upstream
 default change cannot move it
@@ -1918,7 +1918,7 @@ that read: the engine validates the signature over the same bytes directly after
 accepted unless both pass, and a refusal on an unverified payload only refuses. The record is not
 latched, because the refusal is reached only on a success answer of the token endpoint, which needs
 an authorization code or a refresh token the identity provider issued -- a caller without one cannot
-produce it. One case never reaches the check: a response that carries no access token at all is
+produce it. A response that carries no access token at all does not reach the check: it is
 refused one step earlier by the engine, with the same outcome and without the `ApiSheriff-131`
 record.
 
@@ -2205,7 +2205,7 @@ URL was found; the concern is recorded here from the mechanism.
 *Control -- what the endpoint discloses.* `ClientJwksEndpoint` answers `GET` on
 `oidc.client_authentication.jwks_path` (default `/auth/jwks`) with one JSON Web Key: the public
 members of the client-authentication key, `use: sig`, the algorithm and the key id. It never
-publishes a private member, and it never publishes the DPoP proof key. It reads no request input.
+publishes a private member, and it never publishes a separate DPoP proof key. It reads no request input.
 The response is `Cache-Control: no-store`; every other method is `405`.
 
 *Control -- reachability.* The path is reserved on *every* host, not only on the OIDC host, and is
@@ -2560,7 +2560,7 @@ outstanding hardening work (next section).
 | <<bff-14>> | DPoP: a proof on every token leg; a token response not bound to the gateway's proof key is refused (login `400`, refresh ends the session); the binding ends at the gateway -- upstream `cnf` contract, own bearer routes accept a bound token without a proof | Engine `SenderConstraint` + gateway `BoundTokenEndpointClient` / `BffRuntimeProducer` -- ADR-0057 | PARTIAL (no proof check at the point of use, accepted)
 | <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048 | PARTIAL (session-wide scope growth accepted)
 | <<bff-16>> | `session_fallback` branch chosen from `Authorization` presence only; no session fallback on a failed bearer; CSRF on the session branch only; one resolver for CSRF and authentication | Gateway (`AuthBranch`, `AuthenticationStage`, `GatewayEdgeRoute`) + configuration validator -- ADR-0055 | COVERED
-| <<bff-17>> | `private_key_jwt` by default, algorithm derived from the key; key files read by the gateway and refused at boot on any defect, generated keys in process memory only; `oidc.client_secret` an operator choice announced at every boot and refused together with a key file | Engine `PrivateKeyJwtAuth` + gateway `ClientSigningKey` / `BffRuntimeProducer` + configuration validator -- ADR-0057 | COVERED (key mode) / accepted residual (client-secret mode: the profile's client-authentication requirement is not met)
+| <<bff-17>> | `private_key_jwt` by default, algorithm derived from the key; key files read by the gateway and refused at boot on any defect, generated keys in process memory only; `oidc.client_secret` an operator choice announced at every boot and refused together with a client-authentication key file | Engine `PrivateKeyJwtAuth` + gateway `ClientSigningKey` / `BffRuntimeProducer` + configuration validator -- ADR-0057 | COVERED (key mode) / accepted residual (client-secret mode: the profile's client-authentication requirement is not met)
 | <<bff-18>> | Client key set published without a credential on every host: one public key, no input read, `GET` only; `404` and still reserved in client-secret mode; a colliding `jwks_path` refused at boot | Gateway (`ClientJwksEndpoint`, `ReservedPathRegistry`) + configuration validator -- ADR-0057 | COVERED (TLS on the path, the registered URL and a generated key behind several replicas are deployment residuals, accepted)
 | <<bff-19>> | Every authorization request pushed; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login `502` before any state is stored, recorded once per reason | Engine `ParClient` + gateway `PushedAuthorizationRequests` -- ADR-0057 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap, accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED

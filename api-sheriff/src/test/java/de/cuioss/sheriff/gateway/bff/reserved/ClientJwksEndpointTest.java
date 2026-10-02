@@ -57,7 +57,7 @@ class ClientJwksEndpointTest {
 
     private static final String CACHE_CONTROL = "Cache-Control";
     private static final String NO_STORE = "no-store";
-    /** The members a published key must never carry: the private RSA and EC members, and key_ops. */
+    /** Members a published key must never carry: private RSA and EC members, and key_ops. */
     private static final List<String> NEVER_PUBLISHED = List.of("d", "p", "q", "dp", "dq", "qi", "key_ops");
 
     @TempDir

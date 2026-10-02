@@ -475,7 +475,8 @@ backend-API CSRF, request proxying, logout receivers, and RFC 9457 rendering at 
 That seam is realized directly: *API Sheriff depends on the engine module
 `token-sheriff-client`* -- purpose-built for this gateway and implemented upstream -- for the
 entire confidential-client flow and server-side token lifecycle, and implements *only the BFF
-side* itself (session/cookie handling, CSRF, proxying, logout receivers, and RFC 9457
+side* itself (session/cookie handling, CSRF, proxying, logout receivers, the client's signing keys,
+its key-set endpoint and the token-binding check of <<_bff_client_controls>>, and RFC 9457
 rendering for *gateway-raised* errors -- *engine-raised* failures are mapped to
 `application/problem+json` by `token-sheriff-client-quarkus`'s exception mapper; both conform
 to the same RFC 9457 contract).
@@ -520,8 +521,8 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   and the client JWKS endpoint -- are matched on every host, because the identity provider dials
   them server-to-server by whatever address the relying party registered — routinely an internal
   service name rather than the browser-facing one (ADR-0018, back-channel-host amendment; ADR-0057).
-  The client JWKS path is the one reserved path that needs no declaration: an `oidc` block that
-  names none reserves the default `/auth/jwks`. It is reserved in both client-authentication modes.
+  The client JWKS path is the one reserved path that needs no declaration: an `oidc` block with a
+  `redirect_uri` that names none reserves the default `/auth/jwks`. It is reserved in both client-authentication modes.
   In key mode it answers the client-authentication public key to a `GET`; in client-secret mode it
   answers `404` to every method and is still not released to the route table, so no proxied upstream
   can answer under a key-set URL the identity provider may hold. The gateway edge consults the
@@ -566,7 +567,7 @@ Three controls sit between the BFF and the identity provider
   names the issuer as its audience. With `oidc.client_secret` configured -- *client-secret mode* --
   the gateway authenticates with `client_secret_basic`, resolves no client-authentication key and
   logs `WARN` `ApiSheriff-130` at every boot. There is no switch beside the secret, and a secret
-  together with a key file is refused at boot. The one authentication instance is shared by the
+  together with a client-authentication key file is refused at boot. The one authentication instance is shared by the
   pushed authorization request, the code exchange, the refresh grant and RFC 7009 revocation.
 * *The client JWKS endpoint follows the same decision.* In key mode `ClientJwksEndpoint` publishes
   the public half of the client-authentication key, for a provided and for a generated key alike. In
@@ -1058,7 +1059,7 @@ Two exits of the BFF login belong to this contract and are easy to misread from 
 * *`400` -- the token response is not bound to the proof key.* The callback answers `400`, creates no
   session and sets no session cookie when the token response of the code exchange is not of type
   `DPoP` or its access token does not carry the `cnf.jkt` of the gateway's proof key. It is the
-  answer the callback gives to every failure of the token engine. `WARN` `ApiSheriff-131` records the
+  answer the callback gives to every `TokenSheriffException` of the token engine. `WARN` `ApiSheriff-131` records the
   leg and the reason. At a
   refresh the same refusal ends the session instead, and the request is answered as
   `oidc.session.refresh.on_failure` says.

@@ -834,7 +834,7 @@ class GatewayEdgeRouteBffWiringTest {
          * covers every header line in both directions, so a header the unknown path does not carry
          * ({@code Cache-Control}, {@code Allow}) fails it as surely as a differing media type.
          * <p>
-         * The two leading assertions are the control: they pin the reference to the route table's own
+         * The three leading assertions are the control: they pin the reference to the route table's own
          * {@code 404} problem document, so two answers that agreed on some other shape would not pass.
          * The upstream count is what keeps the equality from being bought by releasing the path — the
          * {@code /auth} proxy route covers the JWKS path and allows both methods, and still sees
@@ -850,7 +850,7 @@ class GatewayEdgeRouteBffWiringTest {
             EdgeAnswer withheld = send(withheldFront, method, host, DEFAULT_JWKS_PATH);
 
             Map<String, Object> unknownProblem = new JsonObject(unknown.body()).getMap();
-            assertAll("the JWKS path with a client secret configured",
+            assertAll("the JWKS path in its withheld form",
                     () -> assertEquals(404, unknown.status(), "control: the reference is the unrouted 404"),
                     () -> assertEquals("application/problem+json", unknown.headers().get("Content-Type"),
                             "control: in the route table's problem media type"),

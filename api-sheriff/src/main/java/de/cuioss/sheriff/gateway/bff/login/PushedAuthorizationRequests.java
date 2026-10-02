@@ -43,7 +43,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * This class composes no authorization parameter itself. What is pushed is exactly what the
  * engine's request builder rendered into the authorization URL — {@code response_type},
- * {@code redirect_uri}, {@code scope}, {@code state}, {@code nonce}, the PKCE challenge,
+ * {@code client_id}, {@code redirect_uri}, {@code scope}, {@code state}, {@code nonce}, the PKCE challenge,
  * {@code response_mode=query} and, on the step-up leg, {@code acr_values} and {@code max_age}. The
  * URL is the parameter source and is never sent to the browser. No {@code dpop_jkt} is added: FAPI
  * 2.0 does not require a client to bind the authorization code to its DPoP key, and the engine's
@@ -110,7 +110,7 @@ public final class PushedAuthorizationRequests {
      * @param clientId         the OAuth 2.0 client id the redirect carries
      * @param authorizationUrl the authorization URL the engine built on the provider's authorization
      *                         endpoint, already rewritten to {@code response_mode=query}
-     * @return the authorization endpoint with exactly two form-encoded query parameters,
+     * @return the authorization endpoint with exactly two form-encoded query parameters appended,
      *         {@code client_id} and {@code request_uri}
      * @throws GatewayException with {@link EventType#UPSTREAM_ERROR} when the provider advertises no
      *                          pushed-authorization-request endpoint, when the authorization URL

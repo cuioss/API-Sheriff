@@ -61,7 +61,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 @EnableTestLogger
 @TestProfile(CookieModeBootTest.CookieBootProfile.class)
-@DisplayName("Cookie-mode boot — generate-on-startup key and the UNSUPPORTED destruction capability")
+@DisplayName("Cookie-mode boot — generate-on-startup keys and the UNSUPPORTED destruction capability")
 class CookieModeBootTest {
 
     private static final String GENERATED_CLIENT_AUTHENTICATION_KEY =

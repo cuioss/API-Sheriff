@@ -42,9 +42,9 @@ oidc:
   # the fixture boots the default client authentication, private_key_jwt with a key
   # generated on startup. The key authenticates to nothing — this fixture reaches no IdP.
   scopes: ["openid"]
-  # The host of redirect_uri is the oidc host every reserved path binds to; its
-  # origin is the gateway origin used for same-origin return-URL validation and
-  # as the default CSRF trusted origin.
+  # The host of redirect_uri is the oidc host the browser-facing reserved paths
+  # bind to; its origin is the gateway origin used for same-origin return-URL
+  # validation and as the default CSRF trusted origin.
   redirect_uri: https://localhost:8443/auth/callback
   logout:
     path: /auth/logout

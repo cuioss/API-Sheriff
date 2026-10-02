@@ -56,7 +56,7 @@ set of things well, with zero mandatory external dependencies.
   back channel, the browser is sent to the IdP authorization endpoint with `client_id` and
   `request_uri` only, the code is exchanged server-to-server, tokens are kept out of
   browser-readable storage, and upstream requests carry an injected `Authorization: Bearer`. The
-  gateway authenticates the back-channel calls with `private_key_jwt` by default; a client secret
+  gateway authenticates to the IdP with `private_key_jwt` by default; a client secret
   is an operator choice (see the PAR row under <<_differentiators>>). See
   link:variants/03-bff-cookie.adoc[Variant 3] and link:variants/02-bff-session.adoc[Variant 2].
 

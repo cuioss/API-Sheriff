@@ -657,7 +657,8 @@ the identity provider calls them server-to-server at whatever address was regist
 
 The first six are registered only when their configuration key is present, so a deployment that
 omits `oidc.user_info` or `oidc.login` carves out fewer. The client JWKS path is the exception: it
-needs no declaration, and an `oidc` block that names none reserves the default `/auth/jwks`. A proxy
+needs no declaration, and an `oidc` block with a `redirect_uri` that names none reserves the default
+`/auth/jwks`. A proxy
 route such as `path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while
 other virtual hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path
 namespace -- except for the two every-host paths, which no virtual host can proxy. Routes remain free

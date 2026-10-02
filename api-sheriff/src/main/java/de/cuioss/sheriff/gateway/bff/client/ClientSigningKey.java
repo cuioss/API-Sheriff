@@ -68,7 +68,7 @@ import org.jspecify.annotations.Nullable;
  * One signing key of the confidential client (ADR-0057), resolved at boot into one of two
  * first-class, fully supported production modes. The gateway holds at most one such key per
  * {@link Purpose}: the key that signs the {@code private_key_jwt} client assertion, and the key that
- * signs the DPoP proofs its tokens are bound to.
+ * signs the DPoP proofs its access tokens are bound to.
  * <p>
  * <strong>(a) {@link Mode#PROVIDED}.</strong> The operator named a PEM file on a mount. The file is
  * read once, bounded to {@value #MAX_KEY_FILE_BYTES} bytes, and must hold exactly one unencrypted
@@ -600,7 +600,7 @@ public final class ClientSigningKey {
         /** The key that signs the {@code private_key_jwt} client assertion. */
         CLIENT_AUTHENTICATION("oidc.client_authentication.key_file", "client-authentication"),
 
-        /** The key that signs the DPoP proofs the tokens are bound to. */
+        /** The key that signs the DPoP proofs the access tokens are bound to. */
         SENDER_CONSTRAINT("oidc.sender_constraint.key_file", "sender-constraint");
 
         private final String configField;

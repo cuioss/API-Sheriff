@@ -496,7 +496,7 @@ legitimate holder's session ends too, while the Keycloak user session survives.
 
 The sample gateway itself mediates no session -- its one route is `auth: require: none` -- so the
 setting only acts once you add a BFF route with refresh enabled. Such a route additionally needs an
-identity-provider client that accepts pushed authorization requests and binds its tokens with DPoP
+identity-provider client that accepts pushed authorization requests and binds its access tokens with DPoP
 and, in the default key mode, fetches the gateway's key set; the sample's own client is a
 secret-authenticated token-minting client and is not that client (see
 link:bff-session.adoc#key-material[Server-Session BFF -- Key material]). The rotation setting is

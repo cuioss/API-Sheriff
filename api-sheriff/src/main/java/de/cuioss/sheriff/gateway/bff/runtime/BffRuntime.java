@@ -60,7 +60,7 @@ import org.jspecify.annotations.Nullable;
  *       capability gate answers {@code 404} where IdP-driven destruction is unsupported, so the
  *       reserved path never falls through to the proxy route table. The client JWKS arm stays wired
  *       in both client-authentication modes for the same reason: with a client secret configured the
- *       endpoint yields {@code 404} itself. That one outcome the edge does not render verbatim: it
+ *       endpoint yields {@code 404} itself. That outcome the edge does not render verbatim: it
  *       answers it with the response of an unrouted path.</li>
  *   <li>{@link #sessionIdentity(String, Instant)} — the display identity (signed in or not, and the
  *       {@code preferred_username}) the application portal renders for the request's session.</li>
@@ -224,7 +224,7 @@ public final class BffRuntime {
      * @param kind the reserved endpoint the {@code ReservedPathRegistry} resolved for the request
      * @param req  the framework-agnostic request pieces the handlers consume
      * @param now  the reference instant (TTL anchor for session / pending resolution)
-     * @return the normalized response the edge renders verbatim
+     * @return the normalized response the edge renders
      * @throws IllegalStateException when this runtime is inert (no reserved handler is wired)
      */
     public ReservedHttpResponse dispatch(ReservedEndpoint kind, ReservedHttpRequest req, Instant now) {

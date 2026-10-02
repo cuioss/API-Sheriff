@@ -138,7 +138,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
-@DisplayName("Generated keys: published, usable for a login, replaced by a restart under a live session")
+@DisplayName("Generated keys: client key published, both usable for a login, both replaced by a restart under a live session")
 class BffGeneratedKeysIT {
 
     /** The container name and the network alias; the host of the realm client's {@code jwks.url}. */
@@ -182,8 +182,11 @@ class BffGeneratedKeysIT {
     private static final String SEALING_KEY = Base64.getEncoder()
             .encodeToString("generated-keys-sealing-key-01234".getBytes(StandardCharsets.US_ASCII));
 
-    /** INFO — a signing key was generated at startup; names the purpose, never the key. */
-    private static final String KEY_GENERATED_RECORD = "ApiSheriff-20";
+    /**
+     * INFO — a signing key was generated at startup; names the purpose, never the key. The trailing
+     * colon keeps the match off the identifiers from 200 to 209.
+     */
+    private static final String KEY_GENERATED_RECORD = "ApiSheriff-20:";
 
     private static final List<String> KEY_PURPOSES = List.of("client-authentication", "sender-constraint");
 
@@ -193,7 +196,7 @@ class BffGeneratedKeysIT {
     private static final long BOOT_TIMEOUT_SECONDS = 90L;
 
     @Test
-    @DisplayName("generates and publishes its keys, logs in, and keeps the session across a restart that replaces both keys")
+    @DisplayName("generates its keys and publishes the client key, logs in, and keeps the session across a restart that replaces both keys")
     void generatedKeysServeALoginAndARestartUnderALiveSession() throws Exception {
         dockerQuietly("rm", "-f", NETWORK_ALIAS);
         try {

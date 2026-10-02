@@ -107,9 +107,7 @@ Each key is in one of two modes. Both are supported in production.
 * *Provided* -- name a key file. The key survives a restart and can be given to every instance. Use
   this mode as soon as *more than one instance* serves the same identity-provider client. Every
   replica must be given the *same* key files. A replica with a different client key fails
-  authentication on some requests and not on others, and a replica with a different proof key
-  refreshes a session another replica logged in with a proof of another key, which an identity
-  provider may refuse.
+  authentication on some requests and not on others.
 
 The two keys choose their mode independently. A common single-node setup provides neither.
 
@@ -238,7 +236,7 @@ log names the configuration key -- `oidc.client_authentication.key_file` or
 | Generate a key of at least 2048 bits.
 |===
 
-The remaining refusals -- a directory instead of a file, a file above 16 KiB, a second block of the
+The remaining refusals -- among them a directory instead of a file, a file above 16 KiB, a second block of the
 same kind, any other PEM block, text outside a block -- are listed in
 link:../configuration.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys].
 
@@ -297,7 +295,7 @@ and the access token must carry a `cnf.jkt` claim that names the gateway's proof
   material.
 
 An identity provider that issues *opaque* access tokens is refused the same way: there is no `cnf`
-to read. The fix is at the identity provider: require DPoP-bound tokens for the client. This holds
+to read. The fix is at the identity provider: require DPoP-bound access tokens for the client. This holds
 in both client-authentication modes.
 
 [[replacing-a-key]]
@@ -382,7 +380,7 @@ no key set for the identity provider to fetch. The path stays reserved and is no
 route table.
 
 *What to register at the identity provider.* A client that authenticates with a secret, requires
-pushed authorization requests and binds its tokens with DPoP. Register no key-set URL. On Keycloak:
+pushed authorization requests and binds its access tokens with DPoP. Register no key-set URL. On Keycloak:
 `clientAuthenticatorType: client-secret`, `require.pushed.authorization.requests: true`,
 `dpop.bound.access.tokens: true`.
 

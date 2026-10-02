@@ -156,10 +156,10 @@ import org.jspecify.annotations.Nullable;
  * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
  * token-endpoint client is a {@link BoundTokenEndpointClient} over the base back-channel
  * configuration and the key id of the sender-constraint key. It is the single instance handed to the
- * base flow and to {@link ScopedEngineFlows}, so the code exchange, every per-scope flow and every
- * refresh grant read their token response through it; the producer does not read the
- * client-authentication mode for it. The refusal surfaces where the response was requested: the
- * callback answers {@code 400} and creates no session, and a refresh ends the session and follows
+ * base flow and to {@link ScopedEngineFlows}, so the code exchange and every refresh grant read
+ * their token response through it; the producer does not read the client-authentication mode for
+ * it. The refusal surfaces where the response was requested: the callback answers {@code 400} and
+ * creates no session, and a refresh ends the session and follows
  * {@code oidc.session.refresh.on_failure}. The check judges token responses only — a session whose
  * token is bound to an earlier key is never re-checked, so replacing the key does not by itself end a
  * session.
@@ -204,11 +204,12 @@ import org.jspecify.annotations.Nullable;
  * refresh-failure response without clearing the cookie. That response is
  * {@code oidc.session.refresh.on_failure}, resolved here and handed to the stage:
  * {@code reauthenticate} (also when omitted) re-drives the login negotiation, {@code reject} answers
- * {@code 401} for every request. A refresh token still live at the identity provider after a session
- * ends on a refused redemption or a persist failure is revoked, best-effort, through the engine's
- * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
- * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
- * failing request never waits for the revocation endpoint.
+ * {@code 401} for every request. Where the gateway can name a refresh token still live at the identity
+ * provider after a session ends on a refused redemption or a persist failure, it is revoked,
+ * best-effort, through the engine's RFC 7009 {@link RevocationClient} built from the same
+ * back-channel configuration — dispatched on the Quarkus-managed virtual-thread executor after the
+ * session-ended outcome has been published, so the failing request never waits for the revocation
+ * endpoint.
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
@@ -398,8 +399,8 @@ public class BffRuntimeProducer {
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
         IdTokenValidationBridge idBridge = new IdTokenValidationBridge(validator);
         // The one token-endpoint client of the runtime. It refuses a token response that is not bound
-        // to the proof key, and because the base flow, every per-scope flow and every refresh grant post
-        // through this single instance, none of them can obtain a token that bypasses the check.
+        // to the proof key, and because the base flow, every per-scope flow and every refresh grant hold
+        // this single instance, none of them can obtain a token that bypasses the check.
         TokenEndpointClient tokenEndpointClient = new BoundTokenEndpointClient(clientConfiguration,
                 senderConstraintKey.keyId());
         // The gateway drives response_mode=query, NOT the engine's built-in form_post: the callback has
@@ -409,8 +410,8 @@ public class BffRuntimeProducer {
         // shared with the step-up leg below, so BOTH engine seams that build an authorization URL carry
         // the corrected mode. The IssValidator and the CallbackHandler are the defaults the 4-arg
         // AuthorizationCodeFlow constructor supplies on its own; the trailing argument is the shared
-        // DPoP sender constraint, so the code exchange presents a proof and its tokens are bound to the
-        // proof key.
+        // DPoP sender constraint, so the code exchange presents a proof and its access token is bound to
+        // the proof key.
         AuthorizationRequestBuilder authorizationRequestBuilder = new QueryResponseModeAuthorizationRequestBuilder();
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
                 tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
@@ -731,7 +732,7 @@ public class BffRuntimeProducer {
      * Resolves the sender-constraint key — the key the gateway signs its DPoP proofs with — from
      * {@code oidc.sender_constraint.key_file}. An absent block or an absent key selects the generated
      * mode. The key is resolved in both client-authentication modes: a configured client secret
-     * changes how the gateway authenticates, not whether its tokens are sender-constrained.
+     * changes how the gateway authenticates, not whether its access tokens are sender-constrained.
      * <p>
      * The key mode and the algorithm are named by one {@code DEBUG} line — never key material and
      * never the key id.

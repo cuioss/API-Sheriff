@@ -42,8 +42,8 @@ import org.junit.jupiter.api.Test;
  * <strong>Where the token comes from.</strong> The suite mints it with the password grant of
  * {@code token-mint-client}, the one realm client that still allows direct access grants and that no
  * gateway authenticates as. The gateway clients cannot serve as a mint: direct access grants are
- * disabled on them, their tokens are bound to a DPoP proof key, and the key-authenticated ones hold no
- * secret.
+ * disabled on them, their access tokens are bound to a DPoP proof key, and the key-authenticated ones
+ * hold no secret.
  * A token of {@code token-mint-client} is an unbound bearer token of the same realm, signed by the
  * same realm keys, which is all the bearer route validates.
  * <p>

@@ -2731,7 +2731,7 @@ Each key is in exactly one of two modes. Both are supported production modes.
   consequences follow: *the key is replaced on every restart*, and *it cannot be shared across
   replicas*. The generated mode is for a single node.
 
-There is exactly one key per purpose. No second, retiring key is published or accepted, so replacing
+There is at most one key per purpose. No second, retiring key is published or accepted, so replacing
 a key is a clean break with no overlap.
 
 ===== The reference is a path, and a path is not a secret
@@ -2930,8 +2930,8 @@ reason differs per key:
 * *The client-authentication key.* The identity provider verifies an assertion against the key set
   it fetched from one instance. An instance that signs with another key fails client authentication,
   on some requests and not on others.
-* *The proof key.* A token is bound to the key of the instance that obtained it. A refresh on another
-  instance presents a proof of another key.
+* *The proof key.* An access token is bound to the key of the instance that obtained it. In cookie
+  mode a refresh on another instance presents a proof of another key.
 
 A deployment with more than one replica therefore provides both key files. The generated mode is for
 a single node.

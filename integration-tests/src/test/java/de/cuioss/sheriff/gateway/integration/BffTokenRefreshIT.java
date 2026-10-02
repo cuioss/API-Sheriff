@@ -56,10 +56,10 @@ import org.junit.jupiter.api.Test;
  * <strong>This instance authenticates with a client secret.</strong> It is the one gateway instance
  * of the stack whose descriptor declares {@code oidc.client_secret}; every other instance
  * authenticates with {@code private_key_jwt}. Only the client authentication differs: the realm
- * requires {@code refresh-client} to push its authorization requests and to have its tokens bound to
- * a DPoP proof key, like the key-authenticated clients. Every login of this suite therefore drives
- * the pushed request and the code exchange, and every {@code REFRESHED} leg the refresh grant, with
- * {@code client_secret_basic}, and the two token requests with a DPoP proof. A green run is the
+ * requires {@code refresh-client} to push its authorization requests and to have its access tokens
+ * bound to a DPoP proof key, like the key-authenticated clients. Every login of this suite therefore
+ * drives the pushed request and the code exchange, and every {@code REFRESHED} leg the refresh grant,
+ * with {@code client_secret_basic}, and the two token requests with a DPoP proof. A green run is the
  * evidence that Keycloak accepts a pushed request and a DPoP-carrying code exchange and refresh from
  * a secret-authenticated client; the proofs that name those properties one by one are
  * {@code BffClientSecretModeIT}'s.
@@ -102,7 +102,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>Why the realm-wide admin logout is safe to use here.</strong> The {@code FAILED} legs end
  * <em>every</em> Keycloak session of {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, which
- * {@code BffCookieRefreshIT} logs in as too. The two suites cannot overlap: the
+ * other suites log in as too. The suites cannot overlap: the
  * {@code integration-tests} Failsafe execution declares no {@code forkCount} (so the default of one
  * fork at a time applies), sets {@code reuseForks=false}, and configures no JUnit parallel execution,
  * so test classes run strictly one after another and every test logs in afresh. A logout therefore

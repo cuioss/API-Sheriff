@@ -47,7 +47,7 @@ import okio.ByteString;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The one identity-provider fixture the unit tests drive a produced BFF runtime against: a local
+ * An identity-provider fixture the unit tests drive a produced BFF runtime against: a local
  * server that serves an OIDC discovery document and the back-channel endpoints that document names,
  * records every request it receives, and answers each endpoint from a script a test may fill.
  *

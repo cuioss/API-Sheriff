@@ -480,7 +480,7 @@ class BoundTokenEndpointClientTest {
             checks.add(() -> assertTrue(secrets.stream().noneMatch(message::contains),
                     "the refusal carries scripted token material: " + message));
         }
-        assertAll("nothing the identity provider issued is disclosed", checks);
+        assertAll("no scripted token material is disclosed", checks);
     }
 
     private static List<LogRecord> refusalRecords() {

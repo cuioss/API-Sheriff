@@ -1398,8 +1398,8 @@ class BffRuntimeProducerTest {
          * runtime's own pending store shows.
          */
         @Test
-        @DisplayName("a provider that advertises no pushed-authorization-request endpoint refuses the login with the 502 event")
-        void providerWithoutPushedRequestEndpointRefusesTheLogin() {
+        @DisplayName("a login against a provider that advertises no pushed-authorization-request endpoint is refused with the 502 event")
+        void loginAgainstAProviderWithoutPushedRequestEndpointIsRefused() {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(server.issuer())
                     .clientId("gateway-client")

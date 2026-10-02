@@ -30,8 +30,9 @@ import java.util.Base64;
 
 /**
  * Signing-key fixtures for the tests of {@link ClientSigningKey} and of everything assembled over
- * it. Every key is generated with {@link KeyPairGenerator} when a test asks for it and written as a
- * PEM file into a directory the test supplies, so no key material is committed for unit tests.
+ * it. Every key is generated with {@link KeyPairGenerator} when a test asks for it, and a key file is
+ * written as a PEM file into a directory the test supplies, so no signing key is committed for unit
+ * tests.
  * <p>
  * The helper writes the one accepted file shape — an unencrypted PKCS#8 {@code PRIVATE KEY} block
  * followed by a {@code PUBLIC KEY} block — and variants of it a provided key file is refused

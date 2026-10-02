@@ -51,8 +51,8 @@ import org.jspecify.annotations.Nullable;
  * @param clientAuthentication the client-authentication settings — the {@code private_key_jwt}
  *                             key file and the client JWKS path — {@code null} when omitted
  * @param senderConstraint     the sender-constraint settings — the key file of the DPoP proof key
- *                             the gateway's tokens are bound to — {@code null} when omitted. Read
- *                             in both client-authentication modes
+ *                             the gateway's access tokens are bound to — {@code null} when omitted.
+ *                             Read in both client-authentication modes
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -420,7 +420,7 @@ List<String> scopes,
      * The {@code sender_constraint} block: the key the gateway signs its DPoP proofs with, and
      * therefore the key every access token it obtains is bound to. The block is read in both
      * client-authentication modes — a configured {@code client_secret} changes how the gateway
-     * authenticates, not whether its tokens are sender-constrained.
+     * authenticates, not whether its access tokens are sender-constrained.
      * <p>
      * The record is named {@code SenderConstraintSettings} so that it does not shadow the token
      * engine's {@code SenderConstraint} type where both are in scope.

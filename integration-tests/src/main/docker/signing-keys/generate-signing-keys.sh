@@ -8,8 +8,8 @@
 #
 # Each file holds exactly what oidc.client_authentication.key_file and oidc.sender_constraint.key_file
 # accept: one unencrypted PKCS#8 PRIVATE KEY block followed by the matching PUBLIC KEY block, and
-# nothing else. The gateway derives the algorithm and the key id from the key, so neither is
-# configured anywhere.
+# nothing else. The gateway derives the algorithm and the key id from the key, so the gateway
+# configuration names neither.
 #
 #   client-auth-rsa.pem  RSA-2048. The client-authentication key of every key-authenticated compose
 #                        gateway (clients integration-client and cookie-refresh-client). It signs

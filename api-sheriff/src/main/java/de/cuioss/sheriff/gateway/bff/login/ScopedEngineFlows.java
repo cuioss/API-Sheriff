@@ -53,10 +53,10 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * uses, so the only thing that varies between two scoped flows is the scope list.
  * <p>
  * <strong>One sender constraint for every scope set (ADR-0057).</strong> The constraint is handed in
- * once and passed to every flow this seam builds: each cached login flow carries it as its code
- * exchange's constraint, and each refresh grant presents a DPoP proof signed with it. Two scope sets
- * therefore present proofs from the same key, and a token obtained for one scope set is bound to the
- * same key as a token obtained for another.
+ * once and passed to every flow this seam builds: each cached login flow is built with it, and each
+ * refresh grant presents a DPoP proof signed with it. Two scope sets therefore present proofs from
+ * the same key, and an access token obtained for one scope set is bound to the same key as one
+ * obtained for another.
  * <p>
  * <strong>The factory owns the pinned back-channel posture.</strong> The configuration factory is the
  * producer's {@code backChannelConfiguration(oidc, scopes)}, which applies the ADR-0045 hostname and
@@ -107,7 +107,7 @@ public final class ScopedEngineFlows {
      * @param idBridge                    the ID-token validation bridge
      * @param authorizationRequestBuilder the gateway's {@code response_mode=query} request builder
      * @param clientAuthentication        the confidential-client authentication the refresh grant presents
-     * @param senderConstraint            the one DPoP sender constraint every flow binds its tokens with
+     * @param senderConstraint            the one DPoP sender constraint handed to every flow this seam builds
      */
     public ScopedEngineFlows(Function<List<String>, ClientConfiguration> configurationFactory,
             TokenEndpointClient tokenEndpointClient, TokenValidationBridge tokenBridge,

@@ -118,8 +118,12 @@ class BffFapiControlsIT {
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
     static final String MEDIATED_PATH = "/bff-session/get";
 
-    /** INFO — the mediated tokens of a session were refreshed. */
-    static final String TOKEN_REFRESHED_RECORD = "ApiSheriff-12";
+    /**
+     * INFO — the mediated tokens of a session were refreshed. The trailing colon is part of the match:
+     * a log line renders the identifier as {@code ApiSheriff-12:}, and without it the value is a prefix
+     * of every identifier from 120 to 129.
+     */
+    static final String TOKEN_REFRESHED_RECORD = "ApiSheriff-12:";
 
     /** WARN — a token response was refused because it is not bound to the gateway's proof key. */
     static final String TOKEN_NOT_BOUND_RECORD = "ApiSheriff-131";

@@ -103,7 +103,8 @@ public final class StepUpCoordinator {
      * @param silentSatisfaction the silent-step-up seam (bound to the engine's silent elevation; a
      *                           test binds a fixed present/absent result)
      * @param stepUpInitiation   the engine step-up authorization seam (bound to
-     *                           {@code StepUpHandler#initiate}; a test binds a hand-built request)
+     *                           {@code StepUpHandler#initiate} and the push of the request it builds;
+     *                           a test binds a hand-built request)
      * @param pendingStore       the single-use pending-authorization store the re-drive transaction
      *                           is persisted to
      * @param bindingCookieCodec the browser-binding cookie codec
@@ -205,9 +206,10 @@ public final class StepUpCoordinator {
 
     /**
      * The engine step-up authorization seam. The session runtime binds it to the engine's
-     * {@code StepUpHandler#initiate}; a test binds a hand-built request. The engine carries the
-     * challenge's {@code acr_values} / {@code max_age} into the authorization request; keeping the
-     * confidential-client wiring behind the seam decouples the coordinator from it.
+     * {@code StepUpHandler#initiate} and the push of the request it builds; a test binds a hand-built
+     * request. The engine carries the challenge's {@code acr_values} / {@code max_age} into the
+     * authorization request; keeping the confidential-client wiring behind the seam decouples the
+     * coordinator from it.
      *
      * @author API Sheriff Team
      * @since 1.0

@@ -76,7 +76,10 @@ final class OneOffGatewayContainers {
     /** The certificate directory every gateway mounts at {@code /app/certificates}. */
     static final Path CERTIFICATES = DOCKER.resolve("certificates");
 
-    /** The bearer-gated directory asset every one-off gateway fetches; served from the mounted assets. */
+    /**
+     * The bearer-gated directory asset every bearer-only one-off gateway fetches; served from the
+     * mounted assets.
+     */
     static final String SECURE_ASSET = "/secure-assets/app.css";
 
     /** WARN — a load attempt produced no key set and a retry was scheduled. */
@@ -174,7 +177,7 @@ final class OneOffGatewayContainers {
     }
 
     /**
-     * Starts a one-off BFF gateway, mounted as a compose variant instance is: the shared
+     * Starts a one-off BFF gateway. It mounts the shared
      * {@code sheriff-config} directory with one overlay descriptor, the certificates, the assets and
      * the demo directory. Nothing else is mounted — in particular no signing-key directory, so the
      * container holds no signing-key file a descriptor could name.

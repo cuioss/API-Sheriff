@@ -82,7 +82,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Tests for {@link PushedAuthorizationRequests}: the parameters of an engine-built authorization
  * request are pushed to the identity provider exactly as the engine rendered them, the browser is
  * sent to the authorization endpoint with {@code client_id} and {@code request_uri} only, and each
- * failure staged here refuses the login with the {@code 502} event, recorded once per reason.
+ * failure staged here refuses the request with the {@code 502} event, recorded as a {@code WARN} once
+ * per reason and adapter.
  * <p>
  * The adapter is driven with the engine's own collaborators: the authorization URL is built by the
  * gateway's request builder over an engine {@link FlowContext}, and the push goes through a real
@@ -105,7 +106,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 @ModuleDispatcher
 @EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
 @ExtendWith(SheriffDebugCapture.class)
-@DisplayName("PushedAuthorizationRequests — the authorization request is pushed, or the login is refused")
+@DisplayName("PushedAuthorizationRequests — the authorization request is pushed, or no redirect is issued")
 class PushedAuthorizationRequestsTest {
 
     private static final String ISSUER = "https://idp.example.com";
@@ -625,7 +626,7 @@ class PushedAuthorizationRequestsTest {
             secrets.addAll(List.of(context.state(), context.nonce(), context.pkceChallenge().codeChallenge()));
         }
         received.forEach(pushed -> secrets.add(pushed.form().get(CLIENT_ASSERTION)));
-        assertNothingIsDisclosed(secrets, failed, invalid);
+        assertNoneIsDisclosed(secrets, failed, invalid);
     }
 
     // The adapter with the engine's client_secret_basic authentication in place of the key-based one.
@@ -666,7 +667,7 @@ class PushedAuthorizationRequestsTest {
     }
 
     @Test
-    @DisplayName("Should return the same two-parameter redirect with a client secret, disclosing the secret nowhere")
+    @DisplayName("Should return the same two-parameter redirect with a client secret, disclosing the secret in no record and no refusal")
     void shouldReturnTheSameRedirectWithAClientSecret(URIBuilder uriBuilder) {
         String secret = clientSecret();
         ClientConfiguration configuration = secretConfiguration(secret);
@@ -686,7 +687,7 @@ class PushedAuthorizationRequestsTest {
                 + URLEncoder.encode(requestUri, StandardCharsets.UTF_8), redirect,
                 "the authorization endpoint with client_id and request_uri, and nothing else");
         assertRefusal(refused, REASON_PUSH_FAILED);
-        assertNothingIsDisclosed(List.of(secret, URLEncoder.encode(secret, StandardCharsets.UTF_8),
+        assertNoneIsDisclosed(List.of(secret, URLEncoder.encode(secret, StandardCharsets.UTF_8),
                 basicCredential(secret).substring(BASIC_SCHEME.length())), refused);
     }
 
@@ -741,7 +742,7 @@ class PushedAuthorizationRequestsTest {
      * The control comes first: a {@code DEBUG} record of the adapter and of the engine client it
      * pushes through is captured, so the records read below include the {@code DEBUG} output of both.
      */
-    private static void assertNothingIsDisclosed(List<String> secrets, Throwable... refusals) {
+    private static void assertNoneIsDisclosed(List<String> secrets, Throwable... refusals) {
         SheriffDebugCapture.assertDebugIsCaptured(PushedAuthorizationRequests.class, ParClient.class);
         List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
@@ -750,16 +751,16 @@ class PushedAuthorizationRequestsTest {
             String rendered = SheriffDebugCapture.rendered(captured);
             checks.add(() -> assertTrue(secrets.stream().noneMatch(rendered::contains),
                     "a " + captured.getLevel() + " record of " + captured.getLoggerName()
-                            + " carries a value of the authorization request"));
+                            + " carries one of the values that must not be disclosed"));
         }
         for (Throwable refusal : refusals) {
             for (Throwable cause = refusal; cause != null; cause = cause.getCause()) {
                 String message = String.valueOf(cause.getMessage());
                 checks.add(() -> assertTrue(secrets.stream().noneMatch(message::contains),
-                        "a refusal carries a value of the authorization request: " + message));
+                        "a refusal carries one of the values that must not be disclosed: " + message));
             }
         }
-        assertAll("nothing of the authorization request is disclosed", checks);
+        assertAll("none of the given values is disclosed", checks);
     }
 
     private static List<LogRecord> refusalRecords() {

@@ -15,7 +15,8 @@
  */
 /**
  * The confidential client's own key material (ADR-0057) — the keys the BFF signs with when it
- * authenticates to the identity provider and when it proves possession of its tokens.
+ * authenticates to the identity provider and when it sends the DPoP proofs its access tokens are
+ * bound to.
  * <p>
  * {@link de.cuioss.sheriff.gateway.bff.client.ClientSigningKey} is the one type of the package. It
  * resolves one key per purpose — the {@code private_key_jwt} client-assertion key and the DPoP proof

@@ -78,9 +78,9 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>What this suite does NOT prove.</strong> The three refresh outcomes of this instance are
  * {@code BffTokenRefreshIT}'s, and the replayed refresh token is {@code BffRefreshReuseIT}'s. That the
- * secret travels in the {@code Authorization} header only, form-encoded, and on every leg, is asserted
- * at unit level on the request a stub identity provider records ({@code BffRuntimeProducerTest}); here
- * the request is not observable, only that Keycloak accepted it.
+ * secret travels in the {@code Authorization} header only, form-encoded, and on every authenticated
+ * leg, is asserted at unit level on the request a stub identity provider records
+ * ({@code BffRuntimeProducerTest}); here the request is not observable, only that Keycloak accepted it.
  * <p>
  * The suite logs in as {@link BffKeycloakLoginFlow#REFRESH_USERNAME} and ends no session, its own
  * included: it revokes nothing at the identity provider. It does not extend
@@ -104,7 +104,7 @@ class BffClientSecretModeIT {
     private static final String CLIENT_SECRET_RECORD = "ApiSheriff-130";
 
     /** INFO — the effective default trust source; emitted at every boot of every instance. */
-    private static final String BOOT_RECORD = "ApiSheriff-17";
+    private static final String BOOT_RECORD = "ApiSheriff-17:";
 
     private static final String NOT_CONFORMANT = "not FAPI 2.0 conformant";
 
@@ -160,7 +160,7 @@ class BffClientSecretModeIT {
 
         String proofKey = publicKeyThumbprint(signingKeyFile("dpop-rsa.pem"));
         assertNotEquals(atLogin, rotated, "the call inside the near-expiry window must mediate a rotated token");
-        assertAll("a secret-authenticated client's tokens are bound like any other's",
+        assertAll("a secret-authenticated client's access tokens are bound like any other's",
                 () -> assertEquals(proofKey, confirmationThumbprint(atLogin),
                         "the code exchange carried a proof: its token must name the committed RSA proof key"),
                 () -> assertEquals(proofKey, confirmationThumbprint(rotated),
@@ -173,7 +173,7 @@ class BffClientSecretModeIT {
 
     @Test
     @DisplayName("the JWKS path answers 404 to GET and POST, while the primary instance publishes its key there")
-    void jwksPathIsReservedAndPublishesNothing() {
+    void jwksPathAnswersNotFoundAndPublishesNothing() {
         int get = BffKeycloakLoginFlow.gateway(Map.of(), ORIGIN).when().get(JWKS_PATH).statusCode();
         int post = BffKeycloakLoginFlow.gateway(Map.of(), ORIGIN).when().post(JWKS_PATH).statusCode();
         int primary = BffKeycloakLoginFlow.gateway(Map.of()).when().get(JWKS_PATH).statusCode();

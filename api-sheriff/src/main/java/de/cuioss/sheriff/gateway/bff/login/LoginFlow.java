@@ -89,7 +89,8 @@ public final class LoginFlow {
     /**
      * Assembles the login flow with the engine authorization seam and the gateway-side stores.
      *
-     * @param authorization      the engine authorization seam (bound to {@link ScopedEngineFlows#authorize})
+     * @param authorization      the engine authorization seam (bound to {@link ScopedEngineFlows#authorize}
+     *                           and the push of the request it renders)
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to

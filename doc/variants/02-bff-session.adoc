@@ -94,7 +94,7 @@ and shared with the cookie-based variant:
 
 Each of the two keys is either read from a PEM file the configuration names by path, or generated at
 startup when no file is named. A generated key is replaced by every restart and cannot be shared, so
-it fits a single node -- which is what this variant is.
+it fits a single node.
 
 The binding ends at the gateway. The token injected upstream carries `cnf.jkt` and travels as
 `Authorization: Bearer`, without a proof: an upstream must not check `cnf`.

@@ -50,9 +50,9 @@ import org.junit.jupiter.api.Test;
  * {@code max_cookie_size} override, so it runs on the lowered browser-safe default. It no longer
  * shares a client with {@code api-sheriff-refresh}: {@code cookie-refresh-client} authenticates with
  * {@code private_key_jwt}, while {@code refresh-client} stays on its client secret for that instance,
- * and a realm client has one authentication method. The tokens sealed here are bound to this
- * instance's DPoP proof key, so the seal measured below is that of a session holding sender-constrained
- * tokens.
+ * and a realm client has one authentication method. The access token sealed here is bound to this
+ * instance's DPoP proof key, so the seal measured below is that of a session holding a
+ * sender-constrained access token.
  * <p>
  * <strong>What this suite proves.</strong> In cookie mode the session <em>is</em> the cookie, so a
  * refresh cannot be persisted server-side — the only way to keep the rotated tokens is to re-seal and

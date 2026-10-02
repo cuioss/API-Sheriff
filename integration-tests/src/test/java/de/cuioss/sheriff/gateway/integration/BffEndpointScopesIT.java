@@ -70,11 +70,10 @@ import org.junit.jupiter.api.Test;
  * client scopes, whatever the request named, so "nothing extra" cannot be read from it. That property
  * is proven at unit level against the pushed request body a stub identity provider records
  * ({@code BffRuntimeProducerTest}, the scope-set cases of the produced runtime, and
- * {@code PushedAuthorizationRequestsTest}). Nor does this suite exercise step-up — a live session
- * lacking a scope navigating onto a route that needs it — or the scope set a refresh requests; the
- * latter is {@code BffTokenRefreshIT}'s, which needs the short-token-lifespan instance. Like every
- * {@code Bff*IT}, it replays a cookie map and asserts nothing about browser cookie policy (see
- * {@link BffKeycloakLoginFlow}).
+ * {@code PushedAuthorizationRequestsTest}). Nor does this suite exercise step-up or the scope set a
+ * refresh requests; the latter is {@code BffTokenRefreshIT}'s, which needs the short-token-lifespan
+ * instance. Like every {@code Bff*IT}, it replays a cookie map and asserts nothing about browser
+ * cookie policy (see {@link BffKeycloakLoginFlow}).
  * <p>
  * The scope helpers are package-private so {@code BearerScopeIT}, {@code BffSessionFallbackIT} and
  * {@code BffTokenRefreshIT} read granted scopes the same way instead of carrying their own copies.

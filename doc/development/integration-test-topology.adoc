@@ -161,7 +161,7 @@ collapsed into one annotated group that names each of them with its port pair:
   other instance authenticates with `private_key_jwt`, and this one keeps `oidc.client_secret` so
   that the client-secret mode the gateway still supports is proven against a real identity provider
   rather than at unit level alone. Only the client authentication differs -- its requests are pushed
-  and its tokens are DPoP-bound like every other instance's. See <<realm-clients>>.
+  and its access tokens are DPoP-bound like every other instance's. See <<realm-clients>>.
 
 | `api-sheriff-no-certificate`
 | 10453 (plain HTTP) +
@@ -265,8 +265,8 @@ differing in exactly one scalar. Every other instance resolves the alias and sim
 [#realm-clients]
 === The realm clients and the signing keys
 
-Every gateway instance pushes its authorization requests (RFC 9126) and binds its tokens to a DPoP
-proof key (RFC 9449). What differs between instances is how the gateway authenticates to Keycloak
+Every gateway instance pushes its authorization requests (RFC 9126) and binds its access tokens to a
+DPoP proof key (RFC 9449). What differs between instances is how the gateway authenticates to Keycloak
 (link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]).
 The `integration` realm declares five clients:
 
@@ -364,7 +364,7 @@ a scratch realm, before the stack was migrated:
   is missing"; with a proof the response is of type `DPoP` and the access token's `cnf.jkt` is the
   thumbprint of the proof key.
 * *A secret-authenticated client can carry both requirements.* It pushed with `client_secret_basic`
-  (`201`) and received DPoP-bound tokens.
+  (`201`) and received DPoP-bound access tokens.
 * *"Declares no secret" is a statement about the import file.* Keycloak generates a secret for a
   `client-jwt` client whose import declares none. The realm file registers no secret and no key for
   the three key-authenticated clients; what Keycloak stores beside them is not something the file
@@ -442,7 +442,7 @@ Compose stack publishes, `10443` to `10455`. The note above says to allocate hos
 certificate. `BffClientKeyWiringTest` reads all three without a container and asserts that:
 
 * the JWKS URL of `generated-key-client` names the alias and the JWKS path the test uses;
-* the client declares no secret and requires pushed requests and DPoP-bound tokens;
+* the client declares no secret and requires pushed requests and DPoP-bound access tokens;
 * the Keycloak service trusts the certificate, and the certificate names the alias;
 * every other realm client registered for a signed assertion is the client of a compose instance.
 

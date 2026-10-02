@@ -154,9 +154,10 @@ public final class TestTlsConfigurationRegistry implements TlsConfigurationRegis
     }
 
     /**
-     * Shared body of the three usable-profile factories above. They differ only in which of the two
-     * trust-material shapes they supply — including neither, which is the anchor-free bucket — so the
-     * distinct scenario NAMES stay, and only the construct-register-return triplet is shared.
+     * Shared body of the three usable-profile factories above that bring no SSL context of their own.
+     * They differ only in which of the two trust-material shapes they supply — including neither,
+     * which is the anchor-free bucket — so the distinct scenario NAMES stay, and only the
+     * construct-register-return triplet is shared.
      *
      * @param name         the logical profile name to define
      * @param trustStore   the loaded trust store, or {@code null} when this shape is not supplied
