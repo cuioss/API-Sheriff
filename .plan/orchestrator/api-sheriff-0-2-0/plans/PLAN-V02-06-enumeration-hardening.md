@@ -2,133 +2,9 @@
 
 epic: api-sheriff-0-2-0
 workstream: WS-03
-track: **POST-0.1.0**
 
-> **MOVED TO `api-sheriff-next` 2026-07-27** by operator decision at the full plan revisit: this is
-> post-0.1.0 work. The `api-sheriff-roadmap` epic now carries the release track only and closes at
-> the cut. Re-ground this spec against HEAD at that epic's decompose — its claim labels were written
-> 2026-07-25 and several were already refuted by PLAN-06 and PLAN-23 (see
-> `../../api-sheriff-roadmap/archive.md` § 6).
-
-> Staged plan spec — ready for `/plan-marshall` hand-off. NEW 2026-07-25 (operator requirements intake
-> + prior-art research; AskUserQuestion: "uniform-404 for untrusted only").
-> ~~Gated POST-first-landing.~~ **That gate EXPIRED** — PLAN-05 and PLAN-06 both shipped.
->
-> **⚠ MERGE PENDING — decided 2026-07-27, executed at this epic's DECOMPOSE, not now.**
-> **PLAN-19 merges INTO this plan.** Rationale: three plans each partially generalizing one shared
-> per-client component is how the third ends up rewriting the first's design — PLAN-19's own spec
-> already flags it as its "central risk" (*"if PLAN-18's substrate is bucket-only and not
-> general-purpose, this plan must generalize it, not duplicate it"*). Merged, the substrate is **one
-> design decision** (bucket + sliding window + strike/ban API + the ECS/OCSF emit shape) instead of a
-> cross-plan hypothesis. PLAN-20 stays separate — deception is a distinct feature carrying its own
-> legal/operational review.
-> **The merged spec is deliberately NOT authored yet**: both specs' claim labels date from
-> 2026-07-25, and authoring a merged spec against stale ground truth for work that runs post-release
-> is precisely the failure the verify-first contract exists to prevent. Re-ground, then merge.
-
-> **Renumbered 2026-08-04.** This spec was `PLAN-18-enumeration-hardening.md` in the retired `api-sheriff-next`
-> backlog epic. In-body references to other `PLAN-NN` numbers were deliberately **not**
-> rewritten: many point at `api-sheriff-roadmap` plans that keep their numbers. Resolve any
-> such reference through the renumbering map in this epic's `epic.md`.
-
-## Re-Grounded 2026-08-08 at `963e422` (== `origin/main`, clean tree)
-
-Epic-wide re-grounding pass at `decompose`. **This section outranks any conflicting line below it.**
-
-**⚠ THE MERGE IS OFF — OPERATOR DECISION 2026-08-08, SUPERSEDING THE 2026-07-27 RULING.**
-The header above says *"PLAN-19 merges INTO this plan"*. **It does not.** `PLAN-V02-07`
-(threat-classification) stays a separate plan. Two facts that were not in evidence on 2026-07-27
-changed the balance:
-
-1. **`PLAN-V02-13` (terminal-rejection-contract) now re-categorises the very
-   `EventType`/`EventCategory` taxonomy V02-07 weights**, so V02-07 must sequence after it. Merging
-   would drag that dependency onto the substrate work, which does not need it.
-2. **Merged, the plan carries ~11 deliverables** — far past the scope-bloat split guard, and this
-   spec's own split-guard note already flags D3 as the heaviest item at five.
-
-**What replaces the merge — and it preserves the original intent exactly.** The 2026-07-27 rationale
-was *"the substrate is ONE design decision, not a cross-plan hypothesis."* That intent is now met by
-contract rather than by merger: **this plan owns a written, general-purpose substrate contract, and
-V02-07 consumes it without redesigning it.** See the new deliverable 7. The failure the merge
-existed to prevent — a third plan rewriting the first's design — is prevented by the contract being
-explicit and testable, not by the two plans being one document.
-
-**NEW DELIVERABLE 7 — the substrate contract, stated as its own named line item.**
-Publish D3's per-client substrate as a **general-purpose API with a written contract**, not as a
-recon-code-specific bucket. The contract must state, at minimum: the per-source (+ host) keying and
-its cardinality bound; how an arbitrary weighted event is admitted (not only 4xx recon codes); the
-sliding-window/bucket semantics and their configuration; the strike/ban state transitions and their
-query API; and the structured emit shape a consumer formats from. **V02-07's D1 weights and D2
-window are the named first consumer — design against that consumer explicitly**, and record which of
-its needs the contract deliberately does not serve so V02-07 can plan around them rather than
-discover them. A substrate that V02-07 must generalise on arrival is this deliverable failing.
-
-**CONFIRMED, first-party — the oracle is real and unchanged.** `EventType.java`:
-`PATH_NOT_ALLOWED`:58 (400), `NO_ROUTE_MATCHED`:62 (404), `TOKEN_MISSING`:101 (401) — the three
-differentiated codes the plan collapses. `RouteSelectionStage` still deny-by-default (doc at :35,
-throw at :70). `EventCategory` carries all five values.
-
-**CONFIRMED ABSENCE — no per-client detection exists.** A search for leaky-bucket / sliding-window /
-per-client-bucket constructs under `api-sheriff/src/main/java` returns nothing, with a control query
-passing (10 files reference `EventCounter`). D3 is genuinely net-new.
-
-**MOVED — D1's render point.** `renderProblem` has **five** call sites in `GatewayEdgeRoute.java`
-(:566, :694, :750, :775, :1093) plus its private definition at :1096. The trust-boundary branch must
-account for all five, and **`PLAN-V02-13` is editing exactly these sites** — see Sequencing.
-
-**SEQUENCING, UPDATED.** **Sequence after `PLAN-V02-13`.** V02-13 re-categorises `NO_ROUTE_MATCHED`
-and `METHOD_NOT_ALLOWED` out of `INPUT_VALIDATION` and makes `renderProblem` content-negotiating.
-Both are surfaces D1 rewrites. Building the uniform-404 branch against a taxonomy and a render path
-that are about to change means doing it twice. **Also overlaps `PLAN-V02-05`** on `ResponseStage` /
-the edge — the two are close enough that the disjointness check must read V02-05's *current outline*,
-not its staged spec.
-
-**RENUMBERING.** "PLAN-19" is **PLAN-V02-07**; "PLAN-20" is `api-sheriff-0-3-0`'s **PLAN-V03-01**
-(honeypot) — a different epic, and this substrate deliberately ships a release ahead of it.
-"Sequence after PLAN-05 / PLAN-06 / PLAN-15" refers to shipped `api-sheriff-roadmap` work.
-The reference to WS-05 as this plan's dependent workstream is stale — V02-07 is **WS-03**, alongside
-this plan.
-
-
-## Re-Grounded (2) 2026-08-09 at `95dd566` — after four landings
-
-`PLAN-V02-02`, `-03`, `-16` and `-17` have shipped. **This section outranks the 2026-08-08
-re-grounding above it wherever they conflict.**
-
-**EPIC-WIDE, AND NO SPEC BELOW KNOWS IT: THE BUILD NOW FAILS ON ANY COMPILER WARNING.**
-`PLAN-V02-02` turned on `<showDeprecation>true</showDeprecation>` **and**
-`<failOnWarning>true</failOnWarning>` reactor-wide (`pom.xml`:163, :178), so javac runs with
-`-Werror` across all six modules. A deprecated API or an unchecked cast is now a **build failure**,
-not a log line. Two consequences bind every plan:
-
-1. **Answer such a failure by migrating off the warned construct.** `CLAUDE.md` states it directly:
-   a `@SuppressWarnings` added to get back to green *"hollows the gate out while leaving it reporting
-   success"*, and it collides with the Pre-1.0 rule forbidding deprecated code at all.
-2. **The failure reaches the executor as a `warnings[]` row plus a `-Werror` `errors[]` row.** Read
-   both arrays — the line number lives on the warning row.
-
-**ALL ANCHORS HELD** at `95dd566`: `PATH_NOT_ALLOWED`:58, `NO_ROUTE_MATCHED`:62, `TOKEN_MISSING`:101,
-and `renderProblem` still has exactly **five** call sites.
-
-**THE V02-13 BOUNDARY IS NOW STATED EXPLICITLY, BECAUSE BOTH PLANS EDIT THE SAME FIVE SITES.**
-Ambiguity resolved here rather than left to whoever runs second:
-
-| Concern | Owner |
-|---|---|
-| WHICH `EventCategory` a rejection carries (the taxonomy, incl. a new `ROUTING` category) | **V02-13 D1** |
-| HOW a rejection is RENDERED to a browser vs. a JSON client (`Accept` negotiation) | **V02-13 D2** |
-| WHETHER an untrusted caller sees the honest code or a uniform 404 (the trust-boundary branch) | **V02-06 D1** |
-| Response-TIMING uniformity on the reject path | **V02-06 D2** |
-
-**V02-06 changes the code a rejection resolves TO; V02-13 changes what it is CALLED and how it is
-RENDERED.** They compose at the same dispatch and must not re-litigate each other: this plan does not
-touch the category assignment, and does not alter the content negotiation V02-13 installs — its
-uniform-404 must work through that negotiation, not around it. **Sequence V02-13 first** so the
-branch is built once against the final shape.
-
-## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
-
-D1–D7 premises hold (no per-source counter, the route-miss throw and `renderProblem` signature are unchanged). **Sequencing premise changed:** `renderProblem` is ALREADY content-negotiating via `portal/ErrorPageClassifier` (#343, independent of V02-13), and `NO_ROUTE_MATCHED`/`PATH_NOT_ALLOWED`/`METHOD_NOT_ALLOWED`/`TOKEN_MISSING` are already `HTML_ELIGIBLE`. The V02-13 dependency therefore now reduces to D1's taxonomy change alone. D1's uniform-404 must be designed against a negotiating renderer, and must not reintroduce a status or shape oracle through the HTML branch. **D8 partially discharged:** `edge/EdgeHardeningOptions` already bounds header size, initial-line length, chunk size and idle timeout on every listener. It does NOT set `maxConcurrentStreams`, does not rate-bound stream resets, and does not strip h2c `Upgrade` — that is D8's remaining scope. `GrpcDispatchStage`'s Javadoc overclaims gw-08 coverage while the threat model says `GAP`. Both files are now named in the Expected Surface.
+> Staged plan spec — one shippable unit of work, ready for `/plan-marshall` hand-off.
+> The orchestrator EMITS the command below; it never launches the plan inline.
 
 ## Objective
 
@@ -138,7 +14,22 @@ existing-but-auth-required path 401, an existing-but-off-allowlist path 400 — 
 map real endpoints. This plan presents a **uniform 404** (body + code + timing) to **untrusted /
 unauthenticated** sources while keeping honest 401/403 for authenticated callers past the trust
 boundary, and introduces a **per-client 404-rate detection substrate** (a CrowdSec-`http-probing`-style
-leaky bucket) that WS-05's later plans reuse.
+leaky bucket) with a written contract that `PLAN-V02-07` consumes.
+
+## Boundary with PLAN-V02-13
+
+Both plans edit the same rejection dispatch in `GatewayEdgeRoute`. The split is fixed:
+
+| Concern | Owner |
+|---|---|
+| WHICH `EventCategory` a rejection carries (the taxonomy, incl. a new `ROUTING` category) | `PLAN-V02-13` |
+| HOW a rejection is RENDERED to a browser vs. a JSON client (`Accept` negotiation) | already on `main`: `portal/ErrorPageClassifier`; `PLAN-V02-13` owns the remaining reclassification |
+| WHETHER an untrusted caller sees the honest code or a uniform 404 (the trust-boundary branch) | this plan, D1 |
+| Response-TIMING uniformity on the reject path | this plan, D2 |
+
+This plan changes the code a rejection resolves TO; `PLAN-V02-13` changes what it is CALLED. This plan
+does not touch the category assignment and does not alter the content negotiation — its uniform-404
+must work through that negotiation, not around it.
 
 ## Deliverables
 
@@ -147,12 +38,21 @@ leaky bucket) that WS-05's later plans reuse.
    **identical 404** (same body, code, and — deliverable 2 — timing). Authenticated callers past the
    trust boundary keep honest `401/403`. **Stated as its own line item** (behaviour change; the
    trust-boundary condition is the crux — an outline must not collapse it to "return 404").
+
+   - `renderProblem` is already content-negotiating: `portal/ErrorPageClassifier` marks
+     `NO_ROUTE_MATCHED`, `PATH_NOT_ALLOWED`, `METHOD_NOT_ALLOWED` and `TOKEN_MISSING` as
+     HTML-eligible. Design the uniform-404 against that negotiating renderer, and do not reintroduce
+     a status or shape oracle through the HTML branch.
+   - `renderProblem` has several call sites in `GatewayEdgeRoute.java` (five when last counted). The
+     trust-boundary branch must account for every one; re-count at outline.
+   - Verify at outline whether `PASSTHROUGH_HOST_SMUGGLED` is a further pre-auth 404 event that
+     belongs in the uniform-404 scope beside `NO_ROUTE_MATCHED`.
 2. **Response-timing uniformity** for the reject path, so 404-vs-would-be-401 are not timing-
    distinguishable (route rejects through one code path / add jitter; watch early-exit shortcuts).
 3. **Per-client 404-rate detection substrate** — a NEW shared component: a per-source leaky bucket over
    4xx recon codes (400/403/404), keyed by source (+ host), with static-resource exclusion, that trips
-   on a configurable threshold. **This substrate is the WS-05 foundation** PLAN-19 and PLAN-20 consume.
-   In-memory / single-node by decision; emits its trip event for external correlation.
+   on a configurable threshold. In-memory / single-node by decision; emits its trip event for external
+   correlation. `PLAN-V02-07` and, in the `api-sheriff-0-3-0` epic, `PLAN-V03-01` (honeypot) consume it.
 4. **Response on trip**: soft throttle / tarpit-lite or temporary local block of a tripped source
    (config-driven), plus a structured security event (feeds the signal system).
 5. **Tests** (oracle closed for unauth, honest codes for auth, bucket trips on a scan pattern, static
@@ -163,60 +63,58 @@ leaky bucket) that WS-05's later plans reuse.
    policy (the existence-oracle decision, its rationale, and the deliberate scoping to untrusted
    callers). Plus **three-layer documentation** (`configuration.adoc` threshold/predicate/action config,
    `doc/user/`, `doc/development/`), including the usability note (uniform-404 is scoped to untrusted
-   callers precisely to preserve authenticated-client error handling).
+   callers precisely to preserve authenticated-client error handling). Derive the ADR ordinal from
+   `doc/adr/` on the branch at write time; a duplicate ordinal fails the build.
+7. **The general-purpose substrate contract** — **stated as its own named line item.** D3 ships the
+   mechanism; D7 ships the *contract* that stops the next consumer having to generalise it. Publish
+   the substrate as a general-purpose API with a written contract, not as a recon-code-specific
+   bucket. The contract states, at minimum: the per-source (+ host) keying and its cardinality bound;
+   how an arbitrary weighted event is admitted (not only 4xx recon codes); the sliding-window/bucket
+   semantics and their configuration; the strike/ban state transitions and their query API; and the
+   structured emit shape a consumer formats from. **`PLAN-V02-07`'s weights and window are the named
+   first consumer — design against that consumer explicitly**, and record which of its needs the
+   contract deliberately does not serve, so that plan can work around them rather than discover them.
+   A substrate `PLAN-V02-07` must generalise on arrival is this deliverable failing.
+8. **HTTP/2 & gRPC stream-abuse bound** — threat-model row `gw-08` in
+   `doc/security-threat-model.adoc`, currently `GAP`.
 
-7. **The general-purpose substrate contract** — added 2026-08-08, see § Re-Grounded. **Stated as its
-   own named line item.** D3 ships the mechanism; D7 ships the *contract* that stops the next
-   consumer having to generalise it. `PLAN-V02-07` is the named first consumer.
+   The full requirement: rate-limit stream creation and reset per connection (not only concurrent
+   streams, which bounds a different thing); bound total CONTINUATION/header-frame size and count
+   per stream and drop over-limit connections; re-derive `Content-Length` on any h2→h1 downgrade;
+   never forward a client's `Upgrade`/`Connection` (h2c) headers to the backend. API Sheriff
+   terminates h2 via ALPN and proxies gRPC over upstream h2, so both sides inherit this requirement.
 
-8. **Folded in 2026-09-22 from `doc/security-threat-model.adoc` GAP row `gw-08` — HTTP/2 & gRPC
-   stream-abuse bound (WEAK FIT, recorded honestly rather than forced quietly).**
+   **Part of it is already in place.** `edge/EdgeHardeningOptions` bounds header size, initial-line
+   length, chunk size and idle timeout on every listener. It does not set `maxConcurrentStreams`,
+   does not rate-bound stream resets, and does not strip h2c `Upgrade` — that is this deliverable's
+   remaining scope. `GrpcDispatchStage`'s Javadoc claims the `gw-08` bounds hold on the gRPC path
+   while the threat model says `GAP`; reconcile the two.
 
-   Rate-limit stream creation and reset per connection (not only concurrent streams, which bounds a
-   different thing); bound total CONTINUATION/header-frame size and count per stream and drop
-   over-limit connections; re-derive `Content-Length` on any h2→h1 downgrade; never forward a
-   client's `Upgrade`/`Connection` (h2c) headers to the backend. API Sheriff terminates h2 via ALPN
-   and proxies gRPC over upstream h2, so both sides inherit this requirement.
-
-   **Why it landed here despite the mismatch**: D7's general-purpose substrate contract is explicitly
-   designed to "admit an arbitrary weighted event (not only 4xx recon codes)" — a stream-reset-rate
-   trip is a plausible second consumer of that same substrate, by source connection rather than by
-   source client. It is NOT a natural fit for this plan's existence-oracle/enumeration subject, and
-   the operator chose this placement over leaving it untracked. **If outline finds the substrate's
+   **This deliverable is a weak fit for the plan and is recorded as one.** It sits here because D7's
+   contract admits an arbitrary weighted event, and a stream-reset-rate trip is a plausible second
+   consumer of that substrate, keyed by connection rather than by client. If outline finds the
    per-source (+host) keying does not generalise cleanly to per-connection HTTP/2 state, say so and
-   re-scope rather than force it** — this deliverable's fit was never verified against the substrate's
-   actual shape, only against its stated intent.
+   re-scope rather than force it. Verify the exact enforcement call site at outline against the
+   h2/gRPC termination code.
 
    Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
    `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives
-   framing. **Verify the exact enforcement call site at outline** — not independently re-grounded
-   against the pipeline code.
+   framing.
 
-   **Provisional check, 2026-09-22 same day, at `69b322b` (a PR landed between the fold and now):**
-   the portal/HTML-error-pages PR #343's diff touches no HTTP/2 or gRPC pipeline file, so this
-   deliverable is provisionally still fully open — but the check was time-boxed against a 148-file
-   diff, not a targeted read of the h2/gRPC termination layer. Re-verify properly at outline rather
-   than trusting this note; D7's sibling fold in `PLAN-V02-13` turned out wrong under exactly this
-   kind of unverified inference, so this one is flagged rather than assumed safe.
-
-**Split-guard re-evaluation, 2026-09-22.** Eight deliverables — **past the ~6 presumptive-split
-threshold a second time, proceeding unsplit, rationale recorded.** D8 is the newest and weakest-fit
-addition and shares no code with D1/D2's oracle work; it is the first candidate to peel off if
-outline finds the combined scope too heavy. **Updated split line: D1+D2 (the oracle and its timing) |
-D3+D4+D7 (the substrate and its contract) | D8 alone (HTTP/2 stream abuse, if the substrate does not
-generalise cleanly)** — D5 and D6 still follow whichever half they test and document. Do not split
-between D3 and D7 for the same reason as before: shipping the substrate without its contract is the
-exact failure the retired merge existed to prevent.
+**Split-guard.** Eight deliverables — past the presumptive split threshold, proceeding unsplit. D8 is
+the weakest fit and shares no code with D1/D2; it is the first candidate to peel off. **Split line if
+outline finds the scope too heavy: D1+D2 (the oracle and its timing) | D3+D4+D7 (the substrate and its
+contract) | D8 alone.** D5 and D6 follow whichever half they test and document. Never split between D3
+and D7: shipping the substrate without its contract is the failure the contract exists to prevent. If
+the trust-boundary threading in D1 is itself large, split D1 off rather than bloat.
 
 ## Claim Labels
-
-Corroborated against HEAD 3f60d49, 2026-07-25.
 
 - OBSERVED (the oracle): the differentiated codes are real — `events/EventType.java`: `NO_ROUTE_MATCHED`
   (404), `TOKEN_MISSING` (401), `PATH_NOT_ALLOWED` (400); rendered by `edge/GatewayEdgeRoute.java`
   `renderProblem` per the event's HTTP mapping.
   - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType PATH_NOT_ALLOWED:58(400) NO_ROUTE_MATCHED:62(404) TOKEN_MISSING:101(401) unchanged
-- OBSERVED: deny-by-default routing (no listing) — `pipeline/RouteSelectionStage.java`:34-35
+- OBSERVED: deny-by-default routing (no listing) — `pipeline/RouteSelectionStage.java`
   (`NO_ROUTE_MATCHED`, "the gateway never forwards an unmatched request").
   - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: RouteSelectionStage:38 comment intact; process():74 still throws NO_ROUTE_MATCHED
 - OBSERVED: no per-client recon detection exists — `events/GatewayEventCounter.java` counts events
@@ -230,7 +128,7 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
   thread it, which widens the deliverable.
   - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem(ctx, request, eventType) signature unchanged at GatewayEdgeRoute:1500
 - Verify-first clause: confirm that collapsing to 404 does not break the shipped BFF/XHR contracts
-  (PLAN-06's info endpoint deliberately returns 401-not-redirect for XHR) — the uniform-404 must NOT
+  (the user-info endpoint deliberately returns 401-not-redirect for XHR) — the uniform-404 must NOT
   apply to those authenticated-session flows; scope the "untrusted" predicate against the landed auth
   model, not this spec's prose.
   - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: UserInfoEndpoint javadoc :64-66 still 401 problem+json never redirect; now references content negotiation (ErrorPageClassifier, #343)
@@ -244,17 +142,19 @@ Corroborated against HEAD 3f60d49, 2026-07-25.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**` — config for the threshold / trusted-source predicate / response action
 - OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`; `api-sheriff/src/test/**`
 - `doc/security-threat-model.adoc` — flip `gw-08` from `GAP` to `COVERED` once D8 lands — D8
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EdgeHardeningOptions.java` — D8 (located 2026-09-24): the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcDispatchStage.java` — D8: its Javadoc (`:42-45`) claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EdgeHardeningOptions.java` — D8: the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcDispatchStage.java` — D8: its Javadoc claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
 
 ## Dependencies and Sequencing
 
-- Depends on: nothing functionally, but **sequence after PLAN-05 / PLAN-06 / PLAN-15** (all hold the
-  edge / event system / auth model this plan reads). **Foundation of WS-05** — PLAN-19 and PLAN-20
-  depend on its per-client substrate.
-- Overlaps with: PLAN-17 (both touch the edge, likely disjoint enough to pair — decide at emit).
-- **Split-guard note:** 5 deliverables, under the presumption. The substrate (D3) is the heaviest;
-  if outline finds the trust-boundary threading (D1) is itself large, split D1 off rather than bloat.
+- Depends on: `PLAN-V02-13`, for D1's taxonomy only. It re-categorises `NO_ROUTE_MATCHED` and
+  `METHOD_NOT_ALLOWED` out of `INPUT_VALIDATION`; building the uniform-404 branch against a taxonomy
+  that is about to change means doing it twice. Content negotiation is no longer a reason to wait —
+  it is already on `main`.
+- Depended on by: `PLAN-V02-07`, which consumes D3 and D7 and must not run before this plan lands.
+- Overlaps with: `PLAN-V02-05` on `ResponseStage` and the edge. The two are close enough that the
+  disjointness check should read `PLAN-V02-05`'s current outline if it is in flight, not only its
+  staged spec.
 
 ## Standing Conventions
 
@@ -263,15 +163,11 @@ Three-layer docs, Sonar zero-findings, named line items, integration tests in th
 ## Hand-Off Command
 
 ```text
-/plan-marshall task="implement .plan/local/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-06-enumeration-hardening.md" plan_id=plan-v02-06-enumeration-hardening
+/plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-06-enumeration-hardening.md" plan_id=plan-v02-06-enumeration-hardening
 ```
 
 ## Write-Boundary
 
-Touches only its own repository source and tests; creates/edits NO file under `.plan/local/orchestrator/`.
-
-## Status Trail
-
-- plan_marshall_plan_id: {set at launch}
-- pr: {set when the PR opens}
-- landing: {set when landings/PLAN-18.md is recorded}
+The plan implementing this spec touches only its own repository source and tests. It creates and
+edits NO file under `.plan/orchestrator/` other than its own `inbox/{sender}-{seq}` message, and
+reports its outcome through its PR and that message.

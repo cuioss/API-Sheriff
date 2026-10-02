@@ -123,6 +123,18 @@ PLAN-41 → PLAN-V03-04.
   carry a `## Re-Grounded` section that outranks their stale bodies. Per-plan carries now live in the
   specs, per the decompose contract, rather than being duplicated in the resume anchor.
 - **2026-08-08 — the lessons corpus was audited and `PLAN-V02-17` re-clustered.** > ↪ Relocated to `settled.md` § "Decision 2026-08-08 — lessons corpus audit and PLAN-V02-17 re-clustering" — V02-17 shipped (PR #200); `logs/decision.log` remains authoritative
+- **2026-10-02 — the twelve staged specs are restated as current state, on operator instruction.**
+  `PLAN-V02-01`, `-04`, `-05`, `-06`, `-07`, `-09`, `-10`, `-11`, `-12`, `-13`, `-14` and `-15` no longer carry
+  `## Re-Grounded` sections, renumbering notes, status trails or dated provenance. Each finding those
+  sections held is folded into the Objective, Deliverables, Dependencies or an "already in place"
+  section, so a spec is read top to bottom as the brief. The earlier decision that every spec carries
+  a `## Re-Grounded` section outranking its body is retired with this one. The superseded text is
+  in the ledger's git history. `## Claim Labels` verdict bullets are kept: they are the
+  machine-read field the prep-ready test parses, not narrative. One declared surface changed —
+  `PLAN-V02-10` now declares the compose file, `NoCertificatePlainHttpOptInIT.java` and
+  `doc/user/tls-scenarios.adoc`, and no longer `TokenValidatorProducer.java` or `doc/user/`. Running
+  `PLAN-V02-08` and the shipped specs are untouched. From here on a spec is corrected in place;
+  no dated section is appended to it.
 
 ## Sequencing Constraints
 
