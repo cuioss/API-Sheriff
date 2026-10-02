@@ -77,7 +77,7 @@ MANAGEMENT_CONTAINER_PORT=9000
 # variable NAME, so a rename here fails the test rather than silently passing.
 # See doc/user/context-path.adoc.
 MANAGEMENT_ROOT_PATH=/q
-# Host port for case 7's negative leg, so this script can run against a live integration
+# Host port for the negative leg of cases 7 and 12, so this script can run against a live integration
 # stack without colliding with it. The invariant is positional, not a fixed range: it must
 # sit CLEAR of the contiguous management-port block docker-compose.yml publishes upward from
 # 19000, and that block grows by exactly one port for every gateway instance added to the
@@ -487,8 +487,8 @@ assert_fails_to_boot "${MINIMAL_BFF_DIR}" "profile 'minimal' on a type: bff rout
 # reports DOWN and retries. This case is the other kind of failure: a configuration the gateway can
 # never serve, which must stop the process rather than leave it running DOWN.
 #
-# This case, uniquely, passes MGMT_PROBE_PORT to get the negative leg. The reason is the seam it
-# exercises: cases 1-6 are refused by ConfigProducer while the route table is being produced —
+# This case passes MGMT_PROBE_PORT to get the negative leg; case 12 is the only other one that
+# does. The reason is the seam it exercises: cases 1-6 and 8-11 are refused by ConfigProducer —
 # before any bean that could open a port exists — whereas this one is refused from a StartupEvent
 # OBSERVER, which is late enough that "did a port open first?" is a real question rather than a
 # structurally impossible one. Asserting only the non-zero exit would leave that question
