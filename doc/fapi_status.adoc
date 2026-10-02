@@ -57,8 +57,8 @@ Two terms are used throughout:
 | Sender-constrained access tokens -- mTLS (RFC 8705) and/or DPoP (RFC 9449) (§5.3.3.1)
 | *MET* (DPoP), in both modes
 | `BffRuntimeProducer` resolves one sender-constraint key and builds one `SenderConstraint` from it.
-  That one instance has three consumers: the code exchange of the base `AuthorizationCodeFlow`, the
-  per-scope login flows, and every refresh grant (the last two through `ScopedEngineFlows`). The
+  That one instance is handed to the base `AuthorizationCodeFlow`, whose code exchange presents it,
+  and to `ScopedEngineFlows`, whose refresh grants present it. The
   runtime's one token-endpoint client is `BoundTokenEndpointClient`. It refuses a token response
   that is not of type `DPoP`, or whose access token does not carry a `cnf.jkt` equal to the RFC 7638
   thumbprint of the gateway's proof key. A refused response fails the login (`400`, no session) or
@@ -78,7 +78,7 @@ Two terms are used throughout:
   `oidc.client_secret` is configured.
 | Key mode: `ClientSigningKey` hands the engine one `PrivateKeyJwtAuth`, and `BffRuntimeProducer`
   shares that instance between the pushed authorization request, the code exchange, the refresh
-  grant and RFC 7009 revocation. The assertion's `aud` is the configured issuer, sent as a single
+  grant and RFC 7009 revocation. The assertion's `aud` is the resolved issuer, sent as a single
   string (§5.3.3.1 item 5). Exception: `BffRuntimeProducer` selects the authentication by
   configuration presence -- `OidcConfig.usesClientSecret()` -- and with a secret it builds
   `ClientSecretBasicAuth`, which is not among the profile's permitted methods. The gateway logs

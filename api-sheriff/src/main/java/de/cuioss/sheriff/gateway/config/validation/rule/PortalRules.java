@@ -180,9 +180,9 @@ public class PortalRules {
      * {@code #}, and a path the {@link LocationPathReview} admits (no dot segment, no percent-encoded
      * separator, nothing the {@code cui-http} URL path review refuses).
      * <p>
-     * It is the one review {@link #validatePortalPathCanonical} applies to {@code portal.path} and
-     * the configuration validator applies to the client JWKS path, so the two exact-match paths
-     * cannot be held to two versions of this review. It judges a path and canonicalizes nothing.
+     * {@link #validatePortalPathCanonical} applies it to {@code portal.path}; the configuration
+     * validator applies it to the client JWKS path and adds two refusals of its own there. It judges
+     * a path and canonicalizes nothing.
      * The returned reason is fixed text and never echoes the reviewed value.
      *
      * @param path the configured path to review, never {@code null}

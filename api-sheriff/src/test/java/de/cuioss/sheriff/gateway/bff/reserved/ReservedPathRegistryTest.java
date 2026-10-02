@@ -290,7 +290,7 @@ class ReservedPathRegistryTest {
 
         @Test
         @DisplayName("Should reserve the default path when the block declares a key file and no jwks_path")
-        void shouldReserveTheDefaultPathWithoutAKey() {
+        void shouldReserveTheDefaultPathWithoutAJwksPath() {
             OidcConfig oidc = withRedirectUri().clientAuthentication(OidcConfig.ClientAuthenticationSettings
                     .builder().keyFile("/etc/sheriff/keys/client-auth.pem").build()).build();
 
