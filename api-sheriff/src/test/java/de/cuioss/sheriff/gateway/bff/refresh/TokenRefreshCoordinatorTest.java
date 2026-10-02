@@ -40,12 +40,17 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
+import java.util.stream.Stream;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -82,6 +87,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for {@link TokenRefreshCoordinator}: the single-flight, per-session transparent refresh and the
@@ -90,7 +98,8 @@ import org.junit.jupiter.api.Test;
  * The engine refresh is driven through the {@link RefreshExchange} seam, the near-expiry decision
  * through the {@link AccessTokenExpiry} seam and revocation through a recording
  * {@link RefreshTokenRevocation}, so every path — not-needed, refreshed, each failure kind, the
- * post-exchange persist failure, the pre-redemption back-off and the concurrent single-flight coalesce
+ * post-exchange persist failure, a session terminated while its refresh is in flight, the pre-redemption
+ * back-off and the concurrent single-flight coalesce
  * — is exercised with the engine's own exception types and no test-double framework. The engine's
  * {@code RefreshFlow.classify} is NOT stubbed: each test throws the exception the engine actually raises
  * for that situation, so a change in the classification is observed here. The downstream content
@@ -1156,6 +1165,245 @@ class TokenRefreshCoordinatorTest {
         }
     }
 
+    /**
+     * A logout or a back-channel logout that destroys the session while its refresh is in flight —
+     * after the leader resolved it, before the rotated session is persisted. In server mode the
+     * rotated session must not be written back.
+     * <p>
+     * The interleaving is driven from the {@link RefreshExchange} stub, which runs on the leader's own
+     * thread between the resolve and the persist: it terminates the session through the binding's own
+     * destroy methods and then returns the rotation. Nothing depends on timing. Each leg carries a
+     * matched control running the same stub with a termination that does nothing, so the refusal is
+     * caused by the termination and not by the stub.
+     */
+    @Nested
+    @DisplayName("Session terminated while the refresh is in flight (server mode)")
+    class TerminatedDuringRefresh {
+
+        private static final String IDP_SID = "idp-session-1";
+        private static final String SUB = "sub-1";
+        private static final String MISSING = "orders:write";
+        private static final Set<String> REQUESTED = Set.of("openid", "profile", "email", "orders:read", MISSING);
+        private static final String REQUESTED_SCOPE = "openid profile email orders:read orders:write";
+        private static final String REFRESHED_ID = BffLogMessages.INFO.TOKEN_REFRESHED.resolveIdentifierString();
+
+        /** The matched control's termination: it destroys nothing, so the session is there at the persist. */
+        private static final BiConsumer<SessionBinding, SessionRecord> NO_TERMINATION = (target, session) -> {
+            // Deliberately empty: the control runs the same stub and leaves the session in place.
+        };
+
+        static Stream<Arguments> terminations() {
+            BiConsumer<SessionBinding, SessionRecord> bySessionIdentity = SessionBinding::destroy;
+            BiConsumer<SessionBinding, SessionRecord> bySid = (target, session) -> target.destroyBySid(IDP_SID);
+            BiConsumer<SessionBinding, SessionRecord> bySub = (target, session) -> target.destroyBySub(SUB);
+            return Stream.of(
+                    Arguments.of("a logout destroying the session by its identity", bySessionIdentity),
+                    Arguments.of("a back-channel logout destroying it by sid", bySid),
+                    Arguments.of("a back-channel logout destroying it by sub", bySub));
+        }
+
+        /** Stores a session that carries an IdP {@code sid}, so it is reachable by all three destroy forms. */
+        private SessionRecord storedSessionWithSid() {
+            SessionRecord live = SessionRecord.builder()
+                    .sessionId(SESSION_ID)
+                    .accessToken("access-current")
+                    .refreshToken(CURRENT_REFRESH)
+                    .idToken("id-current")
+                    .sub(SUB)
+                    .sid(IDP_SID)
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .activeScopes(ACTIVE_SCOPES)
+                    .grantedScopes(GRANTED_SCOPES)
+                    .build();
+            store.create(live, NOW);
+            return live;
+        }
+
+        /**
+         * An exchange that runs {@code termination} against the live session and then returns
+         * {@code rotation} — the identity provider redeemed the grant while the session was terminated.
+         */
+        private RefreshExchange terminatingExchange(SessionRecord live,
+                BiConsumer<SessionBinding, SessionRecord> termination, RotationResult rotation,
+                AtomicInteger calls) {
+            return (presented, _) -> {
+                calls.incrementAndGet();
+                termination.accept(binding, live);
+                return rotation;
+            };
+        }
+
+        @ParameterizedTest(name = "near-expiry leg: {0}")
+        @MethodSource("terminations")
+        @DisplayName("Should not write the rotated session back on the near-expiry leg, return FAILED and revoke the rotated token")
+        void shouldNotRecreateOnNearExpiryLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
+            SessionRecord live = storedSessionWithSid();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    terminatingExchange(live, termination, rotation(), calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertTerminated(label, outcome, calls.get());
+        }
+
+        @ParameterizedTest(name = "scope-driven leg: {0}")
+        @MethodSource("terminations")
+        @DisplayName("Should not write the rotated session back on the scope-driven leg, and return FAILED rather than SCOPE_REFUSED or REFRESHED")
+        void shouldNotRecreateOnScopeLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
+            SessionRecord live = storedSessionWithSid();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, terminatingExchange(live, termination,
+                    rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL), calls));
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            assertTerminated(label, outcome, calls.get());
+        }
+
+        private void assertTerminated(String label, RefreshOutcome outcome, int engineCalls) {
+            assertAll(label,
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind(),
+                            "the request is answered as unauthenticated and the stage clears the cookie"),
+                    () -> assertNull(outcome.session(), "no session is handed on"),
+                    () -> assertTrue(outcome.setCookieHeaders().isEmpty(), "nothing was re-bound"),
+                    () -> assertEquals(1, engineCalls, "the exchange ran, so the termination struck in flight"),
+                    () -> assertFalse(sessionResolvable(NOW), "the terminated session is not written back"),
+                    () -> assertEquals(0, store.size(), "the store holds no session at all"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "the rotated refresh token is live at the identity provider and held nowhere, so it is revoked"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, REFRESHED_ID);
+            assertTrue(TestLoggerFactory.getTestHandler().resolveLogMessages(TestLogLevel.WARN).stream()
+                            .filter(entry -> String.valueOf(entry.getMessage()).contains(REFRESH_FAILED_ID))
+                            .allMatch(entry -> entry.getThrown() == null),
+                    "a termination that overtook the refresh is no fault, so the record carries no exception");
+        }
+
+        @Test
+        @DisplayName("Should refresh and persist on the near-expiry leg when nothing terminates the session (matched control)")
+        void shouldRefreshOnNearExpiryLegWithoutTermination() {
+            SessionRecord live = storedSessionWithSid();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    terminatingExchange(live, NO_TERMINATION, rotation(), calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll("the same stub refreshes when the session is still there at the persist",
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
+                    () -> assertEquals(1, calls.get()),
+                    () -> assertEquals(ROTATED_ACCESS, store.resolve(SESSION_ID, NOW).orElseThrow().accessToken()),
+                    () -> assertTrue(revoked.isEmpty(), "a persisted rotation revokes nothing"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should refresh and persist on the scope-driven leg when nothing terminates the session (matched control)")
+        void shouldRefreshOnScopeLegWithoutTermination() {
+            SessionRecord live = storedSessionWithSid();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, terminatingExchange(live, NO_TERMINATION,
+                    rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL), calls));
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            assertAll("the same stub obtains the scope when the session is still there at the persist",
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
+                    () -> assertEquals(1, calls.get()),
+                    () -> assertEquals(REQUESTED, store.resolve(SESSION_ID, NOW).orElseThrow().activeScopes()),
+                    () -> assertTrue(revoked.isEmpty(), "a persisted rotation revokes nothing"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+
+        @Test
+        @DisplayName("Should hand a coalesced near-expiry waiter the leader's FAILED outcome and revoke the rotated token once")
+        void shouldShareTerminatedOutcomeWithCoalescedWaiter() throws Exception {
+            SessionRecord live = storedSessionWithSid();
+
+            CoalescedRun run = coalesceWithTermination(live,
+                    coordinator -> coordinator.refresh(live, COOKIE_HEADER, NOW), rotation());
+
+            assertCoalescedTermination(run);
+        }
+
+        @Test
+        @DisplayName("Should hand a coalesced scope waiter the leader's FAILED outcome, never SCOPE_REFUSED")
+        void shouldShareTerminatedOutcomeWithCoalescedScopeWaiter() throws Exception {
+            SessionRecord live = storedSessionWithSid();
+
+            CoalescedRun run = coalesceWithTermination(live,
+                    coordinator -> coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW),
+                    rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL));
+
+            assertCoalescedTermination(run);
+        }
+
+        private void assertCoalescedTermination(CoalescedRun run) {
+            assertAll("the waiter shares the leader's session-ended outcome",
+                    () -> assertEquals(1, run.calls(), "one exchange served both requests"),
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, run.leader().kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, run.follower().kind(),
+                            "the coalesced waiter is answered as unauthenticated too"),
+                    () -> assertFalse(sessionResolvable(NOW), "the terminated session is not written back"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked, "the rotated token is revoked exactly once"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+        }
+
+        /**
+         * Runs {@code call} twice on the stored session: once as the single-flight leader and once as
+         * a waiter that has provably coalesced with it. The leader's exchange holds until the waiter's
+         * thread is parked — the single-flight join is the only place a refresh call parks — then
+         * destroys the session and returns {@code rotation}. The hold is a condition, not a delay: it
+         * ends when the waiter is observed parked and fails the test when that never happens.
+         */
+        private CoalescedRun coalesceWithTermination(SessionRecord live,
+                Function<TokenRefreshCoordinator, RefreshOutcome> call, RotationResult rotation) throws Exception {
+            AtomicInteger calls = new AtomicInteger();
+            CountDownLatch exchangeEntered = new CountDownLatch(1);
+            AtomicReference<Thread> waiterThread = new AtomicReference<>();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
+                calls.incrementAndGet();
+                exchangeEntered.countDown();
+                awaitParked(waiterThread);
+                binding.destroy(live);
+                return rotation;
+            });
+            FutureTask<RefreshOutcome> leader = new FutureTask<>(() -> call.apply(coordinator));
+            FutureTask<RefreshOutcome> waiter = new FutureTask<>(() -> call.apply(coordinator));
+            Thread leading = new Thread(leader, "refresh-leader");
+            Thread waiting = new Thread(waiter, "refresh-waiter");
+            leading.start();
+            try {
+                Awaits.connect(exchangeEntered, "the leader to enter the engine refresh");
+                waiterThread.set(waiting);
+                waiting.start();
+                RefreshOutcome leaderOutcome = Awaits.connect(leader, "the leader refresh to complete");
+                RefreshOutcome waiterOutcome = Awaits.connect(waiter, "the coalesced waiter to complete");
+                return new CoalescedRun(leaderOutcome, waiterOutcome, calls.get());
+            } finally {
+                leading.interrupt();
+                waiting.interrupt();
+            }
+        }
+
+        /** Holds the calling thread until the thread in {@code parked} is parked, bounded by the teardown tier. */
+        private static void awaitParked(AtomicReference<Thread> parked) {
+            try {
+                Awaits.until(() -> {
+                    Thread candidate = parked.get();
+                    return candidate != null && candidate.getState() == Thread.State.WAITING;
+                }, "the coalesced waiter to park in the single-flight join", Awaits.TEARDOWN_CEILING_SECONDS);
+            } catch (TimeoutException e) {
+                throw new AssertionError("the waiter never coalesced with the in-flight refresh", e);
+            }
+        }
+    }
+
     @Nested
     @DisplayName("Single-flight coalescing")
     class SingleFlight {
@@ -1716,6 +1964,29 @@ class TokenRefreshCoordinatorTest {
             assertTrue(outcome.setCookieHeaders().isEmpty(), "nothing was re-sealed, so the browser keeps its cookie");
         }
 
+        /**
+         * The stateless limit, pinned rather than hidden. {@code destroy} removes nothing in cookie mode,
+         * so a logout that lands while the refresh is in flight is not observable at the persist: the
+         * rotated session is re-sealed exactly as before. Server mode refuses the same interleaving (see
+         * {@link TerminatedDuringRefresh}).
+         */
+        @Test
+        @DisplayName("Should still re-seal the rotated session when the session is destroyed during the exchange")
+        void shouldStillResealWhenDestroyedDuringTheExchange() {
+            TokenRefreshCoordinator coordinator = cookieCoordinator((rt, _) -> {
+                cookieBinding.destroy(cookieSession);
+                return rotation();
+            });
+
+            RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+
+            assertAll("the stateless update never reports the session gone",
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
+                    () -> assertEquals(1, outcome.setCookieHeaders().size(), "the rotated session is re-sealed"),
+                    () -> assertTrue(revoked.isEmpty(), "no session ended, so nothing is revoked"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
         private static SessionRecord rotatedSession(RefreshOutcome outcome) {
             SessionRecord rotated = outcome.session();
             assertNotNull(rotated, "a refreshed outcome carries the rotated session");
@@ -2140,8 +2411,10 @@ class TokenRefreshCoordinatorTest {
     }
 
     /**
-     * A binding that behaves like the wrapped one except that re-binding a rotated session fails, the
-     * way {@link CookieSessionBinding#persist} does when the sealed cookie exceeds its size budget.
+     * A binding that behaves like the wrapped one except that updating a rotated session fails, the
+     * way {@link CookieSessionBinding#persist} does when the sealed cookie exceeds its size budget. It
+     * throws rather than reporting the session gone: the session is still there, the binding just
+     * cannot hold its updated form.
      */
     private static final class PersistFailingBinding implements SessionBinding {
 
@@ -2162,7 +2435,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Override
-        public BoundSession persist(SessionRecord rotated, Instant now) {
+        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
             throw new IllegalStateException("sealed session cookie exceeds the size budget");
         }
 

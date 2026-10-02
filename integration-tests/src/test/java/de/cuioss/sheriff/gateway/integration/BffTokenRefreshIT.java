@@ -85,9 +85,9 @@ import org.junit.jupiter.api.Test;
  * the realm's strict refresh-token rotation directly. It does not exercise cookie-mode re-seal on
  * rotation ({@code BffCookieRefreshIT}), a refresh racing session expiry, concurrent requests
  * coalescing onto one single-flight refresh, or an IdP refusal other than {@code invalid_grant}: the
- * pre-redemption back-off, the redeemed-response and the persist-failure dispositions are proven
- * at unit level only. It also asserts nothing about browser cookie policy — it replays a cookie
- * map, exactly as {@link BffKeycloakLoginFlow} documents.
+ * pre-redemption back-off, the redeemed-response, the persist-failure and the session-terminated
+ * dispositions are proven at unit level only. It also asserts nothing about browser cookie policy —
+ * it replays a cookie map, exactly as {@link BffKeycloakLoginFlow} documents.
  * <p>
  * <strong>Why the realm-wide admin logout is safe to use here.</strong> The {@code FAILED} legs end
  * <em>every</em> Keycloak session of {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, which
@@ -196,7 +196,7 @@ class BffTokenRefreshIT {
      * The bounded reason {@code ApiSheriff-111} renders when the IdP rejected the presented refresh
      * token. Spelled out as it appears in the record's template — parenthesised — so the match
      * cannot be satisfied by the other reasons ({@code redeemed-response-refused},
-     * {@code persist-failure}).
+     * {@code persist-failure}, {@code session-terminated}).
      */
     private static final String CREDENTIAL_REJECTED_REASON = "(credential-rejected)";
 

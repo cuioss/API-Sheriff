@@ -1651,7 +1651,11 @@ realm. The provider refuses a replayed token with `invalid_grant`; the engine cl
 link:configuration.adoc#_refresh_failure_dispositions[the configuration reference]): a failure
 before the provider processed the grant keeps the session with a fixed back-off; a redeemed
 response the gateway refused, or a rotated session it could not persist, ends the session and
-revokes best-effort the one live refresh token it can name. The gateway's own part in the
+revokes best-effort the one live refresh token it can name. In server mode one more case ends the
+same way without being a failure of the refresh: a logout or a back-channel logout destroyed the
+session while its refresh was in flight. The rotated session is then not written back
+(<<bff-09>>), the request is answered as session-ended, the refresh token the exchange returned is
+revoked best-effort, and `ApiSheriff-111` records `session-terminated`. The gateway's own part in the
 concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per instance*: concurrent
 requests on one session share one redemption, so one instance never presents the same token twice
 and never forks the family itself.
@@ -1694,8 +1698,9 @@ detection signal rotation exists to provide -- an operator decision, never a gat
   the absolute TTL -- amplification and log flooding, not an authentication bypass. The refresh
   coordinator therefore marks the presented refresh token (a per-instance salted digest, never the
   token or cookie) when it ends a session as `credential-rejected`, `redeemed-response-refused` or
-  `persist-failure`, until the session's absolute lifetime, and refuses a marked token locally with
-  no IdP call, no revocation and no warning. Keyed on the token, a successor cookie still reaches the
+  `persist-failure` -- every reason a cookie-mode session is ended for, since `session-terminated`
+  arises in server mode only -- until the session's absolute lifetime, and refuses a marked token
+  locally with no IdP call, no revocation and no warning. Keyed on the token, a successor cookie still reaches the
   provider once. *Residual:* the marker is per instance (each other instance makes one IdP call before
   marking), in memory (a restart forgets it, one IdP call again), bounded (a full store records
   nothing, so replays degrade to one IdP call per request), not set by RP logout, and unused in
@@ -1731,13 +1736,60 @@ grant's ID token when the token carries one. Without that, a logout token for th
 answered the widening would be accepted, destroy nothing (`ApiSheriff-13` with a count of `0`) and
 leave the gateway session usable.
 
-*Status:* COVERED. Both channels, the logout-token checks and the logout-`state` cookie are
-delivered, and cookie mode disables the back-channel receiver.
+*A termination wins over an in-flight write (server mode).* Two writers update a session that
+already exists: the token refresh, on both of its legs (<<bff-08>>), and the widening callback
+(<<bff-17>>). Each resolves the session, calls the identity provider and writes the result back. A
+logout or a validated back-channel logout can destroy the session between that resolve and that
+write, and an unconditional write would then store the session again, holding newly issued tokens,
+after it was ended. The `SessionBinding` seam therefore has one creating write, used by the login,
+and one updating write that never creates
+(link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
+In server mode the store checks for the session and replaces its record as one atomic step, under
+the lock every destroy operation takes, so a destruction either precedes the check -- and nothing is
+written -- or follows the replacement and removes it. A write that finds the session gone is
+answered as the session having ended: the refresh returns its session-ended outcome to the request
+and to every request coalesced with it, revokes best-effort the refresh token the exchange returned,
+and records `ApiSheriff-111` with `session-terminated`; the widening callback answers `403` with no
+`Location` and no `Set-Cookie`, stores nothing, and records `ApiSheriff-131` with
+`session-terminated`. The tokens of a refused widening grant are dropped unstored and are not
+revoked, as with the callback's other refusals.
+
+*Status:* COVERED in server mode. Both channels, the logout-token checks and the logout-`state`
+cookie are delivered, cookie mode disables the back-channel receiver, and a server-mode termination
+is not undone by a refresh or a widening that was in flight. Cookie mode carries one accepted
+residual.
+
+*Residual risk (accepted) -- cookie mode: a response in flight can outlast the logout.* The stateless
+binding holds no session state, so its `destroy` removes nothing and its updating write cannot
+observe a logout: it always re-seals. What the logout endpoint does is resolve the session from the
+request, revoke its tokens at the identity provider best-effort (RFC 7009), answer with the clearing
+`Set-Cookie`, and redirect to the `end_session_endpoint`. A near-expiry refresh, a scope-driven
+refresh or a widening callback that was already running for the same browser still answers with a
+re-sealed session cookie. If that response reaches the browser after the logout response, the
+browser again holds a cookie the gateway resolves as a session, until the session's absolute
+lifetime. The exposure needs a request of the same browser in flight at the moment of the logout.
+Beyond that it is bounded by the identity provider, not by the gateway: where the provider ends its
+own session on the logout, the refresh token in the re-sealed cookie is refused at that session's
+next transparent refresh and the session ends there, as for any IdP-side termination in this
+variant; until then the gateway mediates the access token the cookie carries. The mitigations are the ones
+link:variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout] names for a termination the stateless
+variant cannot enforce at once: a short `ttl_seconds`, short access-token lifetimes, and the
+session-based variant where immediate termination is a hard requirement.
 
 *Assertion.* A logout token missing `events`/`sub`/`sid`, or *containing* `nonce`, or an ID
 token replayed as a logout token -> rejected; a non-registered `post_logout_redirect_uri` ->
 rejected; post-logout the session is gone and the cookie cleared; cookie-mode back-channel ->
-`404`.
+`404`. In server mode a session destroyed by its identity, by `sid` or by `sub` is not written back
+by the conditional store write, which replaces a stored record only and consumes no capacity
+(`InMemorySessionStoreTest`, `ServerSessionBindingTest`); a session destroyed in each of those three
+ways between a widening callback's resolve and its write ends in `403` with no `Location` and no
+`Set-Cookie`, stays unresolvable and is recorded as `session-terminated`, while the same callback
+merges when nothing destroys the session (`CallbackEndpointTest`); a session destroyed in each of
+those ways during the provider exchange, on the near-expiry leg and on the scope-driven leg, is not
+written back, the request and a coalesced waiter are answered as session-ended, and the rotated
+refresh token is handed to revocation (`TokenRefreshCoordinatorTest`). The cookie-mode residual is
+pinned rather than hidden: the stateless update re-seals after every destroy form
+(`CookieSessionBindingTest`, `TokenRefreshCoordinatorTest`).
 
 [#bff-10]
 === BFF-10 -- Cookie hardening & token-leakage-to-browser
@@ -2102,9 +2154,18 @@ authorization request at all.
   lacks a scope sought beyond `S`, a subject mismatch, a callback without the live session -- is
   `403` with no `Location` and no `Set-Cookie`. The session stays usable on every route it
   satisfies. Nothing redirects again, so a scope the identity provider will not grant cannot loop
-  the browser, and the request that started it is never relayed. The refusal is logged as
-  `ApiSheriff-131` with a reason from a closed set; an unknown error code is logged as `other`,
-  never as the text the identity provider or an attacker supplied.
+  the browser, and the request that started it is never relayed. An identity-provider error and a
+  grant lacking a sought scope are logged as `ApiSheriff-131` with a reason from a closed set; an
+  unknown error code is logged as `other`, never as the text the identity provider or an attacker
+  supplied.
+* *A terminated session is not brought back by the merge.* The callback resolves the live session
+  and writes the merge later in the same call. In server mode a logout or a validated back-channel
+  logout that destroys the session in between wins: the merge is the seam's updating write, which
+  never creates a session (<<bff-09>>), so nothing is stored, the callback answers the same `403`
+  with no `Location` and no `Set-Cookie`, and `ApiSheriff-131` records `session-terminated`. The
+  session stays terminated, and the tokens of the refused grant are held nowhere. In cookie mode the
+  binding cannot observe a logout and re-seals the merged session; that residual is recorded under
+  <<bff-09>>.
 * *A scope the provider stopped granting reaches that refusal.* "Sought beyond `S`" is only a
   terminal check if `S` is true. A scope that is still named in `S` after the provider has stopped
   granting it -- an entitlement removed mid-session, a consent withdrawn -- would be sought by
@@ -2126,7 +2187,9 @@ authorization request at all.
   the user's session. It cannot choose them or the landing origin, as above.
 * *A widening merge and a concurrent refresh race.* Both resolve the session and then persist it,
   and the last writer wins. Either result is an identity-provider-fresh token set of the same
-  identity; the loss is one abandoned refresh token.
+  identity; the loss is one abandoned refresh token. This race between the two writers is unchanged
+  by the updating write above: that write settles a writer against a *termination*, in server mode,
+  and says nothing about two writers.
 * *The interactive re-drive is asserted at unit level only.* In the integration suite the browser
   that just logged in holds a live SSO session, so the silent attempt always succeeds there.
 
@@ -2144,7 +2207,10 @@ grant no longer returns is merged once with the scope gone from `S` and refused 
 round, while the same session is merged round after round when the grant still returns it; after a
 widening the production back-channel receiver destroys the session for a logout token naming the
 new `sid` and matches nothing for one naming the previous `sid`, and a grant whose ID token carries
-no `sid` leaves the session reachable under the one it had; an unknown
+no `sid` leaves the session reachable under the one it had; a server-mode session destroyed by its
+identity, by `sid` or by `sub` between the callback's resolve and its write is `403` with no
+`Location` and no `Set-Cookie`, is recorded as `session-terminated` and stays unresolvable, while
+the same callback merges when nothing destroys the session; an unknown
 error code is logged as `other` (`CallbackEndpointTest`). With the stage, the refresh coordinator
 and the callback assembled, a navigation for a scope the provider no longer grants is widened once
 and its callback is `403` with no `Location`, and a session without a refresh token is merged once
@@ -2383,7 +2449,7 @@ outstanding hardening work (next section).
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
-| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway) | Engine (RP-initiated) + gateway (back-channel receiver) | COVERED
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway); in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated) + gateway (back-channel receiver, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018 | COVERED (server) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED
@@ -2391,7 +2457,7 @@ outstanding hardening work (next section).
 | <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) | PARTIAL
 | <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, a session route compares it on every request and refreshes, widens or refuses `403`, a near-expiry refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `SessionAuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048, ADR-0057 | PARTIAL (session-wide scope growth accepted)
 | <<bff-16>> | `session_fallback` branch chosen from `Authorization` presence only; no session fallback on a failed bearer; CSRF on the session branch only; one resolver for CSRF and authentication | Gateway (`AuthBranch`, `AuthenticationStage`, `GatewayEdgeRoute`) + configuration validator -- ADR-0055 | COVERED
-| <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay; granted set kept truthful so a scope the provider stopped granting reaches the refusal; merged session indexed under the grant's `sid` | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `TokenRefreshCoordinator`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
+| <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay; granted set kept truthful so a scope the provider stopped granting reaches the refusal; merged session indexed under the grant's `sid`; in server mode a session terminated before the merge is written is not brought back | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `TokenRefreshCoordinator`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED

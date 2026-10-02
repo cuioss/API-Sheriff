@@ -35,7 +35,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * <p>
  * <strong>Why it exists.</strong> In cookie mode {@code SessionBinding.destroy} holds nothing
  * server-side, so a session ended for {@code credential-rejected}, {@code redeemed-response-refused} or
- * {@code persist-failure} is ended only by the clearing {@code Set-Cookie}. A client that retains or
+ * {@code persist-failure} is ended only by the clearing {@code Set-Cookie}. Those three are every reason
+ * a cookie-mode session is ended for: the coordinator's fourth reason, {@code session-terminated}, is
+ * reported only by a binding that holds server-side state and never occurs in cookie mode. A client that retains or
  * replays the sealed cookie would otherwise drive a fresh refresh grant to the identity provider, and a
  * {@code WARN ApiSheriff-111} with stack trace, until the absolute session
  * TTL. {@link TokenRefreshCoordinator} marks the presented refresh token when it ends such a session and

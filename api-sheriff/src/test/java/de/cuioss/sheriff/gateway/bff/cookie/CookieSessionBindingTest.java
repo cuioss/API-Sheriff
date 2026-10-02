@@ -185,6 +185,16 @@ class CookieSessionBindingTest {
         return setCookie.substring(0, setCookie.indexOf(';'));
     }
 
+    /**
+     * Re-seals {@code updated} through {@code persist} and unwraps the result. The stateless binding
+     * never reports a session gone, so an empty result is a defect of the binding and fails the test
+     * that asked for the re-seal.
+     */
+    private BoundSession reseal(SessionRecord updated, Instant now) {
+        return binding.persist(updated, now)
+                .orElseThrow(() -> new AssertionError("the stateless binding must never report a session gone"));
+    }
+
     @Nested
     @DisplayName("Bind and resolve")
     class BindAndResolve {
@@ -281,7 +291,7 @@ class CookieSessionBindingTest {
                     .sessionNonce(resolved.sessionNonce())
                     .build();
 
-            BoundSession reBound = binding.persist(rotated, LOGIN.plusSeconds(60));
+            BoundSession reBound = reseal(rotated, LOGIN.plusSeconds(60));
 
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow();
             assertEquals("rotated-access-token", reResolved.accessToken());
@@ -294,7 +304,7 @@ class CookieSessionBindingTest {
             BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
             SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
 
-            BoundSession reBound = binding.persist(withRotatedAccessToken(resolved, "rotated-access-token"),
+            BoundSession reBound = reseal(withRotatedAccessToken(resolved, "rotated-access-token"),
                     LOGIN.plusSeconds(60));
 
             // In this mode the cookie IS the session, so the re-seal is the ONLY place the rotated
@@ -322,7 +332,7 @@ class CookieSessionBindingTest {
             String nonceAtLogin = resolved.sessionNonce();
             assertNotNull(nonceAtLogin, "bind mints the session's one nonce");
 
-            BoundSession reBound = binding.persist(withRotatedAccessToken(resolved, "rotated-access-token"),
+            BoundSession reBound = reseal(withRotatedAccessToken(resolved, "rotated-access-token"),
                     LOGIN.plusSeconds(60));
 
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
@@ -341,7 +351,7 @@ class CookieSessionBindingTest {
             Instant halfway = LOGIN.plus(TTL.dividedBy(2));
             SessionRecord rotated = resealable("rotated-access-token");
 
-            BoundSession reBound = binding.persist(rotated, halfway);
+            BoundSession reBound = reseal(rotated, halfway);
 
             String setCookie = reBound.setCookieHeaders().getFirst();
             assertTrue(setCookie.contains("Max-Age=" + TTL.dividedBy(2).toSeconds()),
@@ -352,12 +362,47 @@ class CookieSessionBindingTest {
         @DisplayName("Should keep the absolute deadline anchored across a re-seal")
         void shouldKeepDeadlineAnchoredAcrossReseal() {
             Instant halfway = LOGIN.plus(TTL.dividedBy(2));
-            BoundSession reBound = binding.persist(resealable("rotated-access-token"), halfway);
+            BoundSession reBound = reseal(resealable("rotated-access-token"), halfway);
             String cookieHeader = cookieHeaderOf(reBound);
 
             assertTrue(binding.resolve(cookieHeader, LOGIN.plus(TTL).minusSeconds(1)).isPresent());
             assertTrue(binding.resolve(cookieHeader, LOGIN.plus(TTL)).isEmpty(),
                     "the original deadline still applies after the re-seal");
+        }
+
+        @Test
+        @DisplayName("Should always return the re-sealed session — the update never reports the session gone")
+        void shouldNeverReportTheSessionGone() {
+            Optional<BoundSession> persisted = binding.persist(resealable("rotated-access-token"),
+                    LOGIN.plusSeconds(60));
+
+            assertTrue(persisted.isPresent(), "a stateless binding has nothing to find the session gone in");
+        }
+
+        /**
+         * The stateless limit, pinned rather than hidden: {@code destroy} and the two IdP-driven forms
+         * remove nothing here, so an update made after them still re-seals a cookie that resolves. In
+         * server mode the same sequence reports the session gone.
+         */
+        @ParameterizedTest(name = "persist after {0} still re-seals")
+        @ValueSource(strings = {"destroy", "destroyBySid", "destroyBySub"})
+        @DisplayName("Should re-seal as before after a destruction, because a stateless binding cannot observe one")
+        void shouldResealAfterDestruction(String destruction) {
+            SessionRecord updated = resealable("rotated-access-token");
+            switch (destruction) {
+                case "destroy" -> binding.destroy(updated);
+                case "destroyBySid" -> binding.destroyBySid(SID);
+                default -> binding.destroyBySub(SUB);
+            }
+
+            Optional<BoundSession> persisted = binding.persist(updated, LOGIN.plusSeconds(60));
+
+            BoundSession reBound = persisted
+                    .orElseThrow(() -> new AssertionError("persist after " + destruction + " must still re-seal"));
+            assertEquals(1, reBound.setCookieHeaders().size(), "the re-seal still emits its one Set-Cookie");
+            assertEquals("rotated-access-token",
+                    binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow().accessToken(),
+                    "the re-sealed cookie resolves, carrying the updated material");
         }
     }
 
@@ -407,7 +452,7 @@ class CookieSessionBindingTest {
                     .activeScopes(narrowed)
                     .build();
 
-            BoundSession reBound = binding.persist(rotated, LOGIN.plusSeconds(60));
+            BoundSession reBound = reseal(rotated, LOGIN.plusSeconds(60));
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
                     .orElseThrow();
 
@@ -420,7 +465,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should carry an unchanged active scope set across a re-seal")
         void shouldResealUnchangedScopes() {
-            BoundSession reBound = binding.persist(resealable("rotated-access-token"), LOGIN.plusSeconds(60));
+            BoundSession reBound = reseal(resealable("rotated-access-token"), LOGIN.plusSeconds(60));
 
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
                     .orElseThrow();
@@ -448,7 +493,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should carry the granted scope set through persist and resolve")
         void shouldSurvivePersistAndResolve() {
-            BoundSession reBound = binding.persist(resealable("rotated-access-token"), LOGIN.plusSeconds(60));
+            BoundSession reBound = reseal(resealable("rotated-access-token"), LOGIN.plusSeconds(60));
 
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
                     .orElseThrow();
@@ -463,7 +508,7 @@ class CookieSessionBindingTest {
             SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
             Set<String> narrowed = Set.of("openid");
 
-            BoundSession reBound = binding.persist(withScopes(resolved, narrowed, resolved.grantedScopes()),
+            BoundSession reBound = reseal(withScopes(resolved, narrowed, resolved.grantedScopes()),
                     LOGIN.plusSeconds(60));
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
                     .orElseThrow();
@@ -480,7 +525,7 @@ class CookieSessionBindingTest {
             Set<String> widened = Set.of("openid", "profile", "email", "orders:read", "orders:write",
                     "billing:read");
 
-            BoundSession reBound = binding.persist(withScopes(resolved, resolved.activeScopes(), widened),
+            BoundSession reBound = reseal(withScopes(resolved, resolved.activeScopes(), widened),
                     LOGIN.plusSeconds(60));
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60))
                     .orElseThrow();
@@ -546,7 +591,7 @@ class CookieSessionBindingTest {
             SessionRecord first = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
 
             SessionRecord rotated = withRotatedAccessToken(first, "rotated-access-token");
-            BoundSession reBound = binding.persist(rotated, LOGIN.plusSeconds(60));
+            BoundSession reBound = reseal(rotated, LOGIN.plusSeconds(60));
             SessionRecord second = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow();
 
             assertEquals(first.sessionId(), second.sessionId(),

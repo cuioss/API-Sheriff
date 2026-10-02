@@ -410,6 +410,11 @@ The first two are logged as `ApiSheriff-131` with a bounded reason, the identity
 scope the IdP will not grant cannot loop the browser. The gateway keeps no record of a refusal: a
 later navigation to the route starts a new attempt.
 
+*A logout during a widening wins.* If the user logs out, or the IdP delivers a back-channel logout,
+after the callback has found the live session and before it stores the merged one, the grant is not
+merged and nothing is stored: the session stays logged out. The callback answers the same `403`,
+and the refusal is logged as `ApiSheriff-131` with the reason `session-terminated`.
+
 [[scope-revoked]]
 === When the IdP stops granting a scope
 
@@ -604,6 +609,13 @@ window buys that back at the cost of exactly the detection signal rotation provi
   how the failing request is answered: `reauthenticate` redirects navigations to login and answers
   API calls `401`, `reject` answers `401` to everything. See
   link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table].
+* *A logout is not undone by a request that was already running.* A logout through
+  `oidc.logout.path`, or a back-channel logout, can arrive while a token refresh or a widening for
+  the same session is in flight. The logout wins: the refreshed or widened session is not stored,
+  the refreshing request is answered as unauthenticated with the session cookie cleared, and the
+  refresh token the IdP had just issued is revoked best-effort. The log shows `ApiSheriff-111` with
+  the reason `session-terminated` for a refresh and `ApiSheriff-131` with the same reason for a
+  widening. Neither is a fault; `persist-failure` is the reason to look into.
 * *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
   without the IdP -- but logins fail until the issuer is reachable. Confirm egress to the issuer
   (and its JWKS) is permitted.

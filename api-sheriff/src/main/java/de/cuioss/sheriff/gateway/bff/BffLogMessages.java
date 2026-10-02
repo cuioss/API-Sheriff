@@ -150,15 +150,19 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A transparent token refresh failed and its session was destroyed; the caller
-         * re-authenticates. The session is destroyed for exactly three reasons, each recorded as a
-         * bounded, non-sensitive reason: the identity provider rejected the presented refresh token
-         * ({@code credential-rejected}, which includes a replayed token rejected under strict
-         * rotation), the gateway refused a response the provider had already redeemed
-         * ({@code redeemed-response-refused}), or the rotated session could not be persisted
-         * ({@code persist-failure}). A failure before the provider processed the grant never
-         * destroys the session and is recorded as {@link #SESSION_REFRESH_DEFERRED} instead. Never
-         * records the presented refresh token or session id.
+         * A transparent token refresh ended with its session destroyed; the caller
+         * re-authenticates. The record carries exactly one of four bounded, non-sensitive reasons:
+         * the identity provider rejected the presented refresh token ({@code credential-rejected},
+         * which includes a replayed token rejected under strict rotation), the gateway refused a
+         * response the provider had already redeemed ({@code redeemed-response-refused}), the
+         * binding could not hold the rotated session ({@code persist-failure}), or the session was
+         * terminated — by a logout or a back-channel logout — while the refresh was in flight, so
+         * the rotated session was not written ({@code session-terminated}; server mode only, since
+         * a stateless binding cannot observe a termination). In the first three the refresh
+         * coordinator destroys the session; in the fourth the termination already had. A failure
+         * before the provider processed the grant never destroys the session and is recorded as
+         * {@link #SESSION_REFRESH_DEFERRED} instead. Never records the presented refresh token or
+         * session id.
          */
         public static final LogRecord SESSION_REFRESH_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
@@ -248,17 +252,21 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A session widening was refused by the identity provider, or its grant did not carry the
-         * scopes the widening asked for; the refusal is terminal and the session is left unchanged.
-         * The template carries only a bounded reason token: a known OAuth / OIDC {@code error} code
-         * ({@code invalid_scope}, {@code access_denied}, {@code login_required}, …), {@code other} for
-         * any code outside that closed set, or {@code scope-not-granted}. Never the raw IdP error
+         * A session widening was refused and its grant was not merged into a session: the identity
+         * provider refused it, its grant did not carry the scopes the widening asked for, or the
+         * session was terminated — by a logout or a back-channel logout — while the widening's
+         * callback was in flight. The refusal is terminal. In the first two cases the session is
+         * left as it was; in the third it stays terminated. The template carries only a bounded
+         * reason token: a known OAuth / OIDC {@code error} code ({@code invalid_scope},
+         * {@code access_denied}, {@code login_required}, …), {@code other} for any code outside
+         * that closed set, {@code scope-not-granted}, or {@code session-terminated} (server mode
+         * only, since a stateless binding cannot observe a termination). Never the raw IdP error
          * description, a token, the session id or the subject.
          */
         public static final LogRecord SESSION_WIDENING_REFUSED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(131)
-                .template("Session widening refused by the identity provider (%s) — session unchanged")
+                .template("Session widening refused (%s) — no grant was merged into a session")
                 .build();
     }
 }

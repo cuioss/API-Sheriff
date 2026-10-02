@@ -33,7 +33,9 @@
  *       session and backs off; a rejected credential (including a replay rejected under strict
  *       rotation), a refused redeemed response, or a failure to persist the rotated session destroys
  *       it, revoking a refresh token that is still live where one is known, so the caller treats the
- *       request as unauthenticated.</li>
+ *       request as unauthenticated. In server mode a session that a logout terminated while its
+ *       refresh was in flight is not written back: the refresh ends the same way, and the rotated
+ *       refresh token is revoked.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens} is the coordinator's bounded,
  *       per-instance, in-memory marker of refresh tokens whose session it ended, keyed on a salted digest
  *       of the token, so a replayed cookie-mode refresh token of an ended session is refused locally

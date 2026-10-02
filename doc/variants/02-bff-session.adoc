@@ -178,6 +178,17 @@ gateway as BFF:
   revocation is *immediately effective* -- an advantage over the
   link:03-bff-cookie.adoc[cookie-based variant].
 
+*A logout is not undone by a request already in flight.* A token refresh and a session widening
+both resolve the session, call the IdP and then write the result back. Either can be running when
+one of the logouts above destroys the session. The write they make updates a session the store still
+holds and never creates one: the store checks for the session and replaces its record as one atomic
+step, so a session destroyed in between is not written back. The refresh then answers its request as
+session-ended and revokes, best-effort, the refresh token the IdP had just issued
+(`ApiSheriff-111`, reason `session-terminated`); the widening callback answers `403` and stores
+nothing (`ApiSheriff-131`, same reason). The cookie-based variant cannot give this guarantee, because
+it holds no session a logout could remove
+(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
+
 == Transparent Token Refresh
 
 When the stored access token is within the configured leeway of expiry, the gateway refreshes
@@ -197,6 +208,10 @@ A refused refresh is disposed by *what the identity provider did to the presente
 * *The provider redeemed the grant but the gateway refused its response*, or *the rotated session
   could not be stored* -- the session ends and the one refresh token still live at the provider is
   revoked best-effort.
+
+One further outcome ends the request the same way without being a refused refresh: the exchange
+succeeded, but a logout destroyed the session while it was in flight. The rotated session is not
+written back and the refresh token the exchange returned is revoked best-effort (see <<_logout>>).
 
 A request left without a token is answered by `oidc.session.refresh.on_failure`: with
 `reauthenticate` (the default) a *navigation* request is re-driven through the login flow while an

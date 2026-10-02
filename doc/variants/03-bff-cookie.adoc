@@ -168,7 +168,9 @@ effect is a rare forced re-login.
 destroys nothing server-side -- only the clearing `Set-Cookie` ends it -- so a client that keeps or
 replays the sealed cookie would otherwise drive a fresh refresh grant to the IdP, and a
 `WARN ApiSheriff-111`, on every near-expiry request until the absolute TTL. When the refresh
-coordinator ends a session as `credential-rejected`, `redeemed-response-refused` or `persist-failure`,
+coordinator ends a session as `credential-rejected`, `redeemed-response-refused` or `persist-failure`
+-- the three reasons a cookie-mode session is ended for; the record's fourth reason,
+`session-terminated`, arises in the session-based variant only --
 it therefore marks the presented refresh token -- as a salted, non-reversible digest, never the token
 or the cookie -- until the session's absolute lifetime. A later request presenting that token takes
 the session-ended disposition (cleared cookie, `on_failure`) with no IdP call, no revocation and no
@@ -203,6 +205,19 @@ and the session ends. Until then, already-issued cookies stay decryptable -- imm
 termination cannot be guaranteed. Mitigate with a short `ttl_seconds` and short access-token
 lifetimes; where instant revocation is a hard requirement, choose the
 link:02-bff-session.adoc[session-based variant].
+
+*A logout cannot stop a response that is already in flight.* Expiring the cookie is all a logout
+does to a cookie-mode session on the gateway side: there is no stored session to destroy, so the
+session binding's updating write has nothing to consult and always re-seals. A token refresh or a
+widening callback that was already running for the same browser when it logged out therefore still
+answers with a re-sealed session cookie. If that response reaches the browser after the logout
+response, the browser again holds a cookie the gateway resolves as a session -- until `ttl_seconds`
+at the latest, and earlier where the IdP ended its own session on the logout, because the session's
+next transparent refresh is then refused. The same mitigations apply: a short `ttl_seconds`, short
+access-token lifetimes, and the session-based variant where a logout has to be final at once. In
+that variant the store refuses the write of a session it no longer holds, so a logout wins over a
+refresh or a widening that was in flight
+(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
 == CSRF Defence
 

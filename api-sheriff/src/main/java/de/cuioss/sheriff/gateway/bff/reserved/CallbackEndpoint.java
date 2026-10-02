@@ -150,11 +150,23 @@ import org.jspecify.annotations.Nullable;
  *       can never send the browser round the widening again). The grant is then merged into the
  *       <em>live</em> session, which keeps its {@code sessionId}, {@code sessionNonce},
  *       {@code expiresAt} and {@code authTime}, takes the new access, refresh and ID tokens and the
- *       new {@code acr}, and sets both {@code A} and {@code S} to the granted scope. It is re-bound
- *       through {@link SessionBinding#persist} — never a new session — and the browser is
- *       redirected to the recorded return URL. A persist failure answers {@code 500}, like a bind
- *       failure on login.</li>
+ *       new {@code acr}, and sets both {@code A} and {@code S} to the granted scope. It is written
+ *       through {@link SessionBinding#persist} — the updating write, which never creates a
+ *       session — and the browser is redirected to the recorded return URL. A persist that reports
+ *       the session gone is answered like a missing live session: a terminal {@code 403}, no
+ *       {@code Location}, no {@code Set-Cookie}, nothing stored (see below). A persist the binding
+ *       cannot hold answers {@code 500}, like a bind failure on login.</li>
  * </ul>
+ * <strong>A terminated session is not brought back by the merge.</strong> In server mode a logout or
+ * a validated back-channel logout may destroy the session between the resolve above and the
+ * persist. The binding then writes nothing and reports the session gone; the callback answers
+ * {@code 403} with no {@code Location} and no {@code Set-Cookie} and records
+ * {@code ApiSheriff-131} with the reason {@code session-terminated}. The tokens of the refused grant
+ * are dropped, exactly as the other refusals drop theirs — they are stored nowhere and are not
+ * revoked. In cookie mode the binding holds no state a logout could have removed, cannot observe
+ * one, and re-seals the merged session; that limit is the stateless variant's and is documented
+ * with it.
+ * <p>
  * <strong>The merged granted set is what this grant returned.</strong> {@code S} becomes the granted
  * scope itself, never the union with what an earlier grant returned. A scope the identity provider
  * has stopped granting therefore leaves {@code S} on the merge, the next request needing it seeks it
@@ -170,9 +182,10 @@ import org.jspecify.annotations.Nullable;
  * matches it.
  * <p>
  * The merge is a check-then-act on the live session: a concurrent refresh may rotate its tokens
- * between the resolve and the persist. The last writer wins over two IdP-fresh token sets of the same
- * identity; the identity is re-checked on the resolved record, never taken from the pending record
- * alone.
+ * between the resolve and the persist. Between those two writers the last one wins over two IdP-fresh
+ * token sets of the same identity; the identity is re-checked on the resolved record, never taken
+ * from the pending record alone. A termination is not a writer in that sense: in server mode it wins
+ * over the merge, as described above.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -211,6 +224,13 @@ public final class CallbackEndpoint {
             "temporarily_unavailable");
     private static final String REASON_OTHER = "other";
     private static final String REASON_SCOPE_NOT_GRANTED = "scope-not-granted";
+
+    /**
+     * The bounded reason recorded when the session a widening was about to be merged into was
+     * terminated between the callback's resolve and its persist — reported by a binding that can
+     * observe it (server mode).
+     */
+    private static final String REASON_SESSION_TERMINATED = "session-terminated";
 
     private final CodeExchange codeExchange;
     private final PendingAuthorizationStore pendingStore;
@@ -336,7 +356,9 @@ public final class CallbackEndpoint {
 
     /**
      * Merges a successful widening grant into the live session the request carries, after checking
-     * that it is the same identity and that the grant carries the scopes the widening sought.
+     * that it is the same identity and that the grant carries the scopes the widening sought. The
+     * merge is written through the binding's updating write, so a session the binding reports gone
+     * at that point is refused {@code 403} instead of being created anew.
      */
     private CallbackOutcome completeWidening(AuthorizationCodeFlow.AuthenticationResult result,
             PendingAuthorizationRecord pending, PendingAuthorizationRecord.Widening widening,
@@ -389,9 +411,11 @@ public final class CallbackEndpoint {
                 // beyond S and a grant lacking it again is refused above instead of merged.
                 .grantedScopes(granted)
                 .build();
-        SessionBinding.BoundSession bound;
+        Optional<SessionBinding.BoundSession> persisted;
         try {
-            bound = sessionBinding.persist(merged, now);
+            // The updating write: it never creates a session, so a session a logout destroyed since
+            // the resolve above is not brought back by this merge.
+            persisted = sessionBinding.persist(merged, now);
         } catch (IllegalStateException persistFailure) {
             // As on login: the grant was valid, but the binding cannot hold the merged session (for
             // example the sealed cookie-mode value outgrew the cookie-size budget). The live session
@@ -399,11 +423,18 @@ public final class CallbackEndpoint {
             LOGGER.debug(persistFailure, "OIDC widening callback could not persist the widened session");
             return CallbackOutcome.error(INTERNAL_ERROR);
         }
+        if (persisted.isEmpty()) {
+            // The session was terminated between the resolve and the persist (server mode: a logout or
+            // a back-channel logout). Nothing was written, so it stays terminated; the answer is the
+            // one a callback without a live session gets, and the grant's tokens are dropped unstored.
+            LOGGER.warn(BffLogMessages.WARN.SESSION_WIDENING_REFUSED, REASON_SESSION_TERMINATED);
+            return CallbackOutcome.error(FORBIDDEN);
+        }
 
         Set<String> added = new TreeSet<>(granted);
         added.removeAll(live.grantedScopes());
         LOGGER.info(BffLogMessages.INFO.SESSION_WIDENED, String.join(" ", added));
-        List<String> setCookies = new ArrayList<>(bound.setCookieHeaders());
+        List<String> setCookies = new ArrayList<>(persisted.get().setCookieHeaders());
         setCookies.add(bindingCookieCodec.toClearingSetCookieHeader());
         return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }

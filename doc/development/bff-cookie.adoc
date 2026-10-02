@@ -64,10 +64,20 @@ Every reserved endpoint, the CSRF defence, the refresh and step-up coordinators,
 seam and are unaware of which binding is in force. That is why adding a cookie-mode capability
 almost never means touching a reserved endpoint.
 
-The one place the modes genuinely differ is capability: `idpDestruction()` reports `UNSUPPORTED`
-for the cookie binding, and the back-channel logout endpoint is *gated on that signal* rather than
-on the mode name -- it answers a deliberate `404` instead of claiming a destruction that never
-happened.
+Where the modes genuinely differ, they differ in capability, and there are two such places. The
+first carries a flag: `idpDestruction()` reports `UNSUPPORTED` for the cookie binding, and the
+back-channel logout endpoint is *gated on that signal* rather than on the mode name -- it answers a
+deliberate `404` instead of claiming a destruction that never happened.
+
+The second has no flag, because the result carries it. `persist` is the seam's *updating* write: it
+updates a session that already exists and never creates one, and it returns an empty result when
+the binding observed that the session is gone. `ServerSessionBinding` reports that when a logout
+destroyed the session after the caller resolved it. `CookieSessionBinding` holds nothing a logout
+could have removed, so it always re-seals and never returns empty -- a refresh or a widening that
+was in flight during a logout still produces a session cookie. Callers must handle the empty result
+(`TokenRefreshCoordinator` ends the request as session-ended, `CallbackEndpoint` answers `403`);
+`bind` stays the only creating write. See the updating-write amendment of
+link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
 
 == The sealed-cookie wire format
 

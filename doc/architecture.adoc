@@ -471,6 +471,15 @@ boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `Resolv
   scope-driven refresh the identity provider processed removes every requested scope its response
   did not return. A scope the provider stopped granting therefore leaves `S` the first time it is
   asked for, and a widening whose grant lacks it again ends in the terminal `403`.
+* *A termination wins over both writers in server mode.* The widening merge and the refresh store
+  their result through the seam's updating write, which replaces a stored session and never creates
+  one. A session that a logout or a back-channel logout destroyed while either was in flight is
+  therefore not written back: the widening callback answers the terminal `403`
+  (`ApiSheriff-131`, reason `session-terminated`), and the refresh ends as a failed refresh
+  (`ApiSheriff-111`, reason `session-terminated`) whose rotated refresh token is revoked best-effort.
+  In cookie mode there is no stored session to check, so the update re-seals the cookie whether or not
+  a logout happened in between
+  (link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
 Why a session route obtains what is missing rather than relaying, and what it does when the identity
 provider refuses, is recorded in

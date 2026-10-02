@@ -143,14 +143,16 @@ import org.jspecify.annotations.Nullable;
  * stage's refresh seams degrade to the unwired binding — session unchanged, no cookies — and no refresh
  * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
  * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: an
- * outcome carrying a session is mediated; a failed refresh — the session was destroyed —
+ * outcome carrying a session is mediated; a failed refresh — the session was destroyed, or in server
+ * mode was found already terminated when the rotation was to be persisted —
  * clears the session cookie before the refresh-failure response; an unavailable refresh — the identity
  * provider was unreachable and the access token has expired, but the session is kept — answers the
  * refresh-failure response without clearing the cookie. That response is
  * {@code oidc.session.refresh.on_failure}, resolved here and handed to the stage:
  * {@code reauthenticate} (also when omitted) re-drives the login negotiation, {@code reject} answers
  * {@code 401} for every request. A refresh token still live at the identity provider after a session
- * ends on a refused redemption or a persist failure is revoked, best-effort, through the engine's
+ * ends on a refused redemption, on a persist failure or, in server mode, on a session terminated while
+ * the refresh was in flight is revoked, best-effort, through the engine's
  * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
  * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
  * failing request never waits for the revocation endpoint.
@@ -660,7 +662,8 @@ public class BffRuntimeProducer {
      * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
      * seam. {@code CURRENT}, {@code REFRESHED}, {@code DEFERRED} and {@code SCOPE_REFUSED} carry a
      * session and are mediated with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} —
-     * the session was destroyed — ends the session so the stage clears the cookie; {@code UNAVAILABLE} —
+     * the session was destroyed, or in server mode was found already terminated when the rotation was to
+     * be persisted — ends the session so the stage clears the cookie; {@code UNAVAILABLE} —
      * the session was kept but its access token has expired — fails only this request, so the cookie
      * survives for the next attempt.
      * <p>

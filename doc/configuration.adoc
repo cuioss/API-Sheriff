@@ -2417,9 +2417,10 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   sweeps the sessions expired at that instant and is admitted if the sweep freed a slot. A store
   still full afterwards is genuinely full of live sessions and the login is refused fail-closed.
   Nothing schedules that sweep -- there is no scheduler, timer thread or periodic task, and no knob
-  configures one -- so size this against expected peak concurrency. Re-storing an id already held
-  (how a rotated session is persisted) consumes no new capacity and is admitted at the bound
-  without consulting it.
+  configures one -- so size this against expected peak concurrency. Updating a session the store
+  already holds -- the write a token refresh or a widening makes -- replaces its record in place,
+  consumes no new capacity and is admitted at the bound without consulting it. That write never
+  creates a session: when a logout has destroyed the session meanwhile, nothing is stored.
 
 | `session.cookie_name`
 | Name of the session cookie, in *both* session modes. Optional; omitted, it resolves to
@@ -2614,15 +2615,32 @@ answered.
   the presented token when it did not, none when rotation is unknown.
 | `ApiSheriff-111` (`redeemed-response-refused`)
 
-| *Persist failure* -- the exchange succeeded, but the rotated session could not be stored or
-  re-sealed
+| *Persist failure* -- the exchange succeeded, but the session binding could not hold the rotated
+  session (for example a sealed cookie past its size budget)
 | *Ended*, as above.
 | Best-effort, the refresh token the exchange returned.
 | `ApiSheriff-111` (`persist-failure`)
+
+| *Session terminated meanwhile* (`session.mode: server` only) -- the exchange succeeded, but a
+  logout or a back-channel logout destroyed the session while the refresh was in flight
+| *Stays ended.* The rotated session is not written back; the session cookie is cleared and the
+  request is answered through `on_failure`.
+| Best-effort, the refresh token the exchange returned.
+| `ApiSheriff-111` (`session-terminated`)
 |===
 
 Revocation is best-effort: a failed revocation never changes the disposition, because the local
 session destruction is what ends the session.
+
+*A logout wins over a refresh in server mode.* A refresh resolves the session, calls the identity
+provider and then writes the rotated session. In `session.mode: server` that write replaces the
+session only while the store still holds it, so a session that `oidc.logout.path` or a back-channel
+logout destroyed in between is not brought back: the last row applies. It is recorded with its own
+reason and without an exception, so a logout that overtook a refresh reads differently in the log
+from a binding that could not hold the session (`persist-failure`). In `session.mode: cookie` the
+row never applies. The gateway holds no session state there and cannot observe a logout, so the
+rotated session is re-sealed into a new cookie as on any refresh -- see
+link:variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout] for that limit and its mitigations.
 
 *The scope-driven refresh takes the same dispositions.* The refresh a session route makes to
 obtain a missing scope the session was granted before (see link:#_endpoint_scopes[`endpoint.scopes`])

@@ -31,6 +31,18 @@ Connect Core 1.0 §3.1.2.6 defines for a `prompt=none` request, and it calls for
 
 Unchanged and still in force: there is exactly one interactive attempt, and any error on that attempt
 is terminal.
+
+*Amended.* In server mode a widening merge no longer brings a terminated session back. The merge is
+written through the `SessionBinding` seam's updating write, which never creates a session
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]):
+when a logout or a back-channel logout destroyed the session between the callback resolving it and
+writing the merge, nothing is stored and the callback answers the terminal `403`. The scope-driven
+refresh leg behaves the same way and ends the request as session-ended
+(link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+
+Unchanged and still in force: the race between a widening merge and a concurrent refresh, in which
+the last writer wins, and cookie mode, whose binding cannot observe a termination and re-seals the
+merged session.
 ====
 
 == Context
@@ -132,6 +144,15 @@ needs, and the first scope-driven refresh that does ask settles the question.
   a subject mismatch, a missing live session, and a grant that still lacks a scope sought beyond `S`
   all answer `403`. The session is left unchanged and stays usable on every route it satisfies. No
   further redirect follows, so a scope the identity provider will not grant cannot loop the browser.
+* *A terminated session is not brought back by the merge.* The merge is the seam's updating write,
+  which never creates a session. In server mode a session that a logout or a back-channel logout
+  destroyed after the callback resolved it is reported gone at that write: nothing is stored, the
+  callback answers the same terminal `403` with no `Location` and no `Set-Cookie`, the refusal is
+  recorded with the reason `session-terminated`, and the tokens of the refused grant are dropped as
+  the other refusals drop theirs. The session stays terminated. In cookie mode the binding holds no
+  state a logout could have removed, cannot observe one, and re-seals the merged session; that is a
+  residual of the stateless variant
+  (link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]).
 * *A scope the provider stopped granting reaches that refusal.* Because `S` is truthful, such a scope
   is sought beyond `S` by the time a widening callback checks its grant. When a scope refresh ran
   first and was answered with a narrower grant, the scope has already left `S`: the widening that
@@ -248,7 +269,16 @@ session back unchanged, and the stage goes straight to widening.
   last writer wins. Either result is an identity-provider-fresh token set of the same identity, and
   the subject is re-checked on the resolved session, not taken from the pending record. The loss is
   one abandoned refresh token. The loser's `S` can be overwritten too; a scope it wrongly keeps is
-  removed again the next time it is asked for and not returned.
+  removed again the next time it is asked for and not returned. This race between the two writers is
+  unchanged. A *termination* is no longer part of it in server mode: neither writer can bring back a
+  session a logout destroyed, because both write through the updating write and a write that finds
+  the session gone stores nothing.
+* *In cookie mode a merge or a refresh can outlast a logout.* The stateless binding cannot observe a
+  logout, so a widening callback or a refresh that was in flight when the browser logged out still
+  re-seals a session cookie. If that response reaches the browser after the logout response, the
+  browser holds a cookie the gateway resolves again, until the session's absolute lifetime. The
+  mitigations are the stateless variant's own: a short `ttl_seconds`, short access-token lifetimes,
+  and the session-based variant where immediate termination is required. It is tracked as BFF-09.
 * *A refresh inside the grant depends on the identity provider honouring it.* A provider that
   declines to restore a previously granted scope returns a narrower grant or refuses the request, and
   the session is widened instead. The outcome is slower, not wrong. A narrower grant also takes the

@@ -309,6 +309,16 @@ cleared, and an expired cookie the browser keeps anyway is still refused server-
 TTL check. Where instant central revocation is a hard requirement, use the server-session variant.
 Mitigate in this variant with a short `ttl_seconds` and short access-token lifetimes.
 
+*A logout does not stop a response that is already in flight.* The gateway keeps nothing a logout
+could mark, so a token refresh or a session widening that was already running for the same browser
+when it logged out still answers with a re-sealed session cookie. If that response reaches the
+browser after the logout response, the browser holds a session cookie again. It lasts until
+`ttl_seconds` at the latest; where the logout ended the session at the IdP as well, it ends earlier,
+when the session's next refresh is refused there. The window needs a request of the same browser in
+flight at the moment of the logout, and the mitigations are the two above. The server-session
+variant does not have this window: there a logout wins over a refresh or a widening that was in
+flight, and the session stays ended.
+
 == Session affinity for the login leg
 
 The variant is stateless once a session is *established*, but not during the login exchange. The

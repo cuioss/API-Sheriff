@@ -36,6 +36,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.stream.Stream;
 import javax.crypto.spec.SecretKeySpec;
 
 
@@ -71,6 +73,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -238,6 +242,76 @@ class CallbackEndpointTest {
                 new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
                         SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"), (byte) 1),
                 salt);
+    }
+
+    /**
+     * A {@link SessionBinding} that behaves exactly like the one it wraps, except that it runs
+     * {@code termination} once, immediately after a {@code resolve} returned a live session. The
+     * callback resolves the live session and persists the merge later in the same call, so this is the
+     * deterministic stand-in for a logout or a back-channel logout arriving between the two: the
+     * session is terminated through the wrapped binding's own destroy methods, on the calling thread,
+     * with no sleep and no second thread.
+     */
+    private static final class TerminatingAfterResolve implements SessionBinding {
+
+        private final SessionBinding delegate;
+        private final BiConsumer<SessionBinding, SessionRecord> termination;
+        private int terminationsRun;
+
+        TerminatingAfterResolve(SessionBinding delegate, BiConsumer<SessionBinding, SessionRecord> termination) {
+            this.delegate = delegate;
+            this.termination = termination;
+        }
+
+        /** How often the termination ran — once per resolve that returned a live session. */
+        int terminationsRun() {
+            return terminationsRun;
+        }
+
+        @Override
+        public BoundSession bind(SessionRecord session, Instant now) {
+            return delegate.bind(session, now);
+        }
+
+        @Override
+        public Optional<SessionRecord> resolve(@Nullable String cookieHeader, Instant now) {
+            Optional<SessionRecord> resolved = delegate.resolve(cookieHeader, now);
+            resolved.ifPresent(session -> {
+                terminationsRun++;
+                termination.accept(delegate, session);
+            });
+            return resolved;
+        }
+
+        @Override
+        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+            return delegate.persist(updated, now);
+        }
+
+        @Override
+        public void destroy(SessionRecord session) {
+            delegate.destroy(session);
+        }
+
+        @Override
+        public int destroyBySid(String sid) {
+            return delegate.destroyBySid(sid);
+        }
+
+        @Override
+        public int destroyBySub(String sub) {
+            return delegate.destroyBySub(sub);
+        }
+
+        @Override
+        public IdpDestruction idpDestruction() {
+            return delegate.idpDestruction();
+        }
+
+        @Override
+        public String clearingSetCookieHeader() {
+            return delegate.clearingSetCookieHeader();
+        }
     }
 
     /**
@@ -988,6 +1062,85 @@ class CallbackEndpointTest {
                 assertEquals(live, resolveServerSession(), "a narrower grant is never merged");
                 LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
                         BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("scope-not-granted"));
+            }
+        }
+
+        /**
+         * A logout or a back-channel logout that lands between the callback's resolve and its persist.
+         * The interleaving is driven by {@link TerminatingAfterResolve}, which terminates the session
+         * the moment the callback has resolved it — no thread and no timing is involved. The merge must
+         * not bring the session back: the callback answers like one that carried no live session.
+         * <p>
+         * The last case is the matched control. It runs the same callback through the same hook with a
+         * termination that does nothing, and merges — so the refusals above are caused by the
+         * termination and not by the hook.
+         */
+        @Nested
+        @DisplayName("Session terminated between the resolve and the persist (server mode)")
+        class TerminatedBeforePersist {
+
+            static Stream<Arguments> terminations() {
+                BiConsumer<SessionBinding, SessionRecord> bySessionIdentity = SessionBinding::destroy;
+                BiConsumer<SessionBinding, SessionRecord> bySid = (binding, session) -> binding.destroyBySid(IDP_SID);
+                BiConsumer<SessionBinding, SessionRecord> bySub = (binding, session) -> binding.destroyBySub(SUBJECT);
+                return Stream.of(
+                        Arguments.of("a logout destroying the session by its identity", bySessionIdentity),
+                        Arguments.of("a back-channel logout destroying it by sid", bySid),
+                        Arguments.of("a back-channel logout destroying it by sub", bySub));
+            }
+
+            @ParameterizedTest(name = "{0}")
+            @MethodSource("terminations")
+            @DisplayName("Should answer 403 with no Location and no Set-Cookie, and leave the session gone")
+            void shouldNotBringTerminatedSessionBack(String label,
+                    BiConsumer<SessionBinding, SessionRecord> termination) {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+                TerminatingAfterResolve interleaved = new TerminatingAfterResolve(sessionBinding, termination);
+
+                CallbackOutcome outcome = endpoint(fullGrant(), interleaved)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                assertRefused(outcome);
+                assertAll(label,
+                        () -> assertEquals(1, interleaved.terminationsRun(),
+                                "the termination ran after the resolve, so the refusal is the persist's"),
+                        () -> assertTrue(sessionBinding.resolve(sessionCookie, CALLBACK_AT).isEmpty(),
+                                "the terminated session does not resolve again"),
+                        () -> assertEquals(0, sessionStore.size(), "the merge stored nothing"),
+                        () -> assertEquals(0, sessionBinding.destroyBySid(WIDENED_SID),
+                                "no session exists under the sid of the refused grant"),
+                        () -> assertEquals(0, sessionBinding.destroyBySid(IDP_SID),
+                                "and none under the sid the session was created with"));
+                LogAsserts.assertSingleLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.format("session-terminated"));
+                LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO,
+                        BffLogMessages.INFO.SESSION_WIDENED.resolveIdentifierString());
+            }
+
+            @Test
+            @DisplayName("Should merge through the same hook when nothing terminates the session (matched control)")
+            void shouldMergeWhenNothingTerminatesTheSession() {
+                bindLive(sessionBinding);
+                pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
+                BiConsumer<SessionBinding, SessionRecord> nothing = (binding, session) -> assertTrue(
+                        binding.resolve(sessionCookie, CALLBACK_AT).isPresent(),
+                        "the control leaves the session in place at the point the terminations strike");
+                TerminatingAfterResolve interleaved = new TerminatingAfterResolve(sessionBinding, nothing);
+
+                CallbackOutcome outcome = endpoint(fullGrant(), interleaved)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+
+                SessionRecord merged = resolveServerSession();
+                assertAll("the same widening merges when the session is still there at the persist",
+                        () -> assertEquals(302, outcome.status()),
+                        () -> assertEquals(WIDEN_RETURN_URL, outcome.location()),
+                        () -> assertEquals(1, interleaved.terminationsRun(), "the hook ran at the same point"),
+                        () -> assertEquals(live.sessionId(), merged.sessionId(), "the same session, never a new one"),
+                        () -> assertEquals(WIDENED_ACCESS_TOKEN, merged.accessToken()),
+                        () -> assertEquals(WIDENING_REQUEST, merged.activeScopes()));
+                LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN,
+                        BffLogMessages.WARN.SESSION_WIDENING_REFUSED.resolveIdentifierString());
             }
         }
 

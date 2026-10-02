@@ -60,8 +60,9 @@ import org.jspecify.annotations.Nullable;
  *         <li>{@link RefreshResult.Mediate mediate} — emits any {@code Set-Cookie} the seam returns, so
  *             a binding that re-binds on refresh reaches the browser on the same response, and
  *             continues with the session;</li>
- *         <li>{@link RefreshResult.SessionEnded session ended} — the seam destroyed the session, so the
- *             stage clears the browser's copy and then applies the refresh-failure response;</li>
+ *         <li>{@link RefreshResult.SessionEnded session ended} — the seam destroyed the session, or
+ *             found it already gone and did not write it back, so the stage clears the browser's copy
+ *             and then applies the refresh-failure response;</li>
  *         <li>{@link RefreshResult.RequestFailed request failed} — the session is still live but this
  *             request has no valid token to mediate, so the stage applies the refresh-failure response
  *             <em>without</em> clearing the cookie: the next request can still use the session.</li>
@@ -335,9 +336,12 @@ public final class SessionAuthenticationStage {
     }
 
     /**
-     * Answers a request whose session a refresh seam destroyed (the identity provider rejected the
-     * refresh token — including a replayed one under strict rotation — or the gateway refused a
-     * redeemed response). Mediating the pre-refresh token would keep serving an ended session, so the
+     * Answers a request whose session a refresh seam reported ended. Either the seam destroyed it — the
+     * identity provider rejected the refresh token (including a replayed one under strict rotation),
+     * the gateway refused a redeemed response, or the binding could not hold the rotated session — or
+     * the seam found it already gone: it expired, or, in server mode, a logout terminated it while the
+     * refresh was in flight and the seam did not write it back. Mediating the pre-refresh token would
+     * keep serving an ended session, so the
      * clearing cookie drops the browser's stale copy first. On the reauthenticate navigation branch the
      * login challenge adds its own binding cookie for a DIFFERENT cookie name, so both must reach the
      * browser on this one response — hence the multi-valued Set-Cookie accumulator rather than a
@@ -443,8 +447,9 @@ public final class SessionAuthenticationStage {
          * @return {@link RefreshResult.Mediate mediate} carrying the session to mediate from — the
          *         same one, or a refreshed copy carrying the rotated token material — plus any
          *         {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
-         *         ended} when the seam destroyed the session; or {@link RefreshResult.RequestFailed
-         *         request failed} when the session is kept but this request has no valid token
+         *         ended} when the seam destroyed the session or found it already gone; or
+         *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
+         *         request has no valid token
          */
         RefreshResult refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader, Instant now);
     }
@@ -479,8 +484,9 @@ public final class SessionAuthenticationStage {
          * @return {@link RefreshResult.Mediate mediate} carrying the session that was kept — refreshed
          *         and carrying the set, or unchanged or narrower when the set was not obtained — plus
          *         any {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
-         *         ended} when the seam destroyed the session; or {@link RefreshResult.RequestFailed
-         *         request failed} when the session is kept but this request has no valid token
+         *         ended} when the seam destroyed the session or found it already gone; or
+         *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
+         *         request has no valid token
          */
         RefreshResult refreshForScopes(SessionRecord session, @Nullable String cookieHeader,
                 Set<String> requestedScopes, Instant now);
@@ -504,7 +510,8 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * @return the result for a session the seam destroyed
+         * @return the result for a session that has ended — the seam destroyed it, or found it already
+         *         gone
          */
         static RefreshResult sessionEnded() {
             return new SessionEnded();

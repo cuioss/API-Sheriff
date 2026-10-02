@@ -51,8 +51,9 @@ import org.jspecify.annotations.Nullable;
  * When the mediated access token is within {@code leeway} of expiry the coordinator refreshes it
  * <strong>through the engine</strong> ({@code token-sheriff-client}'s {@code RefreshFlow}, reached
  * via the {@link RefreshExchange} seam) and persists the rotated token material through the
- * mode-neutral {@link SessionBinding} seam — a store write in server mode, a re-bound cookie in a
- * stateless mode — so the browser never sees a token and never drives a leg. The gateway re-implements
+ * mode-neutral {@link SessionBinding} seam — a store write in server mode, made only while the store
+ * still holds the session, and a re-sealed cookie in a stateless mode — so the browser never sees a
+ * token and never drives a leg. The gateway re-implements
  * <strong>no</strong> OAuth leg: the engine owns the refresh grant and refresh-token rotation.
  * <p>
  * <strong>The refresh keeps the session's scope.</strong> The near-expiry grant requests the session's
@@ -105,11 +106,20 @@ import org.jspecify.annotations.Nullable;
  *       revoked: the successor when rotated, the presented token when not rotated, none when rotation
  *       is unknown. The outcome is {@link RefreshOutcome.Kind#FAILED FAILED} with reason
  *       {@code redeemed-response-refused}.</li>
- *   <li><strong>Persist failure</strong> — the exchange succeeded but the rotated session could not be
- *       persisted. The presented token is already redeemed, so the session is destroyed and the refresh
- *       token the exchange returned is revoked. The outcome is {@link RefreshOutcome.Kind#FAILED FAILED}
- *       with reason {@code persist-failure}.</li>
+ *   <li><strong>Persist failure</strong> — the exchange succeeded but the binding could not hold the
+ *       rotated session. The presented token is already redeemed, so the session is destroyed and the
+ *       refresh token the exchange returned is revoked. The outcome is
+ *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code persist-failure}.</li>
+ *   <li><strong>Session terminated at the persist</strong> — the exchange succeeded, but the binding
+ *       reported the session gone when the rotated session was written: a logout or a validated
+ *       back-channel logout destroyed it while the refresh was in flight. The rotated session is
+ *       <em>not</em> written, so the session stays terminated, and the refresh token the exchange
+ *       returned is revoked — the presented one is already redeemed. The outcome is
+ *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code session-terminated}. Only a binding
+ *       that holds server-side state can report a session gone, so this disposition occurs in server
+ *       mode only: a stateless binding cannot observe a logout and re-seals the rotated session.</li>
  * </ul>
+ * Both legs share these dispositions, and so does every request that coalesced with the refresh.
  * Every session-ending disposition records {@code ApiSheriff-111}. The session-ended outcome is published
  * to the failing request and every coalesced waiter <em>first</em>; the revocation is dispatched only
  * afterwards, off the request path, so a slow or hanging revocation endpoint delays the revocation and
@@ -221,8 +231,20 @@ public final class TokenRefreshCoordinator {
     /** The bounded reason recorded when the gateway refused a response the provider already redeemed. */
     static final String REASON_REDEEMED_RESPONSE_REFUSED = "redeemed-response-refused";
 
-    /** The bounded reason recorded when the rotated session could not be persisted. */
+    /** The bounded reason recorded when the binding could not hold the rotated session. */
     static final String REASON_PERSIST_FAILURE = "persist-failure";
+
+    /**
+     * The bounded reason recorded when the binding reported the session gone at the persist: a logout or
+     * a back-channel logout destroyed it while the refresh was in flight (server mode only).
+     * <p>
+     * Deliberately its own reason rather than {@link #REASON_PERSIST_FAILURE}. {@code persist-failure}
+     * says the binding could not hold a session that was still there — a fault worth investigating, and
+     * recorded with the exception that caused it. This reason says a termination overtook the refresh,
+     * which is the gateway refusing to bring a logged-out session back; there is no exception to record.
+     * An operator reading {@code ApiSheriff-111} has to be able to tell the two apart.
+     */
+    static final String REASON_SESSION_TERMINATED = "session-terminated";
 
     /** The RFC 6749 §3.3 delimiter between the names of a {@code scope} value. */
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
@@ -321,7 +343,9 @@ public final class TokenRefreshCoordinator {
      * returned as {@link RefreshOutcome#current(SessionRecord) current} with no engine call. A successful
      * exchange persists the rotated session through the binding; its {@code S} is the previous one less
      * every requested scope the response's {@code scope} did not return, so it is unchanged whenever the
-     * set was obtained or the response omitted {@code scope}. A refused
+     * set was obtained or the response omitted {@code scope}. When the binding reports the session gone
+     * at that persist — a logout overtook the refresh, server mode — nothing is written and the outcome is
+     * {@link RefreshOutcome#failed() failed}, never {@code SCOPE_REFUSED}. A refused
      * exchange takes exactly the near-expiry leg's disposition (see the class documentation); an
      * {@code invalid_scope} answer is among the refusals classified {@code PRE_REDEMPTION} and therefore
      * backs off (<a href="https://github.com/cuioss/TokenSheriff/issues/763">TokenSheriff#763</a>).
@@ -491,20 +515,30 @@ public final class TokenRefreshCoordinator {
         // The identity provider processed the grant: whatever follows, the outage the probe tested is over.
         releaseProbe(admission);
         // The presented token is already redeemed here, so a persist failure cannot keep the session.
+        Optional<SessionBinding.BoundSession> persisted;
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             SessionRecord rotated = rotate(latest, rotation, scopes, scopeDriven);
-            // persist() re-binds in place (an upsert in server mode, a re-seal in a stateless mode), so
-            // no pre-persist destroy is needed on the success path. Destroying first would open a
-            // window where a concurrent resolve() misses the rotating session.
-            SessionBinding.BoundSession bound = sessionBinding.persist(rotated, now);
-            retryNotBefore.remove(sessionId);
-            LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
-            return Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
+            // persist() updates in place and never creates (a replace-if-present in server mode, a
+            // re-seal in a stateless mode), so no pre-persist destroy is needed on the success path.
+            // Destroying first would open a window where a concurrent resolve() misses the rotating
+            // session.
+            persisted = sessionBinding.persist(rotated, now);
         } catch (RuntimeException persistFailure) {
             return endSession(sessionId, latest, now, persistFailure, REASON_PERSIST_FAILURE,
                     rotation.refreshToken());
         }
+        if (persisted.isEmpty()) {
+            // The binding found the session gone: a logout or a back-channel logout destroyed it after
+            // the leader resolved it (server mode). Nothing was written, so it stays terminated. The
+            // rotated refresh token is live at the identity provider and held nowhere, so it is revoked
+            // exactly as on the persist-failure path.
+            return endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, rotation.refreshToken());
+        }
+        SessionBinding.BoundSession bound = persisted.get();
+        retryNotBefore.remove(sessionId);
+        LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
+        return Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
     }
 
     private Disposition disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
@@ -642,16 +676,26 @@ public final class TokenRefreshCoordinator {
      * <p>
      * The presented refresh token is {@code latest.refreshToken()}: {@link #redeem} is only reached after
      * both legs confirmed it is present.
+     * <p>
+     * A session the binding already reported gone takes the same steps: its {@code destroy} is then a
+     * no-op, which the seam documents, and nothing here writes a session.
+     *
+     * @param failure the exception that ended the session, recorded with {@code ApiSheriff-111};
+     *                {@code null} when a termination overtook the refresh and no exception occurred
      */
-    private Disposition endSession(String sessionId, SessionRecord latest, Instant now, RuntimeException failure,
-            String reason, @Nullable String liveRefreshToken) {
+    private Disposition endSession(String sessionId, SessionRecord latest, Instant now,
+            @Nullable RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
         String presentedRefreshToken = Objects.requireNonNull(latest.refreshToken(),
                 "a session-ending disposition requires the presented refresh token");
         retryNotBefore.remove(sessionId);
         sessionBinding.destroy(latest);
         endedRefreshTokens.markEnded(presentedRefreshToken, latest.expiresAt(), now);
         // Bounded, non-sensitive reason only — never the presented refresh token or session id.
-        LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
+        if (failure == null) {
+            LOGGER.warn(BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
+        } else {
+            LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
+        }
         return new Disposition(RefreshOutcome.failed(), liveRefreshToken);
     }
 

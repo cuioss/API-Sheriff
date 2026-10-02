@@ -38,11 +38,19 @@ import org.jspecify.annotations.Nullable;
  * {@link #bind} seals the {@link SessionRecord} into a hardened {@code Set-Cookie};
  * {@link #resolve} unseals the request cookie, enforces the absolute TTL <strong>server-side</strong>
  * against the sealed login instant (a browser that keeps an expired cookie past its {@code Max-Age}
- * still gets "no session"), and reconstructs the record; {@link #persist} re-seals the rotated
+ * still gets "no session"), and reconstructs the record; {@link #persist} re-seals the updated
  * material; {@link #destroy} is a no-op locally — the browser's copy is cleared through
  * {@link #clearingSetCookieHeader()}, which the logout edge emits. A client that retains the cookie of a
  * session the refresh coordinator ended is refused by that coordinator's ended-refresh-token marker,
  * not by this binding.
+ * <p>
+ * <strong>An update cannot observe a logout.</strong> Because {@link #destroy} removes nothing — there
+ * is nothing held to remove — {@link #persist} has no state to consult and always re-seals: it never
+ * reports the session gone. A refresh or a widening that was in flight while the browser logged out
+ * therefore still produces a sealed {@code Set-Cookie}; if that response reaches the browser after the
+ * logout response, the browser again holds a cookie this gateway resolves as a session, until the
+ * session's absolute deadline. This is a limit of the stateless mode, not of this method, and the
+ * server-mode binding does not share it.
  * <p>
  * <strong>No IdP-driven destruction.</strong> A stateless gateway holds no index and cannot reach
  * another browser's cookie, so {@link #idpDestruction()} reports
@@ -123,38 +131,49 @@ public final class CookieSessionBinding implements SessionBinding {
     }
 
     /**
-     * Re-seals the rotated material into a fresh {@code Set-Cookie} <em>without</em> extending the
+     * Re-seals the updated material into a fresh {@code Set-Cookie} <em>without</em> extending the
      * session.
      * <p>
-     * There is nothing to write server-side, so the whole of "persisting" a refresh here is emitting
-     * the new sealed value. The original login instant is re-derived from the record's absolute
-     * deadline rather than taken from {@code now}, so an endlessly-refreshed session still dies at
-     * its original absolute deadline: a refresh rotates the tokens, never the session's lifetime.
+     * There is nothing to write server-side, so the whole of "persisting" a refresh or a widening
+     * here is emitting the new sealed value. The original login instant is re-derived from the
+     * record's absolute deadline rather than taken from {@code now}, so a session still dies at its
+     * original absolute deadline however often it is re-sealed: an update replaces the tokens, never
+     * the session's lifetime.
      * <p>
      * The session nonce is re-sealed <strong>verbatim</strong> and never re-minted, for the same
      * reason the login instant is re-derived rather than refreshed: both are identity inputs, so
      * minting a new nonce here would change the derived {@link SessionRecord#sessionId()} mid-session
      * and break the refresh coordinator's single-flight coalescing.
+     * <p>
+     * <strong>Never reports the session gone.</strong> This binding holds no server-side state, so it
+     * cannot tell whether the browser logged out since the caller resolved the session: the result is
+     * always present. The re-sealed cookie it returns is one this gateway resolves as a session until
+     * the absolute deadline, even when a logout response has already cleared the browser's previous
+     * one (see the class documentation).
+     * <p>
+     * Thread-safe: the method reads only its arguments and the immutable collaborators.
      *
-     * @param rotated the session carrying the rotated token material
+     * @param updated the session carrying the new token material
      * @param now     the reference instant, used only for the cookie's remaining {@code Max-Age}
-     * @return the re-sealed session and its single {@code Set-Cookie}
+     * @return the re-sealed session and its single {@code Set-Cookie}; never empty
+     * @throws IllegalStateException when the record carries no session nonce, or the sealed value
+     *         exceeds the cookie size budget
      */
     @Override
-    public BoundSession persist(SessionRecord rotated, Instant now) {
-        Objects.requireNonNull(rotated, "rotated");
+    public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+        Objects.requireNonNull(updated, "updated");
         Objects.requireNonNull(now, "now");
-        Instant loginInstant = rotated.expiresAt().minus(codec.sessionTtl());
+        Instant loginInstant = updated.expiresAt().minus(codec.sessionTtl());
         // Fail loud rather than mint a replacement: a cookie-mode record always carries the nonce
         // sealed at login, so an absent one means a caller reconstructed the record and dropped it —
         // silently re-minting would change the session's identity mid-flight.
-        String sessionNonce = rotated.sessionNonce();
+        String sessionNonce = updated.sessionNonce();
         if (sessionNonce == null) {
             throw new IllegalStateException(
                     "cookie-mode session record carries no sessionNonce — cannot re-seal without changing "
                             + "the derived session identity");
         }
-        return seal(payloadOf(rotated, loginInstant, sessionNonce), now);
+        return Optional.of(seal(payloadOf(updated, loginInstant, sessionNonce), now));
     }
 
     @Override

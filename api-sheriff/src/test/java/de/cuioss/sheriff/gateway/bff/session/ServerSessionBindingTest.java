@@ -24,6 +24,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
@@ -31,12 +33,19 @@ import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Tests for {@link ServerSessionBinding} — the regression net proving the seam adapter preserves
- * every landed {@link SessionStore} semantic byte for byte: the opaque-handle cookie on bind, the
- * upsert-in-place on persist (no destroy-then-create window), the lazy TTL eviction on resolve, and
+ * Tests for {@link ServerSessionBinding} — the regression net proving the seam adapter carries the
+ * {@link SessionStore} semantics through unchanged: the opaque-handle cookie on bind, the
+ * replace-in-place on persist (no destroy-then-create window), the lazy TTL eviction on resolve, and
  * the O(1) {@code sid}/{@code sub} destruction with its {@code SUPPORTED} capability.
+ * <p>
+ * It also pins the rule that keeps a terminated session terminated: persist updates a session the
+ * store still holds and never creates one, so after a destroy by identity, by {@code sid} or by
+ * {@code sub} it reports the session gone and nothing resolves. Bind stays the creating write.
  */
 class ServerSessionBindingTest {
 
@@ -145,19 +154,70 @@ class ServerSessionBindingTest {
     }
 
     @Test
-    @DisplayName("Should upsert the rotated record in place on persist, with no new cookie")
-    void shouldUpsertOnPersistWithoutNewCookie() {
+    @DisplayName("Should replace the live session's record in place on persist, with no new cookie")
+    void shouldReplaceOnPersistWithoutNewCookie() {
         SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
         binding.bind(session, NOW);
         SessionRecord rotated = session(session.sessionId(), "access-token-2");
 
-        BoundSession bound = binding.persist(rotated, NOW);
+        Optional<BoundSession> persisted = binding.persist(rotated, NOW);
 
+        BoundSession bound = persisted.orElseThrow(() -> new AssertionError("a live session is updated"));
         assertSame(rotated, bound.session());
         assertTrue(bound.setCookieHeaders().isEmpty(),
                 "the opaque handle is unchanged, so the browser needs no new Set-Cookie");
         assertEquals(Optional.of(rotated), store.resolve(session.sessionId(), NOW),
                 "the rotated record replaced the previous one under the same id");
+        assertEquals(1, store.size(), "the update added no entry");
+    }
+
+    static Stream<Arguments> terminations() {
+        BiConsumer<ServerSessionBinding, SessionRecord> byIdentity = SessionBinding::destroy;
+        BiConsumer<ServerSessionBinding, SessionRecord> bySid = (target, session) -> target.destroyBySid(SID);
+        BiConsumer<ServerSessionBinding, SessionRecord> bySub = (target, session) -> target.destroyBySub(SUB);
+        return Stream.of(Arguments.of("destroy", byIdentity), Arguments.of("destroyBySid", bySid),
+                Arguments.of("destroyBySub", bySub));
+    }
+
+    @ParameterizedTest(name = "after {0}, persist reports the session gone")
+    @MethodSource("terminations")
+    @DisplayName("Should report a terminated session gone on persist and never bring it back")
+    void shouldReportTerminatedSessionGoneOnPersist(String label,
+            BiConsumer<ServerSessionBinding, SessionRecord> termination) {
+        SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
+        binding.bind(session, NOW);
+        termination.accept(binding, session);
+
+        Optional<BoundSession> persisted = binding.persist(session(session.sessionId(), "access-token-2"), NOW);
+
+        assertTrue(persisted.isEmpty(), () -> "after " + label + " the update must report the session gone");
+        assertTrue(binding.resolve(cookieHeaderFor(session.sessionId()), NOW).isEmpty(),
+                () -> "the session terminated by " + label + " stays unresolvable");
+        assertEquals(0, store.size(), "nothing was written back into the store");
+    }
+
+    @Test
+    @DisplayName("Should report a session gone on persist when it was never bound")
+    void shouldReportUnboundSessionGoneOnPersist() {
+        SessionRecord neverBound = session(SessionRecord.newSessionId(), "access-token-1");
+
+        Optional<BoundSession> persisted = binding.persist(neverBound, NOW);
+
+        assertTrue(persisted.isEmpty(), "persist is the updating write and never creates a session");
+        assertEquals(0, store.size());
+    }
+
+    @Test
+    @DisplayName("Should still create a session through bind after a persist was refused")
+    void shouldStillCreateThroughBind() {
+        SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
+        Optional<BoundSession> refused = binding.persist(session, NOW);
+
+        BoundSession bound = binding.bind(session, NOW);
+
+        assertTrue(refused.isEmpty(), "the persist before the bind created nothing");
+        assertEquals(1, bound.setCookieHeaders().size(), "bind is the creating write and emits the session cookie");
+        assertEquals(Optional.of(session), binding.resolve(cookieHeaderFor(session.sessionId()), NOW));
     }
 
     @Test
@@ -166,8 +226,9 @@ class ServerSessionBindingTest {
         SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
         binding.bind(session, NOW);
 
-        binding.persist(session(session.sessionId(), "access-token-2"), NOW);
+        Optional<BoundSession> persisted = binding.persist(session(session.sessionId(), "access-token-2"), NOW);
 
+        assertTrue(persisted.isPresent(), "the live session is updated");
         assertTrue(binding.resolve(cookieHeaderFor(session.sessionId()), NOW).isPresent(),
                 "a concurrent resolve must never miss a rotating session");
     }
@@ -194,9 +255,10 @@ class ServerSessionBindingTest {
         SessionRecord refreshed = scopedSession(session.sessionId(), "access-token-2", Set.of("openid"),
                 GRANTED_SCOPES);
 
-        binding.persist(refreshed, NOW);
+        Optional<BoundSession> persisted = binding.persist(refreshed, NOW);
         SessionRecord resolved = binding.resolve(cookieHeaderFor(session.sessionId()), NOW).orElseThrow();
 
+        assertTrue(persisted.isPresent(), "the live session is updated");
         assertEquals(Set.of("openid"), resolved.activeScopes(), "the persisted A reaches the next request");
         assertEquals(GRANTED_SCOPES, resolved.grantedScopes(), "the persisted S reaches the next request");
     }
