@@ -244,13 +244,29 @@ link:doc/development/cookie-deliverability-blindness.adoc[Cookie-Deliverability 
 the properties the integration lane is structurally incapable of observing at all, however strong
 its assertions. Read all three before treating a green suite as proof of a specific bound.
 
-FAPI 2.0 is not conformant::
-Three mandatory client requirements are unmet -- PAR, sender-constrained tokens, and a
-FAPI-permitted client authentication method are not wired, even though the underlying engine
-supports them: `BffRuntimeProducer` builds the flows with no sender constraint, holds no PAR client,
-and authenticates with `ClientAuthMethod.CLIENT_SECRET_BASIC`. See
-link:doc/fapi_status.adoc[FAPI 2.0 Conformance Status]. *No FAPI conformance may be claimed for
-this release.*
+The FAPI 2.0 controls hold in key mode only, and no conformance-suite run exists::
+In key mode the BFF implements the FAPI 2.0 controls (DPoP route). It pushes every authorization
+request (PAR), binds every token it obtains to one DPoP key, refuses a token response that is not
+bound to that key, and authenticates to the identity provider with `private_key_jwt`. Two limits
+belong to that statement:
++
+* *No conformance-suite run exists.* The controls are implemented and evidenced; no conformance
+  claim is made.
+* *It holds in key mode only.* With `oidc.client_secret` configured the client-authentication requirement is not met.
+  Pushed requests and the DPoP sender constraint stay in effect in that mode.
++
+*How a BFF is configured.* Key-based client authentication is the default: an `oidc` block that
+declares no `client_secret` authenticates with `private_key_jwt`, signed with the key
+`oidc.client_authentication.key_file` names or with a key generated at startup. A client secret
+remains an operator choice, selected by configuring `oidc.client_secret`. Client-secret
+authentication is not FAPI 2.0 conformant and may weaken security, and the gateway says so at every
+boot (`ApiSheriff-130`).
++
+*What every BFF deployment needs from its identity provider.* A pushed-authorization-request
+endpoint and DPoP-bound access tokens, in both modes; without them every login is refused. In key
+mode the identity provider additionally fetches the gateway's client key from its JWKS endpoint.
+See link:doc/fapi_status.adoc[FAPI 2.0 Status], link:doc/fapi_next_steps.adoc[FAPI 2.0 Next Steps]
+and link:doc/user/bff-session.adoc[the BFF setup guide].
 
 Rate limiting is not implemented::
 The `rate_limit` field is reserved and accepted, but it is ignored and no `429` is ever produced:

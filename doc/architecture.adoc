@@ -135,11 +135,14 @@ route) and nothing after it runs:
 Three checks sit ahead of route selection outside this numbering and are described where they are
 owned. After stage 1 the Host-vs-SNI smuggle guard rejects before route selection
 (<<_tls_edge_accept_time_sni_split>>). Then the gateway's own reserved paths are answered: first the
-reserved OIDC paths, exact and on the OIDC host only (<<_bff_session_runtime>>), and then the
-application portal's `portal.path`, exact and on *any* host (<<_application_portal>>). A prefix route
-covering `portal.path` therefore never sees a request for it on any host; a prefix route covering a
-reserved OIDC path never sees a request for it on the configured OIDC host, while the same path on
-another host still reaches route selection. All three answer before stage 2a, so they carry
+reserved OIDC paths, matched exactly (<<_bff_session_runtime>>), and then the application portal's
+`portal.path`, exact and on *any* host (<<_application_portal>>). Five of the seven reserved OIDC
+paths are matched on the OIDC host only; the back-channel logout path and the client JWKS path are
+matched on every host, because the identity provider dials them server-to-server. A prefix route
+covering `portal.path` therefore never sees a request for it on any host. A prefix route covering one
+of the five host-gated OIDC paths never sees a request for it on the configured OIDC host, while the
+same path on another host still reaches route selection; a prefix route covering one of the other
+two never sees a request for it on any host. All three answer before stage 2a, so they carry
 the global security-header block. The portal additionally replaces the `Content-Security-Policy` and
 `X-Content-Type-Options` of that block with its own fixed values.
 
@@ -511,12 +514,18 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   relayed) rather than rejected.
 
 * *Reserved-path registry + live-edge dispatch.* The `ReservedPathRegistry` classifies each of the
-  up-to-six gateway-owned OIDC paths (callback, logout, logout-return, back-channel logout,
-  user-info, login-initiation) by *exact* path match. The five browser-facing paths additionally
-  require the request host to be the OIDC host; back-channel logout is matched on every host,
-  because the identity provider dials it server-to-server by whatever address the relying party
-  registered — routinely an internal service name rather than the browser-facing one (ADR-0018,
-  back-channel-host amendment). The gateway edge consults the registry *before*
+  up-to-seven gateway-owned OIDC paths (callback, logout, logout-return, back-channel logout,
+  user-info, login-initiation, client JWKS) by *exact* path match. The five browser-facing paths
+  additionally require the request host to be the OIDC host. The other two -- back-channel logout
+  and the client JWKS endpoint -- are matched on every host, because the identity provider dials
+  them server-to-server by whatever address the relying party registered — routinely an internal
+  service name rather than the browser-facing one (ADR-0018, back-channel-host amendment; ADR-0057).
+  The client JWKS path is the one reserved path that needs no declaration: an `oidc` block that
+  names none reserves the default `/auth/jwks`. It is reserved in both client-authentication modes.
+  In key mode it answers the client-authentication public key to a `GET`; in client-secret mode it
+  answers `404` to every method and is still not released to the route table, so no proxied upstream
+  can answer under a key-set URL the identity provider may hold. The gateway edge consults the
+  registry *before*
   the proxy route table, so a matched reserved path is dispatched to its handler and a proxy route
   such as `path_prefix: /auth` can never swallow `/auth/callback` (ADR-0018). The
   link:configuration.adoc#_oidc[`oidc`] block is the single source of the registered paths. Because
@@ -542,6 +551,69 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   `SessionBinding` is assembled. Provider-metadata
   discovery is resolved lazily on first engine use, so a BFF gateway boots without a live IdP.
 
+[[_bff_client_controls]]
+==== Client authentication, pushed requests and the sender constraint
+
+Three controls sit between the BFF and the identity provider
+(link:adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]).
+`BffRuntimeProducer` assembles all three once, and each has one instance for the whole runtime.
+
+* *Client authentication has two modes, and the document selects one.* `OidcConfig.usesClientSecret()`
+  is the single predicate boot validation and the producer both read. With no `oidc.client_secret`
+  -- *key mode*, the default -- the gateway authenticates with `private_key_jwt`: `ClientSigningKey`
+  resolves the client-authentication key from `oidc.client_authentication.key_file`, or generates
+  one at startup when no file is named, and hands the engine a `PrivateKeyJwtAuth` whose assertion
+  names the issuer as its audience. With `oidc.client_secret` configured -- *client-secret mode* --
+  the gateway authenticates with `client_secret_basic`, resolves no client-authentication key and
+  logs `WARN` `ApiSheriff-130` at every boot. There is no switch beside the secret, and a secret
+  together with a key file is refused at boot. The one authentication instance is shared by the
+  pushed authorization request, the code exchange, the refresh grant and RFC 7009 revocation.
+* *The client JWKS endpoint follows the same decision.* In key mode `ClientJwksEndpoint` publishes
+  the public half of the client-authentication key, for a provided and for a generated key alike. In
+  client-secret mode the producer hands the runtime the endpoint's withheld form, which answers
+  `404`. The authentication and the endpoint are yielded by one decision, so the key the gateway
+  signs with and the key it publishes cannot differ.
+* *Every authorization request is pushed.* `PushedAuthorizationRequests` is an adapter over the
+  engine's `ParClient`. It sits on both seams that build an authorization request -- the login leg
+  and the RFC 9470 step-up re-drive -- pushes the parameters the engine's request builder rendered,
+  and yields the redirect URL: the authorization endpoint with `client_id` and `request_uri` and
+  nothing else. It composes no parameter itself and has no front-channel fallback. The step-up seam
+  has no caller at the edge, so on that seam the push is proven at unit level only.
+* *One DPoP sender constraint binds every token.* `ClientSigningKey` resolves the sender-constraint
+  key from `oidc.sender_constraint.key_file`, or generates one, in both client-authentication modes.
+  The one `SenderConstraint` it hands out is shared by the base flow's code exchange, every
+  per-scope flow and every refresh grant.
+* *An unbound token response is refused at one seam.* The runtime's one token-endpoint client is
+  `BoundTokenEndpointClient`, a subclass of the engine's client. It accepts a token response only
+  when its type is `DPoP` and the access token's `cnf.jkt` is the thumbprint of the gateway's proof
+  key. A refusal is raised as the engine's redeemed-response failure. That type is the contract with
+  the two callers: the callback answers it with `400` and no session, and the refresh path reads it
+  as a grant the provider already redeemed and ends the session.
+
+*The login sequence.*
+
+. An unauthenticated navigation reaches a `require: session` route, or a browser opens
+  `oidc.login.path`.
+. The gateway resolves the provider metadata (once, lazily) and lets the engine render the
+  authorization request for the scope set the login needs.
+. The gateway *pushes* that request to the identity provider's pushed-authorization-request
+  endpoint, authenticated with the client credential. A provider that advertises no such endpoint,
+  and a push that fails, refuse the login with `502` before anything is stored and before a cookie
+  is set.
+. The gateway stores the pending authorization, sets the browser-binding cookie and answers `302` to
+  the authorization endpoint, carrying `client_id` and `request_uri` only.
+. The identity provider authenticates the user. Keycloak 26.5.7 answers the authorization request
+  that names a pushed `request_uri` with a `302` to its own `login-actions/authenticate` page rather
+  than with the login form itself, so a client that walks the flow follows one more redirect before
+  it sees the form.
+. The identity provider redirects the browser to `oidc.redirect_uri` with `code` and `state` in the
+  query string (see <<_oidc_callback_response_mode>>).
+. The callback verifies the binding cookie and `state`, and the engine exchanges the code. The token
+  request carries the client credential and a DPoP proof.
+. `BoundTokenEndpointClient` checks that the token response is bound to the proof key. A response
+  that is not is refused: the callback answers `400` and creates no session.
+. The engine validates the tokens, and the gateway establishes the session.
+
 [[_oidc_callback_response_mode]]
 ==== OIDC callback response mode: `query`, and the tradeoff that buys
 
@@ -556,6 +628,13 @@ This is not the engine default. `token-sheriff-client`'s `AuthorizationRequestBu
 authorization URL -- the auth-code login leg and the RFC 9470 step-up re-drive. The override
 rewrites only the `response_mode` parameter and preserves every other authorization parameter
 verbatim.
+
+*The request is pushed; the response mode is unchanged.* The URL each seam builds is never sent to
+the browser. It is the parameter source of the pushed authorization request (see
+<<_bff_client_controls>>), so `response_mode=query` travels to the identity provider inside the
+pushed request, and the browser's redirect carries `client_id` and `request_uri` only. Pushing
+changes how the *request* reaches the identity provider. It does not change how the *response*
+returns: `code` and `state` still arrive on the callback URL, and everything below still holds.
 
 *Why the mode is load-bearing, not cosmetic.* The short-lived browser-binding cookie
 (`__Host-sheriff-binding`) that ties an in-flight login to one browser is `SameSite=Lax`, and *a
@@ -775,7 +854,8 @@ The upstream client is split by plane
   configured consecutive failures, half-opens after `reset_ms`; state transitions surface as
   WARN LogRecords and metrics.
 * *Control plane -- `cui-http`.* The gateway's own small, bounded JSON calls (OIDC discovery,
-  JWKS, token exchange, revocation -- made chiefly inside the token-sheriff libraries) use
+  JWKS, the pushed authorization request, token exchange, revocation -- made chiefly inside the
+  token-sheriff libraries) use
   `HttpHandler` (immutable, thread-safe, HTTPS-by-default), `ResilientHttpAdapter`
   (idempotency-aware retry), `ETagAwareHttpAdapter` (ETag/304 caching of the gateway's *own*
   control resources), and `HttpResult<T>` (sealed `Success`/`Failure` with `HttpErrorCategory`
@@ -799,8 +879,8 @@ The upstream client is split by plane
 
 *Two planes, two body shapes* (link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]). The
 `HttpResult<T>` *materialize-the-body* pattern is used on the *control plane* only -- the small,
-bounded JSON calls the gateway itself makes (OIDC discovery, JWKS, token exchange, revocation),
-where a deserialized object, ETag/304 caching, a typed error category, and fallback content are
+bounded JSON calls the gateway itself makes (OIDC discovery, JWKS, the pushed authorization
+request, token exchange, revocation), where a deserialized object, ETag/304 caching, a typed error category, and fallback content are
 exactly what is wanted. On the *data plane* -- proxying arbitrary client traffic, including large
 responses, downloads, SSE, chunked and long-lived streams -- the gateway *streams* request and
 response bodies with backpressure (Vert.x `ReadStream.pipeTo`/`Pipe`, pausing the source when
@@ -965,6 +1045,23 @@ The consolidated status mapping:
 | `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
 |===
+
+Two exits of the BFF login belong to this contract and are easy to misread from the table alone:
+
+* *`502` -- the authorization request could not be pushed.* A login, or a step-up re-drive, that
+  cannot push its authorization request is refused with `502` through the existing `UPSTREAM_ERROR`
+  event. The causes are an identity provider that advertises no pushed-authorization-request
+  endpoint, an authorization request that cannot be split into uniquely named parameters, and a push
+  that fails at the transport or in the provider's answer. Nothing is stored and no cookie is set.
+  The metric counts the refusal in the upstream category; `WARN` `ApiSheriff-132` carries the
+  attribution, once per reason.
+* *`400` -- the token response is not bound to the proof key.* The callback answers `400`, creates no
+  session and sets no session cookie when the token response of the code exchange is not of type
+  `DPoP` or its access token does not carry the `cnf.jkt` of the gateway's proof key. It is the
+  answer the callback gives to every failure of the token engine. `WARN` `ApiSheriff-131` records the
+  leg and the reason. At a
+  refresh the same refusal ends the session instead, and the request is answered as
+  `oidc.session.refresh.on_failure` says.
 
 [[_html_error_pages]]
 ==== Negotiated HTML error pages

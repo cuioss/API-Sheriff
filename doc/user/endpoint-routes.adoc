@@ -147,10 +147,11 @@ endpoint:
     - id: auth
       match: { path_prefix: /auth }
       forward:                     # a POSITIVE-list, chosen deliberately: this route reaches an
-                                   #   IdP authorization endpoint, so only the OIDC request
-                                   #   params should cross
-        query_allow: [client_id, redirect_uri, response_type, scope, state, nonce,
-                      code_challenge, code_challenge_method]
+                                   #   IdP authorization endpoint. The gateway's login redirect
+                                   #   carries two parameters only -- the authorization request
+                                   #   itself is pushed to the IdP over the back channel -- so
+                                   #   only those two should cross
+        query_allow: [client_id, request_uri]
       upstream: { path: /realms/main/protocol/openid-connect/auth }
     - id: token
       match: { path_prefix: /token, methods: [POST] }
@@ -635,25 +636,32 @@ and `present: false` on the other -- is exactly the pair that makes a single rou
 A request that matches no route is rejected with `404`.
 
 *Reserved gateway paths.* The gateway's own OIDC endpoints are matched *exactly, before the
-route table*, but only on the *OIDC host* (the host of `oidc.redirect_uri`). The keys that
-register them, and the field-level contract for each, are owned by
+route table*. The keys that register them, and the field-level contract for each, are owned by
 link:../configuration.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
-path, not what the keys mean. Up to *six* paths are carved out:
+path, not what the keys mean. Up to *seven* paths are carved out. The first five are matched only on
+the *OIDC host* (the host of `oidc.redirect_uri`); the last two are matched on *every* host, because
+the identity provider calls them server-to-server at whatever address was registered with it:
 
 . the `oidc.redirect_uri` path -- the auth-code *callback*, reached by a top-level `GET` with
   `code` and `state` in the query string (`response_mode=query`) and carrying no request body;
 . `oidc.logout.path` -- RP-initiated *logout*;
 . its return path (`oidc.logout.post_logout_redirect_uri`) -- the *logout-return* leg;
-. `oidc.logout.backchannel_path` -- the *back-channel logout* receiver (`mode: server` only);
 . `oidc.user_info.path` -- the session/*user-info* endpoint serving the curated identity view;
-. `oidc.login.path` -- the gateway-owned *login-initiation* entry point that starts a login.
+. `oidc.login.path` -- the gateway-owned *login-initiation* entry point that starts a login. The
+  redirect it answers carries `client_id` and `request_uri` only: the authorization request itself
+  is pushed to the identity provider over the back channel;
+. `oidc.logout.backchannel_path` -- the *back-channel logout* receiver (`mode: server` only);
+. `oidc.client_authentication.jwks_path` -- the *client JWKS* endpoint, at which the identity
+  provider fetches the gateway's client-authentication public key. With `oidc.client_secret`
+  configured there is no such key and the path answers `404`; it stays carved out all the same.
 
-Each is registered only when its configuration key is present, so a deployment that omits
-`oidc.user_info` or `oidc.login` carves out fewer than six. A proxy route such as
-`path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while other virtual
-hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path namespace.
-Routes remain free to use neighbouring prefixes; only the exact reserved paths on that one host
-are carved out.
+The first six are registered only when their configuration key is present, so a deployment that
+omits `oidc.user_info` or `oidc.login` carves out fewer. The client JWKS path is the exception: it
+needs no declaration, and an `oidc` block that names none reserves the default `/auth/jwks`. A proxy
+route such as `path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while
+other virtual hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path
+namespace -- except for the two every-host paths, which no virtual host can proxy. Routes remain free
+to use neighbouring prefixes; only the exact reserved paths are carved out.
 
 [[_endpoint_scopes]]
 === Endpoint scopes (`endpoint.scopes`)

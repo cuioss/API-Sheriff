@@ -2,14 +2,16 @@
 <!--
   BFF OIDC login handshake — the gateway acts as an OIDC confidential client.
   Shared by the session-based and cookie-based variants. Time flows downward.
+  The authorization request is pushed over the back channel (PAR, RFC 9126);
+  the token request carries a DPoP proof and the response must be bound to it.
   theme-handling: A (theme-neutral)
   see  pm-documents:ref-svg-diagrams/standards/diagram-type-sequence.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 760"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">BFF OIDC confidential-client login handshake</title>
-  <desc id="desc">A time-ordered exchange: an unauthenticated browser request is redirected by API Sheriff to the identity provider's authorization endpoint with PKCE, state and nonce; after the user authenticates, the provider redirects the browser back to the gateway callback with the authorization code as a query parameter; the gateway verifies state and issuer, exchanges the code server-to-server for tokens, validates every token offline, and binds them to the browser as either a server-side session or an encrypted cookie.</desc>
+  <desc id="desc">A time-ordered exchange: on an unauthenticated browser request API Sheriff pushes the authorization request — PKCE, state and nonce — to the identity provider over the back channel, authenticated with its client credential, and receives a request URI; it then redirects the browser to the authorization endpoint carrying only the client id and that request URI. The identity provider answers the browser with a redirect to its own login page, as Keycloak does, and the user authenticates there. The provider redirects the browser back to the gateway callback with the authorization code and state as query parameters; the gateway verifies state and issuer and exchanges the code server-to-server, presenting its client credential and a DPoP proof. It refuses a token response that is not of type DPoP or whose access token is not bound to its proof key, validates every token offline, and binds them to the browser as either a server-side session or an encrypted cookie.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -33,60 +35,80 @@
   <!-- actors + lifelines -->
   <text x="150" y="30" class="col-header">Browser</text>
   <rect class="stroke" x="90" y="42" width="120" height="36" rx="6"/>
-  <line class="sep" x1="150" y1="80" x2="150" y2="585"/>
+  <line class="sep" x1="150" y1="80" x2="150" y2="700"/>
 
   <text x="450" y="30" class="col-header">API Sheriff</text>
   <rect class="stroke" x="390" y="42" width="120" height="36" rx="6"/>
-  <line class="sep" x1="450" y1="80" x2="450" y2="585"/>
+  <line class="sep" x1="450" y1="80" x2="450" y2="700"/>
 
   <text x="750" y="30" class="col-header">Identity Provider</text>
   <rect class="stroke" x="680" y="42" width="140" height="36" rx="6"/>
-  <line class="sep" x1="750" y1="80" x2="750" y2="585"/>
+  <line class="sep" x1="750" y1="80" x2="750" y2="700"/>
 
   <!-- activation bars -->
-  <rect class="activation" x="445" y="115" width="10" height="380"/>
-  <rect class="activation" x="745" y="215" width="10" height="57"/>
-  <rect class="activation" x="745" y="368" width="10" height="50"/>
+  <rect class="activation" x="445" y="115" width="10" height="560"/>
+  <rect class="activation" x="745" y="160" width="10" height="50"/>
+  <rect class="activation" x="745" y="290" width="10" height="135"/>
+  <rect class="activation" x="745" y="515" width="10" height="50"/>
 
   <!-- 1. browser -> gateway -->
   <line class="arrow" x1="150" y1="120" x2="445" y2="120" marker-end="url(#arrow)"/>
   <text x="300" y="112" class="arrow-lbl">GET /api/… (no session)</text>
 
-  <!-- 2. gateway -> browser (302) -->
-  <line class="arrow-return" x1="445" y1="170" x2="150" y2="170" marker-end="url(#arrow)"/>
-  <text x="300" y="162" class="arrow-lbl">302 &#8594; IdP /authorize (PKCE, state, nonce)</text>
+  <!-- 2. gateway -> IdP: pushed authorization request (back channel) -->
+  <line class="arrow" x1="455" y1="165" x2="745" y2="165" marker-end="url(#arrow)"/>
+  <text x="600" y="157" class="arrow-lbl">POST PAR: PKCE, state, nonce + client auth</text>
 
-  <!-- 3. browser -> IdP -->
-  <line class="arrow" x1="150" y1="220" x2="745" y2="220" marker-end="url(#arrow)"/>
-  <text x="600" y="212" class="arrow-lbl">authenticate + consent</text>
+  <!-- 3. IdP -> gateway: request_uri -->
+  <line class="arrow-return" x1="745" y1="205" x2="455" y2="205" marker-end="url(#arrow)"/>
+  <text x="600" y="197" class="arrow-lbl">request_uri</text>
 
-  <!-- 4. IdP -> browser (302 redirect, code as query parameter) -->
-  <line class="arrow-return" x1="745" y1="270" x2="150" y2="270" marker-end="url(#arrow)"/>
-  <text x="600" y="262" class="arrow-lbl">302 &#8594; /auth/callback?code</text>
+  <!-- 4. gateway -> browser (302, reference only) -->
+  <line class="arrow-return" x1="445" y1="250" x2="150" y2="250" marker-end="url(#arrow)"/>
+  <text x="300" y="242" class="arrow-lbl">302 &#8594; IdP: client_id + request_uri only</text>
 
-  <!-- 5. browser -> gateway callback -->
-  <line class="arrow" x1="150" y1="320" x2="445" y2="320" marker-end="url(#arrow)"/>
-  <text x="300" y="312" class="arrow-lbl">GET /auth/callback?code&amp;state</text>
+  <!-- 5. browser -> IdP authorization endpoint -->
+  <line class="arrow" x1="150" y1="295" x2="745" y2="295" marker-end="url(#arrow)"/>
+  <text x="600" y="287" class="arrow-lbl">GET /authorize?client_id&amp;request_uri</text>
+
+  <!-- 6. IdP -> browser (302 to the provider's own login page) -->
+  <line class="arrow-return" x1="745" y1="335" x2="150" y2="335" marker-end="url(#arrow)"/>
+  <text x="600" y="327" class="arrow-lbl">302 &#8594; own login page (Keycloak)</text>
+
+  <!-- 7. browser -> IdP: the user authenticates -->
+  <line class="arrow" x1="150" y1="380" x2="745" y2="380" marker-end="url(#arrow)"/>
+  <text x="600" y="372" class="arrow-lbl">authenticate + consent</text>
+
+  <!-- 8. IdP -> browser (302 redirect, code as query parameter) -->
+  <line class="arrow-return" x1="745" y1="420" x2="150" y2="420" marker-end="url(#arrow)"/>
+  <text x="600" y="412" class="arrow-lbl">302 &#8594; /auth/callback?code&amp;state</text>
+
+  <!-- 9. browser -> gateway callback -->
+  <line class="arrow" x1="150" y1="465" x2="445" y2="465" marker-end="url(#arrow)"/>
+  <text x="300" y="457" class="arrow-lbl">GET /auth/callback?code&amp;state</text>
 
   <!-- gateway note: verify -->
-  <text x="466" y="348" class="note">verify state + iss (RFC 9207)</text>
+  <text x="466" y="490" class="note">verify state + iss (RFC 9207)</text>
 
-  <!-- 6. gateway -> IdP token endpoint -->
-  <line class="arrow" x1="455" y1="372" x2="745" y2="372" marker-end="url(#arrow)"/>
-  <text x="600" y="364" class="arrow-lbl">token endpoint: code + client auth</text>
+  <!-- 10. gateway -> IdP token endpoint -->
+  <line class="arrow" x1="455" y1="520" x2="745" y2="520" marker-end="url(#arrow)"/>
+  <text x="600" y="512" class="arrow-lbl">token endpoint: code + client auth + DPoP proof</text>
 
-  <!-- 7. IdP -> gateway tokens -->
-  <line class="arrow-return" x1="745" y1="416" x2="455" y2="416" marker-end="url(#arrow)"/>
-  <text x="600" y="408" class="arrow-lbl">access + refresh + id tokens</text>
+  <!-- 11. IdP -> gateway tokens -->
+  <line class="arrow-return" x1="745" y1="560" x2="455" y2="560" marker-end="url(#arrow)"/>
+  <text x="600" y="552" class="arrow-lbl">DPoP-bound access + refresh + id tokens</text>
 
-  <!-- gateway note: validate + bind -->
-  <text x="466" y="444" class="note">validate every token offline</text>
-  <text x="466" y="460" class="note">bind to session or encrypted cookie</text>
+  <!-- gateway notes: bound-token check, validate, bind -->
+  <text x="466" y="586" class="note">refuse unless token type is DPoP and</text>
+  <text x="466" y="602" class="note">cnf.jkt names the gateway's proof key</text>
+  <text x="466" y="624" class="note">validate every token offline</text>
+  <text x="466" y="640" class="note">bind to session or encrypted cookie</text>
 
-  <!-- 8. gateway -> browser set-cookie -->
-  <line class="arrow-return" x1="445" y1="485" x2="150" y2="485" marker-end="url(#arrow)"/>
-  <text x="300" y="477" class="arrow-lbl">302 &#8594; app · Set-Cookie (HttpOnly, Secure)</text>
+  <!-- 12. gateway -> browser set-cookie -->
+  <line class="arrow-return" x1="445" y1="670" x2="150" y2="670" marker-end="url(#arrow)"/>
+  <text x="300" y="662" class="arrow-lbl">302 &#8594; app · Set-Cookie (HttpOnly, Secure)</text>
 
   <!-- footer -->
-  <text x="450" y="615" class="caption">The token never reaches JavaScript. Code exchange is server-to-server; tokens are validated before they are trusted.</text>
+  <text x="450" y="724" class="caption">The token never reaches JavaScript, and no authorization parameter travels through the browser.</text>
+  <text x="450" y="742" class="caption">Code exchange is server-to-server; tokens must be bound to the gateway's proof key and are validated before they are trusted.</text>
 </svg>

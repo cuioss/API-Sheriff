@@ -26,12 +26,22 @@ link:../architecture.adoc#_authentication_layer[Architecture -- Authentication L
 == Login Flow
 
 The login handshake is shared with the link:03-bff-cookie.adoc[cookie-based variant]; only
-the final binding step differs. The gateway redirects the unauthenticated browser to the IdP
-with PKCE, `state`, and `nonce`; after the user authenticates, the IdP redirects the browser
-back to the gateway callback with the authorization code as a query parameter (a `302`, not a
-POST); the gateway -- driving the `token-sheriff-client` engine -- verifies `state` and issuer, exchanges the
-code server-to-server, validates the tokens offline, and -- in this variant -- *stores them
-server-side* and sets an opaque session-id cookie.
+the final binding step differs. The gateway *pushes* the authorization request -- PKCE, `state`,
+`nonce`, scope and redirect URI -- to the IdP over the back channel (PAR, RFC 9126) and redirects
+the unauthenticated browser to the IdP with `client_id` and `request_uri` only. After the user
+authenticates, the IdP redirects the browser back to the gateway callback with the authorization
+code as a query parameter (a `302`, not a POST). The gateway -- driving the `token-sheriff-client`
+engine -- verifies `state` and issuer and exchanges the code server-to-server, presenting its client
+credential and a DPoP proof. It accepts the token response only when the access token is bound to
+its proof key, validates the tokens offline, and -- in this variant -- *stores them server-side* and
+sets an opaque session-id cookie.
+
+An identity provider that offers no pushed-authorization-request endpoint cannot serve this variant:
+the login is refused with `502`. There is no front-channel fallback.
+
+How the IdP answers that redirect is specific to the IdP. Keycloak 26.5.7 answers an authorization
+request that names a pushed `request_uri` with a further `302` to its own `login-actions/authenticate`
+page, and that page is the login form; the browser follows it.
 
 *What the login asks for.* The authorization request's `scope` is the route's `needed(request) =
 oidc.scopes ∪ endpoint.scopes`, derived once at boot per route -- the same set a bearer route checks,
@@ -65,6 +75,41 @@ exchange the code, so a callback replayed in a different browser (which carries 
 binding cookie) is refused. The record is consumed on first use and expires on a short TTL.
 
 image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client login: redirect to IdP, code exchange, token validation, session binding, align=center]
+
+== Client Authentication, Pushed Requests and Token Binding
+
+Three properties of the confidential client are fixed by
+link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]
+and shared with the cookie-based variant:
+
+* *Pushed authorization requests.* Every authorization request is pushed. The browser never carries
+  an authorization parameter, so none can be read or altered on the front channel.
+* *The sender constraint.* Every token request carries a DPoP proof signed with one key, and every
+  access token is bound to that key by its `cnf.jkt` claim. The gateway refuses a token response that
+  is not bound: a login ends with `400` and no session, and a refresh ends the session.
+* *Key-based client authentication, by default.* The gateway authenticates to the IdP with
+  `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
+  gateway path, `/auth/jwks` by default, answered on every host -- and the IdP fetches it from there.
+
+Each of the two keys is either read from a PEM file the configuration names by path, or generated at
+startup when no file is named. A generated key is replaced by every restart and cannot be shared, so
+it fits a single node -- which is what this variant is.
+
+The binding ends at the gateway. The token injected upstream carries `cnf.jkt` and travels as
+`Authorization: Bearer`, without a proof: an upstream must not check `cnf`.
+
+*The client secret is an operator choice.* Configuring `oidc.client_secret` selects
+`client_secret_basic` in place of `private_key_jwt`. Pushed requests and the DPoP binding stay in
+effect, the JWKS path answers `404`, and the gateway logs `WARN` `ApiSheriff-130` at every boot.
+
+[WARNING]
+====
+Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
+====
+
+Operator setup for both modes is in
+link:../user/bff-session.adoc#key-material[the operator guide], and the requirement-by-requirement
+position in link:../fapi_status.adoc[FAPI 2.0 Status].
 
 == Steady-State API Call
 
@@ -244,7 +289,10 @@ When `oidc.user_info.path` is omitted no user-info endpoint is exposed.
 oidc:
   issuer: https://idp.example.com/realms/main
   client_id: api-sheriff
-  client_secret: ${SHERIFF_CLIENT_SECRET}
+  client_authentication:         # private_key_jwt, the default; no client_secret is declared
+    key_file: /etc/sheriff/keys/client-auth.pem   # optional: omit to generate a key on startup
+  sender_constraint:             # DPoP proof key; every token is bound to it
+    key_file: /etc/sheriff/keys/dpop.pem          # optional: omit to generate a key on startup
   redirect_uri: https://gw.example.com/auth/callback
   scopes: [openid, profile]      # requested on every login; endpoints add their own (additive)
   login:
@@ -288,6 +336,8 @@ endpoint:
 * *Stateful* -- requires a server-side token store.
 * *Strong isolation* -- the token never leaves the server in any form.
 * *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
+* *Pushed requests and bound tokens* -- every authorization request is pushed, every token is bound
+  to one DPoP key, and the client authenticates with a key unless a client secret is configured.
 
 == Performance baseline
 

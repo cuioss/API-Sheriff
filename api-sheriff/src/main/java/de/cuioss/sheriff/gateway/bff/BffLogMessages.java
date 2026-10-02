@@ -246,9 +246,9 @@ public final class BffLogMessages {
          * {@code grant_type} by an allow-list: {@code code-exchange}, {@code refresh} or
          * {@code other}. The second is the reason, a closed set: {@code token-type} (the response's
          * {@code token_type} is not {@code DPoP}), {@code unreadable-access-token} (the access token
-         * is not a compact JWS with a parsable JSON payload), {@code cnf-absent} (the access token
-         * carries no {@code cnf.jkt}) or {@code cnf-mismatch} (its {@code cnf.jkt} names another
-         * key).
+         * is absent, is not a compact JWS with a parsable JSON payload, or could not be read for any
+         * other reason), {@code cnf-absent} (the access token carries no {@code cnf.jkt}) or
+         * {@code cnf-mismatch} (its {@code cnf.jkt} names another key).
          * <p>
          * <strong>Never carries token material.</strong> Neither the access token, the refresh
          * token, the ID token, a claim value, the received {@code jkt} nor the received token type
