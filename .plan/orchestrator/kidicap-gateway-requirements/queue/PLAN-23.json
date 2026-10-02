@@ -2,9 +2,9 @@
   "id": "PLAN-23",
   "slug": "session-route-scope-parity",
   "workstream": "WS-04",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-23-session-route-scope-parity",
-  "pr": "",
-  "landing": "",
+  "pr": "#369",
+  "landing": "landings/PLAN-23.md",
   "seq": 11
 }

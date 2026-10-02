@@ -2,7 +2,8 @@
 
 slug: kidicap-gateway-requirements
 
-> Ledger document for one epic under `.plan/local/orchestrator/kidicap-gateway-requirements/`. The layout and
+> Ledger document for one epic under `.plan/orchestrator/kidicap-gateway-requirements/` (relocated there
+> 2026-10-01 from the retired `.plan/local/` address; now git-tracked, split layout). The layout and
 > authority contract live in the central standard — see
 > `persona-plan-orchestrator/standards/orchestration-model.md`. `status.json` is the
 > machine authority; any statement here that conflicts with it is stale prose.
@@ -80,6 +81,24 @@ decision.
   wires; `StepUpCoordinator` is pre-wired with scope/default-return params and an in-code note naming the
   step-up scope set as PLAN-20's question (ADR-0048). PLAN-21: `LoginFlow.initiate` gained a `scopes`
   parameter; the re-scoped mechanism still holds.
+- **PLAN-24 (staged 2026-10-02, WS-01) — the key-rotation window.** Downstream HIGH, measured twice: an
+  abrupt IdP key change costs up to 600 s of total outage on every protected route and every login, with
+  no knob to shorten it. Wants a bounded single-flight fetch on an unknown `kid` plus a configurable
+  refresh interval. **No main-source overlap with any WS-04 spec** — the first real second-slot candidate
+  since PLAN-22. Carries an outline fork: if the bounded fetch belongs in token-sheriff, the library half
+  leaves this repository.
+- **PLAN-25 (staged 2026-10-02, WS-02) — the IT-evidence plan.** Ten properties the downstream states to
+  its operators with only unit-level backing. Tests only, with a STOP rule if a property proves false, and
+  check-first instructions on the two rows PLAN-23/PLAN-21 may already cover. Surface is
+  `integration-tests/**` with no `api-sheriff/src/main` entry, so it pairs with anything.
+- **PLAN-26 (staged 2026-10-02, WS-04) — the logout truth-up.** Threat-model BFF-09 claims COVERED for a
+  revocation the runtime binds to a no-op; plus the undisposed Medium cookie-mode residual and two missing
+  ADRs. Mostly prose, but deliverable 1 removes a false security claim. Sequenced against PLAN-20/21 (same
+  threat-model and ADR files); pairs with PLAN-24 or PLAN-25.
+- **Pairing, as it now stands:** WS-04 (PLAN-20, PLAN-21, PLAN-26) is one contended surface and stays
+  strictly sequential; PLAN-24 (`auth/` + config) and PLAN-25 (`integration-tests/`) are each disjoint from
+  it. So the second slot is finally fillable — pair one WS-04 plan with PLAN-24 or PLAN-25, never two WS-04
+  plans.
 - Superseded first-cut specs PLAN-01..PLAN-12 live in `plans/superseded/` (mapping in its README) and are
   never emitted. Shipped: PLAN-15 (#320), PLAN-13 (#334), PLAN-14 (#337) — their records are in
   `landings/`.
@@ -225,6 +244,13 @@ decision.
   staged plan touches that surface — fold into whichever plan next enters the relay. — source:
   `landings/PLAN-22.md`
 
+> ↪ **RESOLVED 2026-10-02 by PR #367** (`fix(adr): resolve ordinal 0053 collision and add contract
+> guards`), independently of this epic: `doc/adr/` now carries ONE 0053, the header-matcher ADR moved to
+> 0056, and the PR added contract guards against a repeat. **PLAN-20's deliverable 9 (the renumber) is
+> therefore RETIRED** — it would re-do settled work. What is NOT fixed is the blind gate: `manage-adr
+> scan` still omits the duplicate population on executor 0.1.1826, so confirm the corpus by listing
+> `doc/adr/`, never by that payload. Was:
+
 - **`main` carries TWO ADR-0053 files** — `0053-A_header_matchers_name_is_normalised…` (#346, PLAN-18) and
   `0053-Portal_templates_render_on_a_standalone_Qute_engine…` (#348, which renamed it from 0050 after #341
   had taken 0050; that file is the portal ADR `landings/PLAN-16.md` recorded as ADR-0050). So the ordinal
@@ -236,6 +262,17 @@ decision.
   this and ALSO returned no verdict, because `manage-adr scan` omits the duplicate population from its
   success payload (plan-marshall lesson `2026-09-24-07-001`) — so confirm the corpus by listing
   `doc/adr/`, never by that payload. — observed 2026-09-24 by the orchestrator, not reported by any plan
+- **`source_id` is a stored PATH, resolved at finalize time, so a ledger relocation orphans every
+  in-flight plan's outbox.** PLAN-23 shipped #369 with `emit-landing` reporting *not orchestrated, no
+  landing emitted*: its `source_id` was persisted on 2026-09-25 as
+  `.plan/local/orchestrator/…/PLAN-23-….md`, and the executor regeneration to 0.1.1826 (2026-10-01) made
+  that the RETIRED address — `detection: unrecognised_id`, `orchestrated: false`. Reproduced both ways at
+  2026-10-02. **Caused by this session**: the regeneration alone was sufficient, and the subsequent ledger
+  move made the new address correct without rewriting the pointer the running plan already held. The
+  landing was recovered from the operator's paste, so nothing was lost — but the automatic channel was
+  broken mid-flight, which is the consequence the four earlier detector-disagreement recurrences had not
+  yet produced. **Mitigation until the pointer is resolved dynamically: do not relocate the ledger while a
+  plan is in flight.** Filed upstream as a plan-marshall lesson. — source: `landings/PLAN-23.md`
 - A stray PR-level comment on #346 (`IC_kwDOPatrT88AAAABWb_adQ`) carries internal triage prose that
   `post_responses` transmitted verbatim as a public reply. Harmless; delete by hand on GitHub if wanted.
   Mechanism filed as plan-marshall lesson `2026-09-24-05-001`. — source: inbox
@@ -263,6 +300,26 @@ decision.
   `README.md`, `CLAUDE.md`, `doc/**`, incl. `#as-N` anchors). Not API Sheriff work, and not owned by any
   plan here; the gateway maintainers repoint them (e.g. to API Sheriff issues/ADRs as plans land). —
   source: removal commit 08620f0 in kidicap-gateway (branch feature/initial-structure, not pushed)
+
+- **The threat model asserts a control the runtime does not implement**: BFF-09 is labelled **COVERED**
+  for IdP token revocation on logout, while the revocation hook is bound to a **no-op** in the shipped
+  runtime. PLAN-23 corrected the user docs and left the threat model, so the repository now states both
+  the truth and the claim. A false COVERED closes a question a gap would have invited. **Staged as
+  PLAN-26 deliverable 1.** The plan also recorded the pattern as lesson `2026-10-02-12-007` (kept in this
+  repo's store — the component is this project's). — source: `landings/PLAN-23.md`
+- Cookie mode cannot observe a logout, so a late refresh or widening response can set a fresh cookie.
+  Documented as a residual by PLAN-23; **CodeRabbit rates it Medium and nothing disposes of that rating**.
+  Staged as PLAN-26 deliverable 3. — source: `landings/PLAN-23.md`
+- Two shipped decisions carry no ADR: the problem+json extension-member rule, and the reserved-path boot
+  rule (the ADR check suggests an ADR-0018 amendment for the latter). Staged as PLAN-26 deliverables 4-5.
+  — source: `landings/PLAN-23.md`
+- Three info-level audit items from PLAN-23, unstaged: a widening does not revoke the superseded refresh
+  token; the active scope set falls back to the requested set when the provider states none; no boot rule
+  refuses duplicate reserved paths. — source: `landings/PLAN-23.md`
+- Pre-existing and unstaged: boot refusal messages echo configured values raw (`default_view`, trusted
+  proxies, base-URL alias, websocket origins, anchor prefixes), and roughly forty older comment
+  inaccuracies sit in the BFF files. Hygiene, not correctness — fold into whichever plan next enters those
+  files. — source: `landings/PLAN-23.md`
 
 ## Watches
 
