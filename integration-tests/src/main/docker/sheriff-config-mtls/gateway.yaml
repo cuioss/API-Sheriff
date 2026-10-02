@@ -126,15 +126,23 @@ token_validation:
 # reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
 # the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
 # under /auth and never collide with the /bff-session proxy anchor above. Confidential
-# client: integration-client / integration-secret against the compose 'integration'
-# realm (standardFlowEnabled, redirectUris '*'). OIDC discovery is lazy (first engine
-# use), so boot needs no live IdP; the browser reaches the gateway on the published
-# host port 10444 (this mTLS instance's own published port) and Keycloak on its published
-# host port, while the gateway reaches Keycloak container-internally at keycloak:8443.
+# client: integration-client against the compose 'integration' realm (standardFlowEnabled,
+# redirectUris '*'), authenticated with private_key_jwt — no client secret is declared.
+# OIDC discovery is lazy (first engine use), so boot needs no live IdP; the browser reaches
+# the gateway on the published host port 10444 (this mTLS instance's own published port) and
+# Keycloak on its published host port, while the gateway reaches Keycloak container-internally
+# at keycloak:8443.
 oidc:
   issuer: https://keycloak:8443/realms/integration
   client_id: integration-client
-  client_secret: ${OIDC_CLIENT_SECRET}
+  # The same two key files as the primary gateway.yaml, which carries the explanation: the
+  # client-authentication key by literal path, the DPoP proof key through ${OIDC_DPOP_KEY_FILE}.
+  # This instance holds the key the primary instance publishes at /auth/jwks, so the realm
+  # client's one jwks.url covers it.
+  client_authentication:
+    key_file: /app/signing-keys/client-auth-rsa.pem
+  sender_constraint:
+    key_file: ${OIDC_DPOP_KEY_FILE}
   scopes: ["openid", "profile", "email"]
   # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
   # reserved path binds to; its origin ('https://localhost:10444') is the gateway

@@ -39,6 +39,13 @@ import org.junit.jupiter.api.Test;
  * live compose Keycloak {@code integration} realm, which <em>can</em> mint one. The
  * admitted-and-forwarded path is consequently in scope, and is driven below.
  * <p>
+ * <strong>Where the token comes from.</strong> The suite mints it with the password grant of
+ * {@code token-mint-client}, the one realm client that still allows direct access grants and that no
+ * gateway authenticates as. The gateway clients cannot serve as a mint: direct access grants are
+ * disabled on them, their tokens are bound to a DPoP proof key, and two of the three hold no secret.
+ * A token of {@code token-mint-client} is an unbound bearer token of the same realm, signed by the
+ * same realm keys, which is all the bearer route validates.
+ * <p>
  * <strong>Rejection scenarios.</strong> A missing token and a malformed token must both be rejected
  * {@code 401} at the gateway and the upstream must never be reached. A forwarded request would carry
  * the {@code go-httpbin} echo (a non-null {@code method}); its absence is the observable proof the
@@ -53,11 +60,15 @@ import org.junit.jupiter.api.Test;
  */
 class BearerValidationIT extends BaseIntegrationTest {
 
-    /** The seeded confidential client of the {@code integration} realm (direct grant enabled). */
-    private static final String CLIENT_ID = "integration-client";
+    /**
+     * The realm client the fixtures mint bearer tokens from (see {@code integration-realm.json}): the
+     * only client of the {@code integration} realm with direct access grants enabled. It is not a
+     * gateway client. Package-private so {@code OneOffGatewayContainers} mints from the same client.
+     */
+    static final String TOKEN_MINT_CLIENT_ID = "token-mint-client";
 
-    /** The seeded client secret (see {@code integration-realm.json}); a test-fixture value only. */
-    private static final String CLIENT_SECRET = "integration-secret";
+    /** The secret of {@link #TOKEN_MINT_CLIENT_ID}; a test-fixture value only. */
+    static final String TOKEN_MINT_CLIENT_SECRET = "token-mint-secret";
 
     private static final String TOKEN_ENDPOINT =
             "https://" + BffKeycloakLoginFlow.KEYCLOAK_HOST_AUTHORITY
@@ -141,10 +152,11 @@ class BearerValidationIT extends BaseIntegrationTest {
 
     /**
      * Mints a real access token through the {@code integration} realm's direct-grant
-     * ({@code grant_type=password}) endpoint, reusing the seeded client and user the browser-driven
-     * BFF suite already relies on. The realm pins {@code frontendUrl https://keycloak:8443}, so the
-     * minted token carries the container-internal {@code iss} the gateway's {@code integration-keycloak}
-     * issuer declares — the host-published mint port does not change the issuer claim.
+     * ({@code grant_type=password}) endpoint, as {@link #TOKEN_MINT_CLIENT_ID} and for the seeded user
+     * the browser-driven BFF suite logs in as. The realm pins {@code frontendUrl https://keycloak:8443},
+     * so the minted token carries the container-internal {@code iss} the gateway's
+     * {@code integration-keycloak} issuer declares — the host-published mint port does not change the
+     * issuer claim.
      *
      * <p>
      * <strong>The requested scope is explicit.</strong> Every bearer route of the gateway checks the
@@ -156,7 +168,8 @@ class BearerValidationIT extends BaseIntegrationTest {
      * <p>
      * Package-private rather than private so {@code BearerSecurityFilterInteractionIT} drives the same
      * acquisition instead of introducing a second token helper — one realm/client/user fixture, one
-     * place to fix when the realm import changes.
+     * place to fix when the realm import changes. {@code BffClientKeyWiringTest} asserts on the realm
+     * import that this client is the only one with direct access grants.
      *
      * @return the raw access token
      */
@@ -168,16 +181,21 @@ class BearerValidationIT extends BaseIntegrationTest {
      * Mints a real access token like {@link #mintIntegrationRealmAccessToken()}, requesting the given
      * space-separated {@code scope} instead of the gateway's {@code oidc.scopes}. {@code BearerScopeIT}
      * uses it to mint a token with and without an endpoint-specific scope.
+     * <p>
+     * The request relaxes HTTPS validation itself instead of relying on the setting
+     * {@link BaseIntegrationTest} applies to its subclasses: suites that do not extend that class call
+     * this helper too, and Keycloak serves the stack's self-signed certificate to all of them.
      *
      * @param scope the space-separated scope the password grant requests
      * @return the raw access token
      */
     static String mintIntegrationRealmAccessToken(String scope) {
         Response response = given()
+                .relaxedHTTPSValidation()
                 .contentType(ContentType.URLENC)
                 .formParam("grant_type", "password")
-                .formParam("client_id", CLIENT_ID)
-                .formParam("client_secret", CLIENT_SECRET)
+                .formParam("client_id", TOKEN_MINT_CLIENT_ID)
+                .formParam("client_secret", TOKEN_MINT_CLIENT_SECRET)
                 .formParam("username", BffKeycloakLoginFlow.USERNAME)
                 .formParam("password", BffKeycloakLoginFlow.PASSWORD)
                 .formParam("scope", scope)

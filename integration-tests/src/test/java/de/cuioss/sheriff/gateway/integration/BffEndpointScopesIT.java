@@ -20,14 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.net.URI;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
@@ -39,9 +34,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves, through the live server-mode edge and the compose Keycloak, that a BFF login requests the
+ * Proves, through the live server-mode edge and the compose Keycloak, that a BFF login is granted the
  * scope set of the route it is for — {@code oidc.scopes} united with the endpoint's additive
- * {@code scopes} (ADR-0048) — and that the IdP then issues a token carrying that set.
+ * {@code scopes} (ADR-0048) — by reading the token the IdP issues for it.
  * <p>
  * <strong>The fixture.</strong> {@code endpoints/bff-scoped.yaml} declares the session route
  * {@code /bff-session/scoped} with {@code scopes: ["sheriff_it_endpoint"]}, so its needed set is
@@ -50,30 +45,39 @@ import org.junit.jupiter.api.Test;
  * Keycloak issues it only when the authorization request names it. Its presence in the mediated
  * token is therefore proof that the gateway asked for it, not an artefact of the realm's defaults.
  * <p>
+ * <strong>How the requested scope set is observed.</strong> The gateway pushes its authorization
+ * request (RFC 9126), so the login redirect carries {@code client_id} and {@code request_uri} and no
+ * {@code scope} parameter: the request is not readable from the browser's side. Every case below
+ * therefore completes the login and reads the {@code scope} claim of the token the gateway then
+ * mediates to the echo origin. The optional scope is present in that token exactly when the pushed
+ * request asked for it.
+ * <p>
  * <strong>What this suite proves.</strong>
  * <ul>
- *   <li>An unauthenticated navigation on the scoped route is redirected into the IdP with a
- *       {@code scope} parameter equal to exactly that four-member set — no member missing and none
- *       extra.</li>
- *   <li>{@code /auth/login?returnUrl=} resolves the scope set from the return target: a target on a
- *       {@code require: none} asset route requests exactly {@code oidc.scopes}, while a target on the
- *       scoped session route requests the four-member set. The second case is what keeps the first
- *       from passing vacuously — a resolver that always answered {@code oidc.scopes} would satisfy
- *       the asset case on its own.</li>
- *   <li>After a login started on the scoped route, the echo origin receives a mediated bearer whose
- *       {@code scope} claim contains {@code sheriff_it_endpoint}, while a login started on the plain
- *       {@code /bff-session} route yields a mediated bearer without it — the control that proves the
- *       realm does not issue the scope by default.</li>
+ *   <li>A login started by an unauthenticated navigation on the scoped route mediates a token that
+ *       carries every member of the four-member set.</li>
+ *   <li>{@code /auth/login?returnUrl=} resolves the scope set from the return target: a login for a
+ *       target on a {@code require: none} asset route mediates a token <em>without</em>
+ *       {@code sheriff_it_endpoint}, while a login for a target on the scoped session route mediates
+ *       one <em>with</em> it. The second case is what keeps the first from passing vacuously — a
+ *       resolver that always answered {@code oidc.scopes} would satisfy the asset case on its own.</li>
+ *   <li>A login started on the plain {@code /bff-session} route yields a mediated bearer without the
+ *       endpoint scope — the control that proves the realm does not issue the scope by default.</li>
  * </ul>
  * <p>
- * <strong>What this suite does NOT prove.</strong> It does not exercise step-up — a live session
- * lacking a scope navigating onto a route that needs it — nor the scope set a refresh requests; the
+ * <strong>What this suite does NOT prove.</strong> It does not prove that the gateway requests
+ * <em>exactly</em> the needed set with nothing extra. A granted token also carries the realm's default
+ * client scopes, whatever the request named, so "nothing extra" cannot be read from it. That property
+ * is proven at unit level against the pushed request body a stub identity provider records
+ * ({@code BffRuntimeProducerTest}, the scope-set cases of the produced runtime, and
+ * {@code PushedAuthorizationRequestsTest}). Nor does this suite exercise step-up — a live session
+ * lacking a scope navigating onto a route that needs it — or the scope set a refresh requests; the
  * latter is {@code BffTokenRefreshIT}'s, which needs the short-token-lifespan instance. Like every
  * {@code Bff*IT}, it replays a cookie map and asserts nothing about browser cookie policy (see
  * {@link BffKeycloakLoginFlow}).
  * <p>
- * The scope helpers are package-private so {@code BearerScopeIT} and {@code BffTokenRefreshIT}
- * read requested and granted scopes the same way instead of carrying their own copies.
+ * The scope helpers are package-private so {@code BearerScopeIT}, {@code BffSessionFallbackIT} and
+ * {@code BffTokenRefreshIT} read granted scopes the same way instead of carrying their own copies.
  */
 class BffEndpointScopesIT {
 
@@ -96,62 +100,42 @@ class BffEndpointScopesIT {
     private static final String PUBLIC_ASSET_TARGET = "/assets/static/index.html";
 
     @Test
-    @DisplayName("a navigation on the scoped route requests exactly oidc.scopes plus the endpoint scope")
-    void navigationOnScopedRouteRequestsTheUnitedScopeSet() {
-        Response initiation = BffKeycloakLoginFlow.gateway(Map.of())
-                .header("Accept", "text/html")
-                .redirects().follow(false)
-                .when().get(SCOPED_SESSION_PATH)
-                .then().statusCode(302)
-                .extract().response();
-
-        assertEquals(SCOPED_ROUTE_SCOPES, requestedScopeSet(initiation),
-                "a navigation login on /bff-session/scoped must request oidc.scopes united with the "
-                        + "endpoint's scopes — exactly, with nothing missing and nothing extra");
-    }
-
-    @Test
-    @DisplayName("/auth/login with a public asset return target requests exactly oidc.scopes")
-    void loginInitiationForPublicTargetRequestsOidcScopesOnly() {
-        Response initiation = BffKeycloakLoginFlow.gateway(Map.of())
-                .redirects().follow(false)
-                .when().get("/auth/login?returnUrl=" + PUBLIC_ASSET_TARGET)
-                .then().statusCode(302)
-                .extract().response();
-
-        assertEquals(OIDC_SCOPES, requestedScopeSet(initiation),
-                "a return target on a require:none route contributes no scope, so the login must "
-                        + "request oidc.scopes and nothing else");
-    }
-
-    @Test
-    @DisplayName("/auth/login with a scoped-route return target requests the united scope set")
-    void loginInitiationForScopedTargetRequestsTheUnitedScopeSet() {
-        Response initiation = BffKeycloakLoginFlow.gateway(Map.of())
-                .redirects().follow(false)
-                .when().get("/auth/login?returnUrl=" + SCOPED_SESSION_PATH)
-                .then().statusCode(302)
-                .extract().response();
-
-        assertEquals(SCOPED_ROUTE_SCOPES, requestedScopeSet(initiation),
-                "a return target on the scoped session route must make the login request that "
-                        + "route's needed scope set");
-    }
-
-    @Test
-    @DisplayName("after a login on the scoped route the echo origin sees a mediated token carrying the endpoint scope")
-    void scopedLoginMediatesATokenCarryingTheEndpointScope() {
+    @DisplayName("a login started by a navigation on the scoped route is granted oidc.scopes plus the endpoint scope")
+    void navigationOnScopedRouteIsGrantedTheUnitedScopeSet() {
         Session session = BffKeycloakLoginFlow.login(SCOPED_SESSION_PATH);
 
-        Response echoed = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
-                .when().get(SCOPED_SESSION_PATH)
-                .then().statusCode(200)
-                .extract().response();
+        Set<String> granted = mediatedScopes(session, SCOPED_SESSION_PATH);
 
-        Set<String> granted = grantedScopes(mediatedAuthorization(echoed));
-        assertTrue(granted.contains(ENDPOINT_SCOPE),
-                "the mediated token must carry " + ENDPOINT_SCOPE + ", the scope the login requested "
-                        + "for this route; granted scopes were " + granted);
+        assertTrue(granted.containsAll(SCOPED_ROUTE_SCOPES),
+                "a navigation login on /bff-session/scoped must be granted oidc.scopes united with the "
+                        + "endpoint's scopes; the mediated token carries " + granted);
+    }
+
+    @Test
+    @DisplayName("/auth/login with a public asset return target is granted oidc.scopes without the endpoint scope")
+    void loginInitiationForPublicTargetIsGrantedNoEndpointScope() {
+        Session session = BffKeycloakLoginFlow.login("/auth/login?returnUrl=" + PUBLIC_ASSET_TARGET);
+
+        Set<String> granted = mediatedScopes(session, PLAIN_SESSION_PATH);
+
+        assertTrue(granted.containsAll(OIDC_SCOPES),
+                "a login for a public return target must be granted oidc.scopes; the mediated token "
+                        + "carries " + granted);
+        assertFalse(granted.contains(ENDPOINT_SCOPE),
+                "a return target on a require:none route contributes no scope, so the login must not "
+                        + "ask for " + ENDPOINT_SCOPE + "; the mediated token carries " + granted);
+    }
+
+    @Test
+    @DisplayName("/auth/login with a scoped-route return target is granted the endpoint scope")
+    void loginInitiationForScopedTargetIsGrantedTheEndpointScope() {
+        Session session = BffKeycloakLoginFlow.login("/auth/login?returnUrl=" + SCOPED_SESSION_PATH);
+
+        Set<String> granted = mediatedScopes(session, SCOPED_SESSION_PATH);
+
+        assertTrue(granted.containsAll(SCOPED_ROUTE_SCOPES),
+                "a return target on the scoped session route must make the login ask for that route's "
+                        + "needed scope set; the mediated token carries " + granted);
     }
 
     @Test
@@ -159,12 +143,8 @@ class BffEndpointScopesIT {
     void plainLoginMediatesATokenWithoutTheEndpointScope() {
         Session session = BffKeycloakLoginFlow.login(PLAIN_SESSION_PATH);
 
-        Response echoed = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
-                .when().get(PLAIN_SESSION_PATH)
-                .then().statusCode(200)
-                .extract().response();
+        Set<String> granted = mediatedScopes(session, PLAIN_SESSION_PATH);
 
-        Set<String> granted = grantedScopes(mediatedAuthorization(echoed));
         assertFalse(granted.contains(ENDPOINT_SCOPE),
                 "the realm must not issue " + ENDPOINT_SCOPE + " unless it is requested, otherwise its "
                         + "presence after a scoped login proves nothing; granted scopes were " + granted);
@@ -173,36 +153,21 @@ class BffEndpointScopesIT {
     // ---------------------------------------------------------------- shared helpers
 
     /**
-     * Reads the {@code scope} parameter of the authorization request the gateway redirected the
-     * browser to, and returns its members as a set.
-     * <p>
-     * The gateway holds the needed scope set as an unordered set, so the order of the members in the
-     * parameter carries no meaning and only membership is compared. A duplicated member would be
-     * hidden by that set conversion, so it is rejected explicitly first. A repeated {@code scope}
-     * parameter is rejected for the same reason: reading only the first occurrence would let a
-     * malformed request carrying a second, different scope list pass unnoticed.
+     * The scope members of the token a session mediates on {@code path}. The route must admit the
+     * session as it is: a session lacking a scope the route needs is answered with a step-up
+     * redirect, and this call then fails on the status instead of reading a token.
      *
-     * @param initiation the {@code 302} that starts the authorization-code flow
-     * @return the requested scope members
+     * @param session the established gateway session
+     * @param path    a {@code require: session} path on the primary instance
+     * @return the granted scope members of the mediated token
      */
-    static Set<String> requestedScopeSet(Response initiation) {
-        String location = BffKeycloakLoginFlow.location(initiation);
-        assertTrue(location.contains("/protocol/openid-connect/auth"),
-                () -> "expected a redirect into the OIDC authorization endpoint, got " + location);
-        String rawQuery = URI.create(location).getRawQuery();
-        assertNotNull(rawQuery, () -> "the authorization redirect carries no query: " + location);
-        List<String> scopeParameters = Arrays.stream(rawQuery.split("&"))
-                .filter(parameter -> parameter.startsWith("scope="))
-                .toList();
-        assertEquals(1, scopeParameters.size(),
-                () -> "the authorization redirect must carry exactly one scope parameter: " + location);
-        String scope = URLDecoder.decode(scopeParameters.getFirst().substring("scope=".length()),
-                StandardCharsets.UTF_8);
-        List<String> members = Arrays.asList(scope.trim().split(" +"));
-        Set<String> unique = new HashSet<>(members);
-        assertEquals(members.size(), unique.size(),
-                () -> "the requested scope must name each member once, got '" + scope + "'");
-        return unique;
+    private static Set<String> mediatedScopes(Session session, String path) {
+        Response echoed = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .redirects().follow(false)
+                .when().get(path)
+                .then().statusCode(200)
+                .extract().response();
+        return grantedScopes(mediatedAuthorization(echoed));
     }
 
     /**

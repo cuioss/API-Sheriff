@@ -346,8 +346,9 @@ final class OneOffGatewayContainers {
     }
 
     /**
-     * Mints an access token from the compose Keycloak's {@code integration} realm. The realm pins its
-     * frontend URL, so the token's {@code iss} is the container-internal issuer
+     * Mints an access token from the compose Keycloak's {@code integration} realm, with the password
+     * grant of the realm's token-mint client — the one client that allows direct access grants. The
+     * realm pins its frontend URL, so the token's {@code iss} is the container-internal issuer
      * ({@code https://keycloak:8443/realms/integration}) the one-off descriptors declare, whichever
      * origin the token was minted through.
      *
@@ -357,8 +358,8 @@ final class OneOffGatewayContainers {
         String token = given().relaxedHTTPSValidation()
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("grant_type", "password")
-                .formParam("client_id", "integration-client")
-                .formParam("client_secret", "integration-secret")
+                .formParam("client_id", BearerValidationIT.TOKEN_MINT_CLIENT_ID)
+                .formParam("client_secret", BearerValidationIT.TOKEN_MINT_CLIENT_SECRET)
                 .formParam("username", "integration-user")
                 .formParam("password", "integration-password")
                 .formParam("scope", "openid")

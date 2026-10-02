@@ -415,7 +415,9 @@ jobs:
       # tls.passthrough_sni, so the SNI front listener owns 8443 and the terminated listener must be
       # moved to 8444 or the two collide; and management is HTTPS once the certificate pair is
       # supplied, so the probe speaks TLS. The mounted material is the workspace fixture the
-      # integration-test run above already used — no new fixture is introduced.
+      # integration-test run above already used — the certificates, the configuration directory and
+      # the signing-keys directory, whose two key files the IT gateway.yaml names (one by literal path
+      # under /app/signing-keys, one through OIDC_DPOP_KEY_FILE) — no new fixture is introduced.
       #
       # The probe is the management interface's /health/live, not its aggregate /health, and it is
       # composed beneath MANAGEMENT_CONTEXT_PATH (declared at the top of this workflow) so the
@@ -458,9 +460,11 @@ jobs:
 
           CERTS="${GITHUB_WORKSPACE}/integration-tests/src/main/docker/certificates"
           CONFIG="${GITHUB_WORKSPACE}/integration-tests/src/main/docker/sheriff-config"
+          SIGNING_KEYS="${GITHUB_WORKSPACE}/integration-tests/src/main/docker/signing-keys"
           docker run -d --name api-sheriff-smoke -p 19000:9000 \
             -v "${CERTS}:/app/certificates:ro" \
             -v "${CONFIG}:/app/sheriff-config:ro" \
+            -v "${SIGNING_KEYS}:/app/signing-keys:ro" \
             -e QUARKUS_PROFILE=it \
             -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
             -e QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties \
@@ -471,7 +475,7 @@ jobs:
             -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key \
             -e QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12 \
             -e QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust \
-            -e OIDC_CLIENT_SECRET=smoke \
+            -e OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem \
             "$REF"
 
           for _ in $(seq 1 60); do

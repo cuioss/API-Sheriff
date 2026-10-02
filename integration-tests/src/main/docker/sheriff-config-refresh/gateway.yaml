@@ -255,15 +255,31 @@ token_validation:
 # reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
 # the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
 # under /auth and never collide with the /bff-session proxy anchor above. Confidential
-# client: integration-client / integration-secret against the compose 'integration'
-# realm (standardFlowEnabled, redirectUris '*'). OIDC discovery is lazy (first engine
-# use), so boot needs no live IdP; the browser reaches the gateway on the published
-# host port 10452 and Keycloak on its published host port, while the gateway reaches
-# Keycloak container-internally at keycloak:8443.
+# client: refresh-client against the compose 'integration' realm (standardFlowEnabled,
+# redirectUris '*'). OIDC discovery is lazy (first engine use), so boot needs no live IdP;
+# the browser reaches the gateway on the published host port 10452 and Keycloak on its
+# published host port, while the gateway reaches Keycloak container-internally at
+# keycloak:8443.
+#
+# THIS INSTANCE AUTHENTICATES WITH A CLIENT SECRET, ON PURPOSE. It is the one descriptor of
+# the stack that declares oidc.client_secret, and it exists in that form to prove the
+# client-secret mode on the running stack. What follows from the secret:
+#   * Only the client authentication differs. Every authorization request is still pushed
+#     and every token is still DPoP-bound — the sender_constraint block below is read in
+#     both modes — and the realm requires both of refresh-client.
+#   * No client_authentication block is declared. A key file next to a secret is refused at
+#     boot, and without one there is no client-authentication key at all.
+#   * The gateway logs the client-secret warning (ApiSheriff-130) at every boot.
+#   * The client JWKS path /auth/jwks stays reserved and answers 404: there is no key to
+#     publish, and the path is not handed to the route table.
 oidc:
   issuer: https://keycloak:8443/realms/integration
   client_id: refresh-client
   client_secret: ${OIDC_CLIENT_SECRET}
+  # The DPoP proof key, through a variable as in the base document. The deployment points it at
+  # the RSA proof key for this instance (docker-compose.yml).
+  sender_constraint:
+    key_file: ${OIDC_DPOP_KEY_FILE}
   scopes: ["openid", "profile", "email"]
   # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
   # reserved path binds to; its origin ('https://localhost:10452') is the gateway
