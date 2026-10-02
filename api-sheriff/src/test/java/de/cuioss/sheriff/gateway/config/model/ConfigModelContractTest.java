@@ -184,7 +184,7 @@ class ConfigModelContractTest {
                         .refresh(new OidcConfig.Refresh(true, 60, "reauthenticate"))
                         .maxSessions(10000)
                         .build())
-                .stepUp(new OidcConfig.StepUp(true, false))
+                .stepUp(new OidcConfig.StepUp(true, false, "/session/step-up"))
                 .userInfo(userInfo())
                 .login(new OidcConfig.Login("/session/login", null))
                 .build();
@@ -418,9 +418,14 @@ class ConfigModelContractTest {
                             new OidcConfig.Refresh(true, 60, "reject"),
                             new OidcConfig.Refresh(true, 60, "reject"),
                             new OidcConfig.Refresh(false, null, null)),
-                    voCase("OidcConfig.StepUp", new OidcConfig.StepUp(true, false),
-                            new OidcConfig.StepUp(true, false),
-                            new OidcConfig.StepUp(false, true)),
+                    voCase("OidcConfig.StepUp", new OidcConfig.StepUp(true, false, null),
+                            new OidcConfig.StepUp(true, false, null),
+                            new OidcConfig.StepUp(false, true, null)),
+                    // The step-up path participates in identity: the unequal instance varies only that
+                    // component, so dropping it from equals() fails this case alone.
+                    voCase("OidcConfig.StepUp (path)", new OidcConfig.StepUp(null, null, "/auth/step-up"),
+                            new OidcConfig.StepUp(null, null, "/auth/step-up"),
+                            new OidcConfig.StepUp(null, null, "/auth/other")),
                     voCase("OidcConfig.UserInfo", userInfo(), userInfo(),
                             new OidcConfig.UserInfo("/other", List.of("sub"), List.of())),
                     voCase("OidcConfig.Login", new OidcConfig.Login("/session/login", "/home"),
@@ -604,6 +609,19 @@ class ConfigModelContractTest {
                     () -> assertEquals("default-src 'self'", viaCtor.contentSecurityPolicy()),
                     () -> assertEquals(frameDenyDefault(), viaCtor.headerModes()),
                     () -> assertNull(viaCtor.cors()));
+        }
+
+        @Test
+        void stepUpBuilderMatchesConstructorAndCarriesThePath() {
+            OidcConfig.StepUp viaCtor = new OidcConfig.StepUp(null, null, "/auth/step-up");
+            OidcConfig.StepUp viaBuilder = OidcConfig.StepUp.builder().path("/auth/step-up").build();
+            assertAll("the step-up path is the third component and is independent of the RFC 9470 keys",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals("/auth/step-up", viaCtor.path()),
+                    () -> assertNull(viaCtor.enabled(), "the path does not imply enabled"),
+                    () -> assertNull(viaCtor.honorUpstreamChallenge()),
+                    () -> assertNull(new OidcConfig.StepUp(true, true, null).path(),
+                            "an omitted path stays absent"));
         }
 
         @Test

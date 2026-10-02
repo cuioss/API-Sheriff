@@ -76,10 +76,13 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -456,7 +459,7 @@ class BffRuntimeProducerTest {
         private static SealedSessionPayload cookieSession() {
             return new SealedSessionPayload("raw-access-token", null, "raw-id-token", "user-sub-1",
                     null, null, null, Instant.ofEpochSecond(Instant.now().getEpochSecond()),
-                    "session-nonce-material", Set.of());
+                    "session-nonce-material", Set.of(), Set.of());
         }
 
         @Test
@@ -470,6 +473,248 @@ class BffRuntimeProducerTest {
             assertThrows(IllegalStateException.class, aes128::bffRuntime,
                     "an AES-128 key is refused — the codec is specified as AES-256-GCM");
         }
+    }
+
+    /**
+     * {@code oidc.step_up.path} is proven to <em>act</em>, not just parse: the reserved-path registry
+     * the edge builds from the same {@link OidcConfig} resolves the configured path to
+     * {@link ReservedEndpoint#STEP_UP}, and the runtime the producer assembled dispatches that kind to a
+     * wired {@link StepUpEndpoint} in both session modes. Deleting the key turns
+     * {@link #shouldDispatchConfiguredPathInBothModes()} red at the registry leg; the omitted-key case
+     * is the matched control.
+     */
+    @Nested
+    @DisplayName("Step-up path (oidc.step_up.path)")
+    class StepUpPath {
+
+        private static final String OIDC_HOST = "gw.example.com";
+        private static final String STEP_UP_PATH = "/auth/step-up";
+        private static final Instant NOW = Instant.parse("2026-09-25T10:00:00Z");
+
+        private static OidcConfig withStepUpPath(OidcConfig base, @Nullable String path) {
+            return new OidcConfig(base.issuer(), base.clientId(), base.clientSecret(), base.scopes(),
+                    base.redirectUri(), base.logout(), base.session(), OidcConfig.StepUp.builder().path(path).build(),
+                    base.userInfo(), base.login());
+        }
+
+        @Test
+        @DisplayName("Should dispatch a configured step-up path to a wired endpoint in server and cookie mode")
+        void shouldDispatchConfiguredPathInBothModes() {
+            List<OidcConfig> modes = List.of(withStepUpPath(serverModeOidc(), STEP_UP_PATH),
+                    withStepUpPath(cookieModeOidc(), STEP_UP_PATH));
+
+            assertAll("every session mode registers and dispatches STEP_UP",
+                    modes.stream().map(oidc -> (Executable) () -> {
+                        assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                                ReservedPathRegistry.from(oidc).match(OIDC_HOST, STEP_UP_PATH),
+                                "the configured key reserves the step-up path on the OIDC host");
+                        BffRuntime runtime = producer(oidc).bffRuntime();
+                        BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                                new BffRuntime.ReservedHttpRequest("", null, null, "/orders", null, null, "GET"), NOW);
+                        assertEquals(401, response.status(),
+                                "a wired step-up endpoint answers a request without a session 401");
+                        assertEquals("application/problem+json", response.headers().get("Content-Type"));
+                        assertTrue(response.locationOptional().isEmpty(), "never an IdP redirect without a session");
+                        assertTrue(response.jsonBodyOptional().isPresent(), "the problem body is rendered");
+                        assertEquals(1, reachableInstancesOf(runtime, StepUpEndpoint.class).size(),
+                                "exactly one step-up endpoint is wired");
+                    }));
+        }
+
+        @Test
+        @DisplayName("Should reserve no step-up path when the key is omitted (matched control)")
+        void shouldReserveNothingWithoutKey() {
+            OidcConfig omitted = withStepUpPath(serverModeOidc(), null);
+
+            assertAll("an omitted key registers no STEP_UP endpoint",
+                    () -> assertTrue(ReservedPathRegistry.from(omitted).match(OIDC_HOST, STEP_UP_PATH).isEmpty()),
+                    () -> assertFalse(ReservedPathRegistry.reservedPaths(omitted).contains(STEP_UP_PATH)));
+        }
+
+        /**
+         * The step-up endpoint and the callback's interactive re-drive go through the same widening
+         * coordinator — one {@link SessionWidening} per runtime. A second instance would carry its own
+         * collaborators and let the two legs drift apart.
+         */
+        @Test
+        @DisplayName("Should build the step-up endpoint over the runtime's single SessionWidening")
+        void shouldShareTheSingleSessionWidening() {
+            BffRuntime runtime = producer(withStepUpPath(serverModeOidc(), STEP_UP_PATH)).bffRuntime();
+
+            List<StepUpEndpoint> endpoints = reachableInstancesOf(runtime, StepUpEndpoint.class);
+            assertEquals(1, endpoints.size(), "the walk must see the step-up endpoint, or this test is vacuous");
+            List<SessionWidening> fromRuntime = reachableInstancesOf(runtime, SessionWidening.class);
+            List<SessionWidening> fromStepUp = reachableInstancesOf(endpoints.getFirst(), SessionWidening.class);
+
+            assertAll("one widening coordinator, shared",
+                    () -> assertEquals(1, fromRuntime.size(), "exactly one SessionWidening per runtime"),
+                    () -> assertEquals(1, fromStepUp.size()),
+                    () -> assertSame(fromRuntime.getFirst(), fromStepUp.getFirst(),
+                            "the step-up endpoint holds the runtime's own instance"));
+        }
+    }
+
+    /**
+     * The session stage's scope enforcement is proven to be <em>wired</em> by the producer: the
+     * scope-refresh seam drives the very coordinator the near-expiry seam drives (or nothing at all when
+     * refresh is switched off), and {@code oidc.step_up.path} reaches the stage's {@code 403} answer.
+     * The widening seam needs a resolvable discovery document and is therefore asserted beside the
+     * other fixture-backed tests, in {@code OidcBackChannelTls}.
+     * <p>
+     * The step-up assertions are behavioural: a live session is bound through the binding the assembled
+     * runtime actually holds and a request is driven through the assembled stage, so deleting the key
+     * — or the producer no longer passing it — turns {@link #shouldNameConfiguredStepUpPathOn403()} red.
+     * {@link #shouldNameNoStepUpUrlWithoutKey()} is the matched control.
+     */
+    @Nested
+    @DisplayName("Session-route scope enforcement wiring (scope seams and oidc.step_up.path)")
+    class SessionRouteScopeWiring {
+
+        private static final String STEP_UP_PATH = "/auth/step-up";
+        private static final String OPENID_SCOPE = "openid";
+        private static final String NEEDED_SCOPE = "orders:read";
+
+        @Test
+        @DisplayName("Should drive the near-expiry and the scope-refresh seam through one coordinator in server and cookie mode")
+        void shouldDriveBothRefreshSeamsThroughOneCoordinator() {
+            assertAll("one coordinator per runtime, behind both stage seams",
+                    Stream.of(serverModeOidc(), cookieModeOidc()).map(oidc -> (Executable) () -> {
+                        SessionAuthenticationStage stage = producer(oidc).bffRuntime().sessionStage();
+
+                        List<TokenRefreshCoordinator> behindScopeSeam = reachableInstancesOf(
+                                singleSeam(stage, SessionAuthenticationStage.ScopeRefresh.class),
+                                TokenRefreshCoordinator.class);
+                        List<TokenRefreshCoordinator> behindNearExpirySeam = reachableInstancesOf(
+                                singleSeam(stage, SessionAuthenticationStage.TokenRefresh.class),
+                                TokenRefreshCoordinator.class);
+
+                        assertEquals(1, behindNearExpirySeam.size(),
+                                "the walk must see the near-expiry coordinator, or this test is vacuous");
+                        assertEquals(1, behindScopeSeam.size(), "the scope seam is bound to a coordinator");
+                        assertSame(behindNearExpirySeam.getFirst(), behindScopeSeam.getFirst(),
+                                "both seams share one coordinator");
+                    }));
+        }
+
+        @Test
+        @DisplayName("Should bind a scope seam that reaches no coordinator and keeps the session when refresh.enabled is false")
+        void shouldBindPassThroughScopeSeamWhenRefreshDisabled() {
+            SessionAuthenticationStage stage = producer(refreshOidc(Boolean.FALSE)).bffRuntime().sessionStage();
+            SessionAuthenticationStage.ScopeRefresh scopeSeam =
+                    singleSeam(stage, SessionAuthenticationStage.ScopeRefresh.class);
+            SessionRecord live = SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(token())
+                    .idToken(token())
+                    .sub(SUBJECT)
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1)))
+                    .activeScopes(Set.of(OPENID_SCOPE))
+                    .grantedScopes(Set.of(OPENID_SCOPE, NEEDED_SCOPE))
+                    .build();
+
+            SessionAuthenticationStage.RefreshResult result =
+                    scopeSeam.refreshForScopes(live, null, Set.of(OPENID_SCOPE, NEEDED_SCOPE), Instant.now());
+
+            assertAll("with refresh off the stage goes straight to widening",
+                    () -> assertTrue(reachableInstancesOf(scopeSeam, TokenRefreshCoordinator.class).isEmpty(),
+                            "no coordinator sits behind the scope seam"),
+                    () -> assertSame(live, assertInstanceOf(SessionAuthenticationStage.RefreshResult.Mediate.class,
+                                    result, "the seam keeps the session").boundSession().session(),
+                            "the still under-scoped session is handed back unchanged"));
+        }
+
+        @Test
+        @DisplayName("Should name the configured step-up path on a session route's 403 in server and cookie mode")
+        void shouldNameConfiguredStepUpPathOn403() {
+            assertAll("oidc.step_up.path reaches the stage in every session mode",
+                    Stream.of(serverModeOidc(), cookieModeOidc()).map(base -> (Executable) () -> {
+                        GatewayException thrown =
+                                refuseUnderScopedApiCall(StepUpPath.withStepUpPath(base, STEP_UP_PATH));
+
+                        assertEquals(EventType.SCOPE_MISSING, thrown.getEventType(),
+                                "the assembled stage refuses the under-scoped API call 403");
+                        assertEquals(List.of(NEEDED_SCOPE),
+                                thrown.getProblemExtensions().get(SessionAuthenticationStage.MISSING_SCOPES_MEMBER),
+                                "the missing scope is named");
+                        assertEquals(STEP_UP_PATH + "?returnUrl=%2Forders%2Flist",
+                                thrown.getProblemExtensions().get(SessionAuthenticationStage.STEP_UP_URL_MEMBER),
+                                "the configured path is the one the answer names");
+                    }));
+        }
+
+        @Test
+        @DisplayName("Should name no step-up URL when oidc.step_up.path is omitted (matched control)")
+        void shouldNameNoStepUpUrlWithoutKey() {
+            GatewayException thrown = refuseUnderScopedApiCall(serverModeOidc());
+
+            assertEquals(Map.of(SessionAuthenticationStage.MISSING_SCOPES_MEMBER, List.of(NEEDED_SCOPE)),
+                    thrown.getProblemExtensions(),
+                    "an omitted key leaves the refusal without a step-up URL");
+        }
+
+        /**
+         * Drives an API call through the assembled session stage with a live session that carries
+         * {@code openid} only, on a route that additionally needs {@link #NEEDED_SCOPE}. The scope was
+         * never granted, so no refresh can obtain it and the stage refuses.
+         */
+        private GatewayException refuseUnderScopedApiCall(OidcConfig oidc) {
+            BffRuntime runtime = producer(oidc).bffRuntime();
+            String cookieHeader = bindLiveSession(runtime, Set.of(OPENID_SCOPE));
+            PipelineRequest request = sessionRouteRequest(cookieHeader, "application/json",
+                    Set.of(OPENID_SCOPE, NEEDED_SCOPE));
+            SessionAuthenticationStage stage = runtime.sessionStage();
+
+            return assertThrows(GatewayException.class, () -> stage.process(request),
+                    "an under-scoped API call must be refused, never relayed");
+        }
+
+        /** The one seam of {@code seamType} the assembled stage holds. */
+        private static <T> T singleSeam(SessionAuthenticationStage stage, Class<T> seamType) {
+            List<T> seams = reachableInstancesOf(stage, seamType);
+            assertEquals(1, seams.size(), "exactly one " + seamType.getSimpleName() + " is reachable from the "
+                    + "assembled session stage — if the producer's wiring moved, retarget the walk");
+            return seams.getFirst();
+        }
+    }
+
+    /**
+     * Binds a live session whose active and granted scope sets are both {@code scopes} through the
+     * binding the assembled runtime actually holds, and returns the request {@code Cookie} header that
+     * presents it. Mode-neutral: a server-mode binding stores the record and a cookie-mode binding
+     * seals it. The session carries no refresh token, so the near-expiry seam hands it back without
+     * ever parsing its opaque access token.
+     */
+    private static String bindLiveSession(BffRuntime runtime, Set<String> scopes) {
+        List<SessionBinding> bindings = reachableInstancesOf(runtime.sessionStage(), SessionBinding.class);
+        assertEquals(1, bindings.size(), "exactly one session binding is reachable from the assembled session "
+                + "stage — if the producer's wiring moved, retarget the walk");
+        Instant now = Instant.now();
+        SessionBinding.BoundSession bound = bindings.getFirst().bind(SessionRecord.builder()
+                .sessionId(SessionRecord.newSessionId())
+                .accessToken(token())
+                .idToken(token())
+                .sub(SUBJECT)
+                .expiresAt(now.plus(Duration.ofHours(1)))
+                .activeScopes(scopes)
+                .grantedScopes(scopes)
+                .build(), now);
+        return bound.setCookieHeaders().getFirst().split(";", 2)[0];
+    }
+
+    /** A request on a {@code require: session} route at {@code /orders/list} needing {@code neededScopes}. */
+    private static PipelineRequest sessionRouteRequest(String cookieHeader, String accept, Set<String> neededScopes) {
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath("/orders/list")
+                .queryParameters(List.of())
+                .headers(Map.of("cookie", List.of(cookieHeader), "accept", List.of(accept)))
+                .build();
+        request.canonicalPath("/orders/list");
+        request.selectedRoute(RouteRuntime.builder().id("orders")
+                .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                .neededScopes(neededScopes)
+                .build());
+        return request;
     }
 
     /**
@@ -823,7 +1068,8 @@ class BffRuntimeProducerTest {
      * <p>
      * {@code RefreshSwitch} can only see that a coordinator is or is not present in the object graph;
      * it cannot see what the seams built around it actually do, because the producer holds them as
-     * lambdas that no assembled-runtime test can invoke without a live IdP. The three seams are
+     * lambdas that no assembled-runtime test can invoke without a live IdP. The seams — the exchange
+     * policy, and the near-expiry and scope-refresh seams with their disabled alternatives — are
      * therefore extracted to package-private factories and driven here directly — with a real
      * store-backed binding and hand-built engine objects, no live token endpoint and no test-double
      * framework, exactly as {@code TokenRefreshCoordinatorTest} drives the coordinator itself.
@@ -845,6 +1091,9 @@ class BffRuntimeProducerTest {
         /** None of these seam decisions reaches a revocation, so the seam is bound inert. */
         private static final TokenRefreshCoordinator.RefreshTokenRevocation NO_REVOCATION = refreshToken -> {
         };
+        private static final String OPENID_SCOPE = "openid";
+        /** The granted scope set {@code S} of the scope-seam sessions: one scope more than their active set. */
+        private static final Set<String> GRANTED_SCOPES = Set.of(OPENID_SCOPE, "orders:read");
 
         private final InMemorySessionStore store = new InMemorySessionStore(16);
         private final SessionBinding binding = new ServerSessionBinding(store,
@@ -893,7 +1142,7 @@ class BffRuntimeProducerTest {
             SessionBinding.BoundSession bound = assertInstanceOf(SessionAuthenticationStage.RefreshResult.Mediate.class,
                     result, "turning refresh off is a policy choice — it must not make a live session unauthenticated")
                     .boundSession();
-            assertAll("the gateway mediates the token it was issued until the absolute TTL expires",
+            assertAll("a disabled refresh leaves the session exactly as it was resolved",
                     () -> assertSame(live, bound.session(), "the resolved session is handed back verbatim"),
                     () -> assertTrue(bound.setCookieHeaders().isEmpty(),
                             "an unwired seam re-binds nothing, so it emits no Set-Cookie"));
@@ -1005,6 +1254,115 @@ class BffRuntimeProducerTest {
                                     + "the cookie of a session that is still live"),
                     () -> assertTrue(binding.resolve(cookieHeader(live), NOW).isPresent(),
                             "the session is still resolvable, so the next request can retry the refresh"));
+        }
+
+        @Test
+        @DisplayName("Should yield the session unchanged and no cookies on the disabled scope-refresh seam")
+        void shouldYieldSessionUnchangedOnDisabledScopeSeam() {
+            SessionRecord live = storedScopedSession(token());
+
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.scopesUnobtainable()
+                    .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
+
+            SessionBinding.BoundSession bound = mediated(result);
+            assertAll("with refresh off no grant can restore a scope, so the stage is left to widen",
+                    () -> assertSame(live, bound.session(), "the still under-scoped session is handed back verbatim"),
+                    () -> assertTrue(bound.setCookieHeaders().isEmpty(), "an unwired seam re-binds nothing"));
+        }
+
+        @Test
+        @DisplayName("Should carry the scope-refreshed session through the scope seam, requesting exactly the set it is given")
+        void shouldYieldScopeRefreshedSession() {
+            SessionRecord live = storedScopedSession(token());
+            List<Set<String>> requestedOfEngine = new CopyOnWriteArrayList<>();
+            // The access token is ten minutes from expiry — far outside the leeway — so only the scope
+            // leg, which ignores the remaining lifetime, can be what reaches the engine.
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY,
+                    sessionRecord -> NOW.plusSeconds(600), (refreshToken, scopes) -> {
+                        requestedOfEngine.add(Set.copyOf(scopes));
+                        return rotation();
+                    },
+                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.scopeRefresh(coordinator)
+                    .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
+
+            SessionRecord refreshed = mediated(result).session();
+            assertAll("the scope seam drives the coordinator's scope-driven leg",
+                    () -> assertEquals(List.of(GRANTED_SCOPES), requestedOfEngine,
+                            "exactly one grant, requesting exactly the set the stage handed in"),
+                    () -> assertEquals(GRANTED_SCOPES, refreshed.activeScopes(),
+                            "the mediated session carries the requested set"),
+                    () -> assertEquals(ROTATED_ACCESS_TOKEN, refreshed.accessToken(),
+                            "the stage relays the rotated token, never the under-scoped one"));
+        }
+
+        @Test
+        @DisplayName("Should mediate the kept session when no refresh token can obtain the scope")
+        void shouldMediateKeptSessionWithoutRefreshToken() {
+            SessionRecord live = storedScopedSession(null);
+            AtomicInteger engineCalls = new AtomicInteger();
+
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer
+                    .scopeRefresh(coordinator(NOW.plusSeconds(600), engineCalls))
+                    .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
+
+            assertAll("a SCOPE_REFUSED outcome hands the still-short session back for the stage to widen",
+                    () -> assertSame(live, mediated(result).session(), "the session is kept as it was"),
+                    () -> assertEquals(0, engineCalls.get(), "nothing can be presented, so the engine is not reached"));
+        }
+
+        @Test
+        @DisplayName("Should end the session when the identity provider rejects the scope refresh")
+        void shouldEndSessionOnRejectedScopeRefresh() {
+            SessionRecord live = storedScopedSession(token());
+            TokenRefreshCoordinator rejecting = new TokenRefreshCoordinator(LEEWAY,
+                    sessionRecord -> NOW.plusSeconds(600), (refreshToken, _) -> {
+                        throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
+                    },
+                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.scopeRefresh(rejecting)
+                    .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
+
+            assertInstanceOf(SessionAuthenticationStage.RefreshResult.SessionEnded.class, result,
+                    "a FAILED scope refresh must reach the stage as session-ended, exactly as on the near-expiry leg");
+        }
+
+        @Test
+        @DisplayName("Should fail only the request when the scope refresh is unavailable and the access token has expired")
+        void shouldFailRequestOnUnavailableScopeRefresh() {
+            SessionRecord live = storedScopedSession(token());
+            TokenRefreshCoordinator unreachable = new TokenRefreshCoordinator(LEEWAY, sessionRecord -> NOW,
+                    (refreshToken, _) -> {
+                        throw new TransportException("Token endpoint unreachable");
+                    },
+                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+
+            SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.scopeRefresh(unreachable)
+                    .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
+
+            assertAll("UNAVAILABLE keeps the session and fails only this request on the scope leg too",
+                    () -> assertInstanceOf(SessionAuthenticationStage.RefreshResult.RequestFailed.class, result,
+                            "an UNAVAILABLE scope refresh must not clear a live session's cookie"),
+                    () -> assertTrue(binding.resolve(cookieHeader(live), NOW).isPresent(),
+                            "the session is still resolvable"));
+        }
+
+        /** A stored session whose active scope set lacks a scope its granted set holds — the scope-refresh case. */
+        private SessionRecord storedScopedSession(@Nullable String refreshToken) {
+            SessionRecord live = SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(token())
+                    .refreshToken(refreshToken)
+                    .idToken(token())
+                    .sub(SUBJECT)
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .activeScopes(Set.of(OPENID_SCOPE))
+                    .grantedScopes(GRANTED_SCOPES)
+                    .build();
+            store.create(live, NOW);
+            return live;
         }
 
         private SessionBinding.BoundSession mediated(SessionAuthenticationStage.RefreshResult result) {
@@ -1369,6 +1727,33 @@ class BffRuntimeProducerTest {
         }
 
         /**
+         * The widening seam is driven through the assembled stage against the fixture's discovery
+         * document. The live session's granted set holds a scope the route does not need
+         * ({@code profile}) and lacks one it does, so the requested set tells the two candidate
+         * bindings apart: a widening for the needed scopes alone would drop {@code profile}.
+         */
+        @Test
+        @DisplayName("a navigation whose live session lacks a needed scope is redirected into a silent widening for its granted scopes united with the needed ones")
+        void sessionRouteWidensLiveSessionSilently() {
+            BffRuntime runtime = scopedRuntime();
+            String cookieHeader = bindLiveSession(runtime, Set.of("openid", "profile"));
+            PipelineRequest request = sessionRouteRequest(cookieHeader, "text/html", SCOPED_NEEDED_SCOPES);
+
+            runtime.sessionStage().process(request);
+
+            String location = request.responseHeaders().get("Location");
+            assertAll("the producer binds the widening seam to the runtime's SessionWidening, silent attempt first",
+                    () -> assertEquals(Optional.of(302), request.shortCircuitStatus(),
+                            "the navigation is redirected rather than relayed"),
+                    () -> assertEquals(Set.of("openid", "profile", SCOPED_ENDPOINT_SCOPE), scopeOf(location),
+                            "the widening requests the granted set united with the route's needed scopes"),
+                    () -> assertEquals(Optional.of("none"), queryParameter(location, "prompt"),
+                            "the first widening attempt is silent"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty(),
+                            "the under-scoped session's token is never recorded for the upstream"));
+        }
+
+        /**
          * The refresh binding the producer hands the coordinator is driven directly, against the
          * fixture's discovery document, and the back-channel configuration factory is recorded: the
          * engine sends exactly the {@code scope} of the configuration it is driven over, so the scope
@@ -1377,8 +1762,8 @@ class BffRuntimeProducerTest {
          * endpoint, so the grant itself is refused — the factory call happens before the post.
          */
         @Test
-        @DisplayName("the assembled refresh binding requests the session's active scope set A, never the static oidc.scopes")
-        void refreshBindingRequestsActiveScopes() {
+        @DisplayName("the assembled refresh binding requests exactly the set it is given, never the static oidc.scopes")
+        void refreshBindingRequestsTheSetItIsGiven() {
             RecordingProducer recording = recordingProducer();
             TokenRefreshCoordinator coordinator = single(
                     reachableInstancesOf(recording.bffRuntime(), TokenRefreshCoordinator.class), "refresh coordinator");
@@ -1454,6 +1839,18 @@ class BffRuntimeProducerTest {
                 }
             }
             throw new AssertionError("the authorization URL carries no scope parameter: " + authorizationUrl);
+        }
+
+        /** The decoded value of the first {@code name} query parameter of {@code url}, empty when it carries none. */
+        private static Optional<String> queryParameter(String url, String name) {
+            for (String pair : URI.create(url).getRawQuery().split("&")) {
+                String[] nameValue = pair.split("=", 2);
+                if (name.equals(nameValue[0])) {
+                    return Optional.of(nameValue.length > 1
+                            ? URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8) : "");
+                }
+            }
+            return Optional.empty();
         }
 
         private ClientConfiguration backChannelFor(SanMismatchedJwksServer target, @Nullable EgressTlsConfig egressTls) {

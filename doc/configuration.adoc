@@ -386,8 +386,9 @@ oidc:                              # only used by the BFF variants (2 and 3)
   client_id: api-sheriff
   client_secret: ${SHERIFF_CLIENT_SECRET}
   scopes: [openid, profile]        # REQUESTED on every login and joined into every route's
-                                   #   needed set (bearer routes check them too); endpoints add
-                                   #   their own via endpoint.scopes, never remove these.
+                                   #   needed set (bearer AND session routes hold the caller to
+                                   #   it); endpoints add their own via endpoint.scopes, never
+                                   #   remove these.
                                    #   Each entry is an RFC 6749 scope-token (printable ASCII,
                                    #   no space, " or \) -- anything else is refused at load
   redirect_uri: https://gw.example.com/auth/callback
@@ -442,9 +443,13 @@ oidc:                              # only used by the BFF variants (2 and 3)
       enabled: true
       leeway_seconds: 30           # refresh this long before expiry
       on_failure: reauthenticate   # reauthenticate | reject
-  step_up:                         # RFC 9470
-    enabled: true
+  step_up:
+    enabled: true                  # RFC 9470 upstream-challenge leg
     honor_upstream_challenge: true
+    path: /auth/step-up            # OPTIONAL gateway-served step-up entry point (reserved path):
+                                   #   widens a LIVE session for the route behind its returnUrl.
+                                   #   Named as step_up_url in a session route's 403. Independent
+                                   #   of the two keys above
 
 portal:                            # OPTIONAL application portal; omitted => off, no path reserved
                                    #   (see "portal" below and the portal guide)
@@ -552,8 +557,8 @@ link:#_endpoint_catalog[`endpoint.catalog`] block. Unknown keys are refused by t
   leading `/`. The validator refuses at boot, with `ApiSheriff-200` at `/portal/path`: a path that is
   not canonical (a `//`, a dot segment, a `?` or `#`, a percent-encoded separator, or anything the URL
   path review refuses); a path equal to a reserved OIDC path (callback, logout, logout return,
-  back-channel logout, user-info, login), compared host-independently; and a path equal to the exact
-  `match.path` of an *enabled* endpoint's route. `GET` renders the page, `HEAD` answers the same
+  back-channel logout, user-info, login, step-up), compared host-independently; and a path equal to
+  the exact `match.path` of an *enabled* endpoint's route. `GET` renders the page, `HEAD` answers the same
   headers with an empty body, and any other method is `405` with `Allow: GET, HEAD`.
 
 | `title`
@@ -1932,7 +1937,7 @@ always an explicit, audited choice.
 
 | `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block, and without an anchor-provided one, fails the boot (see link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[Defaults for omitted blocks]).
 | `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; then check the route's needed scope set, `oidc.scopes ∪ endpoint.scopes` (`endpoint.scopes` alone without an `oidc` block). A valid token missing any member is answered `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the missing scopes, and the upstream is never contacted; an empty needed set skips the check. Because the set includes `oidc.scopes`, a BFF-mode gateway rejects a bearer token lacking them -- a `client_credentials` token among them. link:variants/01-base-gateway.adoc[Variant 1].
-| `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. A session route runs *no* scope pre-check: its needed set is what a login started on the route *requests* from the IdP, and a live session is never tested against it -- the upstream judges the relayed token. With `token_relay: false` the session is still required but no token is relayed.
+| `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. A session route *enforces* its needed scope set, `oidc.scopes ∪ endpoint.scopes`: it is what a login started on the route requests from the IdP, and every request's live session is compared against it before anything is relayed. A missing scope inside the session's granted set is obtained by a refresh; any other missing scope redirects a navigation into a widening of the live session and answers every other request `403` `application/problem+json` with the extension members `missing_scopes` and, when link:#_oidc[`oidc.step_up.path`] is configured, `step_up_url` -- with no `WWW-Authenticate` header. A session short of a needed scope is never relayed (see link:user/bff-session.adoc#scope-enforcement[When a session lacks a scope the route needs]). With `token_relay: false` the session is still required and still scope-checked, but no token is relayed.
 |===
 
 [[_auth_token_relay]]
@@ -1944,7 +1949,7 @@ always an explicit, audited choice.
 
 | Type / default | Boolean, default `true`.
 | Scope | Part of the `auth` block, so it is declared at route, endpoint or anchor level and resolved with the block's wholesale cascade (route -> endpoint -> anchor); never merged on its own.
-| Effect | Acts on `require: session` routes and on the SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route. `true` relays the session's access token upstream as `Authorization: Bearer`. `false` keeps the session required -- missing-session redirect/`401`, refresh and cookie clearing all unchanged -- but suppresses only the session-mediated `Authorization`: the gateway relays no session token. It does not filter operator configuration, so a static `Authorization` the route itself declares in `forward.set_headers` still crosses upstream. It never governs a BEARER branch: the BEARER branch of a `session_fallback` route always forwards the validated client token. No effect on plain `require: bearer` routes or on `none` routes.
+| Effect | Acts on `require: session` routes and on the SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route. `true` relays the session's access token upstream as `Authorization: Bearer`. `false` keeps the session required -- missing-session redirect/`401`, refresh, cookie clearing and the enforcement of the route's needed scope set (refresh, widening or `403`) all unchanged -- but suppresses only the session-mediated `Authorization`: the gateway relays no session token. It does not filter operator configuration, so a static `Authorization` the route itself declares in `forward.set_headers` still crosses upstream. It never governs a BEARER branch: the BEARER branch of a `session_fallback` route always forwards the validated client token. No effect on plain `require: bearer` routes or on `none` routes.
 | Boot rule | A route whose effective `token_relay` is `false` while its effective `forward.headers_allow` names `Authorization` (any letter case) is refused (`CONFIG_INVALID`): that list would re-admit the browser's own `Authorization` header to an origin the route promises no token.
 |===
 
@@ -1979,7 +1984,7 @@ single input: whether the request carries an `Authorization` header.
 | `Authorization` present (any scheme, any value, an empty value included) -- *BEARER branch*
 | Exactly a plain `require: bearer` route: the token is validated offline, a token missing a member of the route's needed scope set is `403 insufficient_scope`, and a missing, malformed, non-`Bearer` or empty credential is `401` with `WWW-Authenticate: Bearer`. No session is looked up, no CSRF check runs, no `Set-Cookie` is written and no login redirect is ever issued -- a live session cookie never rescues a failed bearer. An admitted token is forwarded upstream as exactly the validated client token, through the same mediated-bearer seam the session branch uses; no `headers_allow` entry is needed for it, and the browser `Cookie` is withheld as on every route.
 | `Authorization` absent -- *SESSION branch*
-| Exactly a `require: session` route: the fixed CSRF defence on unsafe methods, a live session mediates its token upstream when the effective `token_relay` is `true` (with `false` the session is still required but no session token is relayed), an unauthenticated navigation is redirected into the auth-code flow and any other unauthenticated request is `401` `application/problem+json`. A login started on the route requests the route's needed scope set (see <<_endpoint_scopes>>), but -- as on every session route -- no scope check runs on this branch: any live gateway session is admitted, including one established by a login elsewhere that never requested the route's scopes. The `403 insufficient_scope` guarantee holds on the BEARER branch only, so do not enable `session_fallback` on a route whose scopes are its authorization boundary for browser users. `token_relay` governs this branch.
+| Exactly a `require: session` route: the fixed CSRF defence on unsafe methods, a live session mediates its token upstream when the effective `token_relay` is `true` (with `false` the session is still required but no session token is relayed), an unauthenticated navigation is redirected into the auth-code flow and any other unauthenticated request is `401` `application/problem+json`. A login started on the route requests the route's needed scope set (see <<_endpoint_scopes>>), and -- as on every session route -- the branch enforces that set on every request: a live session whose token lacks a member is not relayed. A missing scope inside the session's granted set is obtained by a refresh; any other missing scope redirects a navigation into a widening of the live session and answers every other request `403` `application/problem+json` naming `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`. Both branches therefore hold a caller to the same set, each with its own answer: the BEARER branch's `403` carries `WWW-Authenticate: Bearer error="insufficient_scope"`, the SESSION branch's carries no `WWW-Authenticate`. `token_relay` governs whether this branch relays the token, not whether it checks the scopes.
 |===
 
 Selection never reads the credential, so no value a client sends -- a malformed token, a `Basic`
@@ -2003,7 +2008,7 @@ of the variants-are-route-postures rule is in link:variants/README.adoc[Variants
 | Syntax | Every entry -- here and in `oidc.scopes` -- must be an RFC 6749 §3.3 `scope-token`: one or more printable ASCII characters (`0x21`-`0x7E`) other than the double quote and the backslash, so no space, control character or non-ASCII. The bundled schemas carry the pattern, so a malformed name (`orders read`, say) is refused at load with a pointer to the entry.
 | Cascade | None. It is endpoint-level only and *additive*: every route of the endpoint needs `needed = oidc.scopes ∪ endpoint.scopes`, materialized once at boot (`endpoint.scopes` alone when the gateway declares no `oidc` block). An endpoint can add scopes but never remove an `oidc.scopes` member, and a route-level `auth` override does not affect the set.
 | `require: bearer` | The validated token must carry every member of `needed`; a shortfall is `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` (the missing names only, sorted, taken from boot config -- never from the token). An empty `needed` skips the check.
-| `require: session` | `needed` is the `scope` a login started on the route requests (and, through `oidc.login.path`, a login whose `returnUrl` lands on the route). No session-route request is checked against it; the session's granted set persists for its life and is what every refresh requests.
+| `require: session` | `needed` is the `scope` a login started on the route requests (and, through `oidc.login.path`, a login whose `returnUrl` lands on the route), and the set every session request is held to. The session's active scope set -- the scopes of its current access token -- must carry every member of `needed`, whatever `token_relay` says. A shortfall inside the session's granted set -- the scopes the IdP is known to grant it -- costs a refresh requesting the active set plus the missing scopes; a scope that refresh asks for and the IdP does not return leaves the granted set. Any other shortfall widens the live session for a navigation and answers every other request `403` `application/problem+json` with `missing_scopes` (the missing names only, sorted, taken from boot config -- never from the token) and, when `oidc.step_up.path` is configured, `step_up_url`. No `WWW-Authenticate` header is sent. An empty `needed` is always satisfied. The SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route is held to the same rule. See link:user/bff-session.adoc#scope-enforcement[When a session lacks a scope the route needs].
 | Boot rule | An enabled endpoint declaring a non-empty `scopes` whose every route resolves `require: none` is refused (`CONFIG_INVALID`) -- the scopes could never act.
 |===
 
@@ -2293,7 +2298,7 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   token carries only that. Every login requests at least `scopes`; a login for a route whose
   endpoint declares link:#_endpoint_scopes[`endpoint.scopes`] requests their union. Because the same
   union is every route's needed set, a `require: bearer` route answers `403 insufficient_scope` to a
-  token lacking any `scopes` member. Each `scopes` entry must be an RFC 6749 §3.3 `scope-token` --
+  token lacking any `scopes` member, and a session route holds every live session to it as well. Each `scopes` entry must be an RFC 6749 §3.3 `scope-token` --
   printable ASCII without space, double quote or backslash -- or the load is refused (see the syntax row of
   link:#_endpoint_scopes[`endpoint.scopes`]).
   *Register it as a plain redirect target reached by a `GET`*: the gateway drives the
@@ -2321,7 +2326,8 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   URL on the `redirect_uri` origin. A scheme-relative, backslash, blank or cross-origin value is
   refused at boot (`CONFIG_INVALID`), so the fallback can never become an open redirect. A login
   started by a session-route navigation returns to the requested path *plus its raw query, byte for
-  byte*, and does not use the default. See
+  byte*, and does not use the default. The same default replaces an absent or off-origin `returnUrl`
+  given to `step_up.path`. See
   link:user/bff-session.adoc#return-url[Where the browser lands after login].
 
 | `user_info.path`
@@ -2345,9 +2351,11 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   so the curated default can never exceed the disclosure ceiling.
 
 | `logout.path`
-| Gateway-served logout endpoint (default `/logout`): revokes the held tokens (RFC 7009),
-  destroys the local session/cookie, and redirects to the IdP `end_session_endpoint` with
+| Gateway-served logout endpoint (default `/logout`): destroys the local session/cookie and
+  redirects to the IdP `end_session_endpoint` with
   `id_token_hint`, `post_logout_redirect_uri`, and a *session-bound `state`* (per `CLIENT-13`).
+  The flow also calls a token-revocation seam, which the shipped runtime binds to a no-op, so the
+  gateway itself revokes no token at the IdP on logout today.
   Because the session is already destroyed at that point, the `state` is sealed into a
   short-lived (60 s), single-use `+__Host-sheriff-logout+` cookie set alongside the redirect;
   the return leg verifies against that cookie and clears it -- stateless, so it works
@@ -2411,9 +2419,10 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   sweeps the sessions expired at that instant and is admitted if the sweep freed a slot. A store
   still full afterwards is genuinely full of live sessions and the login is refused fail-closed.
   Nothing schedules that sweep -- there is no scheduler, timer thread or periodic task, and no knob
-  configures one -- so size this against expected peak concurrency. Re-storing an id already held
-  (how a rotated session is persisted) consumes no new capacity and is admitted at the bound
-  without consulting it.
+  configures one -- so size this against expected peak concurrency. Updating a session the store
+  already holds -- the write a token refresh or a widening makes -- replaces its record in place,
+  consumes no new capacity and is admitted at the bound without consulting it. That write never
+  creates a session: when a logout has destroyed the session meanwhile, nothing is stored.
 
 | `session.cookie_name`
 | Name of the session cookie, in *both* session modes. Optional; omitted, it resolves to
@@ -2524,8 +2533,11 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   whole `refresh` block, leaves refresh on. Setting it to `false` switches off the entire path:
   the refresh token the code exchange returned is *not* retained on the session (so in cookie
   mode nothing extra is sealed into the browser cookie), and no refresh coordinator is
-  assembled, so the gateway mediates the token it was issued until `session.ttl_seconds`
-  expires and never re-contacts the IdP mid-session.
+  assembled, so the gateway never refreshes mid-session. A session then keeps the access token
+  its login -- or a later widening -- issued until it ends, at `session.ttl_seconds` at the
+  latest: the gateway neither refreshes that token nor re-checks its expiry. A session route's
+  scope enforcement then has no refresh to obtain a missing scope with: every shortfall goes
+  straight to a widening of the live session, or to `403`.
 
 | `session.refresh.on_failure`
 | How the *request during which* refresh fails is answered when it is left with no token to
@@ -2537,10 +2549,43 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   `application/problem+json`, even for navigations -- for deployments whose SPA handles re-login
   entirely itself. Any other value is refused at boot.
 
-| `step_up.*`
+| `step_up.enabled` / `step_up.honor_upstream_challenge`
 | RFC 9470: honour an upstream `401` + `insufficient_user_authentication` challenge by silent
   refresh, then re-authorization with elevated `acr_values`/`max_age`. See
-  link:variants/02-bff-session.adoc[Variant 2].
+  link:variants/02-bff-session.adoc[Variant 2]. The two keys govern this leg only and do not gate
+  `step_up.path`.
+
+| `step_up.path`
+| Gateway-served *step-up* entry point -- the reserved path a browser holding a live session
+  navigates to in order to have that session *widened*: `<path>?returnUrl=<target>` asks the IdP
+  for the session's granted scope set plus the needed scope set of the route
+  `<target>` lands on, merges the grant into the same session, and returns the browser to
+  `<target>`. It is the target of the `step_up_url` member a session route names in its `403`
+  `application/problem+json` answer when a non-navigation request lacks a needed scope (see
+  link:#_endpoint_scopes[`endpoint.scopes`]). Optional string. Its presence alone registers the
+  reserved path; omitted, no step-up endpoint exists and no `step_up_url` is ever named.
+  When present it must be an absolute gateway path starting with a single `/` and carrying no query
+  (`?`) and no fragment (`#`), no backslash (`+\+`), no control character and no whitespace -- a
+  blank, relative or scheme-relative (`//host`) value, a value holding a `?` or a `#` anywhere (a
+  bare trailing one included), and a value holding a backslash, a control character or whitespace
+  anywhere, is refused at boot with `ApiSheriff-200` at `/oidc/step_up/path`. The path is matched
+  exactly against the request path, which carries neither a query nor a fragment, and `step_up_url`
+  appends `?returnUrl=...` to the configured value -- so a path holding either would name an
+  endpoint no request reaches and a `step_up_url` that does not carry the return target. A browser
+  reads a backslash as `/` and drops a tab or line break before parsing a URL, so `/\host` -- and
+  `//host` with a tab between its two slashes -- would be read as the scheme-relative `//host`.
+
+  The endpoint serves a live session only: without one it answers `401`
+  `application/problem+json` and never redirects to the IdP. `returnUrl` is same-origin-validated
+  like a login's and falls back to `login.default_return_url`. The route `<target>` lands on is
+  resolved as for `login.path` (matched as a `GET` on the gateway host, query ignored,
+  `match.headers` routes never selected, `oidc.scopes` alone otherwise). When that route's needed
+  set already lies inside the session's granted scope set, the answer is a `302` straight to
+  `<target>`; otherwise the widening starts with a `prompt=none` authorization request, followed by
+  exactly one interactive attempt when the IdP answers `login_required`, `interaction_required`,
+  `consent_required` or `account_selection_required`. Any other IdP refusal ends in a terminal
+  `403` that leaves the session unchanged. See link:user/bff-session.adoc#step-up-path[Server-Session BFF -- The step-up path] and
+  link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
 |===
 
 [[_refresh_failure_dispositions]]
@@ -2575,15 +2620,46 @@ answered.
   the presented token when it did not, none when rotation is unknown.
 | `ApiSheriff-111` (`redeemed-response-refused`)
 
-| *Persist failure* -- the exchange succeeded, but the rotated session could not be stored or
-  re-sealed
+| *Persist failure* -- the exchange succeeded, but the session binding could not hold the rotated
+  session (for example a sealed cookie past its size budget)
 | *Ended*, as above.
 | Best-effort, the refresh token the exchange returned.
 | `ApiSheriff-111` (`persist-failure`)
+
+| *Session terminated meanwhile* (`session.mode: server` only) -- the exchange succeeded, but a
+  logout or a back-channel logout destroyed the session while the refresh was in flight
+| *Stays ended.* The rotated session is not written back; the session cookie is cleared and the
+  request is answered through `on_failure`.
+| Best-effort, the refresh token the exchange returned.
+| `ApiSheriff-111` (`session-terminated`)
 |===
 
 Revocation is best-effort: a failed revocation never changes the disposition, because the local
 session destruction is what ends the session.
+
+*A logout wins over a refresh in server mode.* A refresh resolves the session, calls the identity
+provider and then writes the rotated session. In `session.mode: server` that write replaces the
+session only while the store still holds it, so a session that `oidc.logout.path` or a back-channel
+logout destroyed in between is not brought back: the last row applies. It is recorded with its own
+reason and without an exception, so a logout that overtook a refresh reads differently in the log
+from a binding that could not hold the session (`persist-failure`). In `session.mode: cookie` the
+row never applies. The gateway holds no session state there and cannot observe a logout, so the
+rotated session is re-sealed into a new cookie as on any refresh -- see
+link:variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout] for that limit and its mitigations.
+
+*The scope-driven refresh takes the same dispositions.* The refresh a session route makes to
+obtain a missing scope the session was granted before (see link:#_endpoint_scopes[`endpoint.scopes`])
+runs through the same exchange, shares the per-session single-flight and the back-off with the
+near-expiry refresh, and is disposed by the table above. It adds one outcome that is not a failure:
+the session is kept but still lacks the requested scope -- the IdP granted a narrower `scope`, the
+session holds no refresh token, or the request joined a concurrent refresh that did not ask for it.
+That outcome records no back-off and no warning, and the request goes on to a widening or a `403`.
+When the IdP granted a narrower `scope`, every requested scope it did not return also leaves the
+session's granted set.
+An IdP that answers the refresh with `invalid_scope` is *not* recognised as that outcome: the token
+engine reports it without the OAuth error code, so it is disposed as *pre-redemption* -- the session
+is kept, `ApiSheriff-127` is logged, and the session's next refresh waits out the back-off
+(link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 *Refresh-token reuse detection is the identity provider's job, not the gateway's.* A confidential
 client only sees the refresh tokens it presents itself, and a stateless cookie-mode instance keeps no
@@ -3818,6 +3894,15 @@ control, which is the rule above doing exactly the work it was added for.
   the boot fails, naming every requirement the name misses and echoing the value escaped. An
   omitted key resolves to `+__Host-sheriff-session+` and is never refused (see the
   link:#_oidc[`session.cookie_name`] field reference).
+* A declared `oidc.user_info.path`, `oidc.login.path` or `oidc.step_up.path` must be an absolute
+  gateway path starting with a single `/` and carrying no query (`?`) and no fragment (`#`), no
+  backslash (`+\+`), no control character and no whitespace; a blank, relative or scheme-relative
+  (`//host`) value, a value holding a `?` or a `#`, and a value holding a backslash, a control
+  character or whitespace, fails the boot at the key's own pointer, echoing the value escaped. A
+  reserved path is matched exactly against the request path, which carries neither a query nor a
+  fragment, so a value holding one would name an endpoint no request reaches; a browser reads a
+  backslash as `/` and drops a tab or line break before parsing a URL, so `/\host` would be read
+  as the scheme-relative `//host` (see the link:#_oidc[`oidc`] field reference).
 * `egress_tls.oidc_verify_hostname: false` together with a named `egress_tls.oidc_tls_profile`
   fails the boot with a configuration error naming both keys, and a named `oidc_tls_profile` that is
   unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime

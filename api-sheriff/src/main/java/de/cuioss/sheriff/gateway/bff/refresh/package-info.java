@@ -27,13 +27,15 @@
  * unit-testable without a container or a live IdP:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator} refreshes the mediated
- *       token within its expiry leeway through the engine, <em>single-flighted per session</em> so
+ *       token through the engine, <em>single-flighted per session</em> so
  *       concurrent requests on one session share one refresh, and disposes a refused refresh by the
  *       engine's failure kind: a failure before the identity provider processed the grant keeps the
  *       session and backs off; a rejected credential (including a replay rejected under strict
  *       rotation), a refused redeemed response, or a failure to persist the rotated session destroys
  *       it, revoking a refresh token that is still live where one is known, so the caller treats the
- *       request as unauthenticated.</li>
+ *       request as unauthenticated. In server mode a session that a logout terminated while its
+ *       refresh was in flight is not written back: the refresh ends the same way, and the rotated
+ *       refresh token is revoked.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens} is the coordinator's bounded,
  *       per-instance, in-memory marker of refresh tokens whose session it ended, keyed on a salted digest
  *       of the token, so a replayed cookie-mode refresh token of an ended session is refused locally

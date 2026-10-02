@@ -37,9 +37,11 @@ import org.jspecify.annotations.Nullable;
  * the {@code end_session_endpoint} redirect construction, the {@code id_token_hint}, and — via its
  * {@code PostLogoutRedirectValidator} — the <strong>exact-match</strong> {@code post_logout_redirect_uri}
  * that is the open-redirect defence. {@link RpInitiatedLogout} only orchestrates the gateway-side
- * concerns: it {@linkplain TokenRevocation revokes} the mediated tokens (RFC 7009, best-effort), mints
+ * concerns: it hands the session to the {@link TokenRevocation} seam it was constructed with
+ * (best-effort — a failure of the seam is logged and the logout proceeds), mints
  * a session-bound {@code state}, and carries that {@code state} in the short-lived single-use
- * {@value #LOGOUT_STATE_COOKIE_NAME} cookie. The engine-owned {@code post_logout_redirect_uri} is a
+ * {@value #LOGOUT_STATE_COOKIE_NAME} cookie. It sends no revocation request itself: whether a token
+ * is revoked at the identity provider is decided entirely by the seam implementation it is given. The engine-owned {@code post_logout_redirect_uri} is a
  * gateway-owned reserved path (the return leg), so the browser never controls the redirect target.
  * <p>
  * The {@linkplain #completeReturn return leg} verifies the returned {@code state} against the cookie
@@ -73,7 +75,8 @@ public final class RpInitiatedLogout {
      * Assembles the RP-initiated logout with the engine end-session flow and the gateway-side settings.
      *
      * @param endSessionFlow        the engine end-session redirect builder (owns exact-match validation)
-     * @param revocation            the RFC 7009 token-revocation seam (best-effort)
+     * @param revocation            the token-revocation seam, called once per initiated logout
+     *                              (best-effort)
      * @param endSessionEndpoint    the IdP {@code end_session_endpoint} (from discovery)
      * @param postLogoutRedirectUri the gateway-owned return-leg URI sent to the IdP (exact-match)
      * @param finalRedirect         the application landing URL after the return leg
@@ -101,7 +104,8 @@ public final class RpInitiatedLogout {
     }
 
     /**
-     * Initiates RP-initiated logout for a live session: revokes the mediated tokens (best-effort),
+     * Initiates RP-initiated logout for a live session: hands the session to the token-revocation
+     * seam (best-effort — a {@link RuntimeException} it raises is logged and does not stop the logout),
      * mints the session-bound {@code state}, and builds the engine end-session redirect carrying the
      * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the {@code state}.
      *
@@ -110,14 +114,14 @@ public final class RpInitiatedLogout {
      */
     public LogoutRedirect initiate(SessionRecord session) {
         Objects.requireNonNull(session, "session");
-        // Revocation at the IdP is best-effort: any runtime failure of the revocation seam must not
-        // strand the browser half-logged-out, so the catch is deliberately broad.
+        // The revocation seam is best-effort: any runtime failure of it must not strand the browser
+        // half-logged-out, so the catch is deliberately broad.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             revocation.revoke(session);
         } catch (RuntimeException revocationFailure) {
-            // Revocation at the IdP is best-effort: the authoritative, immediately-effective step is the
-            // local session destruction the caller performs. A revocation-endpoint failure must not strand
+            // The revocation seam is best-effort: the authoritative, immediately-effective step is the
+            // local session destruction the caller performs. A failure of the seam must not strand
             // the browser half-logged-out, so it is logged and the logout proceeds.
             LOGGER.debug(revocationFailure, "Token revocation failed during RP-initiated logout — proceeding with local logout");
         }
@@ -189,9 +193,12 @@ public final class RpInitiatedLogout {
     }
 
     /**
-     * The RFC 7009 token-revocation seam. The session runtime binds it to the engine's revocation
-     * call against the {@code revocation_endpoint}; a test binds it to a no-op or a failing stub.
-     * Revocation is best-effort — the caller's local session destruction is the authoritative logout.
+     * The token-revocation seam: the hook through which an RFC 7009 revocation of a session's
+     * tokens can be performed during logout. {@link RpInitiatedLogout} calls the implementation it
+     * is constructed with once per initiated logout and performs no revocation of its own, so what
+     * happens at the identity provider is decided by whoever binds the seam — an implementation
+     * that does nothing revokes nothing. The seam is best-effort — the caller's local session
+     * destruction is the authoritative logout.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -200,9 +207,11 @@ public final class RpInitiatedLogout {
     public interface TokenRevocation {
 
         /**
-         * Revokes the mediated tokens held by the given session (RFC 7009).
+         * Receives the session being logged out, so that an implementation can revoke the mediated
+         * tokens it holds at the identity provider (RFC 7009).
          *
-         * @param session the session whose access/refresh tokens are being revoked
+         * @param session the session being logged out, carrying the access and refresh tokens an
+         *                implementation may revoke
          */
         void revoke(SessionRecord session);
     }

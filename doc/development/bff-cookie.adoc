@@ -32,7 +32,8 @@ The cookie-specific code is in the `api-sheriff` module under
 
 | `SealedSessionPayload`
 | The plaintext that gets sealed: the mediated tokens, the identity/session claims, the login instant
-  anchoring the TTL, and the per-session identity nonce. Owns the inner wire format (`encode()` /
+  anchoring the TTL, the per-session identity nonce, and the session's active and granted scope sets.
+  Owns the inner wire format (`encode()` /
   `decode(...)`) and redacts every credential from `toString()`.
 
 | `SealedSessionCookieCodec`
@@ -41,8 +42,8 @@ The cookie-specific code is in the `api-sheriff` module under
 
 | `CookieSessionBinding`
 | The `SessionBinding` implementation: `bind` (seal on login, mint the nonce), `resolve` (unseal,
-  enforce the absolute TTL server-side), `persist` (re-seal a refresh), and the derived session
-  identity. Reports `IdpDestruction.UNSUPPORTED`.
+  enforce the absolute TTL server-side), `persist` (re-seal a refresh or a widening merge), and the
+  derived session identity. Reports `IdpDestruction.UNSUPPORTED`.
 
 | `CookieKeyMaterial`
 | Resolves the one sealing key -- passed `encryption_key` versus generate-on-startup -- and the
@@ -63,14 +64,24 @@ Every reserved endpoint, the CSRF defence, the refresh and step-up coordinators,
 seam and are unaware of which binding is in force. That is why adding a cookie-mode capability
 almost never means touching a reserved endpoint.
 
-The one place the modes genuinely differ is capability: `idpDestruction()` reports `UNSUPPORTED`
-for the cookie binding, and the back-channel logout endpoint is *gated on that signal* rather than
-on the mode name -- it answers a deliberate `404` instead of claiming a destruction that never
-happened.
+Where the modes genuinely differ, they differ in capability, and there are two such places. The
+first carries a flag: `idpDestruction()` reports `UNSUPPORTED` for the cookie binding, and the
+back-channel logout endpoint is *gated on that signal* rather than on the mode name -- it answers a
+deliberate `404` instead of claiming a destruction that never happened.
+
+The second has no flag, because the result carries it. `persist` is the seam's *updating* write: it
+updates a session that already exists and never creates one, and it returns an empty result when
+the binding observed that the session is gone. `ServerSessionBinding` reports that when a logout
+destroyed the session after the caller resolved it. `CookieSessionBinding` holds nothing a logout
+could have removed, so it always re-seals and never returns empty -- a refresh or a widening that
+was in flight during a logout still produces a session cookie. Callers must handle the empty result
+(`TokenRefreshCoordinator` ends the request as session-ended, `CallbackEndpoint` answers `403`);
+`bind` stays the only creating write. See the updating-write amendment of
+link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
 
 == The sealed-cookie wire format
 
-`FORMAT_VERSION` is *1* -- the ten-field layout described below -- and it is incremented by one on
+`FORMAT_VERSION` is *2* -- the eleven-field layout described below -- and it is incremented by one on
 every change to the sealed field set (see the rule below). The packaging pipeline has four stages, and the direction matters in both
 readings:
 
@@ -92,11 +103,17 @@ fails the tag check rather than silently selecting a different parse. The gatewa
 sealing key: a stamped id that does not match it is refused outright -- never a try-every-key
 decrypt -- which is what makes withdrawing a key a clean, fail-closed break.
 
-The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is the ten fields in
+The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is the eleven fields in
 record-declaration order, each written as a *2-byte big-endian unsigned length followed by its raw
-UTF-8 bytes* -- ten fields, so 20 bytes of framing. A zero length stands for an absent optional. The
-tenth field is the session's active scope set, written as its names sorted and joined by a single
-space; an empty set is a zero-length field.
+UTF-8 bytes* -- eleven fields, so 22 bytes of framing. A zero length stands for an absent optional.
+The tenth field is the session's active scope set `A` (`activeScopes`, the scopes of the current
+access token) and the eleventh its granted scope set `S` (`grantedScopes`, the scopes the identity
+provider is known to grant the session). Each is written as its names sorted and joined by a single
+space; an empty set is a zero-length field. The two are sealed as independent fields and never
+derived from one another: a near-expiry refresh re-seals `S` unchanged, a scope-driven refresh
+re-seals it without the scopes the grant did not return, and a widening replaces it with the scope
+of its grant
+(link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 It is read only *after* the GCM tag has authenticated the bytes -- `decode(...)` is never a parser
 for untrusted input.
 
@@ -135,10 +152,11 @@ error.
 [IMPORTANT]
 ====
 *Any change to the inner field set increments `FORMAT_VERSION` by exactly one.* The current value is
-`1`: the ten-field layout whose tenth field is the session's active scope set. The field-count guard
-is strict, the reader refuses trailing bytes after the tenth field, and there is no legacy-shape
-acceptance path: a cookie in the previous format must fail to unseal, not be admitted with a
-synthesized value. Incrementing the version is what makes that failure clean, since the version byte
+`2`: the eleven-field layout whose tenth and eleventh fields are the session's active and granted
+scope sets. It superseded version `1`, the same layout without the granted scope set. The field-count
+guard is strict, the reader refuses trailing bytes after the eleventh field, and there is no
+legacy-shape acceptance path: a cookie in the previous format must fail to unseal, not be admitted
+with a synthesized value. Incrementing the version is what makes that failure clean, since the version byte
 is authenticated and is read at an explicit gate *before* a `Cipher` is constructed -- so a cookie
 stamped with any other version is refused without any decryption or inflation being attempted. An
 increment forces every existing cookie-mode session to log in again, once -- call that out in the
@@ -255,9 +273,9 @@ deflation cannot help with would report a ratio no real token reaches:
 | Quantity | Measured
 
 | Framed plaintext (length-prefixed raw UTF-8)
-| 3433 bytes -- measured before the tenth field, the active scope set, was added; it adds the
-  granted scope names (`email openid profile` in this fixture) plus one 2-byte prefix, so the rows
-  below move by a few dozen bytes at most
+| 3433 bytes -- measured before the tenth and eleventh fields, the active and granted scope sets,
+  were added; each adds its scope names (`email openid profile` in this fixture, for both sets) plus
+  one 2-byte prefix, so the rows below move by a few dozen bytes at most
 
 | Sealed cookie value, as emitted
 | 2700 bytes -- *78.6 %* of the framed plaintext
@@ -317,7 +335,8 @@ Two constraints hold it together:
   refresh reproduces the identity byte-identically. `persist` re-seals the nonce *verbatim* and
   fails loud rather than re-minting; `TokenRefreshCoordinator.rotate()` must copy the nonce onto the
   rotated record. `rotate()` rebuilds the record component-by-component, so *any component you add to
-  `SessionRecord` needs a copy line there* or it is silently dropped.
+  `SessionRecord` needs a copy line there* or it is silently dropped. The widening merge in
+  `CallbackEndpoint` rebuilds the live session the same way and carries the same obligation.
 * *Unique.* The nonce is what makes two logins by the same subject inside one clock second resolve to
   distinct identities; without it they collided and cross-wired the single-flight keying.
 

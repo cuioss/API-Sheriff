@@ -47,8 +47,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * <strong>The path is observable at the default log level.</strong> An acceptance raises
  * {@code ApiSheriff-13} carrying the destroyed-session count — and a {@code destroyed=0} acceptance is
  * a first-class, distinguishable outcome, because it is precisely the signal that delivery and
- * validation both succeeded while the {@code sid} recorded at login did not match the one the logout
- * token carried. A rejection is recorded as {@code ApiSheriff-112} with a bounded
+ * validation both succeeded while the {@code sid} the session is indexed under — the one recorded at
+ * login, or the one a later widening took from its grant's ID token — did not match the one the
+ * logout token carried. A rejection is recorded as {@code ApiSheriff-112} with a bounded
  * {@link LogoutRejection} reason under the flood policy {@link LogoutRejectionLog} documents. Neither
  * record carries token material, {@code sub}, or {@code sid} (BFF-10).
  *

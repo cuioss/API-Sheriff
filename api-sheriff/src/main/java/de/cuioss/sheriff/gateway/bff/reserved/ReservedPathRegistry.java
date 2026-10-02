@@ -30,12 +30,13 @@ import org.jspecify.annotations.Nullable;
 /**
  * The exact-match registry of the gateway's reserved OIDC endpoints (D2).
  * <p>
- * The BFF variants carve up to six gateway-owned paths out of the proxy route table — the
+ * The BFF variants carve up to seven gateway-owned paths out of the proxy route table — the
  * {@code oidc.redirect_uri} callback, the RP-initiated {@code oidc.logout.path}, its
  * {@code post_logout_redirect_uri} return leg, the {@code oidc.logout.backchannel_path}
- * receiver, the {@code oidc.user_info.path} session/user-info fold (D11), and the
- * {@code oidc.login.path} login-initiation fold (D12). Each is matched <strong>exactly</strong>
- * (never by prefix). Five of the six are matched <strong>only on the OIDC host</strong> (the host of
+ * receiver, the {@code oidc.user_info.path} session/user-info fold (D11), the
+ * {@code oidc.login.path} login-initiation fold (D12), and the {@code oidc.step_up.path}
+ * session-widening entry point. Each is matched <strong>exactly</strong>
+ * (never by prefix). Six of the seven are matched <strong>only on the OIDC host</strong> (the host of
  * {@code oidc.redirect_uri}); the back-channel logout receiver is matched on <strong>every</strong>
  * host, for the reason {@link #match(String, String)} documents. The gateway edge consults this
  * registry <em>before</em> the route table, so a proxy route such as {@code path_prefix: /auth}
@@ -76,7 +77,13 @@ public final class ReservedPathRegistry {
         USER_INFO,
 
         /** The {@code oidc.login.path} login-initiation fold endpoint (D12). */
-        LOGIN
+        LOGIN,
+
+        /**
+         * The {@code oidc.step_up.path} session-widening entry point — the target of a session route's
+         * {@code step_up_url}.
+         */
+        STEP_UP
     }
 
     private final @Nullable String oidcHost;
@@ -130,7 +137,7 @@ public final class ReservedPathRegistry {
     /**
      * The single derivation of the reserved path map shared by {@link #from(OidcConfig)} and
      * {@link #reservedPaths(OidcConfig)}: the callback path of {@code redirect_uri} first, then the
-     * logout, logout-return, back-channel, user-info and login paths, keeping the first
+     * logout, logout-return, back-channel, user-info, login and step-up paths, keeping the first
      * registration for a path.
      */
     private static Map<String, ReservedEndpoint> pathsOf(OidcConfig config) {
@@ -150,6 +157,10 @@ public final class ReservedPathRegistry {
         OidcConfig.Login login = config.login();
         if (login != null) {
             reservePath(paths, login.path(), ReservedEndpoint.LOGIN);
+        }
+        OidcConfig.StepUp stepUp = config.stepUp();
+        if (stepUp != null) {
+            reservePath(paths, stepUp.path(), ReservedEndpoint.STEP_UP);
         }
         return paths;
     }
@@ -178,11 +189,12 @@ public final class ReservedPathRegistry {
      * {@code /auth/callback}) never matches — that is precisely the carve-out this registry
      * guarantees.
      * <p>
-     * <strong>Five of the six endpoints additionally require the request host to be the OIDC
-     * host</strong> (the host of {@code oidc.redirect_uri}). That is right for all five, because each
+     * <strong>Six of the seven endpoints additionally require the request host to be the OIDC
+     * host</strong> (the host of {@code oidc.redirect_uri}). That is right for all six, because each
      * of them is reached by a <em>browser</em> at the origin the gateway published to it: the callback,
-     * the login initiation, the RP-initiated logout and its return leg, and the user-info fold are all
-     * navigations or fetches from the session's own origin, so a request for one of those paths
+     * the login initiation, the step-up widening, the RP-initiated logout and its return leg, and the
+     * user-info fold are all navigations or fetches from the session's own origin, so a request for one
+     * of those paths
      * arriving on a different virtual host is not the browser and must fall through to the proxy route
      * table.
      * <p>

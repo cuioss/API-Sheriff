@@ -32,7 +32,7 @@ import lombok.experimental.UtilityClass;
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
  * ({@code sid}), token material, and raw offending values never appear in a template: a rejection
  * records only its non-sensitive <em>disposition</em> ({@code untrusted-origin} / {@code signature}
- * / …), a lifecycle event records only a non-sensitive reason or a bounded count. Exception-bearing
+ * / …). Exception-bearing
  * {@code WARN}s pass the throwable first, per the CUI logging contract; callers must not attach a
  * raw, unsanitized IdP exception whose message could re-inject untrusted content. {@code DEBUG} /
  * {@code TRACE} diagnostics use the logger directly and are not catalogued here.
@@ -46,7 +46,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-16).
+     * Info-level messages (INFO range 1-99; this catalogue owns 10-16 and 20).
      */
     @UtilityClass
     public static final class INFO {
@@ -118,10 +118,22 @@ public final class BffLogMessages {
                 .identifier(16)
                 .template("Cookie-mode sealing key generated at startup (%s) — sessions do not survive a restart")
                 .build();
+
+        /**
+         * A live session was widened: the identity provider granted the scopes a route needed, and
+         * the grant was merged into the same session (same identity, same absolute expiry). The
+         * template carries only the sorted names of the scopes the widening added to the session's
+         * granted set — never a token, the session id or the subject.
+         */
+        public static final LogRecord SESSION_WIDENED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(20)
+                .template("Live session widened for a require:session route — scopes added: %s")
+                .build();
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114 and 127).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127 and 130-131).
      */
     @UtilityClass
     public static final class WARN {
@@ -138,15 +150,13 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A transparent token refresh failed and its session was destroyed; the caller
-         * re-authenticates. The session is destroyed for exactly three reasons, each recorded as a
-         * bounded, non-sensitive reason: the identity provider rejected the presented refresh token
-         * ({@code credential-rejected}, which includes a replayed token rejected under strict
-         * rotation), the gateway refused a response the provider had already redeemed
-         * ({@code redeemed-response-refused}), or the rotated session could not be persisted
-         * ({@code persist-failure}). A failure before the provider processed the grant never
-         * destroys the session and is recorded as {@link #SESSION_REFRESH_DEFERRED} instead. Never
-         * records the presented refresh token or session id.
+         * A transparent token refresh ended with its session destroyed; the caller
+         * re-authenticates. The record carries exactly one bounded, non-sensitive reason. The
+         * reasons are defined by {@code de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator}
+         * and described in the {@code ApiSheriff-111} entry of {@code doc/LogMessages.adoc}. A
+         * failure before the provider processed the grant never destroys the session and is
+         * recorded as {@link #SESSION_REFRESH_DEFERRED} instead. Never records the presented
+         * refresh token or session id.
          */
         public static final LogRecord SESSION_REFRESH_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
@@ -221,6 +231,31 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(127)
                 .template("Token refresh failed before the identity provider processed it — session kept, next attempt in %s seconds")
+                .build();
+
+        /**
+         * A session widening was refused because the identity the widening grant names differs from
+         * the live session's (or from the one the widening was issued for). The session is left
+         * unchanged and is never swapped to another identity. The template carries no value at all —
+         * never a token, the session id or either subject.
+         */
+        public static final LogRecord SESSION_WIDENING_IDENTITY_MISMATCH = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(130)
+                .template("Session widening refused — the granted identity differs from the live session; session unchanged")
+                .build();
+
+        /**
+         * A session widening was refused and its grant was not merged into a session. The refusal
+         * is terminal. The template carries only a bounded reason token — never the raw IdP error
+         * description, a token, the session id or the subject. The reason tokens are defined by
+         * {@code de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint} and described in the
+         * {@code ApiSheriff-131} entry of {@code doc/LogMessages.adoc}.
+         */
+        public static final LogRecord SESSION_WIDENING_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(131)
+                .template("Session widening refused (%s) — no grant was merged into a session")
                 .build();
     }
 }

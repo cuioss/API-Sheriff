@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import io.restassured.http.Cookie;
 import io.restassured.http.Cookies;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
@@ -61,7 +62,11 @@ import io.restassured.specification.RequestSpecification;
  * <strong>Two disjoint cookie jars.</strong> RFC 6265 cookies are port-agnostic, so a single
  * {@code localhost} jar would mix the gateway session cookie ({@code localhost:10443}) with the
  * Keycloak {@code AUTH_SESSION_ID} ({@code localhost:1443}). The helper therefore keeps the gateway
- * jar and the Keycloak jar separate and replays only the gateway jar on the returned session.
+ * jar and the Keycloak jar separate, and the returned {@link Session} carries both: the gateway jar
+ * is what a protected request replays, and the Keycloak jar holds the realm SSO cookies the
+ * credential response set. A later authorization request that must be answered from that SSO session
+ * without a login form — a {@code prompt=none} session widening — replays the Keycloak jar, exactly
+ * as the browser that just logged in would.
  * <p>
  * <strong>Origin-parameterized.</strong> The flow is identical for every gateway instance, so the
  * browser-facing origin is a parameter: {@link #login(String)} drives the primary server-mode
@@ -219,8 +224,14 @@ final class BffKeycloakLoginFlow {
      * @param callbackLocation the {@code Location} the callback's {@code 302} sends the browser to —
      *                        the post-login return target the gateway recorded when the login
      *                        started, exactly as emitted (not followed, not re-encoded)
+     * @param keycloakCookies the Keycloak cookie jar as the login left it: the cookies of the login
+     *                        page plus the realm SSO cookies the credential response set, with every
+     *                        cookie that response expired removed. Replaying it on an authorization
+     *                        request lets Keycloak answer from the live SSO session, which is what a
+     *                        silent ({@code prompt=none}) session widening depends on. Immutable
      */
-    record Session(Map<String, String> gatewayCookies, Cookies callbackCookies, String callbackLocation) {
+    record Session(Map<String, String> gatewayCookies, Cookies callbackCookies, String callbackLocation,
+    Map<String, String> keycloakCookies) {
     }
 
     /**
@@ -334,6 +345,11 @@ final class BffKeycloakLoginFlow {
                 .redirects().follow(false)
                 .when().post(formAction)
                 .then().statusCode(302).extract().response();
+        // The credential response is the one that establishes the realm SSO session: it sets the
+        // identity and session cookies and expires the login-restart cookie. Without them the jar
+        // holds only the login page's cookies, and a later prompt=none authorization request would
+        // find no SSO session to answer from.
+        absorbSetCookies(keycloakCookies, credentials);
         String callbackUrl = rewriteToHost(location(credentials));
 
         // Step 4 — follow that redirect to the gateway callback exactly as a browser would: a plain
@@ -358,7 +374,32 @@ final class BffKeycloakLoginFlow {
         // cookie the browser would actually keep.
         assertCookiesFitBrowserBudget(callback);
 
-        return new Session(gatewayCookies, callback.getDetailedCookies(), location(callback));
+        return new Session(gatewayCookies, callback.getDetailedCookies(), location(callback),
+                Map.copyOf(keycloakCookies));
+    }
+
+    /**
+     * Applies the cookies a response set to a cookie jar the way a browser does: a cookie the response
+     * expires — an empty value or {@code Max-Age=0} — is removed from the jar, every other one is
+     * stored under its name.
+     * <p>
+     * A plain {@code jar.putAll(response.getCookies())} keeps an expired cookie in the jar with an
+     * empty value and goes on sending it, which a browser never does. The Keycloak jar must not carry
+     * such a leftover: the credential response expires the login-restart cookie, and the jar is
+     * replayed on a later authorization request.
+     *
+     * @param jar      the cookie jar to update
+     * @param response the response whose {@code Set-Cookie} headers are applied
+     */
+    static void absorbSetCookies(Map<String, String> jar, Response response) {
+        for (Cookie cookie : response.getDetailedCookies()) {
+            String value = cookie.getValue();
+            if (value == null || value.isEmpty() || cookie.getMaxAge() == 0) {
+                jar.remove(cookie.getName());
+            } else {
+                jar.put(cookie.getName(), value);
+            }
+        }
     }
 
     /**

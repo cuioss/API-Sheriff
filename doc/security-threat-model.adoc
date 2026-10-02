@@ -276,7 +276,9 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 
 | B5 browser<->BFF
 | *Spoofing* via CSRF on the cookie-authed API -> <<bff-11>>. *Elevation* by steering a request
-  onto the session branch of a dual-posture route -> <<bff-16>>. *Tampering*/theft of the
+  onto the session branch of a dual-posture route -> <<bff-16>>; by reaching a route with a session
+  that lacks its scopes -> <<bff-15>>; by steering the widening of a live session -> <<bff-17>>.
+  *Tampering*/theft of the
   cookie -> <<bff-10>>, <<bff-12>>. *Elevation* via `state`/code injection on the callback
   -> <<bff-02>>, <<bff-03>>, <<bff-13>>. *Repudiation*/replay via missing `nonce` ->
   <<bff-04>>; logout flaws -> <<bff-09>>.
@@ -1649,7 +1651,11 @@ realm. The provider refuses a replayed token with `invalid_grant`; the engine cl
 link:configuration.adoc#_refresh_failure_dispositions[the configuration reference]): a failure
 before the provider processed the grant keeps the session with a fixed back-off; a redeemed
 response the gateway refused, or a rotated session it could not persist, ends the session and
-revokes best-effort the one live refresh token it can name. The gateway's own part in the
+revokes best-effort the one live refresh token it can name. In server mode one more case ends the
+same way without being a failure of the refresh: a logout or a back-channel logout destroyed the
+session while its refresh was in flight. The rotated session is then not written back
+(<<bff-09>>), the request is answered as session-ended, the refresh token the exchange returned is
+revoked best-effort, and `ApiSheriff-111` records `session-terminated`. The gateway's own part in the
 concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per instance*: concurrent
 requests on one session share one redemption, so one instance never presents the same token twice
 and never forks the family itself.
@@ -1691,10 +1697,11 @@ detection signal rotation exists to provide -- an operator decision, never a gat
   otherwise re-drive a refresh grant and a `WARN ApiSheriff-111` on every near-expiry request until
   the absolute TTL -- amplification and log flooding, not an authentication bypass. The refresh
   coordinator therefore marks the presented refresh token (a per-instance salted digest, never the
-  token or cookie) when it ends a session as `credential-rejected`, `redeemed-response-refused` or
-  `persist-failure`, until the session's absolute lifetime, and refuses a marked token locally with
-  no IdP call, no revocation and no warning. Keyed on the token, a successor cookie still reaches the
-  provider once. *Residual:* the marker is per instance (each other instance makes one IdP call before
+  token or cookie) when it ends a cookie-mode session, for whichever reason
+  link:LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] records, until the session's absolute
+  lifetime, and refuses a marked token locally with no IdP call, no revocation and no warning.
+  Keyed on the token, a successor cookie still reaches the provider once. *Residual:* the marker is
+  per instance (each other instance makes one IdP call before
   marking), in memory (a restart forgets it, one IdP call again), bounded (a full store records
   nothing, so replays degrade to one IdP call per request), not set by RP logout, and unused in
   server mode.
@@ -1722,13 +1729,76 @@ back-channel member) and `sub`/`sid`, and MUST NOT carry `nonce`; validate sig/`
 server session and rotate/clear the cookie on any logout; revoke the RT family. Cookie-mode
 disables the back-channel endpoint (`404`) -- no session to destroy.
 
-*Status:* COVERED. Both channels, the logout-token checks and the logout-`state` cookie are
-delivered, and cookie mode disables the back-channel receiver.
+*The `sid` index names the identity-provider session the tokens belong to.* A session is indexed
+under the `sid` of its login's ID token. A widening (<<bff-17>>) merges tokens that a different
+identity-provider session may have issued, so it re-indexes the session under the `sid` of that
+grant's ID token when the token carries one. Without that, a logout token for the session that
+answered the widening would be accepted, destroy nothing (`ApiSheriff-13` with a count of `0`) and
+leave the gateway session usable.
+
+*A termination wins over an in-flight write (server mode).* Two writers update a session that
+already exists: the token refresh, on both of its legs (<<bff-08>>), and the widening callback
+(<<bff-17>>). Each resolves the session, calls the identity provider and writes the result back. A
+logout or a validated back-channel logout can destroy the session between that resolve and that
+write, and an unconditional write would then store the session again, holding newly issued tokens,
+after it was ended. The `SessionBinding` seam therefore has one creating write, used by the login,
+and one updating write that never creates
+(link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
+In server mode the store checks for the session and replaces its record as one atomic step, under
+the lock every destroy operation takes, so a destruction either precedes the check -- and nothing is
+written -- or follows the replacement and removes it. A write that finds the session gone is
+answered as the session having ended: the refresh returns its session-ended outcome to the request
+and to every request coalesced with it, revokes best-effort the refresh token the exchange returned,
+and records `ApiSheriff-111` with `session-terminated`; the widening callback answers `403` with no
+`Location` and no `Set-Cookie`, stores nothing, and records `ApiSheriff-131` with
+`session-terminated`. The tokens of a refused widening grant are dropped unstored and are not
+revoked, as with the callback's other refusals.
+
+*Status:* COVERED in server mode. Both channels, the logout-token checks and the logout-`state`
+cookie are delivered, cookie mode disables the back-channel receiver, and a server-mode termination
+is not undone by a refresh or a widening that was in flight. Cookie mode carries one accepted
+residual.
+
+*Not delivered: token revocation at logout.* The control names revoking the refresh-token family.
+RP-initiated logout hands the session to a token-revocation seam that the shipped runtime binds to a
+no-op, and the back-channel receiver calls no revocation at all, so in both session modes the
+gateway sends no RFC 7009 request on a logout. Whether the session's tokens stop being valid at the
+identity provider is decided by the provider -- by how it handles the `end_session_endpoint`
+redirect, or by the termination it announces over the back-channel -- not by the gateway. The
+refresh path is separate and does send a best-effort revocation request (<<bff-08>>).
+
+*Residual risk (accepted) -- cookie mode: a response in flight can outlast the logout.* The stateless
+binding holds no session state, so its `destroy` removes nothing and its updating write cannot
+observe a logout: it always re-seals. What the logout endpoint does is resolve the session from the
+request, hand it to a token-revocation seam, answer with the clearing `Set-Cookie`, and redirect to
+the identity provider's `end_session_endpoint`. The shipped runtime binds that seam to a no-op, so
+the gateway itself revokes nothing at the identity provider on logout. A near-expiry refresh, a
+scope-driven refresh or a widening callback that was already running for the same browser still
+answers with a re-sealed session cookie. If that response reaches the browser after the logout response, the
+browser again holds a cookie the gateway resolves as a session, until the session's absolute
+lifetime. The exposure needs a request of the same browser in flight at the moment of the logout.
+Beyond that it is bounded by the identity provider, not by the gateway: where the provider ends its
+own session on the logout, the refresh token in the re-sealed cookie is refused at that session's
+next transparent refresh and the session ends there, as for any IdP-side termination in this
+variant; until then the gateway mediates the access token the cookie carries. The mitigations are the ones
+link:variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout] names for a termination the stateless
+variant cannot enforce at once: a short `ttl_seconds`, short access-token lifetimes, and the
+session-based variant where immediate termination is a hard requirement.
 
 *Assertion.* A logout token missing `events`/`sub`/`sid`, or *containing* `nonce`, or an ID
 token replayed as a logout token -> rejected; a non-registered `post_logout_redirect_uri` ->
 rejected; post-logout the session is gone and the cookie cleared; cookie-mode back-channel ->
-`404`.
+`404`. In server mode a session destroyed by its identity, by `sid` or by `sub` is not written back
+by the conditional store write, which replaces a stored record only and consumes no capacity
+(`InMemorySessionStoreTest`, `ServerSessionBindingTest`); a session destroyed in each of those three
+ways between a widening callback's resolve and its write ends in `403` with no `Location` and no
+`Set-Cookie`, stays unresolvable and is recorded as `session-terminated`, while the same callback
+merges when nothing destroys the session (`CallbackEndpointTest`); a session destroyed in each of
+those ways during the provider exchange, on the near-expiry leg and on the scope-driven leg, is not
+written back, the request and a coalesced waiter are answered as session-ended, and the rotated
+refresh token is handed to revocation (`TokenRefreshCoordinatorTest`). The cookie-mode residual is
+pinned rather than hidden: the stateless update re-seals after every destroy form
+(`CookieSessionBindingTest`, `TokenRefreshCoordinatorTest`).
 
 [#bff-10]
 === BFF-10 -- Cookie hardening & token-leakage-to-browser
@@ -1756,13 +1826,13 @@ the runtime consumes the name verbatim and the schema declares the key an unrest
 omitted key resolves to the gateway's own `+__Host-sheriff-session+`.
 
 *The origin need not see the token either.* A route that only has to know the user is logged in
-declares `auth.token_relay: false`: the session is still required and refreshed, but no
-`Authorization` header is relayed, so a static app or asset origin never holds an access token it
+declares `auth.token_relay: false`: the session is still required, refreshed and held to the route's
+scopes (<<bff-15>>), but no `Authorization` header is relayed, so a static app or asset origin never holds an access token it
 could log, leak or replay. The opt-out cannot be undone by the forward configuration: a route
 resolving `token_relay: false` while its `forward.headers_allow` names `Authorization` (any case) is
 refused at boot, because that list would re-admit the browser's own `Authorization` header to the
-same origin. The cookie-mode seal also carries the session's active scope set; scope names are not
-credentials and are printed as-is where the payload's `toString()` redacts the tokens.
+same origin. The cookie-mode seal also carries the session's active and granted scope sets; scope
+names are not credentials and are printed as-is where the payload's `toString()` redacts the tokens.
 
 *Status:* COVERED.
 
@@ -1882,7 +1952,8 @@ nothing, so the check is the gateway's (see the foundation section above).
 
 *Control.* One boot-time derivation per route, `neededScopes = oidc.scopes ∪ endpoint.scopes`,
 drives every leg, so requesting and checking cannot drift apart
-(link:adr/0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]):
+(link:adr/0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048],
+link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]):
 
 * *Login scope minimization.* A login requests the `neededScopes` of the route it is for -- the
   session route a navigation hit, or the authenticated route a `/auth/login?returnUrl=` target
@@ -1895,32 +1966,68 @@ drives every leg, so requesting and checking cannot drift apart
   upstream contact. The challenge names come from boot configuration, never from the token. Because
   the set includes `oidc.scopes`, a BFF-mode gateway also rejects a bearer token lacking them (a
   `client_credentials` token, for example) -- a deliberate, documented tightening.
-* *Refresh with the active set.* The session records the scope set actually granted (`A`) and every
-  refresh requests exactly `A`, never the static `oidc.scopes`; an omitted response `scope` leaves
-  `A` unchanged (RFC 6749 §5.1), a narrowed response narrows it.
+* *Session scope enforcement.* A session route, and the SESSION branch of a `session_fallback` route
+  (<<bff-16>>), compares the session's active scope set `A` against `neededScopes` on every request,
+  after the session is resolved and before any bearer is recorded -- whatever `auth.token_relay`
+  says. A satisfied session costs no identity-provider call. A scope missing from `A` but inside the
+  session's granted scope set `S` is obtained by a refresh requesting `A ∪ missing`, and
+  the returned session is compared again, so no outcome of that refresh relays a session short of a
+  scope. Any other shortfall redirects a navigation into a widening of the live session
+  (<<bff-17>>) and refuses every other request `403` `application/problem+json`, naming the missing
+  scopes from boot configuration, never from the token. The session answer carries no
+  `WWW-Authenticate` challenge.
+* *Refresh with the active set.* The session records the scope set of its current token (`A`) and
+  every near-expiry refresh requests exactly `A`, never the static `oidc.scopes`; an omitted response
+  `scope` leaves `A` unchanged (RFC 6749 §5.1), a narrowed response narrows it. The granted set `S`
+  is equal to `A` at login, no refresh ever adds to it, and a near-expiry refresh never changes it,
+  so the scope-driven refresh above can ask only for what the identity provider granted this session
+  before (RFC 6749 §6).
+* *The granted set is kept truthful.* `S` records what the identity provider last showed it grants,
+  not everything it ever granted. A widening replaces `S` with the scope of its grant, and a
+  scope-driven refresh the provider processed removes every requested scope the response did not
+  return. A scope the provider has stopped granting therefore leaves `S` the first time the gateway
+  asks for it (<<bff-17>>).
 
 *Status:* PARTIAL (accepted residuals).
 
-* *Session-wide scope growth (accepted).* Scopes are requested when a session is established and
-  held for its life; the token relayed to every session route carries all of them. A session that
-  logged in through a scoped endpoint therefore presents that endpoint's scopes to every other
-  session-route upstream. Per-endpoint token narrowing (token exchange, audience-restricted tokens)
-  is out of scope. The exposure is bounded by the IdP granting only requested scopes (endpoint
-  scopes configured as *optional*, not *default*, client scopes) and by `token_relay: false` for
-  origins that need no token at all.
-* *No session-route scope check (by design).* A live session is never tested against a route's
-  `neededScopes`; a session established on a route needing fewer scopes reaches a route needing more
-  with a token that lacks them, and the upstream decides. Re-authorizing a live session for a wider
-  set is not offered.
-* *Step-up leg.* An RFC 9470 step-up re-drive still requests the static `oidc.scopes` (recorded in
-  ADR-0048); the session-side lookup that re-drive uses is currently unwired.
+* *Session-wide scope growth (accepted).* A session gives a scope back only when the identity
+  provider itself stops returning it; the token relayed to every session route carries every scope
+  the session holds. A session that logged in through, or was widened for, a
+  scoped endpoint therefore presents that endpoint's scopes to every other session-route upstream,
+  and a widening adds to that set during the session's life. Per-endpoint token narrowing (token
+  exchange, audience-restricted tokens) is out of scope. The exposure is bounded by the IdP granting
+  only requested scopes (endpoint scopes configured as *optional*, not *default*, client scopes), by
+  a widening requesting only a route's boot-declared set united with what was already granted, and
+  by `token_relay: false` for origins that need no token at all.
+* *An `invalid_scope` refresh answer is not told apart from an outage (accepted).* The engine
+  surfaces that answer without the OAuth error code, so the scope-driven refresh disposes it as a
+  pre-redemption failure: the session is kept and its next refresh waits out the back-off. The
+  request is still never relayed short of a scope, because the stage compares again and widens or
+  refuses.
+* *RFC 9470 step-up leg.* An RFC 9470 step-up re-drive still requests the static `oidc.scopes`
+  (recorded in ADR-0048); the session-side lookup that re-drive uses is currently unwired. This is
+  the `acr` leg, not the `oidc.step_up.path` scope widening of <<bff-17>>.
 
 *Assertion.* A navigation login on a scoped session route carries exactly `oidc.scopes ∪
 endpoint.scopes`, and `/auth/login?returnUrl=` to an unauthenticated target carries exactly
 `oidc.scopes` (`BffEndpointScopesIT`, `ReturnTargetScopesTest`); a bearer token lacking an endpoint
 scope is `403 insufficient_scope` with no upstream contact while one covering it is `200`
 (`BearerScopeIT`, `AuthenticationStageTest`); a refresh after a scoped login keeps the endpoint scope
-in the refreshed token (`BffTokenRefreshIT`, `TokenRefreshCoordinatorTest`).
+in the refreshed token (`BffTokenRefreshIT`, `TokenRefreshCoordinatorTest`). On a session route and
+on the SESSION branch of a `session_fallback` route, a session lacking a needed scope never reaches
+the upstream: an XHR is `403` `application/problem+json` naming exactly the missing scope, a
+navigation is redirected into a widening, and a satisfied session is relayed twice with a
+byte-identical bearer and no `Set-Cookie` (`BffSessionScopeParityIT`,
+`SessionAuthenticationStageScopeEnforcementTest`). The refresh branch is asserted at unit level
+only (`SessionAuthenticationStageScopeEnforcementTest`, `TokenRefreshCoordinatorTest`): the two
+scope sets are equal after a login and after a widening, so the integration suite cannot produce a
+session whose `A` is narrower than its `S`. For the same reason the truthful granted set is asserted
+at unit level only: a scope-driven grant that does not return a requested scope removes exactly that
+scope from `S` in both session modes, an omitted response `scope` and an unprocessed grant leave `S`
+unchanged, and a near-expiry refresh that narrows `A` leaves `S` unchanged
+(`TokenRefreshCoordinatorTest`); with the stage, the coordinator and the callback assembled, API
+calls for a scope the provider no longer grants are refused `403` and the scope leaves `S`, while a
+scope it still grants is restored by a refresh and relayed (`SessionScopeTruthfulnessFlowTest`).
 
 [#bff-16]
 === BFF-16 -- Authentication-branch downgrade on a dual-posture route (`session_fallback`)
@@ -1955,15 +2062,17 @@ the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
   `Set-Cookie`, and the browser `Cookie` is withheld upstream by the gateway-owned never-forward set,
   as on every route. The upstream receives exactly the validated client token through the
   mediated-bearer seam, not a re-admitted inbound header (ADR-0037).
-* *Nothing new is accepted.* The BEARER branch is exactly a `require: bearer` route, including the
-  `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The SESSION branch is
-  exactly a `require: session` route. A request is admitted on a `session_fallback` route only if one
-  of those two routes would admit it. The consequence for scopes is deliberate and must be read as
-  such: the SESSION branch runs no scope check (ADR-0049), so any live session is admitted to a
-  `session_fallback` route whatever scopes its token carries. Enabling the key on a bearer route
-  therefore widens that route's authorization for browser users from "token carries
-  `neededScopes`" to "holds a gateway session"; the operator documentation says so, and a route
-  whose scopes are its authorization boundary must stay a plain `require: bearer` route.
+* *Both branches enforce the same scope set.* The BEARER branch is exactly a `require: bearer` route,
+  including the `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The
+  SESSION branch is exactly a `require: session` route, including its comparison of the session's
+  active scope set against the same `neededScopes`
+  (link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]):
+  a session lacking a scope is refreshed inside its grant, widened (<<bff-17>>) or refused `403`,
+  and is never relayed short of one. A request is admitted on a `session_fallback` route only if one
+  of those two routes would admit it, so enabling the key on a bearer route does not lower that
+  route's authorization for browser users: either caller must carry `neededScopes`. The two answers
+  differ in form only -- the BEARER `403` carries the RFC 6750 challenge, the SESSION `403` carries
+  `missing_scopes` in a problem body and no `WWW-Authenticate`.
 * *Discoverable and refused when meaningless.* The key is refused at boot on a posture other than
   `require: bearer` and on a gateway without an `oidc` block. The per-route boot posture line
   (`ApiSheriff-3`) reports `auth.session_fallback` for every route, and
@@ -1978,9 +2087,151 @@ lacking a needed scope is `403 insufficient_scope`; an invalid, `Basic` or empty
 live session is served with its mediated token, a navigation is redirected into the IdP, an XHR is
 `401`, and an unsafe method under a foreign `Origin` is CSRF-rejected while a bearer unsafe method
 without any `Origin` is admitted (`BffSessionFallbackIT`, `AuthBranchTest`, `AuthenticationStageTest`,
-`GatewayEdgeRouteBffWiringTest`). Both boot refusals are asserted (`ConfigValidatorSessionFallbackTest`,
-`verify-invalid-config-fails.sh`), and the meter records only on `session_fallback` routes
-(`MetricsIT`, `SheriffMetricsTest`).
+`GatewayEdgeRouteBffWiringTest`). A live session lacking a needed scope is widened or refused `403`
+on the SESSION branch exactly as on a `require: session` route, and never relayed
+(`BffSessionScopeParityIT`, which runs each of its rows on both kinds of route). Both boot refusals
+are asserted (`ConfigValidatorSessionFallbackTest`, `verify-invalid-config-fails.sh`), and the meter
+records only on `session_fallback` routes (`MetricsIT`, `SheriffMetricsTest`).
+
+[#bff-17]
+=== BFF-17 -- Widening a live session (identity swap, attacker-driven authorization, refusal loop)
+
+A session route does not relay a session that lacks a needed scope; it sends the browser back to the
+identity provider to have the *live* session widened (<<bff-15>>). Adding to an existing session is a different
+operation from starting one, and it fails in its own ways. The grant can land in a session that
+belongs to someone else. A request the user never made -- a cross-site link -- can start the
+authorization, and the question is then who chose the scopes and the landing URL. A refusal can send
+the browser round again, or be answered by relaying anyway. The entry point that starts a widening
+on demand, `oidc.step_up.path`, is a new reserved path with a URL parameter of its own.
+
+*Evidence.* No gateway-product CVE is cited: the surface is new in API Sheriff, and the entry is
+recorded from the mechanism. The classes are established ones: session fixation and identity
+confusion (CWE-384), open redirect through a return parameter (CWE-601, as in <<bff-02>>), and log
+injection through an error parameter (CWE-117). OpenID Connect Core §3.1.2.1 defines `prompt=none`
+and §3.1.2.6 the `login_required`, `interaction_required`, `consent_required` and
+`account_selection_required` answers to it.
+RFC 6749 §6 forbids a refresh grant from widening the original grant, which is why a widening is an
+authorization request at all.
+
+*Control.*
+(link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057])
+
+* *The widening callback is bound to the browser like a login callback.* It runs on the same pending
+  record, binding cookie and `state` (<<bff-02>>), and all three are checked before anything else --
+  an identity-provider error response included. An error without the binding cookie, or with a
+  foreign `state`, is `403` and starts nothing, so a forged `login_required` cannot drive a
+  re-drive.
+* *No identity swap.* A grant is merged only when the new ID token's subject, the live session's
+  subject and the subject recorded when the widening started are the same. The subject is checked on
+  the session the callback resolves from the request, never taken from the pending record alone. A
+  mismatch is `403`, the session is unchanged, and `ApiSheriff-130` is logged with no value at all.
+  The merge keeps the session's identity, its authentication time and its absolute expiry, so a
+  widening neither mints a second session nor extends the first.
+* *The merged session follows the identity-provider session that answered.* The tokens a widening
+  merges belong to the identity-provider session that issued the grant, which is not necessarily the
+  one the gateway session was created from: the original may have ended and the user authenticated
+  again, which is what the interactive attempt produces. The merge therefore takes the `sid` of the
+  new ID token when it carries one, and keeps the session's own otherwise. In server mode the store
+  re-indexes the session on that write, so a back-channel logout for the answering session destroys
+  the gateway session (<<bff-09>>) instead of matching nothing and leaving it usable until its next
+  refresh or its absolute expiry. A logout token that names the previous `sid` no longer matches.
+* *The caller does not choose the scopes.* A widening requests `S ∪ neededScopes`: the session's
+  granted set united with the boot-declared set of the target route. A cross-site navigation to a
+  scoped route, or to the step-up path, can therefore make a user's browser *start* a widening, but
+  it can only request a set an operator declared, consent stays with the identity provider, and the
+  first attempt carries `prompt=none`. `missing_scopes` in the `403` answer is read from boot
+  configuration, and `step_up_url` is the configured path plus the refused request's own path and
+  query, percent-encoded.
+* *The step-up path serves a live session only.* It is matched exactly, on the OIDC host, before the
+  route table, like the other browser-facing reserved paths. Without a live session it answers `401`
+  `application/problem+json` with no redirect to the identity provider, no pending record and no
+  cookie, so it is not a second login entry point. That rejection is logged as one fixed-text `DEBUG`
+  line that interpolates no value: an anonymous caller can drive no default-level log volume through
+  it and can place nothing in the log.
+* *The return URL cannot leave the origin.* `returnUrl` is validated by
+  `PendingAuthorizationRecord.sameOrigin`, the predicate a login target passes (<<bff-02>>), and an
+  absent, cross-origin, scheme-relative or unparseable target is replaced by the boot-checked
+  `oidc.login.default_return_url`. This check is load-bearing rather than defence in depth: as a
+  matched reserved path the step-up request terminates before route selection, so its parameter
+  values never reach the per-route url-parameter pipeline
+  (link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]).
+  The pre-route floor still applies to the request.
+* *A refusal is terminal.* A silent attempt answered `login_required`, `interaction_required`,
+  `consent_required` or `account_selection_required` is followed by exactly one interactive attempt.
+  Every other outcome short of a
+  full grant -- another identity-provider error, any error on the interactive attempt, a grant that
+  lacks a scope sought beyond `S`, a subject mismatch, a callback without the live session -- is
+  `403` with no `Location` and no `Set-Cookie`. The session stays usable on every route it
+  satisfies. Nothing redirects again, so a scope the identity provider will not grant cannot loop
+  the browser, and the request that started it is never relayed. An identity-provider error and a
+  grant lacking a sought scope are logged as `ApiSheriff-131` with a reason from a closed set; an
+  unknown error code is logged as `other`, never as the text the identity provider or an attacker
+  supplied.
+* *A terminated session is not brought back by the merge.* The callback resolves the live session
+  and writes the merge later in the same call. In server mode a logout or a validated back-channel
+  logout that destroys the session in between wins: the merge is the seam's updating write, which
+  never creates a session (<<bff-09>>), so nothing is stored, the callback answers the same `403`
+  with no `Location` and no `Set-Cookie`, and `ApiSheriff-131` records `session-terminated`. The
+  session stays terminated, and the tokens of the refused grant are held nowhere. In cookie mode the
+  binding cannot observe a logout and re-seals the merged session; that residual is recorded under
+  <<bff-09>>.
+* *A scope the provider stopped granting reaches that refusal.* "Sought beyond `S`" is only a
+  terminal check if `S` is true. A scope that is still named in `S` after the provider has stopped
+  granting it -- an entitlement removed mid-session, a consent withdrawn -- would be sought by
+  nobody: the refresh would return a narrower grant, the widening would be merged without the
+  scope, and the browser would be sent back to the route and round again, one refresh grant, one
+  authorization request and one code exchange per turn. `S` is therefore kept truthful (<<bff-15>>).
+  A processed narrower scope refresh removes the scope from `S` before the widening starts, so the
+  widening seeks it beyond `S` and a grant lacking it is refused. Where no refresh ran -- the
+  session holds no refresh token, transparent refresh is off, or the near-expiry refresh had just
+  re-bound the cookie -- the widening is merged once, the merge sets `S` to what was granted, and
+  the following round is the refused one. A navigation therefore ends in the `403` after at most two
+  rounds. An outright `invalid_scope` answer to the refresh is different: it is not told apart from
+  an outage (<<bff-15>>), proves nothing about the scope and leaves `S` unchanged, so the refresh is
+  retried once per back-off window rather than once per request.
+
+*Status:* COVERED, with three accepted residuals.
+
+* *A cross-site navigation can start a widening.* The link makes the browser ask for more scopes for
+  the user's session. It cannot choose them or the landing origin, as above.
+* *A widening merge and a concurrent refresh race.* Both resolve the session and then persist it,
+  and the last writer wins. Either result is an identity-provider-fresh token set of the same
+  identity; the loss is one abandoned refresh token. This race between the two writers is unchanged
+  by the updating write above: that write settles a writer against a *termination*, in server mode,
+  and says nothing about two writers.
+* *The interactive re-drive is asserted at unit level only.* In the integration suite the browser
+  that just logged in holds a live SSO session, so the silent attempt always succeeds there.
+
+*Assertion.* On the widening callback: an error response without the binding cookie or with a
+foreign `state` is `403` and re-drives nothing; `login_required`, `interaction_required`,
+`consent_required` and `account_selection_required` on the silent attempt each re-drive exactly one
+interactive attempt with the same scopes and return URL, and the same error on that interactive
+attempt is `403` with no further redirect;
+`invalid_scope` and `access_denied` are `403` with the session unchanged; a grant for another
+subject, a widening issued for another subject, a callback without the live session and a grant
+lacking a sought scope are each `403` with no `Location` and no `Set-Cookie`; a granted widening
+keeps the session's id, authentication time and expiry in both session modes, sets both scope sets
+to the granted scope and takes the `sid` of the new ID token; a session whose `S` names a scope the
+grant no longer returns is merged once with the scope gone from `S` and refused `403` on the next
+round, while the same session is merged round after round when the grant still returns it; after a
+widening the production back-channel receiver destroys the session for a logout token naming the
+new `sid` and matches nothing for one naming the previous `sid`, and a grant whose ID token carries
+no `sid` leaves the session reachable under the one it had; a server-mode session destroyed by its
+identity, by `sid` or by `sub` between the callback's resolve and its write is `403` with no
+`Location` and no `Set-Cookie`, is recorded as `session-terminated` and stays unresolvable, while
+the same callback merges when nothing destroys the session; an unknown
+error code is logged as `other` (`CallbackEndpointTest`). With the stage, the refresh coordinator
+and the callback assembled, a navigation for a scope the provider no longer grants is widened once
+and its callback is `403` with no `Location`, and a session without a refresh token is merged once
+and refused on the second round (`SessionScopeTruthfulnessFlowTest`). On the step-up path: no session, an
+unknown session and an expired session are `401` with no authorization request built; an
+off-origin, scheme-relative, backslash or blank `returnUrl` lands on the configured default; a
+target whose scopes lie inside `S` is a direct `302`, decided on `S` and not on `A`; any other
+target starts one silent widening for `S ∪ neededScopes` (`StepUpEndpointTest`). Against the live
+edge and Keycloak: a navigation needing a grantable scope is widened with `prompt=none` and lands
+back on the route; an XHR is `403` with a `step_up_url` and is relayed after that URL was followed;
+a scope the realm assigns to no client ends in a terminal `403` with the session still served; the
+step-up path without a session is `401` and never redirects (`BffSessionScopeParityIT`).
 
 [[_html_surface_failure_catalogue]]
 == HTML surface failure catalogue
@@ -2207,14 +2458,15 @@ outstanding hardening work (next section).
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
-| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway) | Engine (RP-initiated) + gateway (back-channel receiver) | COVERED
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway); in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated) + gateway (back-channel receiver, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018 | COVERED (server) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED
 | <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- gateway usage rule | COVERED
 | <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) | PARTIAL
-| <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048 | PARTIAL (session-wide scope growth accepted)
+| <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, a session route compares it on every request and refreshes, widens or refuses `403`, a near-expiry refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `SessionAuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048, ADR-0057 | PARTIAL (session-wide scope growth accepted)
 | <<bff-16>> | `session_fallback` branch chosen from `Authorization` presence only; no session fallback on a failed bearer; CSRF on the session branch only; one resolver for CSRF and authentication | Gateway (`AuthBranch`, `AuthenticationStage`, `GatewayEdgeRoute`) + configuration validator -- ADR-0055 | COVERED
+| <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay; granted set kept truthful so a scope the provider stopped granting reaches the refusal; merged session indexed under the grant's `sid`; in server mode a session terminated before the merge is written is not brought back | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `TokenRefreshCoordinator`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED
@@ -2266,8 +2518,8 @@ down. Closing them is the whole point of this exercise. Each is a small, additiv
   HPP and the gateway already calls `CallbackParameters.parse(rawQuery)` on the raw query
   (never the duplicate-blind `of(Map)`); what is missing is a test asserting a
   duplicate-`code` callback is rejected. Scope enforcement is likewise the gateway's -- the
-  validation lib exposes `providesScopes()` but enforces nothing; the gateway's bearer check and
-  its accepted residuals are recorded under <<bff-15>>.
+  validation lib exposes `providesScopes()` but enforces nothing; the gateway's bearer and session
+  checks and their accepted residuals are recorded under <<bff-15>>.
 . *Cross-cutting -- adopt this document as a release gate.* A security-audit sweep validates
   that every COVERED/PARTIAL assertion has a passing test and every GAP is closed or
   explicitly risk-accepted; consider a short ADR recording "CVE-derived validation baseline

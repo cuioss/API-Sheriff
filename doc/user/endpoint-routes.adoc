@@ -44,9 +44,10 @@ endpoint:
   scopes: [orders.read]            # optional, OUTSIDE auth, ADDITIVE: every route of this
                                    #   endpoint needs oidc.scopes ∪ these. A bearer route
                                    #   answers 403 insufficient_scope to a token missing one;
-                                   #   a session route requests them at login (see "Endpoint
-                                   #   scopes" below). Refused at boot when every route of the
-                                   #   endpoint resolves require: none
+                                   #   a session route requests them at login and holds every
+                                   #   live session to them (see "Endpoint scopes" below).
+                                   #   Refused at boot when every route of the endpoint
+                                   #   resolves require: none
   allowed_methods: [GET, POST]   # optional per-endpoint verb allowlist; REPLACES the
                                    #   anchor/global allowed_methods wholesale for this
                                    #   endpoint (no inheritance, no merge). Omit => the
@@ -82,7 +83,8 @@ endpoint:
                                    #   session route, including the session branch of a
                                    #   session_fallback route. false keeps the session's
                                    #   access token away from this upstream (no Authorization
-                                   #   header is relayed) while still requiring the login.
+                                   #   header is relayed) while still requiring the login and
+                                   #   the route's scopes.
                                    #   Refused at boot together with forward.headers_allow
                                    #   naming Authorization
         # session_fallback: false  # default false; valid only with require: bearer and a
@@ -635,10 +637,11 @@ and `present: false` on the other -- is exactly the pair that makes a single rou
 A request that matches no route is rejected with `404`.
 
 *Reserved gateway paths.* The gateway's own OIDC endpoints are matched *exactly, before the
-route table*, but only on the *OIDC host* (the host of `oidc.redirect_uri`). The keys that
+route table*. Six of them are matched only on the *OIDC host* (the host of `oidc.redirect_uri`);
+the back-channel logout receiver is matched on every host. The keys that
 register them, and the field-level contract for each, are owned by
 link:../configuration.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
-path, not what the keys mean. Up to *six* paths are carved out:
+path, not what the keys mean. Up to *seven* paths are carved out:
 
 . the `oidc.redirect_uri` path -- the auth-code *callback*, reached by a top-level `GET` with
   `code` and `state` in the query string (`response_mode=query`) and carrying no request body;
@@ -646,14 +649,16 @@ path, not what the keys mean. Up to *six* paths are carved out:
 . its return path (`oidc.logout.post_logout_redirect_uri`) -- the *logout-return* leg;
 . `oidc.logout.backchannel_path` -- the *back-channel logout* receiver (`mode: server` only);
 . `oidc.user_info.path` -- the session/*user-info* endpoint serving the curated identity view;
-. `oidc.login.path` -- the gateway-owned *login-initiation* entry point that starts a login.
+. `oidc.login.path` -- the gateway-owned *login-initiation* entry point that starts a login;
+. `oidc.step_up.path` -- the *step-up* entry point that widens a live session for the route
+  behind its `returnUrl`.
 
 Each is registered only when its configuration key is present, so a deployment that omits
-`oidc.user_info` or `oidc.login` carves out fewer than six. A proxy route such as
-`path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while other virtual
-hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path namespace.
-Routes remain free to use neighbouring prefixes; only the exact reserved paths on that one host
-are carved out.
+`oidc.user_info`, `oidc.login` or `oidc.step_up.path` carves out fewer than seven. A proxy route
+such as `path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while other
+virtual hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path
+namespace for everything but the back-channel path. Routes remain free to use neighbouring
+prefixes; only the exact reserved paths are carved out.
 
 [[_endpoint_scopes]]
 === Endpoint scopes (`endpoint.scopes`)
@@ -675,16 +680,20 @@ auth:
   missing scopes (sorted), and the upstream is never contacted. Because the set includes
   `oidc.scopes`, a gateway that also runs the BFF rejects a bearer token lacking them -- a
   `client_credentials` token among them. An empty set skips the check. On a route with
-  `session_fallback: true` this enforcement holds on the *bearer branch* only (requests carrying
-  `Authorization`); its session branch behaves as `require: session` below.
-* *`require: session`* -- the set is what a login started on the route *requests* from the IdP. A
-  live session is never checked against it; see
-  link:bff-session.adoc#scopes[Server-Session BFF -- Scopes] for session-wide scope growth and the
-  refresh behaviour. The same applies to the *session branch* of a `session_fallback` route
-  (requests without `Authorization`): the set is requested at login and never enforced, so any live
-  gateway session is admitted. Do not rely on the set as the browser-facing authorization boundary
-  of such a route -- see the security caveat in
-  link:../configuration.adoc#_auth_session_fallback[`auth.session_fallback`].
+  `session_fallback: true` this answer is the *bearer branch's* (requests carrying
+  `Authorization`); its session branch enforces the same set as `require: session` below.
+* *`require: session`* -- the set is what a login started on the route *requests* from the IdP, and
+  what every live session is compared against on each request, whatever `token_relay` says. A
+  session whose token carries every member is relayed with no call to the IdP. A missing scope inside
+  the session's granted set costs a refresh; any other missing scope redirects a navigation to
+  the IdP to widen the live session, and answers every other request `403`
+  `application/problem+json` naming the `missing_scopes` and, when `oidc.step_up.path` is
+  configured, a `step_up_url`. A session short of a scope is never relayed. See
+  link:bff-session.adoc#scope-enforcement[Server-Session BFF -- When a session lacks a scope the
+  route needs] for the full behaviour and
+  link:bff-session.adoc#scopes[Server-Session BFF -- Scopes] for session-wide scope growth. The
+  same applies to the *session branch* of a `session_fallback` route (requests without
+  `Authorization`): both branches of such a route enforce the one set, each with its own answer.
 * *`require: none`* -- the set has no effect. An endpoint declaring `scopes` whose every route
   resolves `require: none` is refused at boot.
 

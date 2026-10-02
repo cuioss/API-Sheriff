@@ -33,12 +33,13 @@ import org.jspecify.annotations.Nullable;
  * mirror of {@link CallbackEndpoint} for the logout direction (D5). It owns the two reserved logout
  * legs ({@link ReservedPathRegistry.ReservedEndpoint#LOGOUT} and
  * {@link ReservedPathRegistry.ReservedEndpoint#LOGOUT_RETURN}) and the session binding; the
- * transport-free logic — token revocation, {@code state} minting, the engine end-session redirect,
- * and the return-leg {@code state} verification — lives in {@link RpInitiatedLogout}.
+ * transport-free logic — the call to the token-revocation seam, {@code state} minting, the engine
+ * end-session redirect, and the return-leg {@code state} verification — lives in
+ * {@link RpInitiatedLogout}.
  * <p>
  * <strong>Logout leg.</strong> {@link #logout(String, Instant)} resolves the request's live
  * {@link SessionRecord} through the mode-neutral {@link SessionBinding} seam, drives
- * {@link RpInitiatedLogout#initiate} (which revokes the mediated tokens and builds the
+ * {@link RpInitiatedLogout#initiate} (which calls its token-revocation seam and builds the
  * {@code end_session_endpoint} redirect carrying the {@code id_token_hint}, the exact
  * {@code post_logout_redirect_uri}, and the single-use logout-state cookie), then destroys the
  * session ({@link SessionBinding#destroy}) and clears the session cookie. The local session

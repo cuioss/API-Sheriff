@@ -36,7 +36,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link ReservedPathRegistry}: the exact-match carve-out (D2) that guarantees a proxy
  * route such as {@code path_prefix: /auth} never swallows the exact {@code /auth/callback}, the
- * OIDC-host gate that the five browser-facing endpoints carry and the back-channel receiver
+ * OIDC-host gate that the six browser-facing endpoints carry and the back-channel receiver
  * deliberately does not, plus the empty registry when no OIDC callback is configured.
  */
 class ReservedPathRegistryTest {
@@ -52,6 +52,7 @@ class ReservedPathRegistryTest {
     private static final String LOGOUT_PATH = "/auth/logout";
     private static final String LOGOUT_RETURN_PATH = "/auth/logout/return";
     private static final String BACKCHANNEL_PATH = "/auth/backchannel";
+    private static final String STEP_UP_PATH = "/auth/step-up";
 
     private static ReservedPathRegistry fullyConfigured() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
@@ -62,6 +63,7 @@ class ReservedPathRegistryTest {
         OidcConfig oidc = OidcConfig.builder()
                 .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
                 .logout(logout)
+                .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                 .build();
         return ReservedPathRegistry.from(oidc);
     }
@@ -80,15 +82,44 @@ class ReservedPathRegistryTest {
         }
 
         @ParameterizedTest(name = "reserved path \"{0}\" is matched exactly")
-        @ValueSource(strings = {LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH})
+        @ValueSource(strings = {LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, STEP_UP_PATH})
         @DisplayName("Should resolve each configured reserved path exactly")
         void shouldResolveEachReservedPath(String path) {
             assertTrue(registry.isReserved(OIDC_HOST, path), path);
         }
 
+        @Test
+        @DisplayName("Should resolve oidc.step_up.path to the STEP_UP endpoint")
+        void shouldResolveStepUpPath() {
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP), registry.match(OIDC_HOST, STEP_UP_PATH));
+        }
+
+        @Test
+        @DisplayName("Should register STEP_UP from the path alone, whatever the RFC 9470 step-up keys say")
+        void shouldRegisterStepUpIndependentlyOfEnabled() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                    .stepUp(new OidcConfig.StepUp(false, false, STEP_UP_PATH))
+                    .build();
+
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                    ReservedPathRegistry.from(oidc).match(OIDC_HOST, STEP_UP_PATH));
+        }
+
+        @Test
+        @DisplayName("Should register no STEP_UP endpoint when the step_up block declares no path")
+        void shouldNotRegisterStepUpWithoutPath() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                    .stepUp(new OidcConfig.StepUp(true, true, null))
+                    .build();
+
+            assertEquals(Set.of(CALLBACK_PATH), ReservedPathRegistry.reservedPaths(oidc));
+        }
+
         @ParameterizedTest(name = "prefix/sibling path \"{0}\" is not reserved")
         @ValueSource(strings = {"/auth", "/auth/", "/auth/callbacks", "/auth/callback/extra", "/auth/other",
-                "/authcallback", "/"})
+                "/authcallback", "/", "/auth/step-up/", "/auth/step-up/extra", "/auth/step"})
         @DisplayName("Should not match a prefix, sibling, or extended path — the exact carve-out")
         void shouldNotMatchPrefixOrSibling(String path) {
             assertFalse(registry.isReserved(OIDC_HOST, path), path);
@@ -103,7 +134,7 @@ class ReservedPathRegistryTest {
         private final ReservedPathRegistry registry = fullyConfigured();
 
         @ParameterizedTest(name = "browser-facing path \"{0}\" is not reserved on a foreign host")
-        @ValueSource(strings = {CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH})
+        @ValueSource(strings = {CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, STEP_UP_PATH})
         @DisplayName("Should not match a browser-facing reserved path on a foreign host")
         void shouldNotMatchForeignHost(String path) {
             assertTrue(registry.match(FOREIGN_HOST, path).isEmpty(), path);
@@ -195,7 +226,7 @@ class ReservedPathRegistryTest {
         private static final String USER_INFO_PATH = "/session/userinfo";
         private static final String LOGIN_PATH = "/session/login";
 
-        private OidcConfig allSixKinds() {
+        private OidcConfig allSevenKinds() {
             OidcConfig.Logout logout = OidcConfig.Logout.builder()
                     .path(LOGOUT_PATH)
                     .postLogoutRedirectUri("https://" + OIDC_HOST + LOGOUT_RETURN_PATH)
@@ -206,6 +237,7 @@ class ReservedPathRegistryTest {
                     .logout(logout)
                     .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
                     .login(new OidcConfig.Login(LOGIN_PATH, null))
+                    .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                     .build();
         }
 
@@ -213,7 +245,7 @@ class ReservedPathRegistryTest {
         @DisplayName("Should return every configured reserved path in declaration order")
         void shouldReturnEveryConfiguredPath() {
             assertEquals(List.of(CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, USER_INFO_PATH,
-                    LOGIN_PATH), List.copyOf(ReservedPathRegistry.reservedPaths(allSixKinds())));
+                    LOGIN_PATH, STEP_UP_PATH), List.copyOf(ReservedPathRegistry.reservedPaths(allSevenKinds())));
         }
 
         @Test
@@ -225,10 +257,11 @@ class ReservedPathRegistryTest {
         @Test
         @DisplayName("Should agree with the registry: every returned path matches on the OIDC host")
         void shouldAgreeWithRegistryMatching() {
-            OidcConfig oidc = allSixKinds();
+            OidcConfig oidc = allSevenKinds();
             ReservedPathRegistry registry = ReservedPathRegistry.from(oidc);
             Set<String> paths = ReservedPathRegistry.reservedPaths(oidc);
-            assertEquals(6, paths.size());
+            assertEquals(ReservedEndpoint.values().length, paths.size(),
+                    "one configured path per reserved endpoint kind");
             for (String path : paths) {
                 assertTrue(registry.isReserved(OIDC_HOST, path), path);
             }
@@ -246,7 +279,7 @@ class ReservedPathRegistryTest {
         @Test
         @DisplayName("Should return an unmodifiable set")
         void shouldBeUnmodifiable() {
-            Set<String> paths = ReservedPathRegistry.reservedPaths(allSixKinds());
+            Set<String> paths = ReservedPathRegistry.reservedPaths(allSevenKinds());
             assertThrows(UnsupportedOperationException.class, () -> paths.add("/x"));
         }
     }

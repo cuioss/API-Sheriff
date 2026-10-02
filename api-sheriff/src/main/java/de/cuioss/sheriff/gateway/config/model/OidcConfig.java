@@ -35,7 +35,7 @@ import org.jspecify.annotations.Nullable;
  * @param redirectUri  the gateway callback URI, {@code null} when omitted
  * @param logout       the logout settings, {@code null} when omitted
  * @param session      the session settings, {@code null} when omitted
- * @param stepUp       the step-up authentication settings, {@code null} when omitted
+ * @param stepUp       the step-up settings, {@code null} when omitted
  * @param userInfo     the session/user-info reserved-endpoint settings, {@code null}
  *                     when omitted
  * @param login        the login-initiation reserved-path settings, {@code null} when
@@ -275,17 +275,26 @@ List<String> scopes,
     }
 
     /**
-     * RFC 9470 step-up authentication settings.
+     * Step-up settings: the RFC 9470 upstream-challenge leg and the gateway-served step-up path.
+     * <p>
+     * The two are independent. {@code enabled} and {@code honorUpstreamChallenge} govern the
+     * RFC 9470 {@code acr} leg only and do not gate {@code path}: the path's presence alone
+     * registers the reserved step-up endpoint, exactly like every other reserved path. That
+     * endpoint is the target of the {@code step_up_url} a session route names when it refuses
+     * a non-navigation request for a missing scope.
      *
      * @param enabled                whether step-up is honored, {@code null} when omitted
      * @param honorUpstreamChallenge whether upstream challenges are honored, {@code null}
      *                               when omitted
+     * @param path                   the gateway-served step-up path ({@code oidc.step_up.path}),
+     *                               {@code null} when omitted, in which case no step-up endpoint
+     *                               is registered and no {@code step_up_url} is ever named
      * @author API Sheriff Team
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record StepUp(@Nullable Boolean enabled, @Nullable Boolean honorUpstreamChallenge) {
+    public record StepUp(@Nullable Boolean enabled, @Nullable Boolean honorUpstreamChallenge, @Nullable String path) {
     }
 
     /**
@@ -321,14 +330,14 @@ List<String> scopes,
      * Login-initiation reserved-path settings (fold). Mirrors the {@link Logout}
      * shape so the login-initiation endpoint reads as {@code oidc.login.path}.
      * <p>
-     * {@code defaultReturnUrl} is the post-login return target used when a login carries no
-     * usable return URL — an absent, cross-origin or unparseable target falls back to it, and
-     * the runtime resolves an omitted value to {@code /}. Boot validation refuses a value that is
+     * {@code defaultReturnUrl} is the return target an absent, cross-origin or unparseable
+     * target falls back to, and the runtime resolves an omitted value to {@code /}. Boot
+     * validation refuses a value that is
      * not same-origin with {@code redirect_uri}.
      *
      * @param path             the gateway-served login-initiation path, {@code null} when
      *                         omitted
-     * @param defaultReturnUrl the post-login fallback return target, {@code null} when omitted
+     * @param defaultReturnUrl the fallback return target, {@code null} when omitted
      * @author API Sheriff Team
      * @since 1.0
      */

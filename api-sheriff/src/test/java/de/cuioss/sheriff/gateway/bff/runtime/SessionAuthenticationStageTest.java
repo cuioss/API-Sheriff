@@ -59,7 +59,7 @@ class SessionAuthenticationStageTest {
 
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
     private static final Instant SESSION_EXPIRY = NOW.plusSeconds(3600);
-    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+    static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
     private static final String SESSION_ID = "opaque-session-id";
     private static final String MEDIATED_TOKEN = "mediated-access-token";
@@ -125,19 +125,23 @@ class SessionAuthenticationStageTest {
         }
 
         @Test
-        @DisplayName("mediates a live session on a route with non-empty needed scopes without any scope check")
-        void mediatesWithoutScopeCheckOnScopedRoute() {
-            // The mediated token is an opaque string granting nothing: were any scope check left on the
-            // session path it could only fail, so a clean mediation proves none runs.
+        @DisplayName("never relays a live session whose scopes fall short of the route's needed scopes")
+        void neverRelaysSessionShortOfNeededScopes() {
+            // The session carries no scope at all, so the needed scope is neither active nor granted:
+            // no refresh can obtain it, and an API call is refused rather than relayed.
             SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
             SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin());
-            PipelineRequest request = sessionRequest(Set.of(NEEDED_SCOPE), navigationHeaders());
+            PipelineRequest request = sessionRequest(Set.of(NEEDED_SCOPE), xhrHeaders());
 
-            assertDoesNotThrow(() -> stage.process(request));
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
 
-            assertEquals(Optional.of(MEDIATED_TOKEN), request.mediatedBearer(),
-                    "a session route requests its needed scopes at login and never enforces them per request");
-            assertTrue(request.shortCircuitStatus().isEmpty());
+            assertAll("a session route enforces its needed scopes on every request",
+                    () -> assertEquals(EventType.SCOPE_MISSING, thrown.getEventType(),
+                            "a session short of a needed scope is answered 403"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty(),
+                            "the under-scoped session's token is never recorded for the upstream"),
+                    () -> assertTrue(request.shortCircuitStatus().isEmpty(),
+                            "an API call is refused, never redirected"));
         }
     }
 
@@ -499,10 +503,12 @@ class SessionAuthenticationStageTest {
         void rejectsNullOnFailurePolicy() {
             SessionBinding binding = emptyBinding();
             SessionAuthenticationStage.TokenRefresh refresh = identityRefresh();
+            SessionAuthenticationStage.ScopeRefresh scopeRefresh = unreachableScopeRefresh();
             SessionAuthenticationStage.LoginInitiation login = redirectLogin();
+            SessionAuthenticationStage.WideningInitiation widening = unreachableWidening();
 
-            assertThrows(NullPointerException.class,
-                    () -> new SessionAuthenticationStage(binding, refresh, login, null, CLOCK));
+            assertThrows(NullPointerException.class, () -> new SessionAuthenticationStage(binding, refresh,
+                    scopeRefresh, login, widening, null, null, CLOCK));
         }
 
         @Test
@@ -661,15 +667,36 @@ class SessionAuthenticationStageTest {
         return stage(binding, refresh, login, OnFailure.REAUTHENTICATE);
     }
 
+    /**
+     * A stage whose scope-refresh and widening seams fail the test when reached and that names no
+     * step-up path: every test in this class drives a session that either covers the route's needed
+     * scopes or lacks one no refresh could obtain, so neither seam is ever legitimately called here.
+     * The seams' own behaviour is covered by {@code SessionAuthenticationStageScopeEnforcementTest}.
+     */
     private static SessionAuthenticationStage stage(SessionBinding binding,
             SessionAuthenticationStage.TokenRefresh refresh, SessionAuthenticationStage.LoginInitiation login,
             OnFailure onFailure) {
-        return new SessionAuthenticationStage(binding, refresh, login, onFailure, CLOCK);
+        return new SessionAuthenticationStage(binding, refresh, unreachableScopeRefresh(), login,
+                unreachableWidening(), onFailure, null, CLOCK);
     }
 
-    private static SessionAuthenticationStage.TokenRefresh identityRefresh() {
+    static SessionAuthenticationStage.TokenRefresh identityRefresh() {
         return (session, cookieHeader, now) ->
                 RefreshResult.mediate(new SessionBinding.BoundSession(session, List.of()));
+    }
+
+    /** A scope-refresh seam that fails the test when reached — the request must not need a scope refresh. */
+    static SessionAuthenticationStage.ScopeRefresh unreachableScopeRefresh() {
+        return (session, cookieHeader, requestedScopes, now) -> {
+            throw new AssertionError("the scope-refresh seam must not be reached");
+        };
+    }
+
+    /** A widening seam that fails the test when reached — the request must not be redirected into a widening. */
+    static SessionAuthenticationStage.WideningInitiation unreachableWidening() {
+        return (live, returnUrl, neededScopes, now) -> {
+            throw new AssertionError("the widening seam must not be reached");
+        };
     }
 
     /** A refresh seam that destroyed the session — the stage clears the cookie, then negotiates. */
@@ -682,7 +709,7 @@ class SessionAuthenticationStageTest {
         return (session, cookieHeader, now) -> RefreshResult.requestFailed();
     }
 
-    private static SessionAuthenticationStage.LoginInitiation redirectLogin() {
+    static SessionAuthenticationStage.LoginInitiation redirectLogin() {
         return (returnUrl, scopes, now) -> new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
     }
 
@@ -690,7 +717,7 @@ class SessionAuthenticationStageTest {
         return new ServerSessionBinding(new InMemorySessionStore(16), CODEC);
     }
 
-    private static SessionBinding bindingWith(SessionRecord session) {
+    static SessionBinding bindingWith(SessionRecord session) {
         InMemorySessionStore store = new InMemorySessionStore(16);
         store.create(session, NOW);
         return new ServerSessionBinding(store, CODEC);
@@ -701,6 +728,16 @@ class SessionAuthenticationStageTest {
     }
 
     private static SessionRecord session(String accessToken, Instant expiresAt) {
+        return session(accessToken, expiresAt, Set.of(), Set.of());
+    }
+
+    /** A live session carrying the active scope set {@code A} and the granted scope set {@code S}. */
+    static SessionRecord session(String accessToken, Set<String> activeScopes, Set<String> grantedScopes) {
+        return session(accessToken, SESSION_EXPIRY, activeScopes, grantedScopes);
+    }
+
+    private static SessionRecord session(String accessToken, Instant expiresAt, Set<String> activeScopes,
+            Set<String> grantedScopes) {
         return SessionRecord.builder()
                 .sessionId(SESSION_ID)
                 .accessToken(accessToken)
@@ -709,10 +746,17 @@ class SessionAuthenticationStageTest {
                 .sub("subject")
                 .sid("idp-sid")
                 .expiresAt(expiresAt)
+                .activeScopes(activeScopes)
+                .grantedScopes(grantedScopes)
                 .build();
     }
 
     private static SessionRecord rebind(SessionRecord session, String accessToken) {
+        return rebind(session, accessToken, session.activeScopes());
+    }
+
+    /** The session as a refresh re-binds it: rotated token material, the given active scope set, {@code S} unchanged. */
+    static SessionRecord rebind(SessionRecord session, String accessToken, Set<String> activeScopes) {
         return SessionRecord.builder()
                 .sessionId(session.sessionId())
                 .accessToken(accessToken)
@@ -723,14 +767,16 @@ class SessionAuthenticationStageTest {
                 .expiresAt(session.expiresAt())
                 .acr(session.acr())
                 .authTime(session.authTime())
+                .activeScopes(activeScopes)
+                .grantedScopes(session.grantedScopes())
                 .build();
     }
 
-    private static Map<String, List<String>> navigationHeaders() {
+    static Map<String, List<String>> navigationHeaders() {
         return Map.of("cookie", List.of(cookie()), "accept", List.of("text/html,application/xhtml+xml"));
     }
 
-    private static Map<String, List<String>> xhrHeaders() {
+    static Map<String, List<String>> xhrHeaders() {
         return Map.of("cookie", List.of(cookie()), "accept", List.of("application/json"));
     }
 
@@ -742,12 +788,17 @@ class SessionAuthenticationStageTest {
         return sessionRequest(neededScopes, headers, null);
     }
 
-    private static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers,
+    static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers,
             @Nullable Boolean tokenRelay) {
+        return sessionRequest(neededScopes, headers, tokenRelay, List.of());
+    }
+
+    static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers,
+            @Nullable Boolean tokenRelay, List<QueryParameter> query) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/app/orders")
-                .queryParameters(List.of())
+                .queryParameters(query)
                 .headers(headers)
                 .build();
         request.canonicalPath("/app/orders");

@@ -23,7 +23,8 @@
  * coupling), so every class is unit-testable without a container or a live IdP:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout} orchestrates RP-initiated
- *       logout — it revokes the mediated tokens (RFC 7009, best-effort), mints a session-bound
+ *       logout — it hands the session to the token-revocation seam it is given (best-effort; the
+ *       class sends no revocation request itself), mints a session-bound
  *       {@code state}, carries it in the short-lived single-use {@code __Host-sheriff-logout} cookie,
  *       and on the return leg verifies the returned {@code state} against that cookie before landing
  *       the browser on {@code final_redirect}.</li>

@@ -11,8 +11,8 @@
 # session mode SERVER. Neither can be flipped without destroying the contract it was built to
 # prove, which is why this third document exists.
 #
-# It is the sibling cookie document (sheriff-config-cookie/gateway.yaml) with exactly THREE
-# deliberate behavioural differences:
+# It is the sibling cookie document (sheriff-config-cookie/gateway.yaml) with THREE values repointed
+# deliberately (1-3 below) and ONE key not carried over, oidc.login.default_return_url:
 #
 #   1. oidc.client_id: refresh-client. The shared realm's 900s accessTokenLifespan would put the
 #      near-expiry window 870s into the session — unreachable in a test. refresh-client carries a
@@ -29,8 +29,8 @@
 #      validation and the default CSRF trusted origin are derived from, so a half-moved triple
 #      rejects the browser flow rather than failing loudly at boot.
 #
-# metadata.config_version below is a document LABEL, not a fourth behavioural difference — it names
-# which overlay a boot log came from and is read by nothing.
+# metadata.config_version below is a document LABEL read by nothing. oidc.login.default_return_url
+# is NOT set here, though the cookie document sets it: a login with no usable returnUrl lands on '/'.
 #
 # It declares NO max_cookie_size override, and that absence is the experiment rather than an
 # omission: the instance runs on the lowered 4019-byte browser-safe default, so whether a

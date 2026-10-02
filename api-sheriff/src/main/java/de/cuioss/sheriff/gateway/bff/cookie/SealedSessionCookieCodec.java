@@ -123,9 +123,12 @@ public final class SealedSessionCookieCodec {
     /**
      * The current sealed-cookie format version, bound into the GCM associated data.
      * <p>
-     * Version {@code 1} is the ten-field {@link SealedSessionPayload} — the session's tokens and
-     * bookkeeping plus the active scope set the identity provider granted — framed as
-     * length-prefixed raw UTF-8 and deflated before sealing.
+     * Version {@code 2} is the eleven-field {@link SealedSessionPayload} — the session's tokens and
+     * bookkeeping plus the active scope set {@code A} the mediated token was granted and the granted
+     * scope set {@code S} the IdP is known to grant the session — framed as length-prefixed raw UTF-8
+     * and deflated before sealing. It superseded version {@code 1}, the ten-field shape without
+     * {@code S}; a version-{@code 1} cookie is refused at the version gate and its browser logs in
+     * again.
      * <p>
      * <strong>Versioning rule.</strong> The value is incremented by exactly one on every change to
      * the sealed payload's field set (a field added, removed or re-framed). A change that leaves the
@@ -138,7 +141,7 @@ public final class SealedSessionCookieCodec {
      * under a different version either. Cookie sessions sealed under any other version are therefore
      * refused fail-closed and the browser simply logs in again, once.
      */
-    public static final byte FORMAT_VERSION = 1;
+    public static final byte FORMAT_VERSION = 2;
 
     /**
      * The {@code Max-Age} attribute introducer, shared by the header assembly in
@@ -508,7 +511,7 @@ public final class SealedSessionCookieCodec {
      * fit a single browser-safe cookie.
      * <p>
      * {@link Deflater#BEST_COMPRESSION} is chosen over the default level because the work is done
-     * once per session change (login, refresh, logout) rather than per request, so the extra CPU buys
+     * once per session change rather than per request, so the extra CPU buys
      * cookie bytes at a cost that is not on the hot path. The incompressible 43-character session
      * nonce is a fixed floor on what any level can achieve.
      */

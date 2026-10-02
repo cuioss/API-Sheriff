@@ -26,9 +26,8 @@
  *       {@code /auth/callback}.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint} handles the OIDC
  *       auth-code callback: it parses the <em>raw</em> query (BFF-13 duplicate-parameter
- *       defence), resolves the browser-bound pending-authorization record, drives the engine's
- *       code exchange and token validation, creates the server-side session, and redirects to the
- *       recorded return URL.</li>
+ *       defence), resolves the browser-bound pending-authorization record, and drives the engine's
+ *       code exchange and token validation.</li>
  * </ul>
  * The classes are framework-agnostic (no CDI, no JAX-RS/Vert.x coupling), so they are
  * unit-testable without a container; the session runtime wires them to the request/response edge.

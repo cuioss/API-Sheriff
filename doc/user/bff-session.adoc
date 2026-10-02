@@ -77,15 +77,17 @@ endpoint:
   id: app1
   base_url: APP1
   auth: { require: session }
-  scopes: [orders.read]                       # requested at login in addition to oidc.scopes
+  scopes: [orders.read]                       # needed on every route of this endpoint, in addition to oidc.scopes
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }
       upstream: { path: /orders }
 ----
 
-A session route runs *no* scope check of its own. `scopes` names what the login for this endpoint
-*asks* the IdP for; what the IdP grants is the upstream's to judge. See <<scopes>>.
+`scopes` names what a login for this endpoint *asks* the IdP for, and what every session request to
+its routes is held to: a session whose token lacks one of these scopes is not relayed. The gateway
+obtains the scope when the IdP grants it and answers `403` when it does not. See <<scopes>> and
+<<scope-enforcement>>.
 
 [[token-relay]]
 == Enforce login without handing the origin a token
@@ -107,10 +109,11 @@ endpoint:
       match: { path_prefix: /app }
 ----
 
-The session is still resolved, refreshed and required exactly as before: a navigation without a
-session is redirected to login, an XHR gets `401`, and an ended session still clears the cookie. The
-only difference is that the gateway mediates no `Authorization` header: the session's token never
-reaches the upstream. The only `Authorization` that could still cross is a static value the route
+The session is still resolved, refreshed, scope-checked and required exactly as before: a navigation
+without a session is redirected to login, an XHR gets `401`, an ended session still clears the
+cookie, and a session lacking a scope the route needs is refreshed, widened or refused `403` (see
+<<scope-enforcement>>). The only difference is that the gateway mediates no `Authorization` header:
+the session's token never reaches the upstream. The only `Authorization` that could still cross is a static value the route
 itself configures in `forward.set_headers` -- operator configuration, which `token_relay` does not
 filter. `token_relay` acts on
 `require: session` routes and on the session branch of a <<session-fallback,`session_fallback`>>
@@ -162,12 +165,14 @@ endpoint:
 | `401` with `WWW-Authenticate: Bearer`. Never a login redirect, and a valid session cookie does not
   rescue it -- the bearer branch was chosen the moment the header was sent.
 | No `Authorization`, live session
-| Served exactly as on a `require: session` route: the session's token is relayed upstream (unless
-  `token_relay: false`), refreshed near expiry, and the session cookie is stripped. As on every
-  session route, *no scope check runs*: any live session is admitted, even one whose login never
-  requested the route's scopes. The `403 insufficient_scope` row above applies to bearer clients
-  only, so a route whose `scopes` are its authorization boundary is not a `session_fallback`
-  candidate.
+| Served exactly as on a `require: session` route. The session's scopes are compared with the set
+  the route needs. A session that carries them is relayed: its token goes upstream (unless
+  `token_relay: false`) and is refreshed near expiry, and the session cookie is stripped. A session
+  lacking one is not relayed: a scope inside its granted set is obtained by a refresh, any other is
+  obtained by widening the session on a navigation, and an XHR or API call gets `403`
+  `application/problem+json` naming the `missing_scopes` and, when `oidc.step_up.path` is
+  configured, a `step_up_url` (see <<scope-enforcement>>). Both branches enforce the same set; the
+  `insufficient_scope` challenge of the second row is the answer to bearer clients only.
 | No `Authorization`, no session, navigation
 | `302` into the login. The login requests the route's scope set, `oidc.scopes` plus the endpoint's
   `scopes`.
@@ -244,24 +249,33 @@ is refused at boot, since scopes act only on authenticated routes.
   request that has not happened yet. When `X` is absent, cross-origin or unparseable, matches no
   route, or lands on a `require: none` route, the login requests `oidc.scopes` alone.
 
-*Session-wide scope growth.* Scopes are requested when a session is *established*, never
-re-negotiated on a live one. A session that logged in through a route of `orders` holds the
-`orders.read` grant for the rest of its life, and the token it relays to every other session route
-carries that scope too -- per-endpoint token narrowing is not offered. Conversely, a session that
-logged in on a route needing fewer scopes is *not* sent back to the IdP when it reaches a route that
-needs more: the gateway runs no session-route scope check, the relayed token simply lacks the
-scope, and the upstream decides. To widen a session, the user logs out and logs in again.
+*Session-wide scope growth.* A login requests only the scope set of the route it is for; further
+scopes are requested when a route first needs them (see <<scope-enforcement>>). A session gives a
+scope back only when the IdP itself stops granting it: one that logged in through, or was widened
+for, a route of `orders` holds the `orders.read` grant for as long as the IdP returns it, and the
+token it relays to every other session route
+carries that scope too -- per-endpoint token narrowing is not offered. Set `token_relay: false` on
+routes whose origin needs no token (see <<token-relay>>).
 
 *Optional client scopes at the IdP.* The IdP grants a requested scope only when the client is allowed
 to request it. On Keycloak, attach an endpoint scope to the client as an *Optional* client scope, so it
-is granted only when a login asks for it. A *Default* client scope is granted on every login whether
-requested or not, which defeats the per-endpoint request.
+is granted only when a login or a widening asks for it. A *Default* client scope is granted on every
+login whether requested or not, which defeats the per-endpoint request.
 
-*Refresh keeps the active set.* The session remembers the scope set the IdP actually granted (its
-active set): after login, the token's `scope` claim (or the requested set when the token carries
-none); after a refresh, the `scope` the token endpoint returns, unchanged when the response omits it.
-Every refresh requests exactly that active set, never the static `oidc.scopes`, so a refresh does not
-silently narrow a session that logged in on a scoped route.
+*The two scope sets a session keeps.* The session remembers the scope set of its current access
+token (its *active* set): after login, the token's `scope` claim (or the requested set when the token
+carries none); after a refresh, the `scope` the token endpoint returns, or the requested set when
+the response omits it. It also remembers the scopes the IdP is known to grant it (its *granted*
+set). That set equals the active set at login. A successful widening replaces it with the scopes of
+the widening's grant. A near-expiry refresh never changes it, and no refresh ever adds to it. The
+one refresh that can reduce it is the scope-driven refresh of <<scope-enforcement>>: a scope it asks
+for and the IdP does not return leaves the granted set. The granted set therefore says what the IdP
+last showed it grants, not everything it ever granted (see <<scope-revoked>>).
+
+*Refresh keeps the active set.* A near-expiry refresh requests exactly the active set, never the
+static `oidc.scopes`, so a refresh does not silently narrow a session that logged in on a scoped
+route. The one refresh that requests more is the scope-driven refresh of <<scope-enforcement>>,
+which asks for the active set plus scopes the session was granted before.
 
 [[bearer-oidc-scopes]]
 *Bearer routes check `oidc.scopes` too.* A `require: bearer` route checks the same `needed` set against
@@ -273,6 +287,211 @@ for example, is answered `403 insufficient_scope` even on a bearer route whose e
 `scopes`. Have such clients request the `oidc.scopes` as well, or serve them from a gateway without an
 `oidc` block.
 
+[[scope-enforcement]]
+== When a session lacks a scope the route needs
+
+A session outlives the route that started it, so it can reach a route whose `needed` set (see
+<<scopes>>) it does not carry. A session route never relays such a session. On every request the
+gateway compares the session's active set with the route's `needed` set -- after the session is
+resolved and any near-expiry refresh has run, and before anything is relayed. This holds on
+`require: session` routes and on the session branch of a <<session-fallback,`session_fallback`>>
+route, and it holds whatever `token_relay` says: `token_relay: false` withholds the token from the
+upstream, not the check from the request.
+
+[cols="2,3"]
+|===
+| The session's scopes | What happens
+
+| Nothing is missing
+| The request continues. The comparison is local: no call to the IdP, no rotated token, no cookie.
+| Every missing scope lies inside the session's granted set
+| A refresh, requesting the active set plus the missing scopes. Navigations and API calls take this
+  path alike.
+| A missing scope lies outside the session's granted set, or the refresh did not obtain it
+| The session has to be *widened*. A navigation is redirected to the IdP; any other request is
+  refused `403`.
+|===
+
+=== A refresh for a scope granted before
+
+When every missing scope lies inside the session's granted set, the gateway makes a refresh that
+requests the active set plus the missing scopes. A session that then carries the `needed` set is
+relayed. A session that is kept but still lacks a scope -- the IdP granted less than requested, or
+the refresh is backing off -- is widened or refused as described below; it is never relayed short of
+a scope. When the IdP granted less than requested, the scopes it did not return also leave the
+session's granted set (see <<scope-revoked>>).
+A refresh that ends the session, or leaves the request without a valid token, is answered
+exactly as a failed near-expiry refresh is (see
+link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table]).
+
+The refresh is skipped, and the request goes straight to widening, in two cases:
+
+* The session holds no refresh token: `oidc.session.refresh.enabled` is `false`, or the IdP issued
+  none.
+* Cookie mode only: the near-expiry refresh of the same request has just issued a new session
+  cookie. The request's own `Cookie` header then names a refresh token the IdP has already retired,
+  so no second exchange is started from it. The next request carries the new cookie and is refreshed
+  normally.
+
+*An `invalid_scope` answer to the refresh arms the refresh back-off.* The gateway cannot tell that
+answer from an IdP that never processed the grant, so it is recorded as a pre-redemption failure
+(`ApiSheriff-127`): the session is kept, the request is widened or refused, and the session's next
+refresh -- a near-expiry one included -- waits out the five-second back-off.
+
+=== Widening the live session
+
+A widening asks the IdP for the session's granted set plus the route's `needed` set and merges the
+grant into the *same* session. What the gateway answers depends on whether the caller can follow a
+redirect to the IdP.
+
+*A navigation* (its `Accept` offers `text/html`) is redirected `302` into that authorization request
+and comes back to the URL it asked for, path and raw query (see <<return-url>>). The first attempt
+carries `prompt=none`, so an IdP that can answer from its own SSO session does so without showing
+the user anything. If the IdP answers `login_required`, `interaction_required`,
+`consent_required` or `account_selection_required`, the gateway starts exactly one interactive
+attempt for the same scopes and the same return URL.
+
+*Any other request* (XHR / `fetch`, an API client) is refused `403` `application/problem+json`. The
+body carries two RFC 9457 extension members (shown formatted; the gateway writes it compact):
+
+[source,json]
+----
+{
+  "type": "urn:api-sheriff:problem:authorization",
+  "title": "Authorization",
+  "status": 403,
+  "missing_scopes": ["orders.read"],
+  "step_up_url": "/auth/step-up?returnUrl=%2Fapi%2Forders%3Ftab%3Dopen"
+}
+----
+
+* `missing_scopes` lists the scope names the session lacks, sorted. Every name comes from the
+  route's configured `needed` set, never from a token.
+* `step_up_url` is a relative, same-origin URL: `oidc.step_up.path` with the refused request's path
+  and query as its percent-encoded `returnUrl` parameter. It is present only when
+  `oidc.step_up.path` is configured. Without it the answer names the missing scopes and nothing to
+  follow.
+* The answer carries no `WWW-Authenticate` header. That challenge belongs to bearer clients.
+* On a `protocol: grpc` route the refusal is a trailers-only gRPC status, which carries neither
+  member.
+
+*Following `step_up_url`.* A script cannot complete a widening by retrying: the widening needs a
+browser navigation to the IdP. Send the browser to `step_up_url` as a top-level navigation, not as a
+`fetch`. After a granted widening the browser is redirected to the `returnUrl` -- the refused
+request's own path and query -- and a repeated call is relayed.
+
+*What a granted widening changes.* The session stays the same session. It keeps its identity, its
+authentication time and its absolute expiry, so a widening does not extend `ttl_seconds`. It takes
+the new tokens, and both its active set and its granted set become the scopes of the new grant. A
+scope of the earlier granted set that the IdP no longer returned is therefore gone from the session.
+The gateway logs `ApiSheriff-20`, naming only the scopes added.
+
+*A widening also moves the session to the IdP session that answered it.* The new tokens belong to
+the IdP session that issued the grant. That is usually the one the login used, but not always: if
+the IdP session ended and the user signed in again -- which is what the interactive attempt does --
+it is a new one. The gateway session takes the `sid` of the new ID token when the token carries one,
+and keeps its own otherwise. In server mode a back-channel logout for that IdP session, delivered
+to `oidc.logout.backchannel_path`, then destroys the gateway session. A logout token that names the
+earlier `sid` no longer matches it.
+
+*When the widening is refused.* The callback answers `403`, redirects nowhere and sets no cookie,
+and the session is left as it was: it stays usable on every route whose `needed` set it satisfies.
+That is the answer to:
+
+* an IdP error on the silent attempt other than the four named above, and any IdP error on the
+  interactive attempt;
+* a grant that still lacks a scope the widening sought beyond the granted set;
+* a grant for a different user (`sub`) than the session's -- a session is never moved to another
+  identity;
+* a callback that arrives without the live session.
+
+The first two are logged as `ApiSheriff-131` with a bounded reason, the identity mismatch as
+`ApiSheriff-130` (see link:../LogMessages.adoc[Log Messages]). Because nothing redirects again, a
+scope the IdP will not grant cannot loop the browser. The gateway keeps no record of a refusal: a
+later navigation to the route starts a new attempt.
+
+*A logout during a widening wins.* If the user logs out, or the IdP delivers a back-channel logout,
+after the callback has found the live session and before it stores the merged one, the grant is not
+merged and nothing is stored: the session stays logged out. The callback answers the same `403`,
+and the refusal is logged as `ApiSheriff-131` with the reason `session-terminated`.
+
+[[scope-revoked]]
+=== When the IdP stops granting a scope
+
+An IdP can stop granting a scope during a session's life: a role or entitlement is removed, a
+consent is withdrawn, a client scope is unassigned. The session's granted set then still names a
+scope the IdP will not return. The gateway corrects the granted set the first time it asks:
+
+* *A refresh is answered with fewer scopes than it asked for.* The scopes the IdP did not return
+  leave the granted set. A navigation is then widened once, and when that grant lacks the scope too
+  the callback answers the terminal `403` above. An API call is refused `403`.
+* *No refresh ran* -- the session holds no refresh token, refresh is switched off, or (cookie mode)
+  the near-expiry refresh had just issued a new cookie. The widening's grant is merged, which takes
+  the scope out of the granted set, and the browser is sent back to the route once. The next
+  widening is the one that ends in the terminal `403`.
+
+Either way the session is kept and stays usable on every route it still satisfies. A navigation ends
+in the `403` after at most two round trips to the IdP.
+
+One case is not corrected this way. An IdP that answers the refresh with an outright `invalid_scope`
+error gives the gateway nothing to learn from (see the back-off note above): the granted set is left
+as it was and the refresh is tried again once per back-off window.
+
+[[step-up-path]]
+=== The step-up path
+
+`oidc.step_up.path` is an optional gateway-owned reserved path (see
+<<_gateway_owned_reserved_paths>>). It is the
+target of `step_up_url`: a browser holding a live session navigates to
+`<path>?returnUrl=<target>` to have that session widened for the route behind `<target>`.
+
+[source,yaml]
+----
+# gateway.yaml
+oidc:
+  step_up:
+    path: /auth/step-up              # optional; absolute gateway path
+----
+
+* *It serves a live session only.* Without one it answers `401` `application/problem+json` with
+  `Cache-Control: no-store`: no redirect to the IdP, no cookie. It widens a session and never
+  starts one; a login is started through a session route or `oidc.login.path`.
+* *The return URL must be same-origin.* `returnUrl` is checked by the rule a login's target is
+  checked by (see <<return-url>>). An absent, cross-origin, scheme-relative or unparseable target is
+  replaced by `oidc.login.default_return_url`, or by `/` when that key is unset.
+* *It requests what the target's route needs.* The target is resolved to a `needed` set exactly as
+  for `/auth/login?returnUrl=` (see <<scopes>>): matched as a `GET` on the gateway host, the query
+  ignored, a route with a `match.headers` condition never selected, and `oidc.scopes` alone when no
+  authenticated route matches.
+* *It redirects straight back when no widening is owed.* When that set already lies inside the
+  session's granted set, the answer is a `302` to the target and nothing else: the route itself then
+  obtains the scope by a refresh. Otherwise the path starts the same widening a navigation gets,
+  `prompt=none` first.
+
+Because the target is matched as a `GET` without headers, a refused request on a route that such a
+`GET` would not select -- a route matching `methods: [POST]` only, or one selected by a header
+matcher -- gets a `step_up_url` that widens for whatever route the `GET` selects instead, or not at
+all.
+
+The path's presence alone registers the endpoint. `oidc.step_up.enabled` and
+`oidc.step_up.honor_upstream_challenge` govern the RFC 9470 upstream-challenge leg and do not gate
+it. See link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] and
+link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
+
+=== What the integration realm showed
+
+The project's integration suite runs these paths against Keycloak 26.5.7 with one realm. Three
+observations from it, each about that version and that realm and not a statement about identity
+providers in general:
+
+* An authorization request naming a scope the realm assigns to no client is answered
+  `invalid_scope`, so the widening ends in the terminal `403`.
+* A `prompt=none` authorization request from a browser that holds the realm's SSO cookies is
+  answered with a code, without a page.
+* A refresh that asks again for a scope of the original grant, after an earlier refresh narrowed it
+  away, is issued a token carrying that scope.
+
+[[_gateway_owned_reserved_paths]]
 == Gateway-owned reserved paths
 
 On the OIDC host (the host of `oidc.redirect_uri`) the gateway carves out its own exact paths
@@ -285,6 +504,7 @@ not collide with a proxied namespace you need:
 
 | `oidc.redirect_uri` (path) | Auth-code callback that lands a login.
 | `oidc.login.path` | Login-initiation entry point that starts a login (optional).
+| `oidc.step_up.path` | Step-up entry point that widens the live session for the URL it is given (optional).
 | `oidc.user_info.path` | Curated identity view served to the SPA (optional).
 | `oidc.logout.path` | RP-initiated logout.
 | `oidc.logout.post_logout_redirect_uri` (path) | Logout-return verification leg.
@@ -389,6 +609,13 @@ window buys that back at the cost of exactly the detection signal rotation provi
   how the failing request is answered: `reauthenticate` redirects navigations to login and answers
   API calls `401`, `reject` answers `401` to everything. See
   link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table].
+* *A logout is not undone by a request that was already running.* A logout through
+  `oidc.logout.path`, or a back-channel logout, can arrive while a token refresh or a widening for
+  the same session is in flight. The logout wins: the refreshed or widened session is not stored,
+  the refreshing request is answered as unauthenticated with the session cookie cleared, and the
+  refresh token the IdP had just issued is revoked best-effort. The log shows `ApiSheriff-111` with
+  the reason `session-terminated` for a refresh and `ApiSheriff-131` with the same reason for a
+  widening. Neither is a fault; `persist-failure` is the reason to look into.
 * *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
   without the IdP -- but logins fail until the issuer is reachable. Confirm egress to the issuer
   (and its JWKS) is permitted.

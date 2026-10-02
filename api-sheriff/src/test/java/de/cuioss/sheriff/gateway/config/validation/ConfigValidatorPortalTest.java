@@ -155,6 +155,7 @@ class ConfigValidatorPortalTest {
         private static final String BACKCHANNEL = "/auth/backchannel";
         private static final String USER_INFO = "/session/userinfo";
         private static final String LOGIN = "/session/login";
+        private static final String STEP_UP = "/session/step-up";
 
         private OidcConfig oidc() {
             return OidcConfig.builder()
@@ -166,11 +167,12 @@ class ConfigValidatorPortalTest {
                             .build())
                     .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO).build())
                     .login(new OidcConfig.Login(LOGIN, null))
+                    .stepUp(OidcConfig.StepUp.builder().path(STEP_UP).build())
                     .build();
         }
 
         @ParameterizedTest(name = "refuses the reserved path {0}")
-        @ValueSource(strings = {CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN})
+        @ValueSource(strings = {CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN, STEP_UP})
         void refusesEveryReservedPathKind(String reserved) {
             assertRefused(portalErrors(gateway(portal(reserved), oidc()), List.of()),
                     PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");

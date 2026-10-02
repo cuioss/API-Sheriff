@@ -74,8 +74,10 @@ public final class RouteRuntime {
     /**
      * The scope set a request on this route needs — {@code oidc.scopes} united with the owning
      * endpoint's {@code scopes}, materialized once at boot. A bearer route checks the token against
-     * it ({@code 403 insufficient_scope} on a shortfall) and a session route requests it at login;
-     * empty when neither level declares a scope, which skips the bearer check.
+     * it ({@code 403 insufficient_scope} on a shortfall). A session route requests it at login and
+     * compares the session's active scope set against it on every request, refreshing or widening
+     * the session on a shortfall and refusing {@code 403} rather than relaying it short. Empty when
+     * neither level declares a scope, which skips both checks.
      */
     @Builder.Default
     private final Set<String> neededScopes = Set.of();
