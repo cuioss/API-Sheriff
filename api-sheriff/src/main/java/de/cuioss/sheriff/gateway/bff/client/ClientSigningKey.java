@@ -93,8 +93,8 @@ import org.jspecify.annotations.Nullable;
  * logs or {@link #toString()}s key material and has no accessor that returns the
  * private key; that key is reachable only through {@link #clientAuthentication(String, String)}
  * and {@link #senderConstraint()}, both of which hand it to the token engine without disclosing it.
- * Every refusal names the configuration field of the purpose and the defect, and never the key
- * material nor the configured path.
+ * Every refusal of a key file names the configuration field of the purpose and the defect, and
+ * never the key material nor the configured path.
  * <p>
  * Instances are immutable and safe for concurrent use.
  *

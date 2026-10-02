@@ -138,7 +138,7 @@ login redirect.
 
 One `SenderConstraint` is built from the sender-constraint key and handed to the base
 `AuthorizationCodeFlow` and to `ScopedEngineFlows`, which passes it to every per-scope login flow and
-every refresh flow. A flow built without it would send a token request without a proof, and
+every refresh flow. A code exchange or a refresh sent without it would carry no proof, and
 `BoundTokenEndpointClient` would refuse its response.
 
 === The bound token-endpoint client

@@ -17,8 +17,9 @@ not bound to that key, and authenticates with `private_key_jwt`.
 
 Three statements belong to that verdict and are not optional reading:
 
-* *Two rows of the matrix are qualified.* The server-provided DPoP nonce is supported only in part,
-  and the gateway does not enforce TLS on the URL its key set is fetched from.
+* *Rows of the matrix carry qualifiers.* The server-provided DPoP nonce is supported only in part,
+  the gateway does not enforce TLS on the URL its key set is fetched from, and the signing-algorithm
+  row covers the JWTs the gateway signs.
 * *No conformance-suite run exists.* The profile's conformance test suite has not been run against
   the gateway. This document claims the controls it lists, each with its evidence, and makes no
   conformance claim and no certification claim.
@@ -107,7 +108,8 @@ Two terms are used throughout:
   checked at boot, for a provided and for a generated key alike. The `RS256` family is unreachable:
   no key type maps to it. `EdDSA` is not offered for either key: the engine's client-assertion signer
   does not sign it, and the proof key is held to the same two key types although the engine's proof
-  signer would sign it; an Ed25519 key file is refused at boot.
+  signer would sign it; an Ed25519 key file is refused at boot. The algorithms the gateway accepts
+  on the tokens it validates are not assessed in this row.
 
 | Server-provided DPoP nonce (§5.3.3.1 item 8)
 | *PARTIAL*

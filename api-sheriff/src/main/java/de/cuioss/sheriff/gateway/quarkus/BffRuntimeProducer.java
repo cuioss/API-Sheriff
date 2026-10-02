@@ -753,9 +753,9 @@ public class BffRuntimeProducer {
 
     /**
      * Resolves one signing key of the confidential client and translates a refusal into the boot
-     * failure every other invalid configuration raises. The refusal text of {@link ClientSigningKey}
-     * names the configuration field and the defect only — never the configured path nor a line of
-     * the file — so it is carried over as it is.
+     * failure every other invalid configuration raises. The text {@link ClientSigningKey} refuses a
+     * key file with names the configuration field and the defect only — never the configured path
+     * nor a line of the file — so it is carried over as it is.
      *
      * @param keyFile the configured {@code key_file} of the purpose, {@code null} to generate a key
      * @param purpose what the key signs
