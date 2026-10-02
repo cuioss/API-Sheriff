@@ -46,6 +46,7 @@ import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
 import de.cuioss.sheriff.token.client.auth.PrivateKeyJwtAuth;
@@ -71,6 +72,7 @@ import okhttp3.Headers;
 import okio.ByteString;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -91,11 +93,18 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>
  * The tests sit at the top level on purpose: the mock server resolves its dispatcher from the test
  * instance, and a nested instance does not declare one.
+ * <p>
+ * The disclosure assertions read every captured record down to {@code DEBUG}, and the latch tests
+ * count the adapter's own {@code DEBUG} records. The root level alone does not open the loggers of
+ * the gateway and of the token library for that — see {@link SheriffDebugCapture} — so the extension
+ * is registered here, and each disclosure assertion first proves that a {@code DEBUG} record of the
+ * adapter and of the engine's {@link ParClient} is captured.
  */
 @EnableGeneratorController
 @EnableMockWebServer
 @ModuleDispatcher
-@EnableTestLogger(rootLevel = TestLogLevel.DEBUG, debug = PushedAuthorizationRequests.class)
+@EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
+@ExtendWith(SheriffDebugCapture.class)
 @DisplayName("PushedAuthorizationRequests — the authorization request is pushed, or the login is refused")
 class PushedAuthorizationRequestsTest {
 
@@ -700,10 +709,14 @@ class PushedAuthorizationRequestsTest {
     }
 
     /**
-     * Asserts that no captured record, at any level, and no message of a refusal or of a cause it
-     * chains carries one of {@code secrets}.
+     * Asserts that no captured record, down to {@code DEBUG}, and no message of a refusal or of a
+     * cause it chains carries one of {@code secrets}.
+     * <p>
+     * The control comes first: a {@code DEBUG} record of the adapter and of the engine client it
+     * pushes through is captured, so the records read below include the {@code DEBUG} output of both.
      */
     private static void assertNothingIsDisclosed(List<String> secrets, Throwable... refusals) {
+        SheriffDebugCapture.assertDebugIsCaptured(PushedAuthorizationRequests.class, ParClient.class);
         List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
         List<Executable> checks = new ArrayList<>();
