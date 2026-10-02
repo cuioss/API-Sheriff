@@ -32,6 +32,7 @@ import java.util.stream.Stream;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -51,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
@@ -63,6 +65,7 @@ import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -93,6 +96,49 @@ import org.junit.jupiter.params.provider.ValueSource;
 @EnableGeneratorController
 @EnableTestLogger
 class ConfigValidatorTest {
+
+    /**
+     * The part of a reserved-path refusal that names the query and fragment restriction. The three
+     * reserved-path keys share one rule, so the groups testing them share this expectation.
+     */
+    private static final String QUERY_OR_FRAGMENT_REFUSAL = "carrying no query ('?') and no fragment ('#')";
+
+    /**
+     * The part of a reserved-path refusal that names the backslash, control-character and whitespace
+     * restriction, shared by the groups testing the three reserved-path keys.
+     */
+    private static final String BACKSLASH_CONTROL_OR_WHITESPACE_REFUSAL =
+            "no backslash ('\\'), no control character and no whitespace";
+
+    /** {@code /\host}: a browser parses the backslash as {@code /} and reads {@code //host}. */
+    private static final String BACKSLASH_AUTHORITY_PATH = "/\\evil.example";
+
+    /** A backslash inside an otherwise plain reserved path. */
+    private static final String BACKSLASH_SEGMENT_PATH = "/auth\\reserved";
+
+    /** {@code /<TAB>/host}: a browser removes the tab before parsing and reads {@code //host}. */
+    private static final String TAB_AUTHORITY_PATH = "/\t/evil.example";
+
+    /** A tab inside an otherwise plain reserved path. */
+    private static final String TAB_SEGMENT_PATH = "/auth/re\tserved";
+
+    /** {@code /<LF>/host}: a browser removes the line break before parsing and reads {@code //host}. */
+    private static final String LINE_BREAK_AUTHORITY_PATH = "/\n/evil.example";
+
+    /** A plain space inside an otherwise plain reserved path. */
+    private static final String SPACE_PATH = "/auth/re served";
+
+    /** A trailing no-break space — a Unicode space separator Java does not class as whitespace. */
+    private static final String NO_BREAK_SPACE_PATH = "/auth/reserved ";
+
+    /**
+     * A relative reserved path — refused whatever else it holds — that carries a CR/LF and a forged
+     * header line, to observe how the refusal echoes it.
+     */
+    private static final String FORGED_LINE_PATH = "reserved\r\nX-Forged: 1";
+
+    /** How a refusal message renders the CR/LF of {@link #FORGED_LINE_PATH}. */
+    private static final String ESCAPED_CARRIAGE_RETURN_LINE_FEED = "\\u000D\\u000A";
 
     private final ConfigValidator validator = new ConfigValidator();
 
@@ -160,6 +206,43 @@ class ConfigValidatorTest {
                         .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
                 () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
                         + messageContains + "', but got: " + errors);
+    }
+
+    /** The single refusal recorded at exactly {@code pointer}; fails when there is none or more than one. */
+    private static ConfigError singleRefusalAt(List<ConfigError> errors, String pointer) {
+        List<ConfigError> refusals = errors.stream().filter(error -> pointer.equals(error.pointer())).toList();
+        assertEquals(1, refusals.size(), () -> "expected exactly one refusal at " + pointer + ", got: " + refusals);
+        return refusals.getFirst();
+    }
+
+    /**
+     * Asserts that a reserved path holding a backslash, a control character or whitespace is refused
+     * once at {@code pointer}, that the refusal names that restriction, and that the message echoes no
+     * control character raw.
+     */
+    private static void assertBackslashControlOrWhitespaceRefusal(List<ConfigError> errors, String pointer) {
+        String message = singleRefusalAt(errors, pointer).message();
+
+        assertAll(pointer,
+                () -> assertTrue(message.contains(BACKSLASH_CONTROL_OR_WHITESPACE_REFUSAL),
+                        () -> "the refusal names the backslash, control-character and whitespace restriction: "
+                                + message),
+                () -> assertTrue(message.chars().noneMatch(Character::isISOControl),
+                        () -> "the refusal echoes no control character raw: " + message));
+    }
+
+    /**
+     * Asserts that the refusal of {@link #FORGED_LINE_PATH} at {@code pointer} renders its CR/LF as
+     * escapes and so stays on one log line.
+     */
+    private static void assertForgedLineEchoedEscaped(List<ConfigError> errors, String pointer) {
+        String message = singleRefusalAt(errors, pointer).message();
+
+        assertAll(pointer,
+                () -> assertTrue(message.contains(ESCAPED_CARRIAGE_RETURN_LINE_FEED),
+                        () -> "the CR/LF is rendered as an escape: " + message),
+                () -> assertTrue(message.indexOf('\r') < 0 && message.indexOf('\n') < 0,
+                        () -> "the refusal carries no raw line break: " + message));
     }
 
     private static AnchorConfig anchor(String name, String prefix, @Nullable Require require) {
@@ -1955,8 +2038,15 @@ class ConfigValidatorTest {
     @DisplayName("The BFF OIDC/session fold rules (D1)")
     class BffOidcFoldRules {
 
+        private static final String USER_INFO_PATH_POINTER = "/oidc/user_info/path";
+        private static final String LOGIN_PATH_POINTER = "/oidc/login/path";
+
         private static GatewayConfig gatewayWithOidc(OidcConfig oidc) {
             return validGateway().oidc(oidc).build();
+        }
+
+        private static List<ConfigError> errorsAt(List<ConfigError> errors, String pointer) {
+            return errors.stream().filter(error -> pointer.equals(error.pointer())).toList();
         }
 
         @Test
@@ -2017,6 +2107,125 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
             assertHasError(errors, "/oidc/user_info/path", "must be an absolute gateway path");
+        }
+
+        @ParameterizedTest(name = "user_info path \"{0}\" is rejected for its query or fragment")
+        @ValueSource(strings = {"/session/userinfo?x=1", "/session/userinfo#part", "/session/userinfo?",
+                "/session/userinfo#"})
+        @DisplayName("Should reject a user_info path carrying a query or a fragment, at its own pointer in gateway.yaml")
+        void shouldRejectUserInfoPathWithQueryOrFragment(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> refusals = errorsAt(validator.validate(gateway, List.of(), topologyWith()),
+                    USER_INFO_PATH_POINTER);
+
+            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
+            ConfigError refusal = refusals.getFirst();
+            assertAll(path,
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
+                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "user_info path #{index} is rejected for its backslash, control character or whitespace")
+        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
+                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
+        @DisplayName("Should reject a user_info path carrying a backslash, a control character or whitespace")
+        void shouldRejectUserInfoPathWithBackslashControlOrWhitespace(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertBackslashControlOrWhitespaceRefusal(errors, USER_INFO_PATH_POINTER);
+        }
+
+        @Test
+        @DisplayName("Should refuse a CR/LF in the user_info path without echoing it raw into the boot log")
+        void shouldRenderUserInfoPathControlCharactersEscaped() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(FORGED_LINE_PATH).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertForgedLineEchoedEscaped(errors, USER_INFO_PATH_POINTER);
+        }
+
+        @ParameterizedTest(name = "user_info path \"{0}\" is accepted")
+        @ValueSource(strings = {"/session/userinfo", "/userinfo", "/"})
+        @DisplayName("Should accept a plain absolute user_info path")
+        void shouldAcceptPlainAbsoluteUserInfoPath(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errorsAt(errors, USER_INFO_PATH_POINTER).isEmpty(),
+                    () -> path + " carries no query and no fragment and must not be refused, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "login path \"{0}\" is rejected for its query or fragment")
+        @ValueSource(strings = {"/session/login?x=1", "/session/login#part", "/session/login?", "/session/login#"})
+        @DisplayName("Should reject a login path carrying a query or a fragment, at its own pointer in gateway.yaml")
+        void shouldRejectLoginPathWithQueryOrFragment(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> refusals = errorsAt(validator.validate(gateway, List.of(), topologyWith()),
+                    LOGIN_PATH_POINTER);
+
+            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
+            ConfigError refusal = refusals.getFirst();
+            assertAll(path,
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
+                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "login path #{index} is rejected for its backslash, control character or whitespace")
+        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
+                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
+        @DisplayName("Should reject a login path carrying a backslash, a control character or whitespace")
+        void shouldRejectLoginPathWithBackslashControlOrWhitespace(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertBackslashControlOrWhitespaceRefusal(errors, LOGIN_PATH_POINTER);
+        }
+
+        @Test
+        @DisplayName("Should refuse a CR/LF in the login path without echoing it raw into the boot log")
+        void shouldRenderLoginPathControlCharactersEscaped() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(FORGED_LINE_PATH).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertForgedLineEchoedEscaped(errors, LOGIN_PATH_POINTER);
+        }
+
+        @ParameterizedTest(name = "login path \"{0}\" is accepted")
+        @ValueSource(strings = {"/session/login", "/login", "/"})
+        @DisplayName("Should accept a plain absolute login path")
+        void shouldAcceptPlainAbsoluteLoginPath(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errorsAt(errors, LOGIN_PATH_POINTER).isEmpty(),
+                    () -> path + " carries no query and no fragment and must not be refused, got: " + errors);
         }
 
         @ParameterizedTest(name = "off-path login value \"{0}\" is rejected")
@@ -3643,7 +3852,7 @@ class ConfigValidatorTest {
         private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
         private static final String DECLARED_JWKS_PATH = "/auth/client-keys";
 
-        /** The six reserved keys a JWKS path can collide with, each placing a path under its own key. */
+        /** The seven reserved keys a JWKS path can collide with, each placing a path under its own key. */
         enum ReservedKey {
 
             REDIRECT_URI("oidc.redirect_uri") {
@@ -3686,6 +3895,13 @@ class ConfigValidatorTest {
                 OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
                     return oidc.login(OidcConfig.Login.builder().path(path).build());
                 }
+            },
+
+            STEP_UP_PATH("oidc.step_up.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.stepUp(OidcConfig.StepUp.builder().path(path).build());
+                }
             };
 
             private final String key;
@@ -3707,7 +3923,7 @@ class ConfigValidatorTest {
             return OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build();
         }
 
-        /** A document declaring all six other reserved paths, none of them the default JWKS path. */
+        /** A document declaring all seven other reserved paths, none of them the default JWKS path. */
         private static OidcConfig.OidcConfigBuilder everyOtherReservedPath() {
             return OidcConfig.builder()
                     .redirectUri(ORIGIN + "/auth/callback")
@@ -3717,11 +3933,28 @@ class ConfigValidatorTest {
                             .backchannelPath("/auth/backchannel")
                             .build())
                     .userInfo(OidcConfig.UserInfo.builder().path("/auth/userinfo").build())
-                    .login(OidcConfig.Login.builder().path("/auth/login").build());
+                    .login(OidcConfig.Login.builder().path("/auth/login").build())
+                    .stepUp(OidcConfig.StepUp.builder().path("/auth/step-up").build());
+        }
+
+        /**
+         * What makes "every other reserved key" true, and keeps it true: one enum constant per
+         * reserved kind other than the client JWKS path itself. A reserved kind added to the registry
+         * fails here until the enum carries the key it is declared under.
+         */
+        @Test
+        @DisplayName("Should cover one colliding key per reserved kind other than the client JWKS path")
+        void shouldCoverEveryOtherReservedKind() {
+            assertEquals(ReservedPathRegistry.ReservedEndpoint.values().length - 1, ReservedKey.values().length,
+                    "one colliding key per reserved kind, the client JWKS path excepted");
+            assertEquals(ReservedKey.values().length,
+                    ReservedPathRegistry.reservedPaths(everyOtherReservedPath()
+                            .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build()).size() - 1,
+                    "the admitted fixture declares a distinct path under every one of those keys");
         }
 
         @Test
-        @DisplayName("Should admit the default and a declared JWKS path beside six distinct reserved paths")
+        @DisplayName("Should admit the default and a declared JWKS path beside seven distinct reserved paths")
         void shouldAdmitDistinctPaths() {
             assertAll("no reserved path equals the client JWKS path",
                     () -> assertEquals(List.of(), jwksPathErrors(everyOtherReservedPath().build()),
@@ -3947,6 +4180,127 @@ class ConfigValidatorTest {
                     () -> assertTrue(errors.stream()
                                     .anyMatch(error -> error.message().contains("oidc.logout.path")),
                             () -> "the collision refusal is reported, got: " + errors));
+        }
+    }
+
+    @Nested
+    @DisplayName("oidc.step_up.path must be an absolute gateway path and not collide with the portal")
+    class StepUpPath {
+
+        private static final String REDIRECT_URI = "https://gateway.example.com/callback";
+        private static final String POINTER = "/oidc/step_up/path";
+        private static final String MESSAGE = "must be an absolute gateway path starting with a single '/'";
+
+        private OidcConfig oidcWithStepUpPath(String path) {
+            return OidcConfig.builder().redirectUri(REDIRECT_URI)
+                    .stepUp(OidcConfig.StepUp.builder().path(path).build()).build();
+        }
+
+        private List<ConfigError> validateStepUpPath(String path) {
+            return validator.validate(validGateway().oidc(oidcWithStepUpPath(path)).build(), List.of(),
+                    topologyWith());
+        }
+
+        private boolean refused(List<ConfigError> errors) {
+            return errors.stream().anyMatch(error -> POINTER.equals(error.pointer()));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"/auth/step-up", "/step-up", "/"})
+        @DisplayName("Should accept an absolute gateway path")
+        void shouldAcceptAbsolutePath(String path) {
+            List<ConfigError> errors = validateStepUpPath(path);
+
+            assertFalse(refused(errors), () -> path + " is an absolute gateway path, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"auth/step-up", "step-up", "//evil.example/step-up", "", "   "})
+        @DisplayName("Should refuse a relative, scheme-relative or blank path")
+        void shouldRefuseNonAbsolutePath(String path) {
+            List<ConfigError> errors = validateStepUpPath(path);
+
+            assertHasError(errors, POINTER, MESSAGE);
+            assertTrue(errors.stream().filter(error -> POINTER.equals(error.pointer()))
+                            .allMatch(error -> "gateway.yaml".equals(error.file())),
+                    () -> "the refusal names gateway.yaml, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "step_up path \"{0}\" is refused for its query or fragment")
+        @ValueSource(strings = {"/auth/step-up?x=1", "/auth/step-up#part", "/auth/step-up?", "/auth/step-up#"})
+        @DisplayName("Should refuse a path carrying a query or a fragment, naming the restriction")
+        void shouldRefusePathWithQueryOrFragment(String path) {
+            List<ConfigError> refusals = validateStepUpPath(path).stream()
+                    .filter(error -> POINTER.equals(error.pointer())).toList();
+
+            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
+            ConfigError refusal = refusals.getFirst();
+            assertAll(path,
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(MESSAGE),
+                            () -> "the refusal keeps its leading wording: " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
+                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "step_up path #{index} is refused for its backslash, control character or whitespace")
+        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
+                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
+        @DisplayName("Should refuse a path carrying a backslash, a control character or whitespace")
+        void shouldRefusePathWithBackslashControlOrWhitespace(String path) {
+            List<ConfigError> errors = validateStepUpPath(path);
+
+            assertBackslashControlOrWhitespaceRefusal(errors, POINTER);
+        }
+
+        @Test
+        @DisplayName("Should refuse a CR/LF in the path without echoing it raw into the boot log")
+        void shouldRenderControlCharactersEscaped() {
+            List<ConfigError> errors = validateStepUpPath("step-up\r\nX-Forged: 1");
+
+            assertHasError(errors, POINTER, MESSAGE);
+            assertTrue(errors.stream().filter(error -> POINTER.equals(error.pointer()))
+                            .noneMatch(error -> error.message().indexOf('\n') >= 0
+                                    || error.message().indexOf('\r') >= 0),
+                    () -> "a control character is escaped in the refusal, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should not refuse an omitted step-up path or step_up block")
+        void shouldAcceptOmittedPath() {
+            OidcConfig withoutPath = OidcConfig.builder().redirectUri(REDIRECT_URI)
+                    .stepUp(new OidcConfig.StepUp(true, true, null)).build();
+            OidcConfig withoutBlock = OidcConfig.builder().redirectUri(REDIRECT_URI).build();
+
+            assertAll(
+                    () -> assertFalse(refused(validator.validate(validGateway().oidc(withoutPath).build(),
+                            List.of(), topologyWith()))),
+                    () -> assertFalse(refused(validator.validate(validGateway().oidc(withoutBlock).build(),
+                            List.of(), topologyWith()))));
+        }
+
+        @Test
+        @DisplayName("Should refuse a portal.path equal to the step-up path")
+        void shouldRefusePortalCollision() {
+            String stepUpPath = "/auth/step-up";
+            GatewayConfig gateway = validGateway().oidc(oidcWithStepUpPath(stepUpPath))
+                    .portal(PortalConfig.builder().path(stepUpPath).title("Applications").build()).build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+        }
+
+        @Test
+        @DisplayName("Should accept a portal.path next to the step-up path")
+        void shouldAcceptPortalNextToStepUpPath() {
+            GatewayConfig gateway = validGateway().oidc(oidcWithStepUpPath("/auth/step-up"))
+                    .portal(PortalConfig.builder().path("/auth").title("Applications").build()).build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> PortalRules.PORTAL_PATH_POINTER.equals(error.pointer())),
+                    () -> "a path that is not the reserved one does not collide, got: " + errors);
         }
     }
 }

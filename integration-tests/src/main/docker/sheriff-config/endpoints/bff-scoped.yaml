@@ -38,7 +38,9 @@ endpoint:
     # a failed bearer. Without it the route behaves exactly like a require: session route — CSRF, login
     # redirect for a navigation or 401 for an XHR, and the mediated session bearer upstream.
     # BffSessionFallbackIT asserts every row of that branch table against this route, and MetricsIT
-    # asserts the sheriff_auth_branch_total{route,branch} series it alone emits.
+    # drives the sheriff_auth_branch_total{route,branch} series on it. The meter is recorded on
+    # session_fallback routes only, and this route is one of two: the other is
+    # bff-unassigned-scope-fallback in endpoints/bff-unassigned-scope.yaml.
     #
     # It lives in THIS descriptor for the endpoint's `scopes`: every token the integration realm mints
     # carries openid, profile and email as default client scopes, so a route needing only oidc.scopes

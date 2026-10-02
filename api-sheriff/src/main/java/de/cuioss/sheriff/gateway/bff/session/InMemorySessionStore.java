@@ -32,22 +32,32 @@ import java.util.Set;
  * Sessions are keyed by their opaque id in a primary map. Two secondary indexes — by IdP
  * {@code sid} and by {@code sub} — give O(1) back-channel logout destruction without scanning
  * the primary map. Every removal path (direct destroy, back-channel destroy, lazy TTL eviction,
- * at-capacity sweep, and the eviction of the record an upsert replaces) keeps the indexes consistent
+ * at-capacity sweep, and the eviction of the record a write replaces) keeps the indexes consistent
  * through a single {@link #removeInternal} seam.
+ * <p>
+ * <strong>Two writes.</strong> {@link #create} stores a new session and is the login's write.
+ * {@link #replaceIfPresent} updates a session that already exists — the write a refresh or a
+ * widening makes — and stores nothing when the id is not held, so a write that was in flight while
+ * the session was destroyed does not bring it back. The presence check and the replacement run
+ * under the same monitor as {@link #destroyById}, {@link #destroyBySid} and {@link #destroyBySub},
+ * so no destruction can take effect between them.
  * <p>
  * The absolute TTL is enforced two ways, with <strong>no per-session timer threads, no scheduler,
  * and no periodic task</strong>: lazily on {@link #resolve} (an expired session is evicted as it is
  * looked up) and opportunistically by {@link #sweepExpired}, whose one automatic trigger is a
  * <em>capacity-consuming</em> {@link #create} — one introducing a session id the store does not yet
- * hold — finding the store at its {@code maxSessions} bound. An upsert of an already-stored id
- * replaces a record already counted against the bound, so it consumes no capacity and never sweeps.
+ * hold — finding the store at its {@code maxSessions} bound. A write that replaces an already-stored
+ * id — {@link #replaceIfPresent}, or a {@link #create} naming an id the store holds — replaces a
+ * record already counted against the bound, so it consumes no capacity and never sweeps.
  * <p>
  * That trigger is what makes the bound a ceiling on <em>live</em> sessions rather than on
  * accumulated ones. An expired session that nothing has resolved since it lapsed still occupies its
  * slot, so without a reclaiming trigger a store could sit permanently full of dead sessions and
  * refuse every login. A capacity-consuming creation therefore sweeps once at the bound and re-tests
- * it; only a store still full of live sessions afterwards is refused, fail-closed. Every operation
- * is guarded by the instance monitor.
+ * it; only a store still full of live sessions afterwards is refused, fail-closed.
+ * <p>
+ * <strong>Thread safety.</strong> Every operation is guarded by the instance monitor, so each one is
+ * atomic with respect to every other.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -76,8 +86,9 @@ public final class InMemorySessionStore implements SessionStore {
     public synchronized void create(SessionRecord session, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(now, "now");
-        // An upsert replaces a record already counted against the bound, so it consumes no new
-        // capacity and must not be refused at the ceiling — that is the path a rotated session takes.
+        // An id the store already holds names a record already counted against the bound, so storing
+        // it consumes no new capacity and is not refused at the ceiling. A rotated or widened session
+        // does not take this path — it is written through replaceIfPresent, which never creates.
         if (!byId.containsKey(session.sessionId()) && byId.size() >= maxSessions) {
             // Sweep once, then re-test: expired sessions still hold their slots until something
             // reclaims them, and reaching the bound is the trigger. A store still at the bound after
@@ -87,7 +98,29 @@ public final class InMemorySessionStore implements SessionStore {
                 throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
             }
         }
-        // An upsert may carry a different sub or sid than the record it replaces, and a deindex is
+        store(session);
+    }
+
+    @Override
+    public synchronized boolean replaceIfPresent(SessionRecord session) {
+        Objects.requireNonNull(session, "session");
+        // The presence check and the replacement share this monitor with every destroy method, so a
+        // logout or a back-channel logout either ran before the check — and nothing is written — or
+        // runs after the replacement and removes it. There is no window in which a destroyed session
+        // is written back.
+        if (!byId.containsKey(session.sessionId())) {
+            return false;
+        }
+        store(session);
+        return true;
+    }
+
+    /**
+     * Stores {@code session} under its id, replacing any record already held there, and brings both
+     * secondary indexes in line with it. Callers hold the instance monitor.
+     */
+    private void store(SessionRecord session) {
+        // The record may carry a different sub or sid than the one it replaces, and a deindex is
         // only ever keyed by the record's OWN sub/sid — so the previous record leaves through the
         // same removeInternal seam every other removal path uses. Left indexed, its stale sub/sid
         // would keep resolving to this id, and a later destroyBySub/destroyBySid on that stale key

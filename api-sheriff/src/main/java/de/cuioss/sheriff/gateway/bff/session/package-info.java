@@ -22,8 +22,10 @@
  *   <li><strong>Seam.</strong> {@link de.cuioss.sheriff.gateway.bff.session.SessionBinding} is the
  *       single session-state contract the stage, the refresh coordinator, and every reserved
  *       endpoint bind — bind / resolve / persist / destroy plus the two IdP-driven destruction
- *       forms and their {@code SUPPORTED}/{@code UNSUPPORTED} capability flag. It names no store
- *       and no opaque id, so a stateless variant is representable.</li>
+ *       forms and their {@code SUPPORTED}/{@code UNSUPPORTED} capability flag. {@code bind} is the
+ *       only creating write; {@code persist} updates a session that already exists and reports it
+ *       gone instead of writing when the implementation can observe that it was destroyed. It names
+ *       no store and no opaque id, so a stateless variant is representable.</li>
  *   <li><strong>Record.</strong> {@link de.cuioss.sheriff.gateway.bff.session.SessionRecord} holds
  *       the access, refresh, and raw ID tokens plus session metadata; every credential is redacted
  *       from {@code toString()}. Its {@code sessionId} is the one identity model — a stable
@@ -32,11 +34,13 @@
  *       {@link de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding} is a thin adapter over
  *       {@link de.cuioss.sheriff.gateway.bff.session.SessionStore} (implemented only by
  *       {@link de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore} — keyed by opaque id,
- *       with secondary indexes by {@code sid}/{@code sub} for O(1) back-channel destruction, an
+ *       with secondary indexes by {@code sid}/{@code sub} for O(1) back-channel destruction, a
+ *       conditional write that replaces a session only while the store still holds it — atomic with
+ *       every destroy, so a destroyed session is not written back — an
  *       absolute TTL enforced lazily on resolve plus an opportunistic sweep triggered when a
  *       capacity-consuming create — one introducing a session id the store does not yet hold, never
- *       an upsert of an already-stored one — arrives at the max-session bound — no scheduler and no
- *       timer threads — and a documented max-session bound capping live sessions)
+ *       a write replacing an already-stored one — arrives at the max-session bound — no scheduler and
+ *       no timer threads — and a documented max-session bound capping live sessions)
  *       and {@link de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec}, which sets and reads
  *       the hardened {@code __Host-} session cookie carrying only the opaque id. In this mode the
  *       token material never leaves the server.</li>

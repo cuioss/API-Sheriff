@@ -44,7 +44,7 @@ image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client log
 == Client Authentication, Pushed Requests and Token Binding
 
 Three properties of the confidential client are fixed by
-link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]
+link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
 and shared with the session-based variant:
 
 * *Pushed authorization requests.* Every authorization request is pushed. The browser carries only
@@ -73,7 +73,7 @@ The binding ends at the gateway. The token injected upstream carries `cnf.jkt` a
 
 *The client secret is an operator choice.* Configuring `oidc.client_secret` selects
 `client_secret_basic` in place of `private_key_jwt`. Pushed requests and the DPoP binding stay in
-effect, the JWKS path answers `404`, and the gateway logs `WARN` `ApiSheriff-130` at every boot.
+effect, the JWKS path answers `404`, and the gateway logs `WARN` `ApiSheriff-133` at every boot.
 
 [WARNING]
 ====
@@ -113,8 +113,10 @@ and the gateway holds no per-user state.
 | AES-256-GCM (authenticated encryption) over a *packed and deflated* plaintext. The payload is the
   token set -- access token, refresh token, the raw ID token (needed as `id_token_hint` at logout --
   without it in the cookie, the stateless gateway could not drive RP-initiated logout), and minimal
-  metadata, including the session's active scope set (the scopes the IdP granted, which every
-  refresh requests) -- framed as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
+  metadata, including the session's active scope set (the scopes of the current token, which every
+  near-expiry refresh requests) and its granted scope set (the scopes the IdP is known to grant the
+  session, which decides whether a missing scope costs a refresh or a new authorization) -- framed
+  as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
   plus nonce and auth tag form the cookie value. Framing by declared length rather than by a
   separator is what removes the per-field base64 armouring the earlier format needed, and deflation
   is what turns that saving into fitting the budget. Compress-then-encrypt is safe in this
@@ -177,6 +179,15 @@ into a *new cookie* (`Set-Cookie` on the response) rather than written to a stor
 requests the session's active scope set, and the re-sealed cookie carries the set the response
 granted, so a session that logged in on a scoped route keeps its endpoint scopes across refreshes.
 
+*Scope enforcement works as in the session-based variant too.* A session route compares the
+session's active scope set against the route's needed set on every request and refreshes, widens or
+refuses (link:02-bff-session.adoc#_scope_enforcement[Scope Enforcement]). Two things differ here,
+both consequences of the session being the cookie. A granted widening is persisted by re-sealing:
+the callback sets a new session cookie for the same derived session identity. And a request whose
+near-expiry refresh has just re-sealed the session does not also start a scope-driven refresh,
+because its own `Cookie` header still names the refresh token that refresh rotated away; it is
+widened or refused instead, and the next request, carrying the new cookie, is refreshed normally.
+
 *The refresh token's cost in the seal is measured, not open.* Holding it makes the session a
 three-token payload -- the largest shape this variant carries -- and under the shipped packaging
 that seals to 2700 bytes against the 4019-byte budget. Refresh is therefore a supported cookie-mode
@@ -208,9 +219,10 @@ effect is a rare forced re-login.
 destroys nothing server-side -- only the clearing `Set-Cookie` ends it -- so a client that keeps or
 replays the sealed cookie would otherwise drive a fresh refresh grant to the IdP, and a
 `WARN ApiSheriff-111`, on every near-expiry request until the absolute TTL. When the refresh
-coordinator ends a session as `credential-rejected`, `redeemed-response-refused` or `persist-failure`,
-it therefore marks the presented refresh token -- as a salted, non-reversible digest, never the token
-or the cookie -- until the session's absolute lifetime. A later request presenting that token takes
+coordinator ends a cookie-mode session, for whichever reason
+link:../LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] records, it therefore marks the presented
+refresh token -- as a salted, non-reversible digest, never the token or the cookie -- until the
+session's absolute lifetime. A later request presenting that token takes
 the session-ended disposition (cleared cookie, `on_failure`) with no IdP call, no revocation and no
 warning record. The marker is keyed on the refresh token, not the session, so a *successor* cookie of
 the same session still reaches the IdP once, is refused there, and is then marked itself. It is a
@@ -228,12 +240,13 @@ residuals are stated plainly:
 == Logout
 
 Gateway-triggered logout works as in the
-link:02-bff-session.adoc[session-based variant]: `oidc.logout.path` revokes the held tokens at
-the IdP (RFC 7009), expires the cookie, and redirects to the `end_session_endpoint` with
+link:02-bff-session.adoc[session-based variant]: `oidc.logout.path` expires the cookie and
+redirects to the `end_session_endpoint` with
 `id_token_hint`, the pre-registered gateway-owned `post_logout_redirect_uri`, and a
 session-bound `state` verified on return (carried across the round-trip in the short-lived
 logout cookie described in link:../configuration.adoc#_oidc[`logout.path`] -- stateless, so
-identical in this variant).
+identical in this variant). As there, the flow calls a token-revocation seam that the shipped
+runtime binds to a no-op, so the gateway itself revokes nothing at the IdP on logout today.
 
 The *back-channel* differs fundamentally: with no server-side session there is nothing a logout
 token can destroy, so in `mode: cookie` the `backchannel_path` endpoint is *disabled* (`404`) --
@@ -243,6 +256,19 @@ and the session ends. Until then, already-issued cookies stay decryptable -- imm
 termination cannot be guaranteed. Mitigate with a short `ttl_seconds` and short access-token
 lifetimes; where instant revocation is a hard requirement, choose the
 link:02-bff-session.adoc[session-based variant].
+
+*A logout cannot stop a response that is already in flight.* Expiring the cookie is all a logout
+does to a cookie-mode session on the gateway side: there is no stored session to destroy, so the
+session binding's updating write has nothing to consult and always re-seals. A token refresh or a
+widening callback that was already running for the same browser when it logged out therefore still
+answers with a re-sealed session cookie. If that response reaches the browser after the logout
+response, the browser again holds a cookie the gateway resolves as a session -- until `ttl_seconds`
+at the latest, and earlier where the IdP ended its own session on the logout, because the session's
+next transparent refresh is then refused. The same mitigations apply: a short `ttl_seconds`, short
+access-token lifetimes, and the session-based variant where a logout has to be final at once. In
+that variant the store refuses the write of a session it no longer holds, so a logout wins over a
+refresh or a widening that was in flight
+(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
 == CSRF Defence
 
@@ -281,7 +307,9 @@ endpoint:
   auth: { require: session }     # default for all routes here; add token_relay: false to
                                  #   require the login without relaying the token upstream
   scopes: [orders.read]          # a login for these routes requests oidc.scopes ∪ [orders.read];
-                                 #   a live session is never checked against it
+                                 #   a live session is compared against that set on every
+                                 #   request, then refreshed within its granted set, widened,
+                                 #   or refused 403
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }
@@ -339,18 +367,21 @@ across replicas with no affinity at all.
 
 The sealed-cookie format version is bound into the cookie's authenticated data, so a cookie carrying
 any other version fails to unseal rather than being mis-parsed -- the version byte is read at an
-explicit gate before a cipher is ever constructed. The current version is *1*: the ten-field payload
--- tokens, identity and session claims, and the session's active scope set -- framed as
-length-prefixed raw UTF-8 and deflated before the seal. *The rule is to increment the version by one
-on every change to the sealed payload's field set*; a change that leaves the field set and its
-framing untouched keeps the version.
+explicit gate before a cipher is ever constructed. The current version is *2*: the eleven-field
+payload -- tokens, identity and session claims, the session's active scope set and its granted scope
+set `S` -- framed as length-prefixed raw UTF-8 and deflated before the seal. *The rule is to
+increment the version by one on every change to the sealed payload's field set*; a change that
+leaves the field set and its framing untouched keeps the version.
 
 *Upgrade consequence*: existing cookie-mode sessions are invalidated on deploy and users must log
 in again, once. The numbering restarted at 1 with the change that added the active scope set, so
 cookies sealed before that change carry an earlier version byte and are refused at the version gate
-as no session; the browser re-authenticates. There is deliberately no backward-compatible acceptance
+as no session; the browser re-authenticates. Version 2 added the granted scope set, so that bump
+again invalidates existing cookie-mode sessions once: a version-1 cookie is refused at the same gate
+and its browser logs in again. There is deliberately no backward-compatible acceptance
 path for a retired format: accepting one would mean synthesizing the fields it lacks -- for the
-active scope set, silently narrowing a session to `oidc.scopes`; for the per-session identity nonce,
+active scope set, silently narrowing a session to `oidc.scopes`; for the granted scope set, guessing
+what the user has authorized; for the per-session identity nonce,
 silently changing the derived session identity -- or carrying a second reader for a format that
 exists only in cookies already issued. See
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]

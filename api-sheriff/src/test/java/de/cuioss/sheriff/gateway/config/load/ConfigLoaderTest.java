@@ -1435,6 +1435,44 @@ class ConfigLoaderTest {
                         + "propagate a parse failure");
     }
 
+    @Test
+    void bindsTheStepUpPathFromYamlThroughTheSchema() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  redirect_uri: "https://gw.example.com/callback"
+                  step_up:
+                    path: /auth/step-up
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertAll("oidc.step_up.path is admitted by the schema and binds on its own",
+                () -> assertEquals("/auth/step-up", loaded.gateway().oidc().stepUp().path()),
+                () -> assertNull(loaded.gateway().oidc().stepUp().enabled(),
+                        "the path does not imply the RFC 9470 enabled key"),
+                () -> assertNull(loaded.gateway().oidc().stepUp().honorUpstreamChallenge()));
+    }
+
+    @Test
+    void refusesANonStringStepUpPathAtItsPointer() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  redirect_uri: "https://gw.example.com/callback"
+                  step_up:
+                    path: 42
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("/oidc/step_up/path")),
+                () -> "the schema declares step_up.path a string, got: " + exception.errors());
+    }
+
     /**
      * The destination-type contract's core case: a schema-declared STRING field whose placeholder
      * resolves to a value that merely <em>looks</em> boolean or numeric. Shape inference retyped such a

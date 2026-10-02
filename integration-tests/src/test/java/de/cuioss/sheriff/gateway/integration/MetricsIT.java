@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -38,7 +39,10 @@ import org.junit.jupiter.api.Test;
  * <p>
  * {@code sheriff_auth_branch_total{route,branch}} is recorded only on {@code session_fallback}
  * routes, once per request at branch resolution, so it is driven on the {@code bff-session-fallback}
- * route (see {@link BffSessionFallbackIT}) and asserted absent for every other route.
+ * route (see {@link BffSessionFallbackIT}) and asserted absent for every route that is not a
+ * {@code session_fallback} route. The stack declares two such routes; the second,
+ * {@code bff-unassigned-scope-fallback}, is driven by {@link BffSessionScopeParityIT} against this
+ * same gateway instance, so its series may or may not be present when this suite scrapes.
  */
 class MetricsIT extends BaseIntegrationTest {
 
@@ -48,6 +52,14 @@ class MetricsIT extends BaseIntegrationTest {
     private static final String FAILURE_TYPE_LABEL = "failure_type=";
     private static final String AUTH_BRANCH_TOTAL = "sheriff_auth_branch_total";
     private static final String FALLBACK_ROUTE_LABEL = "route=\"" + BffSessionFallbackIT.FALLBACK_ROUTE_ID + "\"";
+
+    /**
+     * The {@code route} label of every {@code session_fallback} route the stack declares — the only
+     * routes that may appear on a {@code sheriff_auth_branch_total} series. Each id is owned by the
+     * suite that drives its route.
+     */
+    private static final Set<String> SESSION_FALLBACK_ROUTE_LABELS = Set.of(FALLBACK_ROUTE_LABEL,
+            "route=\"" + BffSessionScopeParityIT.UNASSIGNED_FALLBACK_ROUTE_ID + "\"");
     private static final String BEARER_BRANCH_LABEL = "branch=\"bearer\"";
     private static final String SESSION_BRANCH_LABEL = "branch=\"session\"";
 
@@ -152,8 +164,8 @@ class MetricsIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("sheriff_auth_branch_total counts both branches on the session_fallback route and no other route")
-    void authBranchMeterCountsBothBranchesOnTheFallbackRouteOnly() {
+    @DisplayName("sheriff_auth_branch_total counts both branches on a session_fallback route and on no other kind of route")
+    void authBranchMeterCountsBothBranchesOnSessionFallbackRoutesOnly() {
         // Arrange — capture both branch series of the fallback route before the act; Micrometer emits a
         // series only once it has been recorded, so an absent series sums to 0.0.
         String before = scrapeMetrics();
@@ -203,9 +215,13 @@ class MetricsIT extends BaseIntegrationTest {
                         + "branch=\"session\" series: before=" + sessionBaseline + ", after=" + sessionAfter);
 
         // Assert — the meter is scoped to session_fallback routes and its branch label is bounded: every
-        // exposed series names the fallback route and one of the two branch values.
+        // exposed series names one of the declared session_fallback routes and one of the two branch
+        // values. The plain session route and the plain bearer route driven above are the routes this
+        // rules out: each resolved a branch in this very test, and neither may have recorded one.
         List<String> samples = samples(after, AUTH_BRANCH_TOTAL);
-        List<String> foreignRoute = samples.stream().filter(line -> !line.contains(FALLBACK_ROUTE_LABEL)).toList();
+        List<String> foreignRoute = samples.stream()
+                .filter(line -> SESSION_FALLBACK_ROUTE_LABELS.stream().noneMatch(line::contains))
+                .toList();
         assertTrue(foreignRoute.isEmpty(),
                 "sheriff_auth_branch_total must be recorded only on session_fallback routes, but exposes "
                         + foreignRoute);

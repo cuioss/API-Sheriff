@@ -28,16 +28,22 @@ import org.jspecify.annotations.Nullable;
  * unchanged {@link SessionStore} and {@link SessionCookieCodec}.
  * <p>
  * The token material stays server-side in the store and the browser carries only the opaque
- * {@link SessionRecord#sessionId()} in the hardened {@code __Host-} session cookie, exactly as
- * before the seam was extracted: {@link #bind} is a store {@code create} plus the opaque
+ * {@link SessionRecord#sessionId()} in the hardened {@code __Host-} session cookie:
+ * {@link #bind} is a store {@code create} plus the opaque
  * {@code Set-Cookie}, {@link #resolve} reads the cookie and looks the session up (the store's lazy
- * TTL eviction applies), {@link #persist} is the store's documented upsert-by-id {@code create}
- * (no pre-destroy, so a concurrent resolve never misses a rotating session), and {@link #destroy}
+ * TTL eviction applies), {@link #persist} is the store's conditional {@code replaceIfPresent} (no
+ * pre-destroy, so a concurrent resolve never misses a session being updated), and {@link #destroy}
  * is {@code destroyById}. The store's O(1) secondary indexes back the IdP-driven destruction, so
  * this binding reports {@link IdpDestruction#SUPPORTED}.
  * <p>
- * The adapter is behaviour-preserving by construction — it adds no policy of its own and holds no
- * state beyond its two collaborators.
+ * <strong>A destroyed session stays destroyed.</strong> {@link #persist} never creates: when the
+ * store no longer holds the session — {@link #destroy}, {@link #destroyBySid} or
+ * {@link #destroyBySub} removed it after the caller resolved it — the update writes nothing and
+ * reports the session gone. The store performs the check and the replacement as one atomic step, so
+ * a logout cannot fall between them. {@link #bind} is the only creating write.
+ * <p>
+ * The adapter adds no policy of its own and holds no state beyond its two collaborators; it is
+ * thread-safe because both of them are.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -74,16 +80,19 @@ public final class ServerSessionBinding implements SessionBinding {
     }
 
     @Override
-    public BoundSession persist(SessionRecord rotated, Instant now) {
-        Objects.requireNonNull(rotated, "rotated");
+    public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+        Objects.requireNonNull(updated, "updated");
         Objects.requireNonNull(now, "now");
-        // create() upserts by session id (SessionStore contract; InMemorySessionStore is a keyed map
-        // put), so no pre-destroy is needed. Destroying first would open a window where a concurrent
-        // resolve() misses the rotating session. An upsert consumes no new capacity, so this call is
-        // admitted even at the max-session bound. The opaque handle is unchanged, so the browser
-        // needs no new Set-Cookie.
-        sessionStore.create(rotated, now);
-        return new BoundSession(rotated, List.of());
+        // The store replaces the record only if it still holds the session, as one atomic step, so a
+        // session a logout or a back-channel logout destroyed since the caller resolved it is not
+        // written back. No pre-destroy is needed either way: destroying first would open a window
+        // where a concurrent resolve() misses the session being updated. A replacement consumes no
+        // capacity, so it is admitted even at the max-session bound.
+        if (!sessionStore.replaceIfPresent(updated)) {
+            return Optional.empty();
+        }
+        // The opaque handle is unchanged, so the browser needs no new Set-Cookie.
+        return Optional.of(new BoundSession(updated, List.of()));
     }
 
     @Override

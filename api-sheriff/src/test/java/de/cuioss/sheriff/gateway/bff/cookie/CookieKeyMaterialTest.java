@@ -62,7 +62,7 @@ class CookieKeyMaterialTest {
 
     private static SealedSessionPayload payload() {
         return new SealedSessionPayload("access", null, "id-token", "user-sub-1",
-                null, null, null, LOGIN, "session-nonce", Set.of("openid", "profile"));
+                null, null, null, LOGIN, "session-nonce", Set.of("openid", "profile"), Set.of("openid", "profile"));
     }
 
     /** Reads the key-id byte a sealed value is stamped with (value layout: version, key-id, …). */

@@ -158,8 +158,8 @@ class BffCookieSessionIT {
         // The literal tracks SealedSessionCookieCodec.FORMAT_VERSION by hand: this module tests the
         // gateway black-box through its container, so it carries no api-sheriff class on its
         // classpath and cannot reference the constant. Increment both together.
-        assertEquals((byte) 1, raw[0],
-                "the cookie value must be the version-1 sealed layout, not an opaque server-side handle");
+        assertEquals((byte) 2, raw[0],
+                "the cookie value must be the version-2 sealed layout, not an opaque server-side handle");
     }
 
     @Test

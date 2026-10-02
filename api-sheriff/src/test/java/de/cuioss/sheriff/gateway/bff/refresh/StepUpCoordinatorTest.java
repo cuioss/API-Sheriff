@@ -231,7 +231,7 @@ class StepUpCoordinatorTest {
 
     /**
      * The runtime binds the step-up seam to the engine request followed by the push of that request
-     * (ADR-0057), so a push that fails surfaces here as a throwing seam. The coordinator calls the
+     * (ADR-0058), so a push that fails surfaces here as a throwing seam. The coordinator calls the
      * seam before it stores anything.
      */
     @Nested

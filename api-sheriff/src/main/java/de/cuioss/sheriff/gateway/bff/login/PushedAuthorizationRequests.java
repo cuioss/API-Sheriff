@@ -39,12 +39,14 @@ import org.jspecify.annotations.Nullable;
 /**
  * Pushes an engine-built authorization request to the identity provider (RFC 9126) and yields the
  * URL the browser is sent to instead: the authorization endpoint with {@code client_id} and
- * {@code request_uri}, and nothing else (ADR-0057).
+ * {@code request_uri}, and nothing else (ADR-0058).
  * <p>
  * This class composes no authorization parameter itself. What is pushed is exactly what the
- * engine's request builder rendered into the authorization URL — {@code response_type},
- * {@code client_id}, {@code redirect_uri}, {@code scope}, {@code state}, {@code nonce}, the PKCE challenge,
- * {@code response_mode=query} and, on the step-up leg, {@code acr_values} and {@code max_age}. The
+ * authorization URL it is handed carries — {@code response_type}, {@code client_id},
+ * {@code redirect_uri}, {@code scope}, {@code state}, {@code nonce}, the PKCE challenge,
+ * {@code response_mode=query}, on the RFC 9470 step-up leg {@code acr_values} and {@code max_age},
+ * and on the silent attempt of a session widening the {@code prompt=none} that
+ * {@link ScopedEngineFlows#widen} set on the engine-built URL. The
  * URL is the parameter source and is never sent to the browser. No {@code dpop_jkt} is added: FAPI
  * 2.0 does not require a client to bind the authorization code to its DPoP key, and the engine's
  * pushed-request transport attaches no proof.
@@ -54,7 +56,8 @@ import org.jspecify.annotations.Nullable;
  * so the push dials the identity provider under the same pinned TLS posture and presents the same
  * client credential as every other authenticated back-channel leg.
  * <p>
- * <strong>Every failure refuses the login with {@code 502}.</strong> A provider that advertises no
+ * <strong>Every failure refuses the login, the widening or the step-up re-drive with
+ * {@code 502}.</strong> A provider that advertises no
  * {@code pushed_authorization_request_endpoint} is refused without a network call; an authorization
  * URL that cannot be split into its parameters, or that names one parameter twice, is refused
  * without a network call; and every failure of the push itself — a transport failure, a timeout, a
@@ -65,7 +68,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Latched refusal record (ADR-0051).</strong> Login initiation is reachable without a
  * credential, so a refusal is recorded as {@code ApiSheriff-132} only on the first occurrence of
- * each reason; every repeat is a {@code DEBUG} line. The latch is held per instance, and the runtime
+ * each reason; every repeat is a {@code DEBUG} line. A session widening needs a live session, but it
+ * pushes through this same instance and so shares the latch. The latch is held per instance, and the runtime
  * holds one instance. Neither the record nor the refusal carries the authorization URL, a parameter
  * value or the {@code request_uri}.
  * <p>

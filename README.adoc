@@ -260,7 +260,7 @@ declares no `client_secret` authenticates with `private_key_jwt`, signed with th
 `oidc.client_authentication.key_file` names or with a key generated at startup. A client secret
 remains an operator choice, selected by configuring `oidc.client_secret`. Client-secret
 authentication is not FAPI 2.0 conformant and may weaken security, and the gateway says so at every
-boot (`ApiSheriff-130`).
+boot (`ApiSheriff-133`).
 +
 *What every BFF deployment needs from its identity provider.* A pushed-authorization-request
 endpoint and DPoP-bound access tokens, in both modes; without them every login is refused. In key

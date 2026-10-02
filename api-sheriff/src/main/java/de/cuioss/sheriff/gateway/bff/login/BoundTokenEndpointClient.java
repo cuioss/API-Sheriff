@@ -35,7 +35,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The gateway's token-endpoint client: the engine's {@link TokenEndpointClient} plus the refusal of
- * every token response that is not bound to the gateway's DPoP proof key (ADR-0057).
+ * every token response that is not bound to the gateway's DPoP proof key (ADR-0058).
  * <p>
  * <strong>Why one seam, and why this one.</strong> The engine's code exchange and its refresh grant
  * both obtain their {@link TokenResponse} from the four-argument
@@ -76,7 +76,7 @@ import org.jspecify.annotations.Nullable;
  * redeemed; a failure that escaped as anything but the refusal below would be read by the refresh
  * path as a grant the provider never processed, and the session would be kept.
  * <p>
- * <strong>Refusal.</strong> One private emission point records {@code ApiSheriff-131} with two
+ * <strong>Refusal.</strong> One private emission point records {@code ApiSheriff-134} with two
  * bounded tokens — the leg ({@code code-exchange}, {@code refresh} or {@code other}, mapped from the
  * request's {@code grant_type} by an allow-list) and the reason ({@code token-type},
  * {@code unreadable-access-token}, {@code cnf-absent}, {@code cnf-mismatch}) — and throws the
@@ -86,7 +86,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The exception type is the contract with the two callers, and the reason neither of them
  * changes.</strong> It is a {@code TokenSheriffException}, which {@code CallbackEndpoint} answers
- * with {@code 400}, no session and no session cookie. And {@code RefreshFlow.classify} reads it as
+ * with {@code 400}, no session and no session cookie — on a login callback and on a widening
+ * callback alike, the latter leaving the live session as it was. And {@code RefreshFlow.classify} reads it as
  * a grant the identity provider redeemed, which {@code TokenRefreshCoordinator} disposes by
  * destroying the session under the reason {@code redeemed-response-refused}, after which the session
  * stage applies {@code oidc.session.refresh.on_failure} (ADR-0046). A plain
@@ -256,7 +257,7 @@ public final class BoundTokenEndpointClient extends TokenEndpointClient {
     }
 
     /**
-     * The one emission point of a refusal: records {@code ApiSheriff-131} with the two bounded
+     * The one emission point of a refusal: records {@code ApiSheriff-134} with the two bounded
      * tokens and builds the exception that carries the reason token and nothing else.
      *
      * @param leg    the leg the refused response belongs to

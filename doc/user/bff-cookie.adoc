@@ -153,7 +153,7 @@ keys: one key per purpose is what the FAPI 2.0 profile asks for.
 Each key is in one of two modes. Both are supported in production.
 
 * *Generated* -- leave `key_file` out. The gateway generates an EC P-256 key when it starts and logs
-  `ApiSheriff-20` once for that purpose. Nothing has to be provisioned. The key lives in one process:
+  `ApiSheriff-21` once for that purpose. Nothing has to be provisioned. The key lives in one process:
   it is replaced on every restart, and no other replica has it. *The generated mode is for a single
   replica.*
 * *Provided* -- name a key file. The key survives a restart and can be given to every replica.
@@ -341,8 +341,11 @@ two parameters only, `client_id` and `request_uri`. No scope, no `state` and no 
 in that redirect. Keycloak 26.5.7 answers that redirect with a further `302` to its own
 `login-actions/authenticate` page before it shows the login form.
 
+A widening of a live session is pushed in the same way, so its redirect carries `client_id` and
+`request_uri` only as well.
+
 If the identity provider offers no pushed-authorization-request endpoint, or the push fails, the
-login is refused with `502`. The gateway logs `WARN` `ApiSheriff-132` with the reason, once per
+login -- or the widening, which then leaves the session as it was -- is refused with `502`. The gateway logs `WARN` `ApiSheriff-132` with the reason, once per
 reason; repeats stay at `DEBUG`.
 
 === When the identity provider does not bind the token
@@ -351,9 +354,11 @@ The gateway accepts a token response only when it is bound to the proof key: its
 and the access token must carry a `cnf.jkt` claim that names the gateway's proof key. Otherwise:
 
 * *At login* the callback answers `400`. No session is created and no session cookie is set.
-* *At a refresh* the session ends, its cookie is cleared, and the request is answered as
-  `oidc.session.refresh.on_failure` says.
-* *In the log* the gateway writes `WARN` `ApiSheriff-131`, naming the leg and the reason and no token
+* *At a widening of a live session* the callback answers `400`. Nothing is merged, no cookie is set,
+  and the session stays as it was.
+* *At a refresh* -- near expiry, or for a scope a route needs -- the session ends, its cookie is
+  cleared, and the request is answered as `oidc.session.refresh.on_failure` says.
+* *In the log* the gateway writes `WARN` `ApiSheriff-134`, naming the leg and the reason and no token
   material.
 
 An identity provider that issues *opaque* access tokens is refused the same way: there is no `cnf`
@@ -430,11 +435,11 @@ oidc:
 boot. The message names both keys and carries neither the secret nor the path:
 `oidc.client_secret and oidc.client_authentication.key_file are both declared`. Remove one of them.
 
-*What the gateway logs.* At every boot it writes `WARN` `ApiSheriff-130`:
+*What the gateway logs.* At every boot it writes `WARN` `ApiSheriff-133`:
 
 [source,text]
 ----
-ApiSheriff-130: The BFF authenticates to the identity provider with oidc.client_secret. Client-secret authentication is not FAPI 2.0 conformant and may weaken security. Pushed authorization requests and the DPoP sender constraint stay in effect. Removing oidc.client_secret selects private_key_jwt
+ApiSheriff-133: The BFF authenticates to the identity provider with oidc.client_secret. Client-secret authentication is not FAPI 2.0 conformant and may weaken security. Pushed authorization requests and the DPoP sender constraint stay in effect. Removing oidc.client_secret selects private_key_jwt
 ----
 
 The one way to silence it is to remove `oidc.client_secret`.
@@ -450,7 +455,7 @@ pushed authorization requests and binds its access tokens with DPoP. Register no
 
 *A copied configuration selects this mode.* A `gateway.yaml` taken from another deployment that
 carries `client_secret` authenticates with the secret without anyone having decided it. Check the
-boot log for `ApiSheriff-130`.
+boot log for `ApiSheriff-133`.
 
 == Session cookie name
 
@@ -568,16 +573,21 @@ issues less -- and, where those do not cover it, the
 link:../variants/02-bff-session.adoc[server-session variant], where token size is irrelevant because
 nothing crosses to the browser.
 
-*The seal also carries the session's active scope set.* To refresh with the scopes the IdP actually
-granted -- rather than narrowing the session back to `oidc.scopes` -- the session remembers that set
-(see link:bff-session.adoc#scopes[Scopes]), and in this variant the session is the cookie. The set
-travels as a tenth length-prefixed field: the scope names sorted and joined by single spaces, so it
-costs 2 bytes of framing plus the names themselves, before deflate. For a handful of short scope names
-that is a few dozen bytes of the budget. It grows with the scope set the login requested: a login on
-a route whose endpoint declares its own `scopes` seals `oidc.scopes` plus those names, and keeps them
-for the life of the session, so a deployment with many long `endpoint.scopes` names spends the margin
-above faster. The budget check covers the field like any other -- an oversize seal is still refused,
-never truncated.
+*The seal also carries the session's two scope sets.* To refresh with the scopes of the current
+token -- rather than narrowing the session back to `oidc.scopes` -- the session remembers its active
+set, and to tell a scope a refresh can restore from one that needs a new authorization it remembers
+the scopes the IdP is known to grant it (see link:bff-session.adoc#scopes[Scopes]). In this variant
+the session is the cookie, so both travel in it, as the tenth and eleventh length-prefixed fields:
+each is its scope names sorted and joined by single spaces, so each costs 2 bytes of framing plus the
+names themselves, before deflate. For a handful of short scope names that is a few dozen bytes of the
+budget per set. Both grow with what the session was granted: a login on a route whose endpoint
+declares its own `scopes` seals `oidc.scopes` plus those names, a later widening for another
+endpoint adds that endpoint's names, and the session keeps them for as long as the IdP keeps
+granting them, so a
+deployment with many long `endpoint.scopes` names spends the margin above faster. The budget check
+covers the fields like any other -- an oversize seal is still refused, never truncated. A widening
+whose merged session would no longer fit answers `500` on the callback and leaves the session as it
+was.
 
 The measurement, and the four routes weighed before this one shipped, are recorded in
 link:../development/bff-cookie.adoc[the contributor guide]. Note what the 4019 bar is: the floor
@@ -647,6 +657,16 @@ cleared, and an expired cookie the browser keeps anyway is still refused server-
 TTL check. Where instant central revocation is a hard requirement, use the server-session variant.
 Mitigate in this variant with a short `ttl_seconds` and short access-token lifetimes.
 
+*A logout does not stop a response that is already in flight.* The gateway keeps nothing a logout
+could mark, so a token refresh or a session widening that was already running for the same browser
+when it logged out still answers with a re-sealed session cookie. If that response reaches the
+browser after the logout response, the browser holds a session cookie again. It lasts until
+`ttl_seconds` at the latest; where the logout ended the session at the IdP as well, it ends earlier,
+when the session's next refresh is refused there. The window needs a request of the same browser in
+flight at the moment of the logout, and the mitigations are the two above. The server-session
+variant does not have this window: there a logout wins over a refresh or a widening that was in
+flight, and the session stays ended.
+
 == Session affinity for the login leg
 
 The variant is stateless once a session is *established*, but not during the login exchange. The
@@ -667,13 +687,16 @@ backward-compatible acceptance path.
 invalidated at deploy time and users must log in again, once. There is no rolling migration --
 schedule the deploy accordingly.
 
-The current format is `FORMAT_VERSION` *1*: the sealed payload is length-prefixed raw UTF-8, deflated
-before encryption, and carries ten fields -- the tokens, the identity and session claims, and the
-session's active scope set. The numbering restarted at 1 with the change that added the active scope
-set, so *cookies sealed before this change are refused*: they carry a different version byte, fail the
-explicit version gate *before* decryption (logged once as `ApiSheriff-113` with disposition
-`unknown-version`), and are treated as no session -- navigations are redirected to login and API
-calls answer `401`. Existing cookie sessions therefore log in again once after the upgrade.
+The current format is `FORMAT_VERSION` *2*: the sealed payload is length-prefixed raw UTF-8, deflated
+before encryption, and carries eleven fields -- the tokens, the identity and session claims, and the
+session's active and granted scope sets. Version 2 added the granted scope set, which session routes
+need to enforce their scopes (see link:bff-session.adoc#scope-enforcement[When a session lacks a
+scope the route needs]). The numbering had restarted at 1 with the earlier change that added the
+active scope set. *Cookies sealed before this change are refused*: a version-1 cookie carries a
+different version byte, fails the explicit version gate *before* decryption (logged once as
+`ApiSheriff-113` with disposition `unknown-version`), and is treated as no session -- navigations
+are redirected to login and API calls answer `401`. Existing cookie sessions therefore log in again
+once after the upgrade.
 
 The gate reads and compares the version byte before any cipher is constructed. The version an
 accepted cookie carries is authenticated in turn -- AES-GCM binds it into the associated data -- but
@@ -685,7 +708,14 @@ that happens after the gate, not at it. So a retired format is never mis-parsed.
   deadline is recomputed from the original login on every re-seal, so an endlessly-refreshed session
   still dies on time.
 * *Refresh re-seals the cookie.* A transparent token refresh emits a new `Set-Cookie` -- that is the
-  whole of "persisting" in this variant.
+  whole of "persisting" in this variant. A granted widening of the session re-seals it the same way.
+* *Scopes are enforced as in the server-session variant.* A session lacking a scope the route needs
+  is refreshed, widened or refused `403` exactly as
+  link:bff-session.adoc#scope-enforcement[the server-session guide] describes. One case is specific
+  to this variant: when the near-expiry refresh of a request has just issued a new cookie, that
+  request does not also refresh for a missing scope -- its own `Cookie` header names a refresh token
+  the IdP has already retired -- and is widened or refused instead. The next request carries the new
+  cookie and is refreshed normally.
 * *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
   without the IdP -- but logins fail until the issuer is reachable. The reverse direction matters as
   well in the default setup: the IdP must reach the gateway's JWKS endpoint, or it cannot verify the

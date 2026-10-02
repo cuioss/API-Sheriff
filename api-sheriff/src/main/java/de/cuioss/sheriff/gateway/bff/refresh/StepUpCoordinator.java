@@ -62,7 +62,7 @@ import org.jspecify.annotations.Nullable;
  *       elevated parameters. The recorded return URL is same-origin-validated so the post-step-up
  *       redirect is never an open redirect.</li>
  * </ol>
- * <strong>The re-drive location is a pushed-request redirect (ADR-0057).</strong> The runtime pushes
+ * <strong>The re-drive location is a pushed-request redirect (ADR-0058).</strong> The runtime pushes
  * the step-up authorization request before this coordinator sees it, so the location carries
  * {@code client_id} and {@code request_uri} only and the elevated {@code acr_values} / {@code max_age}
  * travel in the pushed request. A failed push propagates out of the {@link StepUpInitiation} seam as

@@ -77,7 +77,7 @@ Keep new logic on the framework-agnostic side of that seam.
 
 `BffRuntimeProducer` is the one place the client credential, the sender constraint and the
 pushed-request client are assembled
-(link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]).
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
 Each exists once per runtime. Know these seams before you touch the login, the refresh or a reserved
 handler.
 
@@ -90,7 +90,7 @@ handler.
   unencrypted PKCS#8 `PRIVATE KEY` block and one `PUBLIC KEY` block. The key type is established by
   which JDK key factory accepts the blocks; no ASN.1 is parsed in the gateway. One sign-and-verify
   round proves the halves match.
-* *Generated.* A `null` `keyFile` generates an EC P-256 key and logs `ApiSheriff-20`.
+* *Generated.* A `null` `keyFile` generates an EC P-256 key and logs `ApiSheriff-21`.
 
 The type derives the algorithm from the key (`PS256` for RSA from 2048 bits, `ES256` for EC P-256)
 and the key id from the public key (RFC 7638 thumbprint). It has no accessor for the private key:
@@ -108,7 +108,7 @@ producer both call it, so validation and runtime cannot resolve the mode differe
 * *No secret* -- `selectClientCredential` resolves the client-authentication key and returns its
   `PrivateKeyJwtAuth` together with a publishing `ClientJwksEndpoint`.
 * *A secret* -- it returns `ClientSecretBasicAuth` together with `ClientJwksEndpoint.withheld()`,
-  resolves no client-authentication key, and logs `ApiSheriff-130`.
+  resolves no client-authentication key, and logs `ApiSheriff-133`.
 
 The authentication and the endpoint are returned as one value on purpose: the key the gateway signs
 with and the key it publishes come from one decision. Do not add a second read of the mode.
@@ -121,7 +121,8 @@ forms -- `ReservedPathRegistry` does not read the mode -- so that a proxied upst
 under a key-set URL the identity provider may hold. The constructor refuses a JWK that carries a
 private member.
 
-`CLIENT_JWKS` is one of the two kinds matched on every host. If you add a reserved kind the identity
+`CLIENT_JWKS` is one of the two kinds matched on every host, and it is registered last, after the
+step-up path, so that boot validation sees a `jwks_path` another key also names as a collision. If you add a reserved kind the identity
 provider dials server-to-server, add it to that set and say why in `match(...)`.
 
 === The PAR adapter
@@ -131,14 +132,18 @@ the authorization URL the engine's builder rendered, splits it into its paramete
 returns the authorization endpoint with `client_id` and `request_uri`. The engine's `FlowContext` is
 kept as it is. Every failure becomes a `GatewayException` with `UPSTREAM_ERROR` (`502`), recorded as
 `ApiSheriff-132` under a per-reason latch, because the login path is reachable without a credential.
-Both seams that build an authorization request go through it; there is no other way to obtain a
-login redirect.
+Every seam that builds an authorization request goes through it -- the login (`LoginFlow`), the
+session widening (`SessionWidening`, silent attempt and interactive re-drive) and the RFC 9470
+step-up re-drive; there is no other way to obtain a redirect to the identity provider. A new seam
+that renders an authorization URL must be wrapped the same way in `BffRuntimeProducer`, and must
+call its seam before it stores a pending record or sets a cookie, so that a refused push leaves
+nothing half-started.
 
 === The shared sender constraint
 
 One `SenderConstraint` is built from the sender-constraint key and handed to the base
-`AuthorizationCodeFlow` and to `ScopedEngineFlows`, which passes it to every per-scope login flow and
-every refresh flow. A code exchange or a refresh sent without it would carry no proof, and
+`AuthorizationCodeFlow` and to `ScopedEngineFlows`, which passes it to every per-scope login flow,
+every per-call widening flow and every refresh flow, near-expiry and scope-driven. A code exchange or a refresh sent without it would carry no proof, and
 `BoundTokenEndpointClient` would refuse its response.
 
 === The bound token-endpoint client
@@ -151,7 +156,8 @@ token's `cnf.jkt` equals the proof key's thumbprint.
 provider answered with success, so the grant is already redeemed. The two callers read the exception
 type, not the message:
 
-* `CallbackEndpoint` answers any `TokenSheriffException` with `400` and no session.
+* `CallbackEndpoint` answers any `TokenSheriffException` with `400` and no session -- and, on a
+  widening callback, with nothing merged into the live session.
 * `RefreshFlow.classify` reads `RedeemedResponseException` as a redeemed grant, and
   `TokenRefreshCoordinator` ends the session. A plain `TransportException` would be read as a grant
   the provider never processed, and the session would be kept on a refresh token that is already

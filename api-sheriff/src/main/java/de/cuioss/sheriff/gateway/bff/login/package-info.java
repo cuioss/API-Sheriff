@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 /**
- * The confidential-client login initiation for the BFF auth-code flow (D1/D2/D2b).
+ * The confidential-client initiation of the BFF auth-code flow (D1/D2/D2b).
  * <p>
  * {@link de.cuioss.sheriff.gateway.bff.login.LoginFlow} is the browser-facing start of the OIDC
  * code flow and the mirror of the callback endpoint: it drives the engine to build the

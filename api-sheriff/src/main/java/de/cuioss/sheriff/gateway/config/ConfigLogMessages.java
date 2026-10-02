@@ -321,7 +321,7 @@ public final class ConfigLogMessages {
          */
         public static final LogRecord OIDC_CLIENT_SECRET_AUTHENTICATION = LogRecordModel.builder()
                 .prefix(PREFIX)
-                .identifier(130)
+                .identifier(133)
                 .template("The BFF authenticates to the identity provider with oidc.client_secret. Client-secret authentication is not FAPI 2.0 conformant and may weaken security. Pushed authorization requests and the DPoP sender constraint stay in effect. Removing oidc.client_secret selects private_key_jwt")
                 .build();
 

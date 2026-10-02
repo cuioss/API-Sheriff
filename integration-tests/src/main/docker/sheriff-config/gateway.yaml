@@ -340,6 +340,8 @@ oidc:
     default_view: ["sub", "preferred_username"]
   login:
     path: /auth/login
+  step_up:
+    path: /auth/step-up
 # --- Application portal (PortalIT, HtmlErrorPageIT) --------------------------------
 # Appended at the END of the document on purpose: declared-limit-assertion-coverage.adoc cites keys
 # of this file by line number, and a block inserted above them would silently shift every citation.

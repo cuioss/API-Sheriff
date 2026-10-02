@@ -127,7 +127,7 @@ class LoginFlowTest {
 
     /**
      * The runtime binds the seam to the engine authorization followed by the push of the request
-     * (ADR-0057), so a push that fails surfaces here as a throwing seam. The flow calls the seam
+     * (ADR-0058), so a push that fails surfaces here as a throwing seam. The flow calls the seam
      * before it stores anything, which is what keeps a refused login from being left half-started.
      */
     @Nested

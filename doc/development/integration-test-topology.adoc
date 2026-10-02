@@ -267,7 +267,7 @@ differing in exactly one scalar. Every other instance resolves the alias and sim
 
 Every gateway instance pushes its authorization requests (RFC 9126) and binds its access tokens to a
 DPoP proof key (RFC 9449). What differs between instances is how the gateway authenticates to Keycloak
-(link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]).
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
 The `integration` realm declares five clients:
 
 [cols="2,2,4"]
@@ -465,7 +465,7 @@ The last line is the restart verdict: a restart with newly generated keys does n
 session. The failure message of the test names the other possible verdict -- the refresh is refused
 and the session ends through `oidc.session.refresh.on_failure` -- so a Keycloak upgrade that changes
 the behaviour turns the test red. The decision record states the limits of this observation
-(link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc#observed-on-the-integration-stack[ADR-0057: Observed on the integration stack]).
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc#observed-on-the-integration-stack[ADR-0058: Observed on the integration stack]).
 
 === Mounted material
 

@@ -345,6 +345,8 @@ oidc:
     default_view: ["sub", "preferred_username"]
   login:
     path: /auth/login
+  step_up:
+    path: /auth/step-up
 # --- Application portal -- mirrored from the base document, which carries the explanation ----------
 # Mirrored verbatim so this overlay stays the base document minus tls.passthrough_sni and nothing
 # else (TlsEdgeActivationWiringTest's single-variable equality guard). template_dir resolves here too:

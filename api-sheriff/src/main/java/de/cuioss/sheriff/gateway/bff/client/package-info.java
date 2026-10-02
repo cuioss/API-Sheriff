@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 /**
- * The confidential client's own key material (ADR-0057) — the keys the BFF signs with when it
+ * The confidential client's own key material (ADR-0058) — the keys the BFF signs with when it
  * authenticates to the identity provider and when it sends the DPoP proofs its access tokens are
  * bound to.
  * <p>

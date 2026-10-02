@@ -36,7 +36,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link ReservedPathRegistry}: the exact-match carve-out (D2) that guarantees a proxy
  * route such as {@code path_prefix: /auth} never swallows the exact {@code /auth/callback}, the
- * OIDC-host gate that the five browser-facing endpoints carry and the two the identity provider
+ * OIDC-host gate that the six browser-facing endpoints carry and the two the identity provider
  * dials — the back-channel receiver and the client JWKS endpoint — deliberately do not, the client
  * JWKS path that is reserved without being declared, plus the empty registry when no OIDC callback
  * is configured.
@@ -54,6 +54,7 @@ class ReservedPathRegistryTest {
     private static final String LOGOUT_PATH = "/auth/logout";
     private static final String LOGOUT_RETURN_PATH = "/auth/logout/return";
     private static final String BACKCHANNEL_PATH = "/auth/backchannel";
+    private static final String STEP_UP_PATH = "/auth/step-up";
     /**
      * Deliberately the literal and not {@code ClientAuthenticationSettings.DEFAULT_JWKS_PATH}: the
      * default is a documented contract of the configuration surface, so a change of the constant must
@@ -70,6 +71,7 @@ class ReservedPathRegistryTest {
         OidcConfig oidc = OidcConfig.builder()
                 .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
                 .logout(logout)
+                .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                 .build();
         return ReservedPathRegistry.from(oidc);
     }
@@ -88,15 +90,46 @@ class ReservedPathRegistryTest {
         }
 
         @ParameterizedTest(name = "reserved path \"{0}\" is matched exactly")
-        @ValueSource(strings = {LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH})
+        @ValueSource(strings = {LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, STEP_UP_PATH})
         @DisplayName("Should resolve each configured reserved path exactly")
         void shouldResolveEachReservedPath(String path) {
             assertTrue(registry.isReserved(OIDC_HOST, path), path);
         }
 
+        @Test
+        @DisplayName("Should resolve oidc.step_up.path to the STEP_UP endpoint")
+        void shouldResolveStepUpPath() {
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP), registry.match(OIDC_HOST, STEP_UP_PATH));
+        }
+
+        @Test
+        @DisplayName("Should register STEP_UP from the path alone, whatever the RFC 9470 step-up keys say")
+        void shouldRegisterStepUpIndependentlyOfEnabled() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                    .stepUp(new OidcConfig.StepUp(false, false, STEP_UP_PATH))
+                    .build();
+
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                    ReservedPathRegistry.from(oidc).match(OIDC_HOST, STEP_UP_PATH));
+        }
+
+        @Test
+        @DisplayName("Should register no STEP_UP endpoint when the step_up block declares no path")
+        void shouldNotRegisterStepUpWithoutPath() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                    .stepUp(new OidcConfig.StepUp(true, true, null))
+                    .build();
+
+            assertEquals(Set.of(CALLBACK_PATH, DEFAULT_JWKS_PATH), ReservedPathRegistry.reservedPaths(oidc),
+                    "the callback and the client JWKS path, which needs no declaration — and no step-up path");
+            assertTrue(ReservedPathRegistry.from(oidc).match(OIDC_HOST, STEP_UP_PATH).isEmpty());
+        }
+
         @ParameterizedTest(name = "prefix/sibling path \"{0}\" is not reserved")
         @ValueSource(strings = {"/auth", "/auth/", "/auth/callbacks", "/auth/callback/extra", "/auth/other",
-                "/authcallback", "/"})
+                "/authcallback", "/", "/auth/step-up/", "/auth/step-up/extra", "/auth/step"})
         @DisplayName("Should not match a prefix, sibling, or extended path — the exact carve-out")
         void shouldNotMatchPrefixOrSibling(String path) {
             assertFalse(registry.isReserved(OIDC_HOST, path), path);
@@ -111,7 +144,7 @@ class ReservedPathRegistryTest {
         private final ReservedPathRegistry registry = fullyConfigured();
 
         @ParameterizedTest(name = "browser-facing path \"{0}\" is not reserved on a foreign host")
-        @ValueSource(strings = {CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH})
+        @ValueSource(strings = {CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, STEP_UP_PATH})
         @DisplayName("Should not match a browser-facing reserved path on a foreign host")
         void shouldNotMatchForeignHost(String path) {
             assertTrue(registry.match(FOREIGN_HOST, path).isEmpty(), path);
@@ -203,8 +236,8 @@ class ReservedPathRegistryTest {
         private static final String USER_INFO_PATH = "/session/userinfo";
         private static final String LOGIN_PATH = "/session/login";
 
-        /** Declares the six paths that need a declaration; the seventh, the client JWKS path, defaults. */
-        private OidcConfig allSevenKinds() {
+        /** Declares the seven paths that need a declaration; the eighth, the client JWKS path, defaults. */
+        private OidcConfig allEightKinds() {
             OidcConfig.Logout logout = OidcConfig.Logout.builder()
                     .path(LOGOUT_PATH)
                     .postLogoutRedirectUri("https://" + OIDC_HOST + LOGOUT_RETURN_PATH)
@@ -215,6 +248,7 @@ class ReservedPathRegistryTest {
                     .logout(logout)
                     .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
                     .login(new OidcConfig.Login(LOGIN_PATH, null))
+                    .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                     .build();
         }
 
@@ -222,7 +256,23 @@ class ReservedPathRegistryTest {
         @DisplayName("Should return every reserved path in declaration order, the client JWKS path last")
         void shouldReturnEveryReservedPathInDeclarationOrderWithTheClientJwksPathLast() {
             assertEquals(List.of(CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, USER_INFO_PATH,
-                    LOGIN_PATH, DEFAULT_JWKS_PATH), List.copyOf(ReservedPathRegistry.reservedPaths(allSevenKinds())));
+                    LOGIN_PATH, STEP_UP_PATH, DEFAULT_JWKS_PATH),
+                    List.copyOf(ReservedPathRegistry.reservedPaths(allEightKinds())));
+        }
+
+        @Test
+        @DisplayName("Should carry exactly eight reserved kinds, two of them matched on every host")
+        void shouldCarryEightKindsTwoOfThemOnEveryHost() {
+            ReservedPathRegistry registry = ReservedPathRegistry.from(allEightKinds());
+
+            List<String> onEveryHost = ReservedPathRegistry.reservedPaths(allEightKinds()).stream()
+                    .filter(path -> registry.isReserved(FOREIGN_HOST, path)).toList();
+
+            assertEquals(8, ReservedEndpoint.values().length,
+                    "a ninth kind must decide its host rule and its collision rules before this number moves");
+            assertEquals(List.of(BACKCHANNEL_PATH, DEFAULT_JWKS_PATH), onEveryHost,
+                    "only the two endpoints the identity provider dials are matched off the OIDC host — "
+                            + "the step-up path is browser-facing and stays host-gated");
         }
 
         @Test
@@ -234,7 +284,7 @@ class ReservedPathRegistryTest {
         @Test
         @DisplayName("Should agree with the registry: every returned path matches on the OIDC host")
         void shouldAgreeWithRegistryMatching() {
-            OidcConfig oidc = allSevenKinds();
+            OidcConfig oidc = allEightKinds();
             ReservedPathRegistry registry = ReservedPathRegistry.from(oidc);
             Set<String> paths = ReservedPathRegistry.reservedPaths(oidc);
             assertEquals(ReservedEndpoint.values().length, paths.size(),
@@ -256,7 +306,7 @@ class ReservedPathRegistryTest {
         @Test
         @DisplayName("Should return an unmodifiable set")
         void shouldBeUnmodifiable() {
-            Set<String> paths = ReservedPathRegistry.reservedPaths(allSevenKinds());
+            Set<String> paths = ReservedPathRegistry.reservedPaths(allEightKinds());
             assertThrows(UnsupportedOperationException.class, () -> paths.add("/x"));
         }
     }
@@ -378,6 +428,25 @@ class ReservedPathRegistryTest {
                     "the logout path was registered first, so the client JWKS endpoint lost the path");
             assertEquals(Optional.empty(), ReservedPathRegistry.reservedKind(distinct, "/not-reserved"));
             assertEquals(Optional.empty(), ReservedPathRegistry.reservedKind(null, DEFAULT_JWKS_PATH));
+        }
+
+        @Test
+        @DisplayName("Should give a path named by both step_up.path and jwks_path to the step-up endpoint")
+        void shouldRegisterTheStepUpPathBeforeTheClientJwksPath() {
+            OidcConfig onTheDefault = withRedirectUri()
+                    .stepUp(OidcConfig.StepUp.builder().path(DEFAULT_JWKS_PATH).build()).build();
+            OidcConfig onADeclaredPath = withRedirectUri()
+                    .stepUp(OidcConfig.StepUp.builder().path(DECLARED_JWKS_PATH).build())
+                    .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build();
+
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                    ReservedPathRegistry.reservedKind(onTheDefault, DEFAULT_JWKS_PATH),
+                    "the client JWKS path is registered last, so a step-up path on it is what boot "
+                            + "validation sees as the collision");
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                    ReservedPathRegistry.reservedKind(onADeclaredPath, DECLARED_JWKS_PATH));
+            assertTrue(ReservedPathRegistry.from(onTheDefault).match(FOREIGN_HOST, DEFAULT_JWKS_PATH).isEmpty(),
+                    "the colliding path is then host-gated like any step-up path — no key set is served on it");
         }
     }
 }

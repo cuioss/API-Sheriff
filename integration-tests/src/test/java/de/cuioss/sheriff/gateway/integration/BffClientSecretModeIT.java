@@ -101,7 +101,7 @@ class BffClientSecretModeIT {
     private static final String CLIENT_SECRET = "refresh-secret";
 
     /** WARN — the BFF authenticates with a client secret. */
-    private static final String CLIENT_SECRET_RECORD = "ApiSheriff-130";
+    private static final String CLIENT_SECRET_RECORD = "ApiSheriff-133";
 
     /** INFO — the effective default trust source; emitted at every boot of every instance. */
     private static final String BOOT_RECORD = "ApiSheriff-17:";

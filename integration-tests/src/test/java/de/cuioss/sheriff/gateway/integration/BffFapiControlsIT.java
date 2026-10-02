@@ -126,7 +126,7 @@ class BffFapiControlsIT {
     static final String TOKEN_REFRESHED_RECORD = "ApiSheriff-12:";
 
     /** WARN — a token response was refused because it is not bound to the gateway's proof key. */
-    static final String TOKEN_NOT_BOUND_RECORD = "ApiSheriff-131";
+    static final String TOKEN_NOT_BOUND_RECORD = "ApiSheriff-134";
 
     /**
      * Seconds to wait before a call that must land inside the near-expiry window of a 45-second

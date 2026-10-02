@@ -363,6 +363,15 @@
         "include.in.token.scope": "true",
         "display.on.consent.screen": "false"
       }
+    },
+    {
+      "name": "sheriff_it_unassigned",
+      "description": "Endpoint-specific scope assigned to NO client - neither default nor optional on integration-client or refresh-client - so an authorization request naming it is refused with invalid_scope (BffSessionScopeParityIT).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
     }
   ],
   "defaultDefaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],

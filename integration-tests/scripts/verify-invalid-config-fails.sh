@@ -29,7 +29,7 @@
 #      no oidc block, refused by the same rule because the session branch needs the BFF runtime;
 #  11. oidc.client_secret together with oidc.client_authentication.key_file, refused by the
 #      ConfigValidator client-authentication rule because the two select different client
-#      authentications (ADR-0057);
+#      authentications (ADR-0058);
 #  12. an oidc.client_authentication.key_file naming a file that holds no PEM block, refused while
 #      the BFF runtime is assembled — the key file is read there, not by the validator.
 #
@@ -698,7 +698,7 @@ chmod 644 "${FALLBACK_NO_OIDC_DIR}/gateway.yaml" "${FALLBACK_NO_OIDC_DIR}/topolo
 assert_fails_to_boot "${FALLBACK_NO_OIDC_DIR}" "auth.session_fallback without an oidc block" \
     "declares auth.session_fallback: true but the gateway declares no oidc block"
 
-# Case 11: oidc.client_secret together with oidc.client_authentication.key_file (ADR-0057). The
+# Case 11: oidc.client_secret together with oidc.client_authentication.key_file (ADR-0058). The
 # presence of the secret selects client_secret_basic and the key file selects private_key_jwt, so a
 # document declaring both would make the gateway choose between two credentials in silence — the
 # ConfigValidator client-authentication rule refuses it at boot instead, naming both keys. The
@@ -768,7 +768,7 @@ chmod 644 "${SECRET_AND_KEY_FILE_DIR}/gateway.yaml" "${SECRET_AND_KEY_FILE_DIR}/
 assert_fails_to_boot "${SECRET_AND_KEY_FILE_DIR}" "oidc.client_secret together with a client-authentication key file" \
     "oidc.client_secret and oidc.client_authentication.key_file are both declared"
 
-# Case 12: a client-authentication key file that holds no PEM block (ADR-0057). The document declares
+# Case 12: a client-authentication key file that holds no PEM block (ADR-0058). The document declares
 # no client secret, so the gateway authenticates with private_key_jwt and reads the key
 # oidc.client_authentication.key_file names. The file exists inside the mounted fixture directory and
 # is readable, but holds a line of text and no PEM block — the shape a wrong mount or a truncated

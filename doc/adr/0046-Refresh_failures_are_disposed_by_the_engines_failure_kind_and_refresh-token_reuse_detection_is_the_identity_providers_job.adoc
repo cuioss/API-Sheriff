@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A refused BFF token refresh is disposed by what the identity provider did to the presented refresh token, as the engine classifies the exchange, through a default-free switch over the failure kind — PRE_REDEMPTION keeps the session with a fixed five-second back-off and revokes nothing, CREDENTIAL_REJECTED ends it, REDEEMED ends it and revokes the one live refresh token the gateway can name, and a persist failure ends it and revokes the rotated token — while oidc.session.refresh.on_failure decides only how the failing request is answered; refresh-token reuse detection is not built in the gateway or the engine, because a confidential client only sees the tokens it presents and a stateless instance cannot share a token family, so the control is strict refresh-token rotation at the identity provider, shipped on in the integration and compose-sample realms and pinned against Keycloak's observed verdict (successor grant revoked, user session survives), with the residual that without it neither side detects reuse and the cost that a cross-instance duplicate refresh ends the session.
+// summary: A refused BFF token refresh is disposed by what the identity provider did to the presented refresh token, as the engine classifies the exchange, through a default-free switch over the failure kind — PRE_REDEMPTION keeps the session with a fixed five-second back-off and revokes nothing, CREDENTIAL_REJECTED ends it, REDEEMED ends it and revokes the one live refresh token the gateway can name, a persist failure ends it and revokes the rotated token, and in server mode a session terminated while its refresh was in flight is not written back and its rotated token is revoked — while oidc.session.refresh.on_failure decides only how the failing request is answered; refresh-token reuse detection is not built in the gateway or the engine, because a confidential client only sees the tokens it presents and a stateless instance cannot share a token family, so the control is strict refresh-token rotation at the identity provider, shipped on in the integration and compose-sample realms and pinned against Keycloak's observed verdict (successor grant revoked, user session survives), with the residual that without it neither side detects reuse and the cost that a cross-instance duplicate refresh ends the session.
 // tags: bff, oidc, refresh-token, session, reuse-detection, token-rotation, failure-classification, fail-closed, identity-provider, revocation, operator-control
 // affects: api-sheriff, integration-tests, deployment
 // supersedes:
@@ -21,6 +21,22 @@
 == Status
 
 Proposed
+
+[NOTE]
+====
+*Amended.* The per-kind account now has a fifth entry that is not a refused refresh: the exchange
+succeeded, but the session was terminated while the refresh was in flight. In server mode the
+`SessionBinding` seam's updating write reports such a session gone and writes nothing
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]),
+so the rotated session is not written back, the request is answered as session-ended, and the refresh
+token the exchange returned is revoked. The record is `ApiSheriff-111` with the reason
+`session-terminated`.
+
+Unchanged and still in force: the four dispositions of a refused refresh and of a persist failure,
+the ordering of the revocation after the published outcome, and `on_failure` deciding only how the
+request is answered. In cookie mode nothing changes, because a stateless binding cannot observe a
+termination.
+====
 
 == Context
 
@@ -40,6 +56,9 @@ depends entirely on what the identity provider did with the presented token:
   spent, and a successor may now be live at the provider that no session holds.
 * *The redemption succeeded, but the rotated session could not be persisted.* Same position: the
   presented token is spent and the returned one is orphaned.
+* *The redemption succeeded, but the session was terminated meanwhile.* A logout or a back-channel
+  logout destroyed the session while the exchange was in flight. Same position for the tokens, and a
+  further one for the session: writing the rotated session would bring a logged-out session back.
 
 A single destroy-on-every-failure rule treats the first case as the second and leaves the live
 tokens of the last two unrevoked. The engine already classifies a refused refresh into exactly these
@@ -97,7 +116,30 @@ added by the engine fails compilation rather than inheriting a disposition.
 | Ended.
 | The refresh token the exchange returned.
 | `ApiSheriff-111` `persist-failure`
+
+| Session terminated at the persist (server mode)
+| Stays ended. A logout or a back-channel logout destroyed it while the refresh was in flight; the
+  rotated session is not written.
+| The refresh token the exchange returned.
+| `ApiSheriff-111` `session-terminated`
 |===
+
+The last two rows are not kinds the engine classifies: in both the exchange succeeded. They differ in
+what the `SessionBinding` seam answered when the rotated session was written. A *persist failure* is
+the binding raising an error -- it could not hold a session that was still there, for example a
+sealed cookie past its size budget. *Session terminated at the persist* is the binding reporting the
+session gone: the seam's updating write never creates a session
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]),
+so a session a logout destroyed after the refresh resolved it is not written back. Only a binding
+that holds server-side state can report that, so the row applies to server mode; a stateless binding
+cannot observe a logout and re-seals the rotated session. The two rows carry different reasons on
+purpose: the first is a fault to investigate and is recorded with the exception that caused it, the
+second is a logout that overtook a refresh and is recorded with none.
+
+Both refresh legs -- the near-expiry refresh and the scope-driven one of
+link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]
+-- share all five rows, and a request coalesced on the session's single-flight receives the leader's
+outcome in each of them.
 
 Revocation goes through the engine's RFC 7009 `RevocationClient`, built from the same postured
 back-channel client configuration the refresh uses. It is best-effort: a failed revocation is
@@ -159,10 +201,11 @@ No gateway code decides whether a token is a replay: the replay path *is* the cr
 Detection stays the provider's, but the gateway does not re-ask a question it has already had
 answered. In cookie mode the ended session's sealed cookie still unseals, so without a guard every
 near-expiry request carrying it would drive another refresh grant to the provider and another
-`ApiSheriff-111` warning until the absolute TTL. When `TokenRefreshCoordinator` ends a session as
-`credential-rejected`, `redeemed-response-refused` or `persist-failure`, it marks the *presented*
-refresh token in `EndedRefreshTokens` -- a salted, non-reversible SHA-256 digest keyed with a
-per-instance random salt, never the token or the cookie -- until the session's absolute lifetime.
+`ApiSheriff-111` warning until the absolute TTL. When `TokenRefreshCoordinator` ends a cookie-mode
+session, for whichever reason link:../LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] records, it
+marks the *presented* refresh token in `EndedRefreshTokens` -- a salted, non-reversible SHA-256
+digest keyed with a per-instance random salt, never the token or the cookie -- until the session's
+absolute lifetime.
 A later request presenting a marked token is disposed as session-ended (cookie cleared, `on_failure`
 negotiated) with no engine call, no revocation and only a `DEBUG` line.
 
@@ -292,5 +335,3 @@ holds the refresh-token lineage, so it owns reuse detection.
 * link:../user/bff-session.adoc[Server-session BFF operator guide] and
   link:../user/bff-cookie.adoc[Cookie BFF operator guide] -- the strict-rotation operator step
 * link:../LogMessages.adoc[Log messages] -- the `ApiSheriff-111` and `ApiSheriff-127` records
-</content>
-</invoke>

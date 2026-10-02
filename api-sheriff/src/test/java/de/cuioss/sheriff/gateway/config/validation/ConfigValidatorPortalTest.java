@@ -160,6 +160,7 @@ class ConfigValidatorPortalTest {
         private static final String BACKCHANNEL = "/auth/backchannel";
         private static final String USER_INFO = "/session/userinfo";
         private static final String LOGIN = "/session/login";
+        private static final String STEP_UP = "/session/step-up";
         /** The path the client JWKS endpoint is reserved at when {@code jwks_path} is omitted. */
         private static final String DEFAULT_CLIENT_JWKS = "/auth/jwks";
         private static final String DECLARED_CLIENT_JWKS = "/keys/client";
@@ -174,15 +175,16 @@ class ConfigValidatorPortalTest {
                             .build())
                     .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO).build())
                     .login(new OidcConfig.Login(LOGIN, null))
+                    .stepUp(OidcConfig.StepUp.builder().path(STEP_UP).build())
                     .build();
         }
 
         /**
-         * The paths {@link #oidc()} reserves, one per reserved kind: the six it declares, and the client
-         * JWKS path, which it reserves at the default without declaring it.
+         * The paths {@link #oidc()} reserves, one per reserved kind: the seven it declares, and the
+         * client JWKS path, which it reserves at the default without declaring it.
          */
         private static final List<String> EVERY_RESERVED_PATH =
-                List.of(CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN, DEFAULT_CLIENT_JWKS);
+                List.of(CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN, STEP_UP, DEFAULT_CLIENT_JWKS);
 
         static Stream<String> everyReservedPath() {
             return EVERY_RESERVED_PATH.stream();
@@ -222,7 +224,7 @@ class ConfigValidatorPortalTest {
 
         /**
          * The client JWKS path is reserved without being declared, so the portal is refused on the
-         * default path by an {@code oidc} block that never names it. The same path is the seventh row
+         * default path by an {@code oidc} block that never names it. The same path is the eighth row
          * of {@link #refusesEveryReservedPathKind}; it is stated here once more, by name, as the
          * counterpart of the declared-path case below.
          */

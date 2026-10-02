@@ -76,6 +76,10 @@ class AuthenticationStageTest {
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final String SESSION_ID = "opaque-session-id";
     private static final String MEDIATED_TOKEN = "mediated-access-token";
+    /** The scope a session route needs in the session-branch tests. */
+    private static final String SESSION_SCOPE = "orders:read";
+    /** The configured {@code oidc.step_up.path} the session stage names on a 403. */
+    private static final String STEP_UP_PATH = "/auth/step-up";
 
     @Test
     @DisplayName("passes a require:none route without ever resolving the lazy validator")
@@ -220,15 +224,42 @@ class AuthenticationStageTest {
     }
 
     @Test
-    @DisplayName("runs no scope check on a require:session route with non-empty needed scopes")
-    void runsNoScopeCheckOnSessionRoute() {
-        // Arrange — the mediated token is opaque and grants nothing; a session route must not check it
-        AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
-        PipelineRequest request = sessionRequest(Set.of(ABSENT_ENDPOINT_SCOPE));
+    @DisplayName("relays a require:session request whose session covers the route's needed scopes")
+    void relaysSessionCoveringNeededScopes() {
+        // Arrange — the session's active scope set holds the one scope the route needs
+        AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(),
+                sessionStage(Set.of(SESSION_SCOPE)));
+        PipelineRequest request = sessionRequest(Set.of(SESSION_SCOPE));
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request));
-        assertEquals(MEDIATED_TOKEN, request.mediatedBearer().orElseThrow());
+        assertEquals(MEDIATED_TOKEN, request.mediatedBearer().orElseThrow(),
+                "a session covering the needed scopes is relayed");
+    }
+
+    @Test
+    @DisplayName("refuses a require:session API call whose session lacks a needed scope 403 with problem members")
+    void refusesSessionRouteMissingScope() {
+        // Arrange — the session carries no scope, so the needed one is neither active nor granted
+        AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
+        PipelineRequest request = sessionRequest(Set.of(SESSION_SCOPE));
+
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+        // Assert
+        assertAll("the session route enforces its needed scopes",
+                () -> assertEquals(EventType.SCOPE_MISSING, thrown.getEventType()),
+                () -> assertEquals(List.of(SESSION_SCOPE),
+                        thrown.getProblemExtensions().get(SessionAuthenticationStage.MISSING_SCOPES_MEMBER),
+                        "the missing scope is named in the problem body"),
+                () -> assertEquals(STEP_UP_PATH + "?returnUrl=%2Fapp%2Forders",
+                        thrown.getProblemExtensions().get(SessionAuthenticationStage.STEP_UP_URL_MEMBER),
+                        "the step-up URL returns to the refused path"),
+                () -> assertNull(request.responseHeaders().get(WWW_AUTHENTICATE),
+                        "a session refusal carries no bearer challenge"),
+                () -> assertTrue(request.mediatedBearer().isEmpty(),
+                        "an under-scoped session is never relayed"));
     }
 
     @Test
@@ -338,20 +369,44 @@ class AuthenticationStageTest {
         }
 
         @Test
-        @DisplayName("a request without Authorization is dispatched to the session stage")
+        @DisplayName("a request without Authorization is dispatched to the session stage and relayed when its session covers the scopes")
         void noAuthorizationIsDispatchedToSessionStage() {
             // Arrange — a failing validator proves the bearer branch is never entered
-            AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
-            PipelineRequest request = fallbackRequest(null, Set.of(ABSENT_ENDPOINT_SCOPE),
-                    Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
-                            "accept", List.of("application/json")));
+            AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(),
+                    sessionStage(Set.of(SESSION_SCOPE)));
+            PipelineRequest request = fallbackRequest(null, Set.of(SESSION_SCOPE), sessionCookieOnly());
 
             // Act
             stage.process(request);
 
             // Assert
             assertEquals(MEDIATED_TOKEN, request.mediatedBearer().orElseThrow(),
-                    "the session stage mediated the session's bearer, with no scope check");
+                    "the session stage mediated the bearer of a session covering the needed scopes");
+        }
+
+        @Test
+        @DisplayName("a request without Authorization whose session lacks a needed scope answers 403 with problem members")
+        void sessionBranchMissingScopeAnswersProblemMembers() {
+            // Arrange — the same route, reached without Authorization by a session carrying no scope
+            AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
+            PipelineRequest request = fallbackRequest(null, Set.of(SESSION_SCOPE), sessionCookieOnly());
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            // Assert
+            assertAll("the session branch of a session_fallback route gets the session-route outcome",
+                    () -> assertEquals(EventType.SCOPE_MISSING, thrown.getEventType()),
+                    () -> assertEquals(List.of(SESSION_SCOPE),
+                            thrown.getProblemExtensions().get(SessionAuthenticationStage.MISSING_SCOPES_MEMBER),
+                            "the missing scope is named in the problem body"),
+                    () -> assertEquals(STEP_UP_PATH + "?returnUrl=%2Fapi%2Forders",
+                            thrown.getProblemExtensions().get(SessionAuthenticationStage.STEP_UP_URL_MEMBER),
+                            "the step-up URL returns to the refused path"),
+                    () -> assertNull(request.responseHeaders().get(WWW_AUTHENTICATE),
+                            "the session branch answers without the bearer branch's insufficient_scope challenge"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty(),
+                            "an under-scoped session is never relayed"));
         }
 
         @Test
@@ -366,6 +421,11 @@ class AuthenticationStageTest {
 
             // Assert
             assertTrue(thrown.getMessage().contains("no session runtime is wired"));
+        }
+
+        private static Map<String, List<String>> sessionCookieOnly() {
+            return Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
+                    "accept", List.of("application/json"));
         }
 
         private static Map<String, List<String>> withSessionCookie(String authorization) {
@@ -397,7 +457,17 @@ class AuthenticationStageTest {
         };
     }
 
+    /** A session stage over a live session that carries no scope at all. */
     private static SessionAuthenticationStage sessionStage() {
+        return sessionStage(Set.of());
+    }
+
+    /**
+     * A session stage over a live session whose active and granted scope sets are both
+     * {@code sessionScopes}. The granted set never exceeds the active one, so a missing scope is never
+     * refreshable: the scope-refresh seam hands the session back unchanged and is reached by no test.
+     */
+    private static SessionAuthenticationStage sessionStage(Set<String> sessionScopes) {
         InMemorySessionStore store = new InMemorySessionStore(16);
         store.create(SessionRecord.builder()
                 .sessionId(SESSION_ID)
@@ -405,13 +475,19 @@ class AuthenticationStageTest {
                 .idToken("id-token")
                 .sub("subject")
                 .expiresAt(NOW.plusSeconds(3600))
+                .activeScopes(sessionScopes)
+                .grantedScopes(sessionScopes)
                 .build(), NOW);
         SessionCookieCodec codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
         return new SessionAuthenticationStage(new ServerSessionBinding(store, codec),
                 (session, cookieHeader, now) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
+                (session, cookieHeader, requestedScopes, now) -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(session, List.of())),
                 (returnUrl, scopes, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
+                (live, returnUrl, neededScopes, now) -> new LoginChallenge("https://idp.example/widen", List.of()),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
+                STEP_UP_PATH,
                 CLOCK);
     }
 

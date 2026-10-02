@@ -186,7 +186,7 @@ class BffGeneratedKeysIT {
      * INFO — a signing key was generated at startup; names the purpose, never the key. The trailing
      * colon keeps the match off the identifiers from 200 to 209.
      */
-    private static final String KEY_GENERATED_RECORD = "ApiSheriff-20:";
+    private static final String KEY_GENERATED_RECORD = "ApiSheriff-21:";
 
     private static final List<String> KEY_PURPOSES = List.of("client-authentication", "sender-constraint");
 

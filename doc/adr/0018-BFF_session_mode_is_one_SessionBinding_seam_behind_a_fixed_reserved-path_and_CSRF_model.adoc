@@ -7,8 +7,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie
-// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff
+// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie; amended so that the seam has one creating write (bind, the login) and one updating write (persist) that never creates a session, which keeps a server-mode session terminated when a logout overtakes an in-flight refresh or widening, while cookie mode cannot observe a termination and re-seals
+// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff, logout, session-termination
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -348,6 +348,90 @@ requiring it to agree with the provider's registration.
 The only alternative that changes no code. Rejected because it is not generally available: a provider
 on a private network frequently cannot resolve the public name at all, and arranging that it can means
 adding DNS or hairpin routing so that a gateway becomes reachable from a container standing beside it.
+
+[[updating-write]]
+== Amendment: the seam's updating write never creates a session
+
+*This record is amended, not superseded. Decision (iii) is unchanged: both session modes still sit
+behind the one `SessionBinding` seam. This amendment records what the seam's two writes mean, and the
+one capability in which the two modes differ on them.*
+
+=== A write that could undo a termination
+
+A session is written at three moments. A login creates it. A token refresh replaces its tokens. A
+widening merges a new grant into it
+(link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
+The last two are a check followed by an act: the writer resolves the session, calls the identity
+provider, and writes the result back under the same session identity.
+
+In server mode that write was an unconditional store write keyed by the session identity. A logout,
+or a validated back-channel logout, that destroyed the session between the writer's resolve and its
+write was therefore undone by the write: the session existed again, holding newly issued tokens,
+after the user or the identity provider had ended it.
+
+=== The amendment
+
+The seam has one creating write and one updating write, and they are not interchangeable.
+
+* `bind` creates a session. It is the write a login makes.
+* `persist` updates a session that already exists, and never creates one. Its result says whether the
+  session was still there: an implementation that can observe that the session was destroyed writes
+  nothing and reports the session gone.
+
+In server mode the store checks for the session and replaces its record as one atomic step, under the
+lock every destroy operation takes. A destruction therefore either precedes the check, and nothing is
+written, or follows the replacement and removes it. A replacement consumes no capacity, so it is not
+refused at the session bound.
+
+Both callers of `persist` treat a session reported gone as a session that has ended. The widening
+callback answers the terminal `403` it gives a callback without a live session, with no `Location`
+and no `Set-Cookie`, and stores nothing. The refresh coordinator returns its session-ended outcome on
+both of its legs, to the request that led the refresh and to every request coalesced with it, and
+revokes, best-effort, the refresh token the exchange returned -- that token is live at the identity
+provider and no session holds it
+(link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+
+=== Cookie mode cannot observe a termination
+
+This is a difference of capability between the modes, of the kind decision (iii) describes. The
+stateless binding holds no server-side session state. Its `destroy` removes nothing, because there is
+nothing held to remove; a logout ends a cookie-mode session by clearing the browser's cookie. Its
+`persist` therefore has nothing to consult: it always re-seals the updated session and never reports
+it gone.
+
+The consequence is a residual of the stateless variant, not of the seam. A refresh or a widening that
+was in flight while the browser logged out still produces a sealed `Set-Cookie`. If that response
+reaches the browser after the logout response, the browser again holds a cookie the gateway resolves
+as a session, until the session's absolute lifetime. The mitigations are the ones the variant already
+names for a termination it cannot enforce at once -- a short `ttl_seconds`, short access-token
+lifetimes, and the session-based variant where immediate termination is a hard requirement
+(link:../variants/03-bff-cookie.adoc[Variant 3], Logout). The threat model records it under
+link:../security-threat-model.adoc#bff-09[BFF-09].
+
+Unlike IdP-driven destruction, this difference has no capability flag of its own. The result of
+`persist` carries it: a binding that cannot observe a termination never returns "gone".
+
+=== Alternatives considered for this amendment
+
+*Resolve the session again immediately before the write.* It needs no change to the store. Rejected
+because a second check followed by an unconditional write is the same check-then-act with a shorter
+window: a destruction between the second resolve and the write is still undone.
+
+*Make logout wait for the writers.* Serialising a logout with an in-flight refresh or widening -- on
+the refresh coordinator's per-session single-flight, or on a per-session lock -- would close the
+window from the other side. Rejected because it makes a logout wait on an identity-provider round
+trip, and because a back-channel logout destroys by `sid` or `sub` without knowing which sessions
+have a writer in flight. The store already serialises its own operations, so the guarantee is
+available where the state lives.
+
+*Keep one upserting write and add a tombstone for destroyed sessions.* A marker for each destroyed
+session identity would let the upsert refuse it. Rejected because it adds per-session state that
+outlives the session and needs its own bound and expiry, to reconstruct a fact the store has at the
+moment of the write: whether the record is there.
+
+*Give cookie mode a server-side list of logged-out sessions.* It would let the stateless binding
+report a termination too. Rejected because it is server-side session state in the variant that
+exists to have none, and it would have to be shared between instances to mean anything.
 
 == Consequences
 

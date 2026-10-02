@@ -448,7 +448,11 @@
           "additionalProperties": false,
           "properties": {
             "enabled": { "type": "boolean" },
-            "honor_upstream_challenge": { "type": "boolean" }
+            "honor_upstream_challenge": { "type": "boolean" },
+            "path": {
+              "type": "string",
+              "description": "Gateway-served step-up path (reserved, like login.path). A browser holding a live session is sent here to widen that session so it carries the scopes the route behind the URL it is given needs: the returnUrl query parameter names that URL (same-origin only; anything else falls back to login.default_return_url). It is the target of the step_up_url member a session route names in its 403 problem answer when a non-navigation request lacks a needed scope. Its presence alone registers the endpoint - enabled and honor_upstream_challenge govern the RFC 9470 upstream-challenge leg and do not gate it. Omitted means no step-up endpoint and no step_up_url. Must be an absolute gateway path starting with a single '/' and carrying no query ('?') and no fragment ('#'), no backslash ('\\'), no control character and no whitespace: the path is matched exactly against the request path, which carries neither a query nor a fragment, so a value holding one would name an endpoint no request reaches, and a browser reads a backslash as '/' and drops a tab or line break, so such a value could be read as a scheme-relative '//host' URL. The rule is stated here in prose only: the configuration validator is the sole enforcing authority and refuses an offending value at boot, which is why no pattern keyword is declared."
+            }
           }
         },
         "user_info": {

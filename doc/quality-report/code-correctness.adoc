@@ -384,7 +384,7 @@ One property of the unwired re-drive has changed and matters for whoever wires i
 the re-drive is a *pushed* request. The producer hands `StepUpHandler.initiate` through
 `PushedAuthorizationRequests`, exactly as it does for the login leg, so the re-drive location carries
 `client_id` and `request_uri` only and a failed push refuses it with `502`
-(link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057],
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058],
 decision 12).
 
 === BFF-2 — Catalogued session-lifecycle and CSRF LogRecords are never emitted

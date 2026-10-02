@@ -46,7 +46,7 @@ inbound client-certificate check of `tls.mtls` is a different control and is una
 
 `oidc.client_secret` remains a supported configuration key, and configuring it selects
 `client_secret_basic`. In that mode the client-authentication requirement stays unmet by operator
-choice. The gateway reports the mode with `WARN` `ApiSheriff-130` at every boot. Nothing is planned
+choice. The gateway reports the mode with `WARN` `ApiSheriff-133` at every boot. Nothing is planned
 that would change the mode itself; closing the gap for a deployment means removing the secret and
 registering the gateway's key set at the identity provider.
 
@@ -83,7 +83,16 @@ no proof, and an upstream must not check it.
 
 The RFC 9470 step-up re-drive is assembled and its authorization request is pushed, but no edge code
 calls it. Pushed requests on that seam are proven at unit level and are not reachable in a running
-gateway.
+gateway. This is not the step-up *path* (`oidc.step_up.path`), which is live and starts a session
+widening.
+
+=== The pushed session widening on the integration stack
+
+A session widening pushes its authorization request -- the silent attempt and the interactive
+re-drive alike -- and its code exchange and the scope-driven refresh carry the DPoP proof and pass
+the binding check. That is proven at unit level against a stub identity provider. The integration
+suite of the widening has not been run against a realm client that requires pushed requests and
+binds its tokens since the two features were combined.
 
 == Gaps in the Engine
 
@@ -152,6 +161,6 @@ deployment is provisioned the same way.
 == Related
 
 * link:fapi_status.adoc[FAPI 2.0 Status] -- the current position and its evidence
-* link:adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]
+* link:adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
   -- the decisions, including the residuals listed here
 * link:security-threat-model.adoc[Threat Model]
