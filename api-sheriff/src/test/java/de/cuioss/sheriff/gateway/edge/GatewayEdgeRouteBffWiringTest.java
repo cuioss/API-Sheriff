@@ -118,6 +118,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Covers the D16 edge wiring of the server-mode BFF runtime: the {@link ReservedPathRegistry} now
@@ -1013,7 +1014,7 @@ class GatewayEdgeRouteBffWiringTest {
         }
 
         @ParameterizedTest(name = "profile {0}")
-        @CsvSource({"strict", "lenient"})
+        @ValueSource(strings = {"strict", "lenient"})
         @DisplayName("control: a canonical path is answered with the key set, and a sibling path is proxied")
         void shouldAnswerACanonicalPathWithTheKeySet(String profile) throws Exception {
             HttpServer front = startEdge(profile, CANONICAL_PATH);
