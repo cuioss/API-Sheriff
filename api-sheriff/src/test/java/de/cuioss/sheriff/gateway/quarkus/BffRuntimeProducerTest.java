@@ -213,10 +213,7 @@ class BffRuntimeProducerTest {
     /** The scope a scoped endpoint adds on top of {@code oidc.scopes = [openid]}. */
     private static final String SCOPED_ENDPOINT_SCOPE = "orders:read";
 
-    /**
-     * Stands in for the Quarkus-managed virtual-thread executor the producer hands the refresh coordinator.
-     * No assembly test here reaches a revocation, so nothing is ever submitted to it.
-     */
+    /** Stands in for the Quarkus-managed virtual-thread executor the producer hands the refresh coordinator. */
     private static final ExecutorService REVOCATION_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     /** The bundled gateway schema, read off the classpath so the contract sees the shipped copy. */
