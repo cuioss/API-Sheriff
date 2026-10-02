@@ -505,8 +505,9 @@ public class BffRuntimeProducer {
                 new BackchannelLogoutEndpoint(backchannelReceiver, sessionBinding);
 
         // D5 RP-initiated logout — lazy so the discovery-sourced end_session_endpoint is resolved on
-        // first logout, not at boot. Revocation at the IdP is best-effort; the authoritative logout is
-        // the local session destruction the LogoutEndpoint performs.
+        // first logout, not at boot. buildLogoutEndpoint binds the token-revocation seam to a no-op, so
+        // no revocation request is sent on logout; the authoritative logout is the local session
+        // destruction the LogoutEndpoint performs.
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
                 metadata.get(), sessionBinding));
 
@@ -849,7 +850,8 @@ public class BffRuntimeProducer {
         EndSessionFlow endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(postLogoutRedirectUri)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow,
                 sessionRecord -> {
-                    // Best-effort by design: the authoritative logout is the local session destruction.
+                    // A no-op binding: no revocation request is sent to the identity provider on
+                    // logout. The authoritative logout is the local session destruction.
                 },
                 endSessionEndpoint, postLogoutRedirectUri, finalRedirect, LOGOUT_STATE_TTL);
         return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);

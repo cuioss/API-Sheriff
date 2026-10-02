@@ -156,12 +156,13 @@ neither entry.
 Logout follows `CLIENT-13` (RP-initiated logout) with the browser-facing parts owned by the
 gateway as BFF:
 
-. The browser calls `oidc.logout.path` (default `/logout`). The gateway *revokes* the stored
-  access and refresh tokens at the IdP (RFC 7009, via the engine's revocation transport),
-  *destroys* the server-side session, expires
-  the session cookie, and redirects the browser to the IdP `end_session_endpoint` with
-  `id_token_hint`, the pre-registered `post_logout_redirect_uri` (exact string match --
-  open-redirect defence), and a *session-bound `state`* (`CLIENT-13`).
+. The browser calls `oidc.logout.path` (default `/logout`). The gateway *destroys* the server-side
+  session, expires the session cookie, and redirects the browser to the IdP `end_session_endpoint`
+  with `id_token_hint`, the pre-registered `post_logout_redirect_uri` (exact string match --
+  open-redirect defence), and a *session-bound `state`* (`CLIENT-13`). The flow also calls a
+  token-revocation seam, which the shipped runtime binds to a no-op: the gateway itself revokes
+  nothing at the IdP on logout today, and what happens to the tokens there is decided by the IdP's
+  handling of the end-session request.
 . The IdP returns the browser to `post_logout_redirect_uri` -- a *gateway-owned* path, so the
   gateway can *verify the returned `state`*. Because the session is already destroyed by
   step 1, the expected value lives in a short-lived (60 s), single-use

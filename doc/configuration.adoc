@@ -2351,9 +2351,11 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   so the curated default can never exceed the disclosure ceiling.
 
 | `logout.path`
-| Gateway-served logout endpoint (default `/logout`): revokes the held tokens (RFC 7009),
-  destroys the local session/cookie, and redirects to the IdP `end_session_endpoint` with
+| Gateway-served logout endpoint (default `/logout`): destroys the local session/cookie and
+  redirects to the IdP `end_session_endpoint` with
   `id_token_hint`, `post_logout_redirect_uri`, and a *session-bound `state`* (per `CLIENT-13`).
+  The flow also calls a token-revocation seam, which the shipped runtime binds to a no-op, so the
+  gateway itself revokes no token at the IdP on logout today.
   Because the session is already destroyed at that point, the `state` is sealed into a
   short-lived (60 s), single-use `+__Host-sheriff-logout+` cookie set alongside the redirect;
   the return leg verifies against that cookie and clears it -- stateless, so it works
@@ -2563,12 +2565,15 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   link:#_endpoint_scopes[`endpoint.scopes`]). Optional string. Its presence alone registers the
   reserved path; omitted, no step-up endpoint exists and no `step_up_url` is ever named.
   When present it must be an absolute gateway path starting with a single `/` and carrying no query
-  (`?`) and no fragment (`#`) -- a blank, relative or scheme-relative (`//host`) value, and a value
-  holding a `?` or a `#` anywhere (a bare trailing one included), is refused at boot with
-  `ApiSheriff-200` at `/oidc/step_up/path`. The path is matched exactly against the request path,
-  which carries neither a query nor a fragment, and `step_up_url` appends `?returnUrl=...` to the
-  configured value -- so a path holding either would name an endpoint no request reaches and a
-  `step_up_url` that does not carry the return target.
+  (`?`) and no fragment (`#`), no backslash (`+\+`), no control character and no whitespace -- a
+  blank, relative or scheme-relative (`//host`) value, a value holding a `?` or a `#` anywhere (a
+  bare trailing one included), and a value holding a backslash, a control character or whitespace
+  anywhere, is refused at boot with `ApiSheriff-200` at `/oidc/step_up/path`. The path is matched
+  exactly against the request path, which carries neither a query nor a fragment, and `step_up_url`
+  appends `?returnUrl=...` to the configured value -- so a path holding either would name an
+  endpoint no request reaches and a `step_up_url` that does not carry the return target. A browser
+  reads a backslash as `/` and drops a tab or line break before parsing a URL, so `/\host` -- and
+  `//host` with a tab between its two slashes -- would be read as the scheme-relative `//host`.
 
   The endpoint serves a live session only: without one it answers `401`
   `application/problem+json` and never redirects to the IdP. `returnUrl` is same-origin-validated
@@ -3890,11 +3895,14 @@ control, which is the rule above doing exactly the work it was added for.
   omitted key resolves to `+__Host-sheriff-session+` and is never refused (see the
   link:#_oidc[`session.cookie_name`] field reference).
 * A declared `oidc.user_info.path`, `oidc.login.path` or `oidc.step_up.path` must be an absolute
-  gateway path starting with a single `/` and carrying no query (`?`) and no fragment (`#`); a
-  blank, relative or scheme-relative (`//host`) value, and a value holding a `?` or a `#`, fails the
-  boot at the key's own pointer. A reserved path is matched exactly against the request path, which
-  carries neither, so such a value would name an endpoint no request reaches (see the
-  link:#_oidc[`oidc`] field reference).
+  gateway path starting with a single `/` and carrying no query (`?`) and no fragment (`#`), no
+  backslash (`+\+`), no control character and no whitespace; a blank, relative or scheme-relative
+  (`//host`) value, a value holding a `?` or a `#`, and a value holding a backslash, a control
+  character or whitespace, fails the boot at the key's own pointer, echoing the value escaped. A
+  reserved path is matched exactly against the request path, which carries neither a query nor a
+  fragment, so a value holding one would name an endpoint no request reaches; a browser reads a
+  backslash as `/` and drops a tab or line break before parsing a URL, so `/\host` would be read
+  as the scheme-relative `//host` (see the link:#_oidc[`oidc`] field reference).
 * `egress_tls.oidc_verify_hostname: false` together with a named `egress_tls.oidc_tls_profile`
   fails the boot with a configuration error naming both keys, and a named `oidc_tls_profile` that is
   unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime

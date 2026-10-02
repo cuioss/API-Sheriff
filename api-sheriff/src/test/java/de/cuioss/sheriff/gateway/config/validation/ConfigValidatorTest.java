@@ -102,6 +102,43 @@ class ConfigValidatorTest {
      */
     private static final String QUERY_OR_FRAGMENT_REFUSAL = "carrying no query ('?') and no fragment ('#')";
 
+    /**
+     * The part of a reserved-path refusal that names the backslash, control-character and whitespace
+     * restriction, shared by the groups testing the three reserved-path keys.
+     */
+    private static final String BACKSLASH_CONTROL_OR_WHITESPACE_REFUSAL =
+            "no backslash ('\\'), no control character and no whitespace";
+
+    /** {@code /\host}: a browser parses the backslash as {@code /} and reads {@code //host}. */
+    private static final String BACKSLASH_AUTHORITY_PATH = "/\\evil.example";
+
+    /** A backslash inside an otherwise plain reserved path. */
+    private static final String BACKSLASH_SEGMENT_PATH = "/auth\\reserved";
+
+    /** {@code /<TAB>/host}: a browser removes the tab before parsing and reads {@code //host}. */
+    private static final String TAB_AUTHORITY_PATH = "/\t/evil.example";
+
+    /** A tab inside an otherwise plain reserved path. */
+    private static final String TAB_SEGMENT_PATH = "/auth/re\tserved";
+
+    /** {@code /<LF>/host}: a browser removes the line break before parsing and reads {@code //host}. */
+    private static final String LINE_BREAK_AUTHORITY_PATH = "/\n/evil.example";
+
+    /** A plain space inside an otherwise plain reserved path. */
+    private static final String SPACE_PATH = "/auth/re served";
+
+    /** A trailing no-break space — a Unicode space separator Java does not class as whitespace. */
+    private static final String NO_BREAK_SPACE_PATH = "/auth/reserved ";
+
+    /**
+     * A relative reserved path — refused whatever else it holds — that carries a CR/LF and a forged
+     * header line, to observe how the refusal echoes it.
+     */
+    private static final String FORGED_LINE_PATH = "reserved\r\nX-Forged: 1";
+
+    /** How a refusal message renders the CR/LF of {@link #FORGED_LINE_PATH}. */
+    private static final String ESCAPED_CARRIAGE_RETURN_LINE_FEED = "\\u000D\\u000A";
+
     private final ConfigValidator validator = new ConfigValidator();
 
     // --- fixture helpers -------------------------------------------------
@@ -168,6 +205,43 @@ class ConfigValidatorTest {
                         .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
                 () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
                         + messageContains + "', but got: " + errors);
+    }
+
+    /** The single refusal recorded at exactly {@code pointer}; fails when there is none or more than one. */
+    private static ConfigError singleRefusalAt(List<ConfigError> errors, String pointer) {
+        List<ConfigError> refusals = errors.stream().filter(error -> pointer.equals(error.pointer())).toList();
+        assertEquals(1, refusals.size(), () -> "expected exactly one refusal at " + pointer + ", got: " + refusals);
+        return refusals.getFirst();
+    }
+
+    /**
+     * Asserts that a reserved path holding a backslash, a control character or whitespace is refused
+     * once at {@code pointer}, that the refusal names that restriction, and that the message echoes no
+     * control character raw.
+     */
+    private static void assertBackslashControlOrWhitespaceRefusal(List<ConfigError> errors, String pointer) {
+        String message = singleRefusalAt(errors, pointer).message();
+
+        assertAll(pointer,
+                () -> assertTrue(message.contains(BACKSLASH_CONTROL_OR_WHITESPACE_REFUSAL),
+                        () -> "the refusal names the backslash, control-character and whitespace restriction: "
+                                + message),
+                () -> assertTrue(message.chars().noneMatch(Character::isISOControl),
+                        () -> "the refusal echoes no control character raw: " + message));
+    }
+
+    /**
+     * Asserts that the refusal of {@link #FORGED_LINE_PATH} at {@code pointer} renders its CR/LF as
+     * escapes and so stays on one log line.
+     */
+    private static void assertForgedLineEchoedEscaped(List<ConfigError> errors, String pointer) {
+        String message = singleRefusalAt(errors, pointer).message();
+
+        assertAll(pointer,
+                () -> assertTrue(message.contains(ESCAPED_CARRIAGE_RETURN_LINE_FEED),
+                        () -> "the CR/LF is rendered as an escape: " + message),
+                () -> assertTrue(message.indexOf('\r') < 0 && message.indexOf('\n') < 0,
+                        () -> "the refusal carries no raw line break: " + message));
     }
 
     private static AnchorConfig anchor(String name, String prefix, @Nullable Require require) {
@@ -2054,6 +2128,32 @@ class ConfigValidatorTest {
                             () -> "the refusal names the query and fragment restriction: " + refusal.message()));
         }
 
+        @ParameterizedTest(name = "user_info path #{index} is rejected for its backslash, control character or whitespace")
+        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
+                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
+        @DisplayName("Should reject a user_info path carrying a backslash, a control character or whitespace")
+        void shouldRejectUserInfoPathWithBackslashControlOrWhitespace(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertBackslashControlOrWhitespaceRefusal(errors, USER_INFO_PATH_POINTER);
+        }
+
+        @Test
+        @DisplayName("Should refuse a CR/LF in the user_info path without echoing it raw into the boot log")
+        void shouldRenderUserInfoPathControlCharactersEscaped() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(FORGED_LINE_PATH).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertForgedLineEchoedEscaped(errors, USER_INFO_PATH_POINTER);
+        }
+
         @ParameterizedTest(name = "user_info path \"{0}\" is accepted")
         @ValueSource(strings = {"/session/userinfo", "/userinfo", "/"})
         @DisplayName("Should accept a plain absolute user_info path")
@@ -2085,6 +2185,32 @@ class ConfigValidatorTest {
                     () -> assertEquals("gateway.yaml", refusal.file()),
                     () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
                             () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "login path #{index} is rejected for its backslash, control character or whitespace")
+        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
+                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
+        @DisplayName("Should reject a login path carrying a backslash, a control character or whitespace")
+        void shouldRejectLoginPathWithBackslashControlOrWhitespace(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertBackslashControlOrWhitespaceRefusal(errors, LOGIN_PATH_POINTER);
+        }
+
+        @Test
+        @DisplayName("Should refuse a CR/LF in the login path without echoing it raw into the boot log")
+        void shouldRenderLoginPathControlCharactersEscaped() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(FORGED_LINE_PATH).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertForgedLineEchoedEscaped(errors, LOGIN_PATH_POINTER);
         }
 
         @ParameterizedTest(name = "login path \"{0}\" is accepted")
@@ -3636,6 +3762,16 @@ class ConfigValidatorTest {
                             () -> "the refusal keeps its leading wording: " + refusal.message()),
                     () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
                             () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "step_up path #{index} is refused for its backslash, control character or whitespace")
+        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
+                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
+        @DisplayName("Should refuse a path carrying a backslash, a control character or whitespace")
+        void shouldRefusePathWithBackslashControlOrWhitespace(String path) {
+            List<ConfigError> errors = validateStepUpPath(path);
+
+            assertBackslashControlOrWhitespaceRefusal(errors, POINTER);
         }
 
         @Test

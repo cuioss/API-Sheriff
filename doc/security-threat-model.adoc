@@ -1759,13 +1759,22 @@ cookie are delivered, cookie mode disables the back-channel receiver, and a serv
 is not undone by a refresh or a widening that was in flight. Cookie mode carries one accepted
 residual.
 
+*Not delivered: token revocation at logout.* The control names revoking the refresh-token family.
+RP-initiated logout hands the session to a token-revocation seam that the shipped runtime binds to a
+no-op, and the back-channel receiver calls no revocation at all, so in both session modes the
+gateway sends no RFC 7009 request on a logout. Whether the session's tokens stop being valid at the
+identity provider is decided by the provider -- by how it handles the `end_session_endpoint`
+redirect, or by the termination it announces over the back-channel -- not by the gateway. The
+refresh path is separate and does send a best-effort revocation request (<<bff-08>>).
+
 *Residual risk (accepted) -- cookie mode: a response in flight can outlast the logout.* The stateless
 binding holds no session state, so its `destroy` removes nothing and its updating write cannot
 observe a logout: it always re-seals. What the logout endpoint does is resolve the session from the
-request, revoke its tokens at the identity provider best-effort (RFC 7009), answer with the clearing
-`Set-Cookie`, and redirect to the `end_session_endpoint`. A near-expiry refresh, a scope-driven
-refresh or a widening callback that was already running for the same browser still answers with a
-re-sealed session cookie. If that response reaches the browser after the logout response, the
+request, hand it to a token-revocation seam, answer with the clearing `Set-Cookie`, and redirect to
+the identity provider's `end_session_endpoint`. The shipped runtime binds that seam to a no-op, so
+the gateway itself revokes nothing at the identity provider on logout. A near-expiry refresh, a
+scope-driven refresh or a widening callback that was already running for the same browser still
+answers with a re-sealed session cookie. If that response reaches the browser after the logout response, the
 browser again holds a cookie the gateway resolves as a session, until the session's absolute
 lifetime. The exposure needs a request of the same browser in flight at the moment of the logout.
 Beyond that it is bounded by the identity provider, not by the gateway: where the provider ends its
