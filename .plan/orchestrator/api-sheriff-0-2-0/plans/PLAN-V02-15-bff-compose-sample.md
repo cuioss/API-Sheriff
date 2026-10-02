@@ -3,106 +3,11 @@
 epic: api-sheriff-0-2-0
 workstream: WS-02
 
-> **Owns GitHub issue [#176](https://github.com/cuioss/API-Sheriff/issues/176)**, filed 2026-08-06 by
-> an adopter, routed here 2026-08-07. **Deliberately NOT folded into PLAN-V02-03
-> (documentation-restructure)** — that plan deletes `doc/archive/`, splits `doc/configuration.adoc`
-> and retires `doc/plan/`. Adding a runnable deployment artifact to a deletion-and-split plan mixes
-> two unrelated risks.
-
-## Re-Grounded 2026-08-08 at `963e422` (== `origin/main`, clean tree)
-
-Epic-wide re-grounding pass at `decompose`. **This section outranks any conflicting line below it.**
-
-**CONFIRMED — every substantive claim holds, line numbers included.**
-`deployment/compose-sample/docker/sheriff-config/gateway.yaml`:11 still names BFF sessions among the
-deliberate omissions (*"…passthrough SNI, BFF sessions, asset anchors…"*) and :44 still documents the
-public anchor's absent auth block. `endpoints/demo-api.yaml`:18 still carries *"THIS IS THE FIRST
-THING TO CHANGE when adapting the sample"* and :21 is still `require: none`. The Keycloak realm
-import is present at `docker/keycloak/sample-realm.json`, so D1's confidential client is an edit
-rather than new infrastructure. No `oidc` block or `session` key exists in the sample.
-
-**COUNT CORRECTION.** The Claim Label says the sample directory *"contains exactly ten files"*. It
-holds **12**: `docker-compose.yml`, `.env`, `docker/sheriff-config/{gateway.yaml,
-topology.properties, endpoints/demo-api.yaml}`, `docker/keycloak/sample-realm.json`,
-`docker/nginx/demo-api.conf`, `docker/certificates/{generate-certificates.sh,.gitignore}` and
-`scripts/{start-sample.sh,stop-sample.sh,wait-for-ready.sh}`. The three `scripts/` entries matter to
-D4 — the CI proof has an existing bring-up path to reuse rather than invent.
-
-**D5's DEPENDENCY IS UNCHANGED AND STILL THE HARD PART.** `PLAN-V02-12` (idp-addressing-model) still
-owns the browser-vs-container issuer question, and its root-cause finding re-verified this pass:
-`sample-realm.json`:7 pins `"frontendUrl": "https://keycloak:8443"` — the internal authority — so the
-sample carries the same defect the IT topology does. **Read V02-12's verdict and apply it; do not
-settle the addressing model inside a sample.** V02-12 also has not started, so this plan waits on it.
-
-**GATE COST, new since this spec was written.** `docker-compose*.yml` and `.github/workflows/**` are
-now gate-requiring (`build.map`, roadmap PLAN-51 / #196). D1's compose edit and D4's CI wiring each
-pay a full quality gate — and the `.env` surface note below is now a gate-requiring file too.
-
-## Re-Grounded (3) 2026-09-22 at `af63895`
-
-**COUNT CORRECTED AGAIN, AND D4'S BRING-UP PATH CHANGED.** `deployment/compose-sample/` now holds
-**14** files, not the 12 the prior correction recorded: `docker-compose.plain-http.yml` (a
-TLS-terminator variant, per `doc/user/compose-sample.adoc`'s "optional override file adds a fourth
-service"), `docker/nginx/tls-terminator.conf` and `docker/certificates/sample-idp-trust.properties`
-are new. **`scripts/wait-for-ready.sh` no longer exists** — #230 deleted it and folded its readiness
-logic into `scripts/start-sample.sh` (now ~430 lines). D4's "existing bring-up path to reuse" is still
-true, but it is `start-sample.sh` alone now, not the three-script set the prior correction named.
-Sub-facts unaffected: no `oidc`/`session` key (grep clean across all 14 files), `gateway.yaml`:11
-still names BFF sessions among the omissions verbatim, `demo-api.yaml`:21 is still `require: none`;
-the `gateway.yaml`:44 anchor-omission comment has moved to :62 (a new tls_profile/SSRF-egress comment
-block was inserted above it) — re-anchor by content, not line.
-
-**D1 MAY ALREADY BE PARTIALLY SATISFIED.** `docker/keycloak/sample-realm.json`:26-49 already ships a
-fully-formed confidential client `sample-client` (`publicClient:false`,
-`clientAuthenticatorType:client-secret`, `standardFlowEnabled:true`, matching `redirectUris`/
-`webOrigins`/`defaultClientScopes`), present since the file's creation (#150) and untouched since.
-Verify at outline whether only `gateway.yaml`'s `oidc` block plus a session route remain for D1/D2.
-
-**D5's DEPENDENCY STILL HOLDS.** `PLAN-V02-12` is still `staged` in `status.json`; `OidcConfig.java`
-still declares a single `@Nullable String issuer` with no backchannel/discovery split. Nothing to
-re-scope there.
-
-**EXPECTED SURFACE IS NOW UNDERSTATED FOR D1/D2/D3** — see the Expected Surface section below for the
-corrected entries; the two new compose-tree files above and the doc-page-count drift both bear on it.
-
-**ADJACENCY, sharpened.** `PLAN-V02-03` (documentation-restructure) is about to restructure
-`doc/user/` — including `compose-sample.adoc`, which D3 edits. That page did **not** exist when
-V02-03's spec was written and is one of three `doc/user/` pages V02-03's re-grounding newly
-identified. **Sequence deliberately with V02-03**; if it lands first, D3's target has moved.
-
-
-## Re-Grounded (2) 2026-08-09 at `95dd566` — after four landings
-
-`PLAN-V02-02`, `-03`, `-16` and `-17` have shipped. **This section outranks the 2026-08-08
-re-grounding above it wherever they conflict.**
-
-**EPIC-WIDE, AND NO SPEC BELOW KNOWS IT: THE BUILD NOW FAILS ON ANY COMPILER WARNING.**
-`PLAN-V02-02` turned on `<showDeprecation>true</showDeprecation>` **and**
-`<failOnWarning>true</failOnWarning>` reactor-wide (`pom.xml`:163, :178), so javac runs with
-`-Werror` across all six modules. A deprecated API or an unchecked cast is now a **build failure**,
-not a log line. Two consequences bind every plan:
-
-1. **Answer such a failure by migrating off the warned construct.** `CLAUDE.md` states it directly:
-   a `@SuppressWarnings` added to get back to green *"hollows the gate out while leaving it reporting
-   success"*, and it collides with the Pre-1.0 rule forbidding deprecated code at all.
-2. **The failure reaches the executor as a `warnings[]` row plus a `-Werror` `errors[]` row.** Read
-   both arrays — the line number lives on the warning row.
-
-**ANCHORS HELD** at `95dd566`: `deployment/compose-sample/` still holds **12** files (the corrected
-count), and the sample's `gateway.yaml` / `endpoints/demo-api.yaml` seed lines are unchanged.
-
-**D3's TARGET MOVED AND GREW.** `doc/user/` is now **ten** pages; `compose-sample.adoc` survives and
-is still the page D3 updates, but `anchors.adoc` and `endpoint-routes.adoc` are new neighbours that
-may already document what D3 would otherwise restate. Read the landed layout first.
-
-**D5's dependency on `PLAN-V02-12` is unchanged and still hard** — V02-12 has not started, so this
-plan cannot complete D5. **It is emittable only if D5 is explicitly deferred**, and deferring D5
-means deferring the one deliverable that keeps the sample from becoming the de-facto addressing
-specification. Prefer sequencing after V02-12 over emitting a partial.
-
-## Re-Grounded (4) 2026-09-24 at `05f6ee3` — after 18 commits (#343–#354, release 0.2.3)
-
-Claim 0 is still refuted-and-absorbed (14 tracked files). **Expected Surface corrected:** `docker-compose.plain-http.yml` and `docker/nginx/tls-terminator.conf` were claimed as corrected by Re-Grounded (3) but were never added to the list; they are now. D1 is partially discharged (confidential `sample-client` already ships in `sample-realm.json:28-36`). The `oidc` block, the `require: session` route and the `final_redirect` page are still absent. D5 is blocked on V02-12.
+> Staged plan spec — one shippable unit of work, ready for `/plan-marshall` hand-off.
+> The orchestrator EMITS the command below; it never launches the plan inline.
+>
+> **Owns GitHub issue [#176](https://github.com/cuioss/API-Sheriff/issues/176)**, filed by an
+> adopter. No other plan in this epic covers it.
 
 ## Objective
 
@@ -121,7 +26,7 @@ has to reconstruct it from a test harness the sample's own documentation tells t
 also excludes is the `oidc` block — which is **not test scaffolding**. It is the deployment door for
 the headline feature.
 
-The sample's `gateway.yaml`:11 states the omission as a principle:
+The sample's `gateway.yaml` states the omission as a principle:
 
 > Everything the integration suite needs and an operator does not — passthrough SNI, BFF sessions,
 > asset anchors, mTLS — is absent rather than present-and-disabled.
@@ -129,7 +34,7 @@ The sample's `gateway.yaml`:11 states the omission as a principle:
 **The premise "an operator does not need BFF sessions" is the defect.** For anyone adopting the
 gateway as a BFF, it is the one thing they do need. **Amend that sentence; do not delete the
 paragraph** — its distinction between test scaffolding and deployment shape is the sample's whole
-value.
+value. Find the sentence by its text; the file has been edited since it was last located by line.
 
 ## What the adopter path costs today
 
@@ -141,16 +46,38 @@ suites, and route settings authored to exercise assertions rather than to model 
 **Working out which parts are deployment shape and which are test harness is exactly the work the
 sample exists to save.**
 
+## The sample as it stands
+
+`deployment/compose-sample/` holds 14 tracked files: `docker-compose.yml`,
+`docker-compose.plain-http.yml` (an optional TLS-terminator variant that adds a fourth service),
+`.env`, `docker/sheriff-config/{gateway.yaml, topology.properties, endpoints/demo-api.yaml}`,
+`docker/keycloak/sample-realm.json`, `docker/nginx/{demo-api.conf, tls-terminator.conf}`,
+`docker/certificates/{generate-certificates.sh, .gitignore, sample-idp-trust.properties}` and
+`scripts/{start-sample.sh, stop-sample.sh}`.
+
+- The realm import already ships a fully-formed confidential client, `sample-client`
+  (`publicClient: false`, client-secret authentication, standard flow enabled, matching redirect
+  URIs and web origins).
+- No `oidc` block and no `session` key exists anywhere in the sample.
+- `endpoints/demo-api.yaml` declares `require: none` and says of that line *"THIS IS THE FIRST THING
+  TO CHANGE when adapting the sample"* — the sample anticipates this change and points at it.
+- `scripts/start-sample.sh` is the single bring-up path, readiness wait included.
+- `sample-realm.json` pins `"frontendUrl": "https://keycloak:8443"`, the container-internal
+  authority. That is the addressing defect `PLAN-V02-12` owns; see D5.
+
 ## Deliverables
 
-1. **An `oidc` overlay on the existing sample.** The issue's own suggestion, and it is the right
-   scope because the sample already ships Keycloak with a realm import. Missing pieces:
-   - a **confidential client** in `docker/keycloak/sample-realm.json`
-   - an `oidc` block with `session.mode: server` in `docker/sheriff-config/gateway.yaml`
-   - one `require: session` route (today `endpoints/demo-api.yaml`:21 is `require: none`, and :18
-     already says *"THIS IS THE FIRST THING TO CHANGE when adapting the sample"* — so the sample
-     anticipates this change and points at it)
+1. **An `oidc` overlay on the existing sample.** The issue's own suggestion, and the right scope
+   because the sample already ships Keycloak with a realm import and a confidential client. What is
+   missing:
+   - an `oidc` block with `session.mode: server` in `docker/sheriff-config/gateway.yaml`, written
+     against the shape of the `oidc` block on `main` at outline — `PLAN-V02-08` reshapes that block
+   - one `require: session` route
    - a static page as `final_redirect`
+   - whatever the confidential client still needs; verify at outline whether `sample-client` is
+     usable as shipped
+   - the same reach in the plain-HTTP variant (`docker-compose.plain-http.yml`,
+     `docker/nginx/tls-terminator.conf`), so the overlay does not work in one variant only
 
 2. **Keep the sample a sample.** Do NOT import toxiproxy, go-httpbin, the `it-static` issuer, the
    test anchors, or the IT naming. **Every addition must be defensible as something a real
@@ -160,13 +87,14 @@ sample exists to save.**
 3. **Point the two BFF operator guides at it.** `doc/user/bff-session.adoc` and
    `doc/user/bff-cookie.adoc` currently describe fields with nothing runnable to point at; give them
    the reference. Update `doc/user/compose-sample.adoc`, which presents the sample as *"a
-   deployment-shaped stack you can run"*.
+   deployment-shaped stack you can run"*. Read the neighbouring `doc/user/anchors.adoc` and
+   `doc/user/endpoint-routes.adoc` first; they may already document what this would restate.
 
 4. **Prove it runs, in CI, and state what the proof covers.** A sample that is documented but never
    executed decays into a second stale example — which is the failure this plan exists to fix.
-   Minimum: the stack comes up and one `require: session` route completes a login. **Say plainly
-   whether the check is a smoke test or a real flow**; a green that only asserts container start
-   would be exactly the vacuous positive control this project has been bitten by before.
+   Minimum: the stack comes up and one `require: session` route completes a login. Reuse
+   `scripts/start-sample.sh` as the bring-up path. **Say plainly whether the check is a smoke test or
+   a real flow**; a green that only asserts container start would be a vacuous positive control.
 
 5. **Resolve the browser-vs-container issuer address, and do not invent an answer.**
 
@@ -179,17 +107,20 @@ sample exists to save.**
    > **Read PLAN-V02-12's verdict and apply it. Do not settle the addressing model inside a sample**
    > — a sample that picks its own answer becomes the de-facto specification, and the wrong one.
 
+`docker-compose*.yml` and `.github/workflows/**` are gate-requiring paths, so D1 and D4 run the full
+pre-commit process.
+
 ## Claim Labels
 
-- OBSERVED (2026-08-07, `b8dde22`): `deployment/compose-sample/` contains exactly ten files; its
+- OBSERVED: `deployment/compose-sample/` contains 14 tracked files; its
   `docker/sheriff-config/` holds `gateway.yaml`, `topology.properties` and `endpoints/demo-api.yaml`.
-  A search for an `oidc` block or a `session` key returns nothing; `gateway.yaml`:11 names BFF
-  sessions among the deliberate omissions and :44 documents the public anchor's absent auth block;
-  `endpoints/demo-api.yaml`:21 is `require: none`.
-  - verdict: contradicted | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 14 tracked files, not ten -- refutation already absorbed by Re-Grounded (3); no oidc:/session: key in gateway.yaml; demo-api.yaml:21 require: none
-- OBSERVED (2026-08-07): a Keycloak realm import already ships at
-  `deployment/compose-sample/docker/keycloak/sample-realm.json`, so D1's confidential client is an
-  edit rather than new infrastructure.
+  A search for an `oidc` block or a `session` key returns nothing; `gateway.yaml` names BFF
+  sessions among the deliberate omissions and documents the public anchor's absent auth block;
+  `endpoints/demo-api.yaml` is `require: none`.
+  - verdict: corroborated | checked_at: 4228d42fc8f95e44a0798ae8d9df0af326d4742a | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: deployment/compose-sample: 14 tracked files; no oidc:/session: key; gateway.yaml names BFF sessions among the omissions; demo-api.yaml require: none
+- OBSERVED: a Keycloak realm import already ships at
+  `deployment/compose-sample/docker/keycloak/sample-realm.json`, and it carries the confidential
+  client `sample-client`, so D1's client work is at most an edit rather than new infrastructure.
   - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json:28-36 sample-client confidential, client-secret, standard flow
 
 ## Expected Surface
@@ -197,19 +128,23 @@ sample exists to save.**
 - `deployment/compose-sample/docker/sheriff-config/gateway.yaml`, `endpoints/**` — D1
 - `deployment/compose-sample/docker/keycloak/sample-realm.json` — D1
 - `deployment/compose-sample/docker-compose.yml`, `.env` — D1, D2
-- `deployment/compose-sample/docker-compose.plain-http.yml` — D1 (added 2026-09-24): the plain-HTTP / TLS-terminator variant, which the oidc overlay must also reach. Re-Grounded (3) said this was corrected, but the list never carried it.
-- `deployment/compose-sample/docker/nginx/tls-terminator.conf` — D1 (added 2026-09-24): same reason
+- `deployment/compose-sample/docker-compose.plain-http.yml` — D1: the plain-HTTP / TLS-terminator variant, which the oidc overlay must also reach
+- `deployment/compose-sample/docker/nginx/tls-terminator.conf` — D1: same reason
 - `doc/user/compose-sample.adoc`, `bff-session.adoc`, `bff-cookie.adoc` — D3
 - `.github/workflows/**` — D4
 
 ## Dependencies and Sequencing
 
-- **Sequence after PLAN-V02-12 (idp-addressing-model)**, or at minimum read its verdict before D5.
-  See D5 — this is the one genuine dependency and ignoring it produces a sample that hard-codes the
-  wrong answer.
-- **Surface note**: `deployment/compose-sample/.env` was edited by PR #187 (0.1.1 version pins). Any
-  further pin bump touches the same file; sequence deliberately.
-- Surface-disjoint from PLAN-V02-13 and PLAN-V02-14.
+- Depends on: **`PLAN-V02-12` (idp-addressing-model)**, for D5. This is the one genuine dependency,
+  and ignoring it produces a sample that hard-codes the wrong answer. The plan is emittable earlier
+  only if D5 is explicitly deferred, which defers the one deliverable that keeps the sample from
+  becoming the de-facto addressing specification. Prefer sequencing after `PLAN-V02-12` over
+  emitting a partial.
+- Overlaps with: `PLAN-V02-08` and `PLAN-V02-12` on the compose sample and `doc/user/`;
+  `PLAN-V02-14` on `.github/workflows/**` and `doc/user/compose-sample.adoc`. The disjointness gate
+  decides at emit time.
+- Surface note: `deployment/compose-sample/.env` carries the version pins. Any pin bump touches the
+  same file; sequence deliberately.
 
 ## Issue Closure
 
@@ -218,16 +153,16 @@ naming the PR and merge commit, and close it. If D5's addressing answer forced a
 not anticipate, say so on the issue rather than closing silently.
 
 **A PR body that merely mentions an issue does NOT link or close it** — use a closing keyword or
-close explicitly after the merge. Issues #182/#183 sat open after their implementing PR landed for
-exactly this reason.
+close explicitly after the merge.
 
 ## Hand-Off Command
 
 ```text
-/plan-marshall task="implement .plan/local/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-15-bff-compose-sample.md" plan_id=plan-v02-15-bff-compose-sample
+/plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-15-bff-compose-sample.md" plan_id=plan-v02-15-bff-compose-sample
 ```
 
 ## Write-Boundary
 
 The plan implementing this spec touches only its own repository source and tests. It creates and
-edits NO file under `.plan/local/orchestrator/` other than its own `inbox/{sender}-{seq}` message.
+edits NO file under `.plan/orchestrator/` other than its own `inbox/{sender}-{seq}` message, and
+reports its outcome through its PR and that message.

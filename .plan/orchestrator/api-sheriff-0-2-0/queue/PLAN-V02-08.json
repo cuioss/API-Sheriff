@@ -2,8 +2,8 @@
   "id": "PLAN-V02-08",
   "slug": "fapi-2-0-conformance",
   "workstream": "WS-04",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "plan-v02-08-fapi-2-0-conformance",
   "pr": "",
   "landing": "",
   "seq": 8

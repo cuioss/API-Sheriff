@@ -2,9 +2,9 @@
   "id": "PLAN-V02-18",
   "slug": "retire-doc-plan-survivors",
   "workstream": "WS-02",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "status": "shipped",
+  "plan_marshall_plan_id": "retire-doc-plan-survivors",
+  "pr": "368",
+  "landing": "landings/PLAN-V02-18.md",
   "seq": 18
 }
