@@ -2313,10 +2313,10 @@ outbound posture key, as `egress_tls.oidc_verify_hostname` and `egress_tls.oidc_
 link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
 
 Three things hold for every BFF gateway, whatever else the block declares
-(link:adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]):
+(link:adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]):
 
-* *Every authorization request is pushed* (RFC 9126). The browser is redirected with `client_id` and
-  `request_uri` only. The identity provider must offer a pushed-authorization-request endpoint; without
+* *Every authorization request is pushed* (RFC 9126) -- a login's and a session widening's alike. The
+  browser is redirected with `client_id` and `request_uri` only. The identity provider must offer a pushed-authorization-request endpoint; without
   one every login is refused with `502`.
 * *Every access token is bound to one DPoP key* (RFC 9449), and a token response that is not bound to
   that key is refused -- see link:#_oidc_sender_constraint[The sender constraint and the token-binding
@@ -2386,7 +2386,7 @@ Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
 * *Refused together with `client_authentication.key_file`.* A document that declares both does not
   boot. A secret that resolves to a blank value does not boot either.
 * *The client JWKS path answers `404`.* There is no client-authentication key to publish.
-* *The gateway logs `WARN` `ApiSheriff-130` at every boot.* Removing `client_secret` silences it and
+* *The gateway logs `WARN` `ApiSheriff-133` at every boot.* Removing `client_secret` silences it and
   selects `private_key_jwt`.
 
 See link:#_oidc_client_authentication[Client authentication].
@@ -3139,7 +3139,7 @@ answered.
 
 | *Redeemed* -- the provider redeemed the grant, but the gateway refused its response. A token
   response that is not bound to the gateway's DPoP proof key is refused this way, and
-  `ApiSheriff-131` is logged first (see link:#_oidc_sender_constraint[The sender constraint and the
+  `ApiSheriff-134` is logged first (see link:#_oidc_sender_constraint[The sender constraint and the
   token-binding check])
 | *Ended*, as above.
 | Best-effort, the one live token the gateway can name: the successor when the provider rotated,
@@ -4421,7 +4421,8 @@ control, which is the rule above doing exactly the work it was added for.
 * The client JWKS path -- a declared `oidc.client_authentication.jwks_path`, or the default
   `/auth/jwks` when the key is omitted -- must not be the path of another reserved OIDC endpoint: the
   `redirect_uri` callback, `logout.path`, `logout.post_logout_redirect_uri`,
-  `logout.backchannel_path`, `user_info.path` or `login.path`. A collision fails the boot at
+  `logout.backchannel_path`, `user_info.path`, `login.path` or `step_up.path`. A collision fails the
+  boot at
   `/oidc/client_authentication/jwks_path`, naming both keys. A path that is not a canonical gateway
   path fails the boot at the same pointer. Both refusals hold in both client-authentication modes,
   because the path stays reserved with a client secret configured (see

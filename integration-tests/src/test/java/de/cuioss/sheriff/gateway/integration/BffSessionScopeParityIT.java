@@ -25,7 +25,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -68,9 +67,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <strong>What this suite proves.</strong>
  * <ul>
  *   <li><em>A grantable scope, navigation.</em> The navigation is redirected into the identity
- *       provider with {@code prompt=none} and a {@code scope} equal to the session's scopes united
- *       with the route's, the realm SSO session answers without a login form, and the browser lands
- *       back on the route. The session cookie the login set — unchanged — then mediates a token
+ *       provider with a pushed authorization request — {@code client_id} and {@code request_uri} on
+ *       the redirect, {@code prompt=none} and the scope set inside the pushed request, where this
+ *       suite cannot read them — the realm SSO session answers without a login form, and the browser
+ *       lands back on the route. The session cookie the login set — unchanged — then mediates a token
  *       carrying the scope.</li>
  *   <li><em>A grantable scope, XHR.</em> The request is refused {@code 403 application/problem+json}
  *       naming the missing scope and a same-origin {@code step_up_url}; a navigation to that URL
@@ -217,7 +217,7 @@ class BffSessionScopeParityIT {
         Response initiation = navigate(browser, surface.grantablePath);
         WideningRoundTrip widening = followWidening(initiation, browser, session.keycloakCookies());
 
-        assertSilentWideningRequest(initiation, with(before, BffEndpointScopesIT.ENDPOINT_SCOPE));
+        assertPushedWideningRequest(initiation);
         assertGranted(widening);
         assertEquals(302, widening.callback().statusCode(),
                 "a granted widening must redirect the browser back to the route it was navigating to");
@@ -238,7 +238,8 @@ class BffSessionScopeParityIT {
     @DisplayName("an XHR needing a grantable scope is refused 403 with a step_up_url, and is relayed once that URL was followed")
     void xhrIsRefusedWithAStepUpUrlAndRelayedAfterFollowingIt(Surface surface) {
         Session session = loginWithOidcScopesOnly(surface);
-        Set<String> before = activeScopes(session);
+        // The precondition only: the session must lack the endpoint scope before the refusal is read.
+        activeScopes(session);
         Map<String, String> browser = new HashMap<>(session.gatewayCookies());
 
         Response refused = xhr(browser, surface.grantablePath);
@@ -250,7 +251,7 @@ class BffSessionScopeParityIT {
         Response stepUp = navigateVerbatim(browser, refused.jsonPath().getString("step_up_url"));
         WideningRoundTrip widening = followWidening(stepUp, browser, session.keycloakCookies());
 
-        assertSilentWideningRequest(stepUp, with(before, BffEndpointScopesIT.ENDPOINT_SCOPE));
+        assertPushedWideningRequest(stepUp);
         assertGranted(widening);
         assertEquals(302, widening.callback().statusCode(),
                 "a granted widening started on the step-up path must redirect the browser back");
@@ -275,7 +276,7 @@ class BffSessionScopeParityIT {
         Response initiation = navigate(browser, surface.refusedPath);
         WideningRoundTrip widening = followWidening(initiation, browser, session.keycloakCookies());
 
-        assertSilentWideningRequest(initiation, with(before, UNASSIGNED_SCOPE));
+        assertPushedWideningRequest(initiation);
         assertEquals(List.of("invalid_scope"), widening.idpParameter("error"),
                 "the realm assigns " + UNASSIGNED_SCOPE + " to no client, so it must refuse the authorization "
                         + "request with invalid_scope");
@@ -524,12 +525,31 @@ class BffSessionScopeParityIT {
         return new WideningRoundTrip(callbackUrl, callback);
     }
 
-    private static void assertSilentWideningRequest(Response initiation, Set<String> expectedScopes) {
-        assertEquals(List.of("none"), rawQueryValues(BffKeycloakLoginFlow.location(initiation), "prompt"),
-                "a widening must start as a silent attempt: exactly one prompt=none");
-        assertEquals(expectedScopes, BffEndpointScopesIT.requestedScopeSet(initiation),
-                "a widening must request the session's scopes united with the route's needed scopes — "
-                        + "nothing missing, so the session is not narrowed, and nothing extra");
+    /**
+     * Asserts that the gateway started the widening with a pushed authorization request (RFC 9126):
+     * the redirect carries {@code client_id} and {@code request_uri} and neither {@code prompt} nor
+     * {@code scope}.
+     * <p>
+     * The parameters of the request itself — {@code prompt=none} and the scope set, the session's
+     * scopes united with the route's — travel in the pushed request and are not readable from the
+     * browser's side. That the pushed body carries them is asserted at unit level, on the request a
+     * stub identity provider records ({@code BffRuntimeProducerTest}). What this suite observes of the
+     * silent attempt is its outcome: {@link #followWidening} requires the identity provider to answer
+     * with a redirect and never with a page of its own, and the scopes of the token the widened
+     * session mediates are read afterwards.
+     *
+     * @param initiation the gateway's {@code 302} into the identity provider
+     */
+    private static void assertPushedWideningRequest(Response initiation) {
+        String location = BffKeycloakLoginFlow.location(initiation);
+        assertEquals(1, rawQueryValues(location, "request_uri").size(),
+                "a widening must be started with a pushed authorization request: exactly one request_uri");
+        assertEquals(1, rawQueryValues(location, "client_id").size(),
+                "the pushed-request redirect names the client");
+        assertEquals(List.of(), rawQueryValues(location, "prompt"),
+                "prompt=none travels in the pushed request, never on the redirect");
+        assertEquals(List.of(), rawQueryValues(location, "scope"),
+                "the scope set travels in the pushed request, never on the redirect");
     }
 
     private static void assertGranted(WideningRoundTrip widening) {
@@ -551,12 +571,6 @@ class BffSessionScopeParityIT {
 
     private static void assertNoSetCookie(Response response, String message) {
         assertTrue(response.getHeaders().getValues("Set-Cookie").isEmpty(), message);
-    }
-
-    private static Set<String> with(Set<String> scopes, String added) {
-        Set<String> united = new HashSet<>(scopes);
-        united.add(added);
-        return united;
     }
 
     /**

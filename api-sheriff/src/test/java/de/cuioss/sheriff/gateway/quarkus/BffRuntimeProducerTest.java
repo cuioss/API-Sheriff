@@ -1751,7 +1751,7 @@ class BffRuntimeProducerTest {
 
         /**
          * The fixture's discovery document names no {@code pushed_authorization_request_endpoint}, and
-         * the runtime has no mode without the push (ADR-0057). The login is therefore refused before a
+         * the runtime has no mode without the push (ADR-0058). The login is therefore refused before a
          * redirect is built — and before the pending authorization is stored, which the walk to the
          * runtime's own pending store shows.
          */
@@ -2443,7 +2443,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should push the silent attempt of a step-up widening and its one interactive re-drive, each redirecting with client_id and request_uri only")
         void shouldPushBothAttemptsOfAStepUpWidening() {
             BffRuntime runtime = scopedRuntime();
-            String sessionCookie = bindLiveSession(runtime, Set.of("openid", "profile"));
+            String sessionCookie = bind(runtime, sessionGranted(Set.of("openid", "profile")));
             AtomicReference<BffRuntime.ReservedHttpResponse> silent = new AtomicReference<>();
             AtomicReference<BffRuntime.ReservedHttpResponse> interactive = new AtomicReference<>();
 
@@ -2482,7 +2482,7 @@ class BffRuntimeProducerTest {
         void shouldRefuseAWideningWhosePushIsRefused() {
             BffRuntime runtime = scopedRuntime();
             Set<String> granted = Set.of("openid", "profile");
-            String sessionCookie = bindLiveSession(runtime, granted);
+            String sessionCookie = bind(runtime, sessionGranted(granted));
             stub.script(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
                     StubIdentityProvider.Answer.json(400, "{\"error\":\"invalid_request\"}"));
 
@@ -2515,7 +2515,7 @@ class BffRuntimeProducerTest {
         void shouldRefuseTheInteractiveReDriveWhosePushIsRefused() {
             BffRuntime runtime = scopedRuntime();
             Set<String> granted = Set.of("openid", "profile");
-            String sessionCookie = bindLiveSession(runtime, granted);
+            String sessionCookie = bind(runtime, sessionGranted(granted));
             AtomicReference<BffRuntime.ReservedHttpResponse> silent = new AtomicReference<>();
             StubIdentityProvider.ReceivedRequest silentPush = receivedBy(
                     StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
@@ -2551,7 +2551,7 @@ class BffRuntimeProducerTest {
         void shouldRefuseAWideningWhoseTokenResponseIsNotBound() throws Exception {
             BffRuntime runtime = scopedRuntime();
             Set<String> granted = Set.of("openid", "profile");
-            String sessionCookie = bindLiveSession(runtime, granted);
+            String sessionCookie = bind(runtime, sessionGranted(granted));
             String accessTokenBefore = liveSessionOf(runtime, sessionCookie).accessToken();
             String loginProofKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
             AtomicReference<BffRuntime.ReservedHttpResponse> redirected = new AtomicReference<>();
@@ -3604,7 +3604,7 @@ class BffRuntimeProducerTest {
          * the session a scope-driven refresh is made for.
          */
         private static SessionRecord refreshableSession(Set<String> activeScopes, Set<String> grantedScopes,
-                String refreshToken) {
+                @Nullable String refreshToken) {
             return SessionRecord.builder()
                     .sessionId(SessionRecord.newSessionId())
                     .accessToken(token())
@@ -3615,6 +3615,15 @@ class BffRuntimeProducerTest {
                     .activeScopes(activeScopes)
                     .grantedScopes(grantedScopes)
                     .build();
+        }
+
+        /**
+         * A session without a refresh token whose active and granted scope sets are both {@code scopes},
+         * valid at the fixed instant the reserved dispatch of these tests is driven with — the session a
+         * widening started at the step-up path is made for.
+         */
+        private static SessionRecord sessionGranted(Set<String> scopes) {
+            return refreshableSession(scopes, scopes, null);
         }
 
         /** Binds {@code session} through the runtime's own binding and returns the cookie pair presenting it. */
