@@ -40,8 +40,7 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 
 | navigate `/auth/login?returnUrl=...`
 | `302`
-| Into the OIDC authorization endpoint, with `client_id` and `request_uri` as the only query
-  parameters. This is a *top-level navigation*, never a `fetch`.
+| Into the OIDC authorization endpoint. This is a *top-level navigation*, never a `fetch`.
 
 | `/auth/callback?code&state`
 | `302`
@@ -95,13 +94,9 @@ common way to mis-integrate:
 
 The whole leg is navigations the browser performs; your application starts it and reads the result.
 
-. The application navigates to `/auth/login?returnUrl=/some/page`. The gateway pushes the
-  authorization request to the identity provider over its own back channel, sets a short-lived,
-  `HttpOnly` browser-binding cookie and `302`s to the identity provider. *That first redirect carries
-  only `client_id` and `request_uri`*: no scope, no `state` and no redirect URI travel in it.
-. The user authenticates at the identity provider. Keycloak 26.5.7 answers the redirect above with a
-  further `302` to its own `login-actions/authenticate` page, and that page is the login form. The
-  browser follows it; your application does not see it.
+. The application navigates to `/auth/login?returnUrl=/some/page`. The gateway sets a short-lived,
+  `HttpOnly` browser-binding cookie and `302`s to the identity provider.
+. The user authenticates at the identity provider.
 . The identity provider `302`s the browser back to `/auth/callback` *as a top-level GET*, with
   `code` and `state` in the query string.
 . The gateway validates the binding cookie and the `state`, exchanges the code for tokens over its
@@ -125,24 +120,6 @@ gateway drives the authorization request with `response_mode=query`, so the iden
 be free to answer with a `302` carrying `code` and `state` in the query string. *An IdP client
 pinned to force `form_post` will break the login.* The mode is fixed in the gateway and is not an
 operator setting -- there is no knob to look for.
-
-The identity-provider client must also meet three requirements, or the login is refused:
-
-* *It accepts pushed authorization requests.* The gateway sends no other kind. Without a
-  pushed-authorization-request endpoint the login answers `502`.
-* *It binds access tokens with DPoP.* The gateway refuses a token that is not bound to its proof
-  key; the callback then answers `400` and no session is created.
-* *It authenticates the gateway by a signed JWT and fetches the gateway's key set.* Register the
-  gateway's *JWKS URL* -- `https://<gateway address the identity provider can reach>/auth/jwks` --
-  as the client's key-set URL. The identity provider calls that URL server-to-server, so it must
-  reach the gateway and trust its certificate.
-
-That is the default key mode, and it is what the demo stack runs. A gateway can instead authenticate
-with a client secret; pushed requests and DPoP stay required in that mode and no key-set URL is
-registered. See
-link:../../doc/user/bff-session.adoc#client-secret[Server-Session BFF -- Client-secret
-authentication] before choosing it, and
-link:../../doc/user/bff-session.adoc#key-material[Key material] for the key setup.
 ====
 
 [WARNING]

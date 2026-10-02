@@ -10,8 +10,7 @@ link:02-bff-session.adoc[session-based variant]. API Sheriff is still a full OID
 client running the authorization-code + PKCE login flow, but instead of holding tokens in a
 server-side store it *encrypts the tokens (AES-256-GCM) into an `HttpOnly` cookie* and
 decrypts them per request. There is *no server-side store* -- the encrypted cookie carries the
-session state, so all gateway instances need only share key material: the encryption key and the two
-signing-key files (see <<client-controls,the client controls below>>).
+session state, so all gateway instances need only share the encryption key.
 
 This is the *token-mediating backend* shape, and it is the *preferred* target
 because it preserves the gateway's stateless, self-contained posture. It is planned to follow
@@ -27,63 +26,12 @@ link:../architecture.adoc#_authentication_layer[Architecture -- Authentication L
 == Login Flow
 
 The login handshake is identical to the link:02-bff-session.adoc[session-based variant] up to
-the final binding step. The gateway pushes the authorization request -- PKCE, `state`, `nonce`,
-scope and redirect URI -- to the IdP over the back channel, redirects the browser to the IdP with
-`client_id` and `request_uri` only, exchanges the code server-to-server with its client credential
-and a DPoP proof, accepts the token response only when the access token is bound to its proof key,
-and validates the tokens offline (all through the `token-sheriff-client` engine) -- then, in this
+the final binding step. The gateway redirects the browser to the IdP with PKCE / `state` /
+`nonce`, exchanges the code server-to-server, and validates the tokens offline (all through
+the `token-sheriff-client` engine) -- then, in this
 variant, *encrypts them into an `HttpOnly` cookie* rather than storing them server-side.
 
-How the IdP answers that redirect is specific to the IdP. Keycloak 26.5.7 answers an authorization
-request that names a pushed `request_uri` with a further `302` to its own `login-actions/authenticate`
-page, and that page is the login form; the browser follows it.
-
 image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client login: redirect to IdP, code exchange, token validation, cookie binding, align=center]
-
-[[client-controls]]
-== Client Authentication, Pushed Requests and Token Binding
-
-Three properties of the confidential client are fixed by
-link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
-and shared with the session-based variant:
-
-* *Pushed authorization requests.* Every authorization request is pushed. The browser carries only
-  `client_id` and `request_uri` to the IdP, so the request cannot be read or altered on the front
-  channel.
-* *The sender constraint.* Every token request carries a DPoP proof signed with one key, and every
-  access token is bound to that key by its `cnf.jkt` claim. The gateway refuses a token response that
-  is not bound: a login ends with `400` and no session, a widening with `400` and the session
-  unchanged, and a refresh ends the session.
-* *Key-based client authentication, by default.* The gateway authenticates to the IdP with
-  `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
-  gateway path, `/auth/jwks` by default, answered on every host -- and the IdP fetches it from there.
-
-Each of the two keys is either read from a PEM file the configuration names by path, or generated at
-startup when no file is named.
-
-*Horizontal scaling needs the same key files on every replica.* This variant exists to run several
-replicas without a shared store, and the two signing keys join the sealing key as the material those
-replicas share. A generated key lives in one process, so the generated mode fits a single replica
-only. With a different client-authentication key per replica the IdP verifies against the key set of
-whichever replica it fetched from, and authentication fails on the others. With a different proof key
-per replica a refresh on another replica presents a proof signed with a key the session's tokens are
-not bound to, which an identity provider may refuse.
-
-The binding ends at the gateway. The token injected upstream carries `cnf.jkt` and travels as
-`Authorization: Bearer`, without a proof: an upstream must not check `cnf`.
-
-*The client secret is an operator choice.* Configuring `oidc.client_secret` selects
-`client_secret_basic` in place of `private_key_jwt`. Pushed requests and the DPoP binding stay in
-effect, the JWKS path answers `404`, and the gateway logs `WARN` `ApiSheriff-133` at every boot.
-
-[WARNING]
-====
-Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
-====
-
-Operator setup for both modes is in
-link:../user/bff-cookie.adoc#signing-keys[the operator guide], and the requirement-by-requirement
-position in link:../fapi_status.adoc[FAPI 2.0 Status].
 
 == Steady-State API Call
 
@@ -162,7 +110,7 @@ Because the encrypted cookie carries all session state:
 * No session store, no Redis, no database -- the gateway's no-mandatory-external-dependency
   posture holds fully.
 * Any gateway instance can serve any request *of an established session* as long as it has the
-  encryption key and the same two signing-key files -- no sticky sessions, no coordination. The login leg is the one exception: it
+  encryption key -- no sticky sessions, no coordination. The login leg is the one exception: it
   holds per-instance pending state and requires affinity until the callback lands (see
   <<_stateless_after_login_not_during_it,Stateless after login, not during it>>).
 * Horizontal scaling is linear; a node can be added or removed with no session migration.
@@ -285,10 +233,7 @@ cookie, fixed behaviour on every `auth.require: session` route.
 oidc:
   issuer: https://idp.example.com/realms/main
   client_id: api-sheriff
-  client_authentication:         # private_key_jwt, the default; no client_secret is declared
-    key_file: /etc/sheriff/keys/client-auth.pem   # the same file on every replica
-  sender_constraint:             # DPoP proof key; every access token is bound to it
-    key_file: /etc/sheriff/keys/dpop.pem          # the same file on every replica
+  client_secret: ${SHERIFF_CLIENT_SECRET}
   redirect_uri: https://gw.example.com/auth/callback
   scopes: [openid, profile]      # requested on every login; endpoints add their own (additive)
   session:
@@ -323,8 +268,7 @@ endpoint:
 ----
 
 The only material difference from the link:02-bff-session.adoc[session-based] configuration is
-`session.mode: cookie`. The two `key_file` entries are optional in both variants; they are written
-out here because a deployment with more than one replica must provide them.
+`session.mode: cookie`.
 
 `session.encryption_key` is *optional*. Declare it when sessions must be shared across replicas
 and survive a restart -- that is the only thing it buys. Omitting it selects the
@@ -339,11 +283,8 @@ link:../configuration.adoc[the configuration reference] for the authoritative va
 * *No token exfiltration via script* -- `HttpOnly` cookie; the token is never readable by
   JavaScript (XSS on the page can still drive authenticated requests -- hence the fixed CSRF
   defence and short token lifetimes).
-* *Self-contained* -- instances share only key material: the encryption key and the two signing-key
-  files.
+* *Self-contained* -- instances share only the encryption key.
 * *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
-* *Pushed requests and bound tokens* -- every authorization request is pushed, every access token is
-  bound to one DPoP key, and the client authenticates with a key unless a client secret is configured.
 
 [#_stateless_after_login_not_during_it]
 === Stateless after login, not during it
@@ -355,7 +296,7 @@ per-instance and never shared. A login *begun* on one instance must therefore *c
 same instance; a callback landing on a different replica finds no pending authorization and the
 login fails.
 
-An *established* session is fully portable: any replica holding the same key material can unseal the
+An *established* session is fully portable: any replica holding the sealing key can unseal the
 cookie and serve the request. That is exactly the boundary the cookie-statelessness integration
 test documents -- it logs in only against the first instance, then exercises the second instance
 with the resulting cookie.

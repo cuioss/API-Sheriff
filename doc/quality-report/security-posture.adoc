@@ -158,9 +158,9 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 |FULLY
 |`application.properties:36-85`; `Dockerfile.native:34` exposes only 8443/9000
 
-|FAPI 2.0: in key mode the BFF implements the FAPI 2.0 controls (PAR, DPoP sender constraint with an unbound token response refused, `private_key_jwt`); with `oidc.client_secret` configured the client-authentication requirement is not met; no conformance-suite run exists (FAPI status)
-|FULLY in key mode; limitation CONFIRMED for client-secret mode
-|`BffRuntimeProducer`: one shared `SenderConstraint`, `BoundTokenEndpointClient` as the only token-endpoint client, `PushedAuthorizationRequests` on the login, session-widening and RFC 9470 step-up seams, credential selected by `OidcConfig.usesClientSecret()` (`PrivateKeyJwtAuth` or `ClientSecretBasicAuth`); `ApiSheriff-133` at every boot in client-secret mode. Stack evidence: `BffFapiControlsIT`, `BffClientSecretModeIT`, `BffGeneratedKeysIT`. The RFC 9470 step-up seam has no live caller (code-correctness BFF-1); the pushed session widening is proven at unit level only
+|FAPI 2.0: NOT conformant (PAR, sender-constraining, client auth unmet)
+|CONFIRMED accurate
+|`BffRuntimeProducer` (null senderConstraint, `ClientSecretBasicAuth`); no `ParClient` use
 
 |GW-02 smuggling corpus, GW-08 h2 abuse bounds, GW-06 behaviour tests: GAP/PARTIAL
 |CONFIRMED as claimed
@@ -340,5 +340,5 @@ today — the outbound header map is built fresh and framing names are in `REQUE
 * AES-GCM sealed cookie with AAD binding and deterministic key-id gating.
 * Callback flow: raw-query HPP parse, binding cookie plus constant-time state, store-invariant
   single-use.
-* Documentation honesty: Known Limitations, the FAPI status verdict, the
+* Documentation honesty: Known Limitations, the FAPI non-conformance verdict, the
   response-direction caveat, and the accepted-risk entries all match the code.

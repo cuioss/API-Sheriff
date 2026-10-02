@@ -187,13 +187,7 @@ fairness backend, apisix, k6, both production Dockerfiles) — drift, not policy
 |===
 
 `admin/admin` Keycloak bootstrap (IT + sample, the latter with "SAMPLE CREDENTIALS. Change
-both"); `OIDC_CLIENT_SECRET=refresh-secret` (IT, on `api-sheriff-refresh` only -- the one gateway
-instance kept on client-secret authentication; every other IT instance and the release smoke step
-set no client secret and name a signing-key file through `OIDC_DPOP_KEY_FILE` instead);
-`OIDC_CLIENT_SECRET=invalid-config-fixture-secret` (a placeholder in
-`verify-invalid-config-fails.sh` that never reaches an IdP); the committed signing-key files under
-`integration-tests/src/main/docker/signing-keys/` (test material, labelled as such in their
-generator script); fixed AES test key with "never a
+both"); `OIDC_CLIENT_SECRET=integration-secret` (IT); fixed AES test key with "never a
 production key" comment; `benchmark-secret`/`benchmark-password`;
 `integration-user`/`integration-password`; `localhost-trust`; sample realm secret literally
 `CHANGE-ME-BEFORE-PRODUCTION`. No real secret found anywhere; CI secrets referenced only via

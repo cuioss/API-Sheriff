@@ -290,17 +290,6 @@ oidc:
     encryption_key: ${SHERIFF_SESSION_KEY}    # cookie-mode key material
 ----
 
-[WARNING]
-====
-Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
-
-`oidc.client_secret` appears above because it is a secret-classified field and the secrets rule
-applies to it. Declaring it is not required: it *selects* client-secret authentication. The default
-is key-based authentication, which needs no secret in the configuration at all -- see
-link:bff-session.adoc#key-material[Server-Session BFF -- Key material] and
-link:bff-cookie.adoc#signing-keys[Cookie-Based BFF -- Key material: the two signing keys].
-====
-
 *The resemblance stops at the name, and the difference is load-bearing.* A secret field must be a
 *bare* `${VAR}` reference. The `${VAR:-default}` form that the topology and endpoint-enablement
 examples above use is *refused at boot* for `oidc.client_secret` and `oidc.session.encryption_key`,
@@ -312,26 +301,6 @@ other two conventions genuinely diverge.
 The practical consequence: searching the codebase for either name tells you nothing about whether
 a deployment needs it. What a deployment needs is whatever `${VAR}` references its own
 `gateway.yaml` actually contains -- read the file, not this page, for that list.
-
-==== Key-file paths are locations, not secrets
-
-The two signing-key files of a BFF deployment are named by *path*, and a path is not a secret. It
-sits with the topology values, not with the two fields above: write it literally, or supply it
-through a placeholder with or without a default.
-
-[source,yaml]
-----
-oidc:
-  client_authentication:
-    key_file: /etc/sheriff/keys/client-auth.pem                    # a literal path
-  sender_constraint:
-    key_file: ${SHERIFF_DPOP_KEY_FILE:-/etc/sheriff/keys/dpop.pem} # or a variable, with a default
-----
-
-`SHERIFF_DPOP_KEY_FILE` is again only a name the example uses. The secret is the *content* of the
-file, and that is deployment-bound in the ordinary way: the deployment mounts the file, and
-`gateway.yaml` says where it is. See
-link:../configuration.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys].
 
 === The configuration directory
 
@@ -628,11 +597,9 @@ above; it did not exhaustively trace every `@ConfigProperty` in the codebase.
 
 | Certificates, keys, trust anchors
 | Yes -- all material is deployment-supplied; `gateway.yaml` never carries material. For JWKS trust it
-  names a *profile* the deployment binds. The exceptions are keys that name a filesystem *path* to
-  deployment-mounted material -- `tls.mtls.client_ca` for a CA bundle, and
-  `oidc.client_authentication.key_file` and `oidc.sender_constraint.key_file` for the two BFF signing
-  keys. Each is a reference to material, still not the material itself, and the path may be supplied
-  through a `${VAR}` placeholder.
+  names a *profile* the deployment binds. The one exception is `tls.mtls.client_ca`, which names a
+  filesystem *path* to a deployment-mounted CA bundle -- a reference to material, still not the
+  material itself.
 
 | Native-image SSL support
 | No -- build-time. It is set in the Maven `native` profile.

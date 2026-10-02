@@ -242,20 +242,16 @@ published port inside the three origin-bearing `oidc` values.
 reasoning -- it *is* a copy of the base document -- and the `×4` rows are **not** re-cited to include
 it either. It is the base document with
 `tls.passthrough_sni` removed and two per-instance values repointed -- `oidc.client_id` to
-`refresh-client` and the gateway origin from 10443 to 10452 -- and with the one difference in client
-authentication the stack keeps on purpose: it declares `oidc.client_secret` where the base declares
-`oidc.client_authentication.key_file`, because this instance is the stack's proof of client-secret
-authentication. Every *limit-shaped* key the base declares it also declares, at the base's own
-relative order, except the base's `portal` block, which it does not carry; the `portal.cache_seconds`
-row therefore does not derive onto it. It does not declare `oidc.step_up.path` either: like the
-egress pair above it does not mirror that base key, which matches no alternative in the sweep
-pattern and so affects no row. Neither repointed value is limit-shaped: `client_id`
+`refresh-client` and the gateway origin from 10443 to 10452 -- so every key the base declares it also
+declares, at the base's own relative order, except the base's `portal` block, which it does not
+carry; the `portal.cache_seconds` row therefore does not derive onto it. It does not declare
+`oidc.step_up.path` either: like the egress pair above it does not mirror that base key, which
+matches no alternative in the sweep pattern and so affects no row. Neither repointed value is
+limit-shaped: `client_id`
 matches no alternative in the sweep pattern, and the origin appears inside `redirect_uri`,
 `post_logout_redirect_uri` and `csrf.trusted_origins`, whose *keys* are already cited against the
-base. The client-authentication difference is not limit-shaped either: `client_secret`,
-`client_authentication`, `sender_constraint` and `key_file` match no alternative in the sweep
-pattern. It is limit-bearing purely on the base keys it inherits, so it needs no Coverage Matrix row
-of its own.
+base. It is limit-bearing purely on the base keys it inherits, so it needs no Coverage Matrix row of
+its own.
 
 What makes this overlay worth naming is that it is the fixture the `refresh.leeway_seconds`
 row's boundary assertion needs -- the item it served stood in the standing remainder until this
@@ -268,7 +264,7 @@ leeway is measured *against*, never the leeway itself.
 `sheriff-config-cookie-refresh/gateway.yaml` is outside the `×N` notation for the same reason, and it
 is derived from the *cookie* document rather than the base one: it is
 `sheriff-config-cookie/gateway.yaml` with three *behavioural* values repointed -- `oidc.client_id` to
-`cookie-refresh-client`, `session.refresh.enabled` from `false` to `true`, and the gateway origin from 10445
+`refresh-client`, `session.refresh.enabled` from `false` to `true`, and the gateway origin from 10445
 to 10455 -- plus the `metadata.config_version` document label, which the overlay itself records as a
 label rather than a fourth behavioural difference. No key is added, and exactly one is not carried
 over: `oidc.login.default_return_url`, which the cookie document sets and this overlay leaves unset.
@@ -427,7 +423,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `PipelineVerbIT` (405 plus four positive controls)
 
 | `oidc.session.csrf.trusted_origins`
-  `gateway.yaml` ×4 -- base:336, cookie:184, mtls:164, ws:139
+  `gateway.yaml` ×4 -- base:327, cookie:177, mtls:156, ws:135
 | BFF CSRF origin gate
 | COVERED
 | `BffCsrfIT` (403 / 403 with a 401 control)
@@ -500,7 +496,7 @@ declaration's *existence* is proven while its *boundary* is not.
   applies here too.
 
 | `portal.cache_seconds: 60`
-  `sheriff-config/gateway.yaml:370`
+  `sheriff-config/gateway.yaml:361`
 | `PortalResponseEnvelope` (`Cache-Control` of a session-free portal page)
 | PARTIAL
 | `PortalIT` -- the anonymous portal page carries exactly `Cache-Control: max-age=60` together with
@@ -512,7 +508,7 @@ declaration's *existence* is proven while its *boundary* is not.
   which is what keeps this row off `COVERED`.
 
 | `oidc.session.refresh.leeway_seconds: 30`
-  `gateway.yaml` ×4 -- base:334, cookie:182, mtls:162, ws:137
+  `gateway.yaml` ×4 -- base:325, cookie:175, mtls:154, ws:133
 | Session refresh scheduling
 | COVERED
 | `BffTokenRefreshIT` on the dedicated `api-sheriff-refresh` instance -- the only place the boundary
@@ -637,13 +633,13 @@ declaration's *existence* is proven while its *boundary* is not.
 | none -- the http2 benchmark aspect negotiates h2 but asserts no protocol
 
 | *G9* `oidc.session.ttl_seconds: 3600`
-  `gateway.yaml` ×4 -- base:331, cookie:165, mtls:159, ws:134
+  `gateway.yaml` ×4 -- base:322, cookie:158, mtls:151, ws:130
 | Session store expiry
 | GAP
 | none
 
 | *G10* `oidc.user_info.allowed_claims`
-  `gateway.yaml` ×4 -- base:339, cookie:187, mtls:167, ws:142
+  `gateway.yaml` ×4 -- base:330, cookie:180, mtls:159, ws:138
 | user_info claim projection
 | PARTIAL
 | `BffUserInfoIT` asserts the `default_view` projection; no negative leg proves a claim *outside*

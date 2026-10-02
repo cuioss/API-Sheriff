@@ -32,7 +32,7 @@ last column names which one each realizes.
 
 | link:03-bff-cookie.adoc[3. BFF -- Cookie-based]
 | OIDC confidential client; tokens in an AES-256-GCM `HttpOnly` cookie, decrypted per request
-| Stateless (key material only)
+| Stateless (key only)
 | Stateless BFF
 |===
 

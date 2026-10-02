@@ -363,7 +363,7 @@ boot-refused).
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: false-security / correctness
-|Location |`bff/refresh/StepUpCoordinator.java` (whole class); wiring in `quarkus/BffRuntimeProducer.java` (the `StepUpCoordinator` assembly in `build`)
+|Location |`bff/refresh/StepUpCoordinator.java` (whole class); wiring `quarkus/BffRuntimeProducer.java:292-296`
 |===
 
 `StepUpCoordinator` is instantiated and exposed via `BffRuntime.stepUpCoordinator()`, and
@@ -372,20 +372,12 @@ boot-refused).
 path; the `SilentSatisfaction` seam is hardwired to `Optional.empty()`, and
 `stepUpCoordinator()` is referenced only by tests. An upstream `401
 insufficient_user_authentication` on a `require: session` route is relayed to the browser
-unhandled; no step-up re-drive ever happens in production. The finding stays open.
-
-The wiring comment in `BffRuntimeProducer` no longer claims otherwise. As reported it said "the
-upstream-challenge edge integration is exercised by the Keycloak integration tests" — edge
-integration that does not exist in `main/java`. It now reads: "No edge code drives the step-up
-coordinator: the re-drive is assembled here and proven at unit level, but a running gateway never
-reaches it." (The coordinator's own Javadoc was honest throughout.)
-
-One property of the unwired re-drive has changed and matters for whoever wires it: when it is wired,
-the re-drive is a *pushed* request. The producer hands `StepUpHandler.initiate` through
-`PushedAuthorizationRequests`, exactly as it does for the login leg, so the re-drive location carries
-`client_id` and `request_uri` only and a failed push refuses it with `502`
-(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058],
-decision 12).
+unhandled; no step-up re-drive ever happens in production. The wiring comment in
+`BffRuntimeProducer.java:286-287` claims "the upstream-challenge edge integration is exercised
+by the Keycloak integration tests" — edge integration that does not exist in `main/java`. (The
+coordinator's own Javadoc, `StepUpCoordinator.java:66-67`, is honest: "It is exercised only
+when `session.step_up.honor_upstream_challenge` is enabled; the enablement gate is the
+runtime's concern.")
 
 === BFF-2 — Catalogued session-lifecycle and CSRF LogRecords are never emitted
 

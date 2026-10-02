@@ -52,12 +52,9 @@ set of things well, with zero mandatory external dependencies.
 
 | *OIDC Relying Party with encrypted-cookie token mediation*
 | Inspired by APISIX `openid-connect`. The headline BFF capability, and the one feature
-  only APISIX offers in OSS. Mechanism: the authorization request is pushed to the IdP over the
-  back channel, the browser is sent to the IdP authorization endpoint with `client_id` and
-  `request_uri` only, the code is exchanged server-to-server, tokens are kept out of
-  browser-readable storage, and upstream requests carry an injected `Authorization: Bearer`. The
-  gateway authenticates to the IdP with `private_key_jwt` by default; a client secret
-  is an operator choice (see the PAR row under <<_differentiators>>). See
+  only APISIX offers in OSS. Mechanism: 302 to the IdP authorization endpoint, server-to-server
+  code exchange with `client_id`/`client_secret`, tokens kept out of browser-readable storage,
+  upstream requests carry an injected `Authorization: Bearer`. See
   link:variants/03-bff-cookie.adoc[Variant 3] and link:variants/02-bff-session.adoc[Variant 2].
 
 | *Transparent automatic token refresh*
@@ -224,25 +221,24 @@ architecture makes it uniquely able to close all three.
   `realip` / Kong issues cited in ADR-0003's references) and "Forwarded header sabotage".
   See link:adr/0003-forwarded-headers.adoc[ADR-0003].
 
-| *PAR-driven confidential-client flow with DPoP-bound tokens*
-| A *major* differentiator. The BFF drives the authorization-code flow through *Pushed
-  Authorization Requests* (PAR, RFC 9126): it pushes the authorization parameters over the back
-  channel and redirects with the returned `request_uri`, so the pushed request is neither exposed nor
-  tamperable in the browser. It binds every access token it obtains to one DPoP key (RFC 9449) and refuses
-  a token response that is not bound to that key. It authenticates with `private_key_jwt` by
-  default. PKCE `S256`, the exact `redirect_uri` and the `iss` mix-up defence complete the posture.
+| *PAR-driven, FAPI-2.0-aligned confidential-client flow* -- *TARGET, NOT SHIPPED IN 0.2.3*
+| A *major* differentiator -- and, as of the 0.2.3 alpha, an *unrealised* one. The intended posture
+  drives the authorization-code flow through *Pushed Authorization Requests* (PAR, RFC 9126) --
+  pushing the authorization parameters over the back channel and redirecting with the returned
+  `request_uri`, so parameters are never exposed or tamperable in the browser -- as part of a
+  FAPI-2.0-aligned confidential-client posture (PKCE `S256`, exact `redirect_uri`, `iss` mix-up
+  defence, sender-constrained tokens).
 +
 [IMPORTANT]
 ====
-*What is claimed, and its limits.* In key mode the BFF implements the FAPI 2.0 controls (DPoP route).
-Two qualifications belong to every reading of that sentence:
-
-* It holds in key mode only. With `oidc.client_secret` configured the client-authentication requirement is not met;
-  pushed requests and the DPoP sender constraint stay in effect in that mode.
-* No conformance-suite run exists, so no conformance claim is made.
-
-See link:fapi_status.adoc[FAPI 2.0 Status] for the requirement-by-requirement position and
-link:fapi_next_steps.adoc[FAPI 2.0 Next Steps] for what remains open.
+*0.2.3 ships none of the PAR or sender-constrained-token half of this claim.* PKCE `S256` and the
+`iss` mix-up defence are delivered; PAR, sender-constrained tokens, and a FAPI-permitted client
+authentication method are not. The capabilities exist in the `token-sheriff-client` engine
+(`CLIENT-10` PAR, `CLIENT-11` sender-constraint) but are *not wired* by the gateway -- a capability
+present in a dependency is not a capability of the product. See
+link:fapi_status.adoc[FAPI 2.0 Conformance Status] for the requirement-by-requirement position and
+link:fapi_next_steps.adoc[FAPI 2.0 Next Steps] for the route to closing it. *No FAPI conformance may
+be claimed for this release.*
 ====
 +
 *Competitor reality (verified):* three of the six evaluated gateways
@@ -250,8 +246,9 @@ link:fapi_next_steps.adoc[FAPI 2.0 Next Steps] for what remains open.
   only *validate* pre-issued JWTs. The two that genuinely act as an RP in OSS (APISIX's
   `openid-connect`, community Traefik plugins) run a plain PKCE code flow and expose *no* PAR and
   claim *no* FAPI 2.0. The only product shipping PAR inside its RP is *Kong, Enterprise-only*,
-  and it markets generic "FAPI" (1.0-era), not FAPI 2.0. An *OSS*, PAR-initiating RP/BFF with
-  DPoP-bound tokens is therefore not covered by any of the six. (Do not conflate sides: many IdPs
+  and it markets generic "FAPI" (1.0-era), not FAPI 2.0. A first-class, *OSS*, PAR-initiating,
+  FAPI-2.0-aligned RP/BFF is therefore genuinely uncovered -- *the opportunity is real and still
+  open; API Sheriff has not yet taken it.* (Do not conflate sides: many IdPs
   and Gravitee's separate *Access Management* product support PAR/FAPI as the *authorization
   server* -- the opposite side of the wire; the differentiator claimed here is the *client/RP*
   side, pushing to the `pushed_authorization_request_endpoint` and driving the redirect.) See
@@ -294,7 +291,7 @@ Secondary differentiators worth claiming:
 | Immutable static config | Yes | Standalone mode | file provider | Yes (native)
 | OIDC RP + cookie mediation | Yes | Yes | EE only | No
 | Transparent token refresh | Yes | Yes | EE only | M2M only
-| PAR-initiating RP with DPoP-bound tokens | Yes -- in key mode it implements the FAPI 2.0 controls; with `oidc.client_secret` configured the client-authentication requirement is not met; no conformance-suite run exists | No | No | No
+| PAR-initiating FAPI 2.0 RP | Planned (not in 0.2.3) | No | No | No
 | Offline JWT validation | Yes | Yes | Partial | Yes
 | Per-route forward filtering (allow / deny / forward-all) | Yes (three modes) | No | No | Allow-list only
 | Path allowlist + param limits | Yes | Partial | No | Partial
