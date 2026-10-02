@@ -51,9 +51,12 @@ import org.jspecify.annotations.Nullable;
  * header, cookie, query or body and requires no credential: a public key is public.
  * <p>
  * <strong>Withheld form</strong> — {@link #withheld()}, for client-secret authentication, where no
- * client-authentication key exists. Every method answers {@code 404} with
- * {@code Cache-Control: no-store}, no {@code Allow} header and no body, so the answer does not
- * differ from that of a path the gateway does not know.
+ * client-authentication key exists. Every method yields the {@code 404} outcome, which carries no
+ * header and no body. The gateway edge does not write that outcome itself: it answers the request
+ * through the renderer it uses for a path no route matches, so the answer does not differ from that
+ * of a path the gateway does not know — the same status, media type, body and headers. A
+ * {@code 404} written in a shape of its own would let an anonymous caller read the
+ * client-authentication mode off the difference between the two answers.
  * <p>
  * <em>Why the path is answered here and not released to the route table.</em> The path stays
  * reserved in both client-authentication modes. Releasing it in client-secret mode would hand the
@@ -129,7 +132,8 @@ public final class ClientJwksEndpoint {
      *
      * @param httpMethod the request HTTP method, in any letter case
      * @return in the publishing form, {@code 200} with the key set for {@code GET} and {@code 405}
-     *         for every other method; in the withheld form, {@code 404} for every method
+     *         for every other method; in the withheld form, the header-less and body-less
+     *         {@code 404} for every method, which the edge answers as it answers an unrouted path
      */
     public JwksOutcome handle(String httpMethod) {
         Objects.requireNonNull(httpMethod, "httpMethod");
@@ -177,8 +181,12 @@ public final class ClientJwksEndpoint {
             return new JwksOutcome(METHOD_NOT_ALLOWED, Map.of(ALLOW, GET), null);
         }
 
+        /**
+         * The withheld form's outcome. It names no header: the edge answers it with the response of
+         * an unrouted path, and a header set here would be the one thing that tells the two apart.
+         */
         private static JwksOutcome notFound() {
-            return new JwksOutcome(NOT_FOUND, Map.of(CACHE_CONTROL, NO_STORE), null);
+            return new JwksOutcome(NOT_FOUND, Map.of(), null);
         }
     }
 }

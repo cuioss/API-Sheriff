@@ -207,16 +207,23 @@ class ClientJwksEndpointTest {
     @DisplayName("Withheld form")
     class Withheld {
 
+        /**
+         * The outcome names no header on purpose. The edge answers it with the response of an
+         * unrouted path, and a header of the endpoint's own — the {@code no-store} of the publishing
+         * form, or an {@code Allow} — would be what tells the two answers apart. That the answer on
+         * the wire equals the one of an unknown path is asserted where both exist, in
+         * {@code GatewayEdgeRouteBffWiringTest}.
+         */
         @ParameterizedTest(name = "{0}")
         @ValueSource(strings = {"GET", "HEAD", "POST", "PUT", "DELETE"})
-        @DisplayName("Should answer every method with 404, no-store, no Allow header and no body")
+        @DisplayName("Should answer every method with 404, no header at all and no body")
         void shouldAnswerEveryMethodWith404(String method) {
             ClientJwksEndpoint.JwksOutcome outcome = ClientJwksEndpoint.withheld().handle(method);
 
             assertAll(method + " on the withheld form",
                     () -> assertEquals(404, outcome.status()),
-                    () -> assertEquals(Map.of(CACHE_CONTROL, NO_STORE), outcome.headers(),
-                            "no-store, and neither Allow nor a content type"),
+                    () -> assertEquals(Map.of(), outcome.headers(),
+                            "no header of the endpoint's own: neither no-store, nor Allow, nor a content type"),
                     () -> assertNull(outcome.document(), "there is no key, so there is no body"));
         }
     }

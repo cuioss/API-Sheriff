@@ -60,7 +60,8 @@ import org.jspecify.annotations.Nullable;
  *       capability gate answers {@code 404} where IdP-driven destruction is unsupported, so the
  *       reserved path never falls through to the proxy route table. The client JWKS arm stays wired
  *       in both client-authentication modes for the same reason: with a client secret configured the
- *       endpoint answers {@code 404} itself.</li>
+ *       endpoint yields {@code 404} itself. That one outcome the edge does not render verbatim: it
+ *       answers it with the response of an unrouted path.</li>
  *   <li>{@link #sessionIdentity(String, Instant)} — the display identity (signed in or not, and the
  *       {@code preferred_username}) the application portal renders for the request's session.</li>
  * </ol>

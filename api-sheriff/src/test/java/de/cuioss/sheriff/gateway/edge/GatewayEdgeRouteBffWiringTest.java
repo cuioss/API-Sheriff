@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,9 +27,11 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -114,7 +115,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Covers the D16 edge wiring of the server-mode BFF runtime: the {@link ReservedPathRegistry} now
@@ -536,14 +537,15 @@ class GatewayEdgeRouteBffWiringTest {
         }
 
         @Test
-        @DisplayName("CLIENT_JWKS reaches the client JWKS handler — 404 from this fixture's withheld form, no JSON body")
+        @DisplayName("CLIENT_JWKS reaches the client JWKS handler — 404 from this fixture's withheld form, no header, no JSON body")
         void shouldDispatchClientJwks() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CLIENT_JWKS,
                     request(null, null), now);
 
             assertAll("the withheld form through the dispatch",
                     () -> assertEquals(404, response.status()),
-                    () -> assertEquals(Map.of("Cache-Control", "no-store"), response.headers()),
+                    () -> assertEquals(Map.of(), response.headers(),
+                            "the dispatch adds no header: the edge answers this outcome as an unrouted path"),
                     () -> assertEquals(Optional.empty(), response.jsonBodyOptional(),
                             "an absent document stays absent rather than being serialized as the JSON literal null"));
         }
@@ -724,6 +726,8 @@ class GatewayEdgeRouteBffWiringTest {
         /** The path the endpoint is reserved at when {@code jwks_path} is omitted — {@link #fullOidc()} omits it. */
         private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
         private static final String ROUTED_CONTROL_PATH = "/auth/not-reserved";
+        /** A path outside the {@code /auth} route that nothing reserves: the gateway does not know it. */
+        private static final String UNKNOWN_PATH = "/not-a-route";
         /** A host the identity provider might dial that is not the host of {@code oidc.redirect_uri}. */
         private static final String FOREIGN_HOST = "gateway.internal";
 
@@ -820,19 +824,44 @@ class GatewayEdgeRouteBffWiringTest {
                     () -> assertEquals(0, upstreamHits.get(), "the reserved path is not handed to the route"));
         }
 
-        @ParameterizedTest(name = "on host {0}")
-        @ValueSource(strings = {OIDC_HOST, FOREIGN_HOST})
-        @DisplayName("the withheld form answers 404 with no body and no-store, and the path still does not proxy")
-        void shouldAnswer404InTheWithheldFormAndStillNotProxy(String host) throws Exception {
-            EdgeAnswer answer = get(withheldFront, host, DEFAULT_JWKS_PATH);
+        /**
+         * The withheld form must not be told apart from a path the gateway does not know: an anonymous
+         * caller who could tell would read the client-authentication mode off the JWKS path. So the
+         * answer is compared with the answer the same edge gives, to the same method on the same host,
+         * for {@link #UNKNOWN_PATH} — a real unrouted request, not a restated literal. The comparison
+         * covers every header line in both directions, so a header the unknown path does not carry
+         * ({@code Cache-Control}, {@code Allow}) fails it as surely as a differing media type.
+         * <p>
+         * The two leading assertions are the control: they pin the reference to the route table's own
+         * {@code 404} problem document, so two answers that agreed on some other shape would not pass.
+         * The upstream count is what keeps the equality from being bought by releasing the path — the
+         * {@code /auth} proxy route covers the JWKS path and allows both methods, and still sees
+         * nothing.
+         */
+        @ParameterizedTest(name = "{1} on host {0}")
+        @CsvSource({OIDC_HOST + ",GET", OIDC_HOST + ",POST", FOREIGN_HOST + ",GET", FOREIGN_HOST + ",POST"})
+        @DisplayName("the withheld form is answered exactly as a path the gateway does not know, and the path still does not proxy")
+        void shouldAnswerTheWithheldFormAsAnUnknownPath(String host, String methodName) throws Exception {
+            io.vertx.core.http.HttpMethod method = io.vertx.core.http.HttpMethod.valueOf(methodName);
 
+            EdgeAnswer unknown = send(withheldFront, method, host, UNKNOWN_PATH);
+            EdgeAnswer withheld = send(withheldFront, method, host, DEFAULT_JWKS_PATH);
+
+            Map<String, Object> unknownProblem = new JsonObject(unknown.body()).getMap();
             assertAll("the JWKS path with a client secret configured",
-                    () -> assertEquals(404, answer.status()),
-                    () -> assertEquals("no-store", answer.headers().get("Cache-Control")),
-                    () -> assertEquals("", answer.body(), "there is no key to publish, so there is no body"),
-                    () -> assertFalse(answer.headers().contains("Allow"), "404 is not a method refusal"),
+                    () -> assertEquals(404, unknown.status(), "control: the reference is the unrouted 404"),
+                    () -> assertEquals("application/problem+json", unknown.headers().get("Content-Type"),
+                            "control: in the route table's problem media type"),
+                    () -> assertEquals(Set.of("type", "title", "status"), unknownProblem.keySet(),
+                            "control: carrying the route table's problem document"),
+                    () -> assertEquals(unknown.status(), withheld.status(), "the same status"),
+                    () -> assertEquals(headerLines(unknown), headerLines(withheld),
+                            "the same header lines, media type included, and none the unknown path does not carry"),
+                    () -> assertEquals(unknownProblem, new JsonObject(withheld.body()).getMap(),
+                            "the same problem document, member for member"),
+                    () -> assertEquals(unknown.body(), withheld.body(), "and the same bytes"),
                     () -> assertEquals(0, upstreamHits.get(),
-                            "the path stays reserved: the 404 is the endpoint's own, not the upstream's"));
+                            "the path stays reserved: the route that covers it is never reached"));
         }
 
         @Test
@@ -877,6 +906,18 @@ class GatewayEdgeRouteBffWiringTest {
                             .compose(response -> response.body().map(body ->
                                     new EdgeAnswer(response.statusCode(), response.headers(), body.toString()))),
                     "the edge response to " + method + " " + uri + " on host " + host);
+        }
+
+        /**
+         * Every response header line as lower-cased name to values, so two answers compare as whole
+         * sets: a header present on one side only is a difference, whichever side it is on.
+         */
+        private static Map<String, List<String>> headerLines(EdgeAnswer answer) {
+            Map<String, List<String>> lines = new TreeMap<>();
+            for (String name : answer.headers().names()) {
+                lines.put(name.toLowerCase(Locale.ROOT), answer.headers().getAll(name));
+            }
+            return lines;
         }
 
         /** A credential-free proxy route claiming the whole {@code /auth} prefix on every host. */

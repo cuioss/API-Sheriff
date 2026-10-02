@@ -2243,8 +2243,9 @@ class BffRuntimeProducerTest {
                     () -> assertTrue(runtime.isActive(), "the path is dispatched by an active runtime"),
                     () -> assertEquals(404, response.status(),
                             "there is no client-authentication key, so there is nothing to publish"),
-                    () -> assertEquals(Map.of("Cache-Control", "no-store"), response.headers(),
-                            "no-store, and no Allow header: the answer is not a method refusal"),
+                    () -> assertEquals(Map.of(), response.headers(),
+                            "no header of the endpoint's own — neither no-store nor Allow: the edge answers "
+                                    + "this outcome with the response of an unrouted path"),
                     () -> assertEquals(Optional.empty(), response.jsonBodyOptional(), "no body, not an empty key set"),
                     () -> assertEquals(0, recordsContaining(TestLogLevel.INFO, GENERATED_CLIENT_AUTHENTICATION_KEY),
                             "no client-authentication key was generated to answer it"));

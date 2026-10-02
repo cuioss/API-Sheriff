@@ -3795,4 +3795,148 @@ class ConfigValidatorTest {
             assertTrue(errors.stream().noneMatch(error -> POINTER.equals(error.pointer())), errors::toString);
         }
     }
+
+    /**
+     * The client JWKS path is registered verbatim and matched by exact equality with the canonical
+     * request path. A path that is not itself canonical is therefore never answered, and its canonical
+     * spelling is left to the route table; the rule refuses it at boot instead.
+     * <p>
+     * Every case runs in both client-authentication modes, because the path is reserved in both. The
+     * refused spellings are literals on purpose: each is one specific shape the rule exists to refuse,
+     * so the exact string is the contract under test. Each row also names the reason it must be
+     * refused for, so a spelling that one check stopped catching cannot pass on another's account.
+     */
+    @Nested
+    @DisplayName("oidc.client_authentication.jwks_path must be a canonical gateway path")
+    class ClientJwksPathCanonicalForm {
+
+        private static final String POINTER = "/oidc/client_authentication/jwks_path";
+        private static final String JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
+        private static final String ORIGIN = "https://gateway.example.com";
+        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+
+        /** Each refused spelling with a fragment of the reason it must be refused for. */
+        private static final List<List<String>> NON_CANONICAL_PATHS = List.of(
+                List.of("/keys/./client", "dot-segment"),
+                List.of("/keys/../client", "dot-segment"),
+                List.of("/keys/%2e/client", "dot-segment"),
+                List.of("/keys//client", "must not contain '//'"),
+                List.of("/keys/client;v=1", "matrix parameter"),
+                List.of("/keys/%63lient", "percent-encoded character"),
+                List.of("/keys/client%20set", "percent-encoded character"),
+                List.of("/keys%2Fclient", "percent-encoded '/'"),
+                List.of("/keys/client?v=1", "query or a fragment"),
+                List.of("/keys/client#set", "query or a fragment"),
+                List.of("keys/client", "must start with '/'"));
+
+        /** The two client-authentication modes; the path is reserved, and so judged, in both. */
+        enum Mode {
+
+            KEY {
+            @Override
+            OidcConfig.OidcConfigBuilder select(OidcConfig.OidcConfigBuilder oidc) {
+                return oidc;
+            }
+        },
+
+            CLIENT_SECRET {
+                @Override
+                OidcConfig.OidcConfigBuilder select(OidcConfig.OidcConfigBuilder oidc) {
+                    return oidc.clientSecret("configured-secret-value");
+                }
+            };
+
+            abstract OidcConfig.OidcConfigBuilder select(OidcConfig.OidcConfigBuilder oidc);
+        }
+
+        static Stream<Arguments> nonCanonicalPathsInBothModes() {
+            return Stream.of(Mode.values()).flatMap(mode -> NON_CANONICAL_PATHS.stream()
+                    .map(row -> Arguments.of(mode, row.getFirst(), row.getLast())));
+        }
+
+        static Stream<Arguments> canonicalPathsInBothModes() {
+            return Stream.of(Mode.values()).flatMap(mode -> Stream
+                    .of("/auth/jwks", "/keys/client.jwks", "/auth/client-keys", "/.well-known/client-jwks.json", "/jwks")
+                    .map(path -> Arguments.of(mode, path)));
+        }
+
+        private List<ConfigError> jwksPathErrors(OidcConfig.OidcConfigBuilder oidc) {
+            return validator.validate(validGateway().oidc(oidc.build()).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        /** An {@code oidc} block in the given mode that reserves a callback and declares no JWKS path. */
+        private static OidcConfig.OidcConfigBuilder inMode(Mode mode) {
+            return mode.select(OidcConfig.builder().redirectUri(ORIGIN + "/auth/callback"));
+        }
+
+        private static OidcConfig.OidcConfigBuilder declaring(Mode mode, String jwksPath) {
+            return inMode(mode).clientAuthentication(
+                    OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build());
+        }
+
+        @ParameterizedTest(name = "{0}: {1}")
+        @MethodSource("nonCanonicalPathsInBothModes")
+        @DisplayName("Should refuse a non-canonical path at the jwks_path pointer, for its own reason and without echoing it")
+        void shouldRefuseANonCanonicalPath(Mode mode, String path, String reason) {
+            List<ConfigError> errors = jwksPathErrors(declaring(mode, path));
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            ConfigError refusal = errors.getFirst();
+            assertAll("the refusal of a path that can never equal a canonical request path",
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(JWKS_PATH_KEY),
+                            () -> "the refusal must name " + JWKS_PATH_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains("canonical gateway path"),
+                            () -> "the refusal must name the defect: " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(reason),
+                            () -> "the refusal must carry the reason '" + reason + "': " + refusal.message()),
+                    () -> assertFalse(refusal.message().contains(path),
+                            () -> "the configured value must not be echoed: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "{0}: {1}")
+        @MethodSource("canonicalPathsInBothModes")
+        @DisplayName("Should admit the default spelling and an ordinary custom path")
+        void shouldAdmitACanonicalPath(Mode mode, String path) {
+            assertEquals(List.of(), jwksPathErrors(declaring(mode, path)));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(Mode.class)
+        @DisplayName("Should admit the default path when jwks_path is omitted, with and without a client_authentication block")
+        void shouldAdmitTheDefaultPath(Mode mode) {
+            OidcConfig.OidcConfigBuilder noBlock = inMode(mode);
+            OidcConfig.OidcConfigBuilder emptyBlock = inMode(mode)
+                    .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder().build());
+
+            assertAll("the default " + DEFAULT_JWKS_PATH + " is canonical",
+                    () -> assertEquals(List.of(), jwksPathErrors(noBlock), "no client_authentication block"),
+                    () -> assertEquals(List.of(), jwksPathErrors(emptyBlock), "a block that declares no jwks_path"));
+        }
+
+        /**
+         * The two refusals of the rule are independent: a path that is not canonical and that another
+         * reserved key also names is reported for both, in one pass.
+         */
+        @Test
+        @DisplayName("Should report a non-canonical path and its collision together rather than stopping at the first")
+        void shouldCollectTheCanonicalAndTheCollisionRefusalTogether() {
+            String shared = "/keys//client";
+            OidcConfig.OidcConfigBuilder oidc = declaring(Mode.KEY, shared)
+                    .logout(OidcConfig.Logout.builder().path(shared).build());
+
+            List<ConfigError> errors = jwksPathErrors(oidc);
+
+            assertAll("both violations of one jwks_path are reported",
+                    () -> assertEquals(2, errors.size(), () -> "two refusals at " + POINTER + ", got: " + errors),
+                    () -> assertTrue(errors.stream()
+                                    .anyMatch(error -> error.message().contains("canonical gateway path")),
+                            () -> "the canonical-form refusal is reported, got: " + errors),
+                    () -> assertTrue(errors.stream()
+                                    .anyMatch(error -> error.message().contains("oidc.logout.path")),
+                            () -> "the collision refusal is reported, got: " + errors));
+        }
+    }
 }

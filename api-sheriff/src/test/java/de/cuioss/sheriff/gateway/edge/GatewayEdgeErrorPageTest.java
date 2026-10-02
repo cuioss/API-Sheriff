@@ -157,6 +157,8 @@ class GatewayEdgeErrorPageTest {
     private RouteTable routes(int deadPort, int breakerPort) {
         return new RouteTable(List.of(
                 proxyRoute("echo", "/echo", upstreamServer.actualPort()).build(),
+                // Covers the reserved client JWKS path, so that path's 404 cannot be an unrouted one.
+                proxyRoute("auth", "/auth", upstreamServer.actualPort()).build(),
                 proxyRoute("capped", "/capped", upstreamServer.actualPort())
                         .effectiveAllowedMethods(List.of(HttpMethod.POST))
                         .effectiveSecurityFilter(SecurityFilterConfig.builder().maxBodyBytes(16).build()).build(),
@@ -194,6 +196,24 @@ class GatewayEdgeErrorPageTest {
     @DisplayName("an unrouted address negotiates 404")
     void unroutedAddress() throws Exception {
         assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.GET, "/nowhere", Map.of(), null, null);
+    }
+
+    /**
+     * The runtime of this fixture carries the client JWKS endpoint in its withheld form — it holds no
+     * client key — and its {@code oidc} block declares no {@code jwks_path}, so the default path is
+     * reserved. That path must negotiate exactly as the unrouted address above does: an answer that
+     * kept a shape of its own for {@code Accept: text/html} would tell a client-secret gateway from
+     * one that does not know the path.
+     * <p>
+     * The {@code /auth} proxy route of the fixture covers the path. Were the path not reserved, the
+     * stub origin would answer {@code 200} and every leg below would fail, so the {@code 404} is the
+     * reserved endpoint's and not a path that merely matches no route.
+     */
+    @Test
+    @DisplayName("the withheld client JWKS path negotiates 404 exactly as an unrouted address does")
+    void withheldClientJwksPath() throws Exception {
+        assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.GET,
+                OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH, Map.of(), null, null);
     }
 
     @Test

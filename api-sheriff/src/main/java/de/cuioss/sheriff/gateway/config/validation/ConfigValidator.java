@@ -155,7 +155,10 @@ import org.jspecify.annotations.Nullable;
  * The client JWKS path rule refuses an {@code oidc.client_authentication.jwks_path} — declared, or
  * the default it resolves to when omitted — that another reserved OIDC endpoint already claims. The
  * reserved-path registry keeps the first registration for a path, so the collision would otherwise
- * drop the key-set endpoint without a diagnostic.
+ * drop the key-set endpoint without a diagnostic. The same rule refuses a path that is not a
+ * canonical gateway path — held to the canonical-path review of {@link PortalRules}, and carrying
+ * neither a matrix parameter nor a percent-encoded character — because the path is matched by exact
+ * equality with the canonical request path and such a value would never be reserved.
  * <p>
  * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
  * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect
@@ -246,6 +249,12 @@ public final class ConfigValidator {
     @SuppressWarnings("java:S1075")
     private static final String OIDC_CLIENT_JWKS_PATH_POINTER = "/oidc/client_authentication/jwks_path";
     private static final String OIDC_CLIENT_JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
+
+    /** Opens a matrix parameter in a path segment; a client JWKS path must not carry one. */
+    private static final char MATRIX_PARAMETER_DELIMITER = ';';
+
+    /** Opens a percent-encoded octet; a client JWKS path must not carry one. */
+    private static final char PERCENT_SIGN = '%';
 
     /**
      * The fixed detail of the refusal of {@code oidc.client_secret} together with
@@ -2398,14 +2407,27 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: the client JWKS path must not be the path of another reserved OIDC endpoint.
+     * Rule: the client JWKS path must be a canonical gateway path, and must not be the path of another
+     * reserved OIDC endpoint.
      * <p>
-     * The reserved-path registry keeps the first registration for a path and registers the client
-     * JWKS path last. A JWKS path that another key of the {@code oidc} block also names — the callback
-     * of {@code redirect_uri}, the logout path, its return leg, the back-channel logout path, the
-     * user-info path or the login path — would therefore lose silently: the other endpoint would answer
-     * there, the key set would never be published, and the identity provider could not verify the
-     * gateway's client assertion. The collision is refused instead, naming both keys.
+     * <strong>Canonical form.</strong> The reserved-path registry registers the path verbatim and the
+     * edge matches it by exact equality with the canonical request path. A path that is not itself
+     * canonical — a {@code //}, a dot segment, a {@code ?} or {@code #}, a matrix parameter, a
+     * percent-encoded character, or anything else {@link #clientJwksPathRefusal} names — is never
+     * matched by a request for it, with two consequences: the key set is never published, so in key
+     * mode the identity provider cannot verify the gateway's client assertion and every login fails
+     * without a boot diagnostic; and in both client-authentication modes the canonical spelling of
+     * the path is left unreserved and falls through to the route table, where a proxied upstream
+     * could answer under the client's key-set URL. Such a path is refused instead, with a fixed
+     * reason that never echoes the configured value.
+     * <p>
+     * <strong>No collision.</strong> The reserved-path registry keeps the first registration for a
+     * path and registers the client JWKS path last. A JWKS path that another key of the {@code oidc}
+     * block also names — the callback of {@code redirect_uri}, the logout path, its return leg, the
+     * back-channel logout path, the user-info path or the login path — would therefore lose silently:
+     * the other endpoint would answer there, the key set would never be published, and the identity
+     * provider could not verify the gateway's client assertion. The collision is refused instead,
+     * naming both keys.
      * <p>
      * The path is read through {@link OidcConfig#effectiveClientJwksPath()}, the accessor the registry
      * resolves it with, and the owner of the path through
@@ -2415,15 +2437,25 @@ public final class ConfigValidator {
      * is refused like one that declares the collision outright.
      * <p>
      * The rule does not read the client-authentication mode. The path is reserved with a client secret
-     * configured too, so the collision is the same defect in both modes. Every violation collects into
-     * the shared list; the rule never fails fast (ADR-0009).
+     * configured too, so a non-canonical path and a collision are the same defects in both modes. The
+     * two refusals are independent, and every violation collects into the shared list; the rule never
+     * fails fast (ADR-0009).
      */
     private static void validateClientJwksPath(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();
         if (oidc == null) {
             return;
         }
-        ReservedPathRegistry.reservedKind(oidc, oidc.effectiveClientJwksPath())
+        String path = oidc.effectiveClientJwksPath();
+        clientJwksPathRefusal(path).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
+                OIDC_CLIENT_JWKS_PATH_POINTER,
+                ("%s must be a canonical gateway path: %s. A request for the configured path would never "
+                        + "be answered by the key-set endpoint, and the canonical spelling of the path "
+                        + "would not be reserved — declare a canonical path, or omit the key for the "
+                        + "default %s")
+                        .formatted(OIDC_CLIENT_JWKS_PATH_KEY, reason,
+                                OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH))));
+        ReservedPathRegistry.reservedKind(oidc, path)
                 .filter(owner -> owner != ReservedEndpoint.CLIENT_JWKS)
                 .ifPresent(owner -> errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_JWKS_PATH_POINTER,
                         ("%s and %s resolve to the same gateway path; two reserved endpoints cannot share one "
@@ -2434,6 +2466,36 @@ public final class ConfigValidator {
                                         OIDC_CLIENT_JWKS_PATH_KEY,
                                         OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH,
                                         OIDC_CLIENT_JWKS_PATH_KEY, reservedPathKey(owner)))));
+    }
+
+    /**
+     * The reason a client JWKS path is not a canonical gateway path, or empty when it is one.
+     * <p>
+     * The review is {@link PortalRules#canonicalPathRefusal(String)} — the one {@code portal.path} is
+     * held to, reused here rather than restated — followed by two refusals that review does not make.
+     * Both name a path that could never be answered at the URL an operator would register for it:
+     * <ul>
+     *   <li><strong>A matrix parameter.</strong> The canonical-path guard refuses every request whose
+     *       path carries a {@code ;}, so a request for the configured URL is answered {@code 400}
+     *       and never the key set.</li>
+     *   <li><strong>A {@code %}.</strong> The request path is percent-decoded before it is matched, so
+     *       an encoded character in the configured path never equals the decoded one the request
+     *       yields.</li>
+     * </ul>
+     * Every reason is fixed text; none echoes the configured value.
+     */
+    private static Optional<String> clientJwksPathRefusal(String path) {
+        Optional<String> shared = PortalRules.canonicalPathRefusal(path);
+        if (shared.isPresent()) {
+            return shared;
+        }
+        if (path.indexOf(MATRIX_PARAMETER_DELIMITER) >= 0) {
+            return Optional.of("a matrix parameter (';') is refused on every request path");
+        }
+        if (path.indexOf(PERCENT_SIGN) >= 0) {
+            return Optional.of("a percent-encoded character is decoded before the request path is matched");
+        }
+        return Optional.empty();
     }
 
     /**
