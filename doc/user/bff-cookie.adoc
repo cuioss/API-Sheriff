@@ -178,13 +178,12 @@ block, and nothing else but whitespace:
 
 [source,text]
 ----
------BEGIN PRIVATE KEY-----
-...
------END PRIVATE KEY-----
------BEGIN PUBLIC KEY-----
-...
------END PUBLIC KEY-----
+<one PEM block labelled PRIVATE KEY: the unencrypted PKCS#8 private key>
+<one PEM block labelled PUBLIC KEY: the public half of the same key>
 ----
+
+The exhibit describes the two blocks instead of printing their `BEGIN` and `END` armour lines, so
+that a secret scanner does not take this page for a key file.
 
 *The `PUBLIC KEY` block is mandatory for every key type, RSA included.* The gateway publishes the
 public half of the client-authentication key and embeds that of the proof key in its proofs, and it
@@ -336,13 +335,15 @@ at the token endpoint. This was seen on Keycloak 26.5.7; no test asserts it.
 
 === What the browser sees at login
 
-The gateway pushes the authorization request to the identity provider and redirects the browser with
-two parameters only, `client_id` and `request_uri`. No scope, no `state` and no redirect URI travel
-in that redirect. Keycloak 26.5.7 answers that redirect with a further `302` to its own
-`login-actions/authenticate` page before it shows the login form.
+The gateway pushes the authorization request to the identity provider and redirects the browser to
+the authorization endpoint. It adds two parameters to that URL and no other: `client_id` and
+`request_uri`. No scope, no `state` and no redirect URI travel in that redirect. A query that the
+identity provider's authorization endpoint URL itself carries is kept as it is. Keycloak 26.5.7
+answers that redirect with a further `302` to its own `login-actions/authenticate` page before it
+shows the login form.
 
-A widening of a live session is pushed in the same way, so its redirect carries `client_id` and
-`request_uri` only as well.
+A widening of a live session is pushed in the same way, so the gateway adds `client_id` and
+`request_uri` only to its redirect as well.
 
 If the identity provider offers no pushed-authorization-request endpoint, or the push fails, the
 login -- or the widening, which then leaves the session as it was -- is refused with `502`. The gateway logs `WARN` `ApiSheriff-132` with the reason, once per

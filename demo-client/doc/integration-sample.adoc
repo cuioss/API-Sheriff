@@ -40,8 +40,9 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 
 | navigate `/auth/login?returnUrl=...`
 | `302`
-| Into the OIDC authorization endpoint, with `client_id` and `request_uri` as the only query
-  parameters. This is a *top-level navigation*, never a `fetch`.
+| Into the OIDC authorization endpoint. The gateway adds two query parameters, `client_id` and
+  `request_uri`, and no other; a query the endpoint URL itself carries is kept. This is a
+  *top-level navigation*, never a `fetch`.
 
 | `/auth/callback?code&state`
 | `302`
@@ -97,8 +98,10 @@ The whole leg is navigations the browser performs; your application starts it an
 
 . The application navigates to `/auth/login?returnUrl=/some/page`. The gateway pushes the
   authorization request to the identity provider over its own back channel, sets a short-lived,
-  `HttpOnly` browser-binding cookie and `302`s to the identity provider. *That first redirect carries
-  only `client_id` and `request_uri`*: no scope, no `state` and no redirect URI travel in it.
+  `HttpOnly` browser-binding cookie and `302`s to the identity provider. *Of the authorization
+  request, that first redirect carries only `client_id` and `request_uri`*: no scope, no `state` and
+  no redirect URI travel in it. A query that is part of the identity provider's authorization
+  endpoint URL stays in place.
 . The user authenticates at the identity provider. Keycloak 26.5.7 answers the redirect above with a
   further `302` to its own `login-actions/authenticate` page, and that page is the login form. The
   browser follows it; your application does not see it.

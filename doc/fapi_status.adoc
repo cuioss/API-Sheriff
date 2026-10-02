@@ -37,8 +37,10 @@ a *client* (relying party), so only the client-side requirements are assessed he
 the authorization server are the IdP's concern (Keycloak, in the reference topology) and are out of
 scope for this document.
 
-The rows below were verified first-party against the source of API Sheriff and of the
-`token-sheriff-client` engine it consumes, at the pinned version 0.9.6. Where a capability exists in
+The rows below were verified against the source of API Sheriff. The source of the
+`token-sheriff-client` engine it consumes is not in this repository: what the rows say about the
+engine rests on the behaviour of the published artifact at the pinned version 0.9.6, as the unit
+tests and the integration stack exercise it. Where a capability exists in
 the engine but is not wired by the gateway, that distinction is stated explicitly -- *a capability
 present in a dependency is not a capability of the product.* What the running integration stack
 showed is kept apart, in <<_observed_on_the_integration_stack>>.
@@ -74,7 +76,8 @@ Two terms are used throughout:
   the session widening (`SessionWidening` -- its silent attempt and its one interactive re-drive,
   started by a session route or by the step-up path) and the RFC 9470 step-up re-drive
   (`StepUpCoordinator`). It pushes the parameters of the request the engine rendered and redirects
-  the browser with `client_id` and `request_uri` only. There is no front-channel fallback: a provider
+  the browser to the authorization endpoint, adding `client_id` and `request_uri` and no other
+  parameter; a query the endpoint URL itself carries is kept. There is no front-channel fallback: a provider
   without a PAR endpoint, and a push that fails, refuse the login or the widening with `502`. What
   the pushed request of a widening carries -- the scope set and, on the silent attempt,
   `prompt=none` -- is proven at unit level against a stub identity provider. On the integration

@@ -276,7 +276,7 @@ The `integration` realm declares five clients:
 
 | `integration-client`
 | `private_key_jwt`; Keycloak fetches the key from a JWKS URL
-| The ten gateway instances that are not a refresh instance.
+| The ten gateway instances other than `api-sheriff-refresh` and `api-sheriff-cookie-refresh`.
 
 | `cookie-refresh-client`
 | `private_key_jwt`; the same JWKS URL

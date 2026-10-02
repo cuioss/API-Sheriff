@@ -2812,13 +2812,13 @@ block, the two halves of one key, and nothing else but whitespace. The file is l
 
 [source,text]
 ----
------BEGIN PRIVATE KEY-----
-...
------END PRIVATE KEY-----
------BEGIN PUBLIC KEY-----
-...
------END PUBLIC KEY-----
+<one PEM block labelled PRIVATE KEY: the unencrypted PKCS#8 private key>
+<one PEM block labelled PUBLIC KEY: the public half of the same key>
 ----
+
+The exhibit describes the two blocks instead of printing their `BEGIN` and `END` armour lines, so
+that a secret scanner does not take this page for a key file. The commands below write the real
+armour.
 
 *The `PUBLIC KEY` block is mandatory for every key type, RSA included.* The gateway publishes the
 public half of the client-authentication key at the JWKS endpoint and embeds that of the proof key in

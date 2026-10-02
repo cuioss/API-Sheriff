@@ -2507,9 +2507,10 @@ registration therefore cannot be answered by a proxied upstream under that URL.
 *Status:* COVERED, with the residuals below accepted.
 
 *Residual risk (accepted) -- a generated key behind more than one replica.* Each replica generates
-its own key and publishes its own key set. The identity provider fetches from whichever replica
-answers and verifies assertions signed by any of them, so client authentication fails
-intermittently. The control is operational and stated in the operator documentation: every replica
+its own key and publishes its own key set. The identity provider fetches the key set from whichever
+replica answers that fetch and then trusts that replica's key only. An assertion signed by another
+replica is refused until the identity provider fetches again and happens to reach the signer, so
+client authentication fails intermittently. The control is operational and stated in the operator documentation: every replica
 behind one identity-provider client is given the same key files. The gateway cannot see its
 siblings and does not detect the condition.
 

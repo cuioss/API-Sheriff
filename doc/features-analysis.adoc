@@ -54,7 +54,7 @@ set of things well, with zero mandatory external dependencies.
 | Inspired by APISIX `openid-connect`. The headline BFF capability, and the one feature
   only APISIX offers in OSS. Mechanism: the authorization request is pushed to the IdP over the
   back channel, the browser is sent to the IdP authorization endpoint with `client_id` and
-  `request_uri` only, the code is exchanged server-to-server, tokens are kept out of
+  `request_uri` as the only parameters the gateway adds, the code is exchanged server-to-server, tokens are kept out of
   browser-readable storage, and upstream requests carry an injected `Authorization: Bearer`. The
   gateway authenticates to the IdP with `private_key_jwt` by default; a client secret
   is an operator choice (see the PAR row under <<_differentiators>>). See
