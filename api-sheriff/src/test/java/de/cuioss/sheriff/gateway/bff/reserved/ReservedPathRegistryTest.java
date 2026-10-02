@@ -220,7 +220,7 @@ class ReservedPathRegistryTest {
 
         @Test
         @DisplayName("Should return every reserved path in declaration order, the client JWKS path last")
-        void shouldReturnEveryConfiguredPath() {
+        void shouldReturnEveryReservedPathInDeclarationOrderWithTheClientJwksPathLast() {
             assertEquals(List.of(CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, USER_INFO_PATH,
                     LOGIN_PATH, DEFAULT_JWKS_PATH), List.copyOf(ReservedPathRegistry.reservedPaths(allSevenKinds())));
         }

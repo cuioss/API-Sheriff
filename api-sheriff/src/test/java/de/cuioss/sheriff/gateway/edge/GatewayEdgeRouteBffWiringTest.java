@@ -24,6 +24,7 @@ import java.lang.annotation.Annotation;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -76,6 +77,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
@@ -928,6 +930,199 @@ class GatewayEdgeRouteBffWiringTest {
                     .match(MatchConfig.builder().pathPrefix("/auth").build())
                     .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                     .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                    .build();
+        }
+    }
+
+    /**
+     * What a request reaches when the client JWKS path is one the boot refuses as non-canonical.
+     * <p>
+     * The configuration validator refuses such a path, so no booted gateway carries one. The edge is
+     * handed the {@code oidc} block directly here, which stages the state the refusal prevents: a
+     * publishing key-set endpoint reserved at the non-canonical path, next to a proxy route that claims
+     * the {@code /keys} prefix. Each request is answered in one of three ways, told apart by the answer
+     * itself — the key set, the stub upstream, or the {@code 400} of the pre-route floor.
+     * <p>
+     * Two findings are pinned, under the {@code strict} and the {@code lenient} baseline alike:
+     * <ul>
+     *   <li><strong>A path carrying a percent-encoded character is reached by no spelling.</strong> The
+     *       request spelled as configured decodes to the canonical spelling, which is not reserved and
+     *       is proxied; a spelling that would decode to the configured string is refused as double
+     *       encoding.</li>
+     *   <li><strong>A path carrying a matrix parameter is not reached by the request spelled as
+     *       configured</strong>, which the canonical-path guard refuses. It <em>is</em> reached by the
+     *       spelling that percent-encodes the {@code ;}: the guard reads the raw path, and the registry
+     *       matches the decoded one.</li>
+     * </ul>
+     * The paths and the request spellings are literals on purpose: each is the one spelling the claim
+     * is about.
+     */
+    @Nested
+    @DisplayName("a client JWKS path the boot refuses as non-canonical: which request spellings reach the key set")
+    class NonCanonicalClientJwksPath {
+
+        private static final String CANONICAL_PATH = "/keys/client";
+        private static final String PERCENT_ENCODED_PATH = "/keys/%63lient";
+        private static final String MATRIX_PARAMETER_PATH = "/keys/client;v=1";
+        /** The host an identity provider dials: the client JWKS path is matched on every host. */
+        private static final String FOREIGN_HOST = "gateway.internal";
+        private static final String UPSTREAM_BODY = "upstream";
+
+        /** How the edge answered one request. */
+        enum Answered {
+
+            /** The key-set endpoint answered with the published key set. */
+            KEY_SET,
+
+            /** The request was routed to the {@code /keys} proxy route and reached the stub upstream. */
+            PROXIED,
+
+            /** The pre-route floor refused the request with {@code 400}. */
+            REFUSED
+        }
+
+        private final List<HttpServer> fronts = new ArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpClient client;
+        private ClientSigningKey signingKey;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
+                    request.body().onComplete(_ -> request.response().end(UPSTREAM_BODY)))
+                    .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+            signingKey = ClientSigningKey.resolve(null, ClientSigningKey.Purpose.CLIENT_AUTHENTICATION);
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            for (HttpServer front : fronts) {
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+            Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @ParameterizedTest(name = "profile {0}")
+        @CsvSource({"strict", "lenient"})
+        @DisplayName("control: a canonical path is answered with the key set, and a sibling path is proxied")
+        void shouldAnswerACanonicalPathWithTheKeySet(String profile) throws Exception {
+            HttpServer front = startEdge(profile, CANONICAL_PATH);
+
+            assertAll("the fixture tells the three answers apart",
+                    () -> assertEquals(Answered.KEY_SET, answered(front, CANONICAL_PATH),
+                            "the reserved path is answered by the key-set endpoint"),
+                    () -> assertEquals(Answered.PROXIED, answered(front, "/keys/other"),
+                            "an unreserved path under the same prefix reaches the upstream"));
+        }
+
+        @ParameterizedTest(name = "profile {0}: GET {1} is {2}")
+        @CsvSource({
+                "strict,/keys/%63lient,PROXIED",
+                "strict,/keys/%2563lient,REFUSED",
+                "strict,/keys/%25%36%33lient,REFUSED",
+                "lenient,/keys/%63lient,PROXIED",
+                "lenient,/keys/%2563lient,REFUSED",
+                "lenient,/keys/%25%36%33lient,REFUSED"})
+        @DisplayName("a path with a percent-encoded character: neither the configured spelling nor a double-encoded one reaches the key set")
+        void shouldReachAPercentEncodedPathWithNoSpelling(String profile, String requestUri, Answered expected)
+                throws Exception {
+            HttpServer front = startEdge(profile, PERCENT_ENCODED_PATH);
+
+            assertEquals(expected, answered(front, requestUri),
+                    "the request path is decoded once and a second encoding layer is refused, so no "
+                            + "canonical request path carries the '%' the configured path does");
+        }
+
+        @ParameterizedTest(name = "profile {0}: GET {1} is {2}")
+        @CsvSource({
+                "strict,/keys/client;v=1,REFUSED",
+                "strict,/keys/client%3Bv=1,KEY_SET",
+                "strict,/keys/client%3bv=1,KEY_SET",
+                "lenient,/keys/client;v=1,REFUSED",
+                "lenient,/keys/client%3Bv=1,KEY_SET",
+                "lenient,/keys/client%3bv=1,KEY_SET"})
+        @DisplayName("a path with a matrix parameter: the configured spelling is refused, the spelling with the ';' percent-encoded reaches the key set")
+        void shouldReachAMatrixParameterPathOnlyWithTheSemicolonEncoded(String profile, String requestUri,
+                Answered expected) throws Exception {
+            HttpServer front = startEdge(profile, MATRIX_PARAMETER_PATH);
+
+            assertEquals(expected, answered(front, requestUri),
+                    "the canonical-path guard reads the raw path, the registry matches the decoded one");
+        }
+
+        /**
+         * Starts an edge whose {@code oidc} block reserves {@code jwksPath} verbatim, under the given
+         * {@code security_defaults.profile}, with a publishing key-set endpoint and the {@code /keys}
+         * proxy route. The block is handed to the edge without passing the configuration validator.
+         */
+        private HttpServer startEdge(String profile, String jwksPath) throws Exception {
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri(ORIGIN + CALLBACK_PATH)
+                    .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build())
+                    .build();
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
+                    .securityDefaults(new SecurityDefaultsConfig(profile, null, null, null)).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(keysPrefixRoute(upstream.actualPort()))),
+                    gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(new InMemorySessionStore(16)),
+                            new ClientJwksEndpoint(signingKey.publicJwk())),
+                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            fronts.add(front);
+            return front;
+        }
+
+        /** Sends a credential-free {@code GET} for {@code uri}, spelled exactly as given, and classifies the answer. */
+        private Answered answered(HttpServer front, String uri) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(FOREIGN_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+            return Awaits.connect(client.request(options).compose(HttpClientRequest::send)
+                            .compose(response -> response.body().map(body ->
+                                    classify(uri, response.statusCode(), body.toString()))),
+                    "the edge response to GET " + uri);
+        }
+
+        private Answered classify(String uri, int status, String body) {
+            if (status == 400) {
+                return Answered.REFUSED;
+            }
+            if (status == 200 && UPSTREAM_BODY.equals(body)) {
+                return Answered.PROXIED;
+            }
+            if (status == 200 && Map.of("keys", List.of(signingKey.publicJwk())).equals(new JsonObject(body).getMap())) {
+                return Answered.KEY_SET;
+            }
+            throw new AssertionError("GET " + uri + " was answered " + status + ", which is none of the three "
+                    + "answers this fixture produces");
+        }
+
+        /** A credential-free proxy route claiming the whole {@code /keys} prefix on every host. */
+        private static ResolvedRoute keysPrefixRoute(int upstreamPort) {
+            return ResolvedRoute.builder()
+                    .id("keys-proxy")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/keys").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
         }

@@ -3001,8 +3001,11 @@ generated key at all.
   canonical gateway path -- a `//`, a dot segment, a matrix parameter (`;`), a percent-encoded
   character, or anything else the canonical-path review of `portal.path` refuses -- is refused at
   the same pointer, in both client-authentication modes. The path is matched by exact equality with
-  the canonical request path, so such a value would never publish the key set and would leave its
-  canonical spelling unreserved.
+  the canonical request path, so a request that spells such a value as configured would never be
+  answered with the key set, and the canonical path that request resolves to would be left
+  unreserved. That is a statement about the configured spelling: a value carrying a percent-encoded
+  character is reached by no request at all, while a value carrying a matrix parameter would be
+  reached by a request that percent-encodes the `;` -- a URL no operator registers.
 |===
 
 [[_oidc_sender_constraint]]
@@ -4327,7 +4330,8 @@ control, which is the rule above doing exactly the work it was added for.
   values (`client_authentication.key_file`, `sender_constraint.key_file`) are locations, not secrets,
   and are not held to this rule: a literal path and a defaulted placeholder are both accepted.
 * `oidc.client_secret` together with `oidc.client_authentication.key_file` fails the boot. The two
-  select different client authentications, so exactly one of them may be configured. A declared
+  select different client authentications, so at most one of them may be configured; declaring
+  neither is valid and selects `private_key_jwt` with a generated key. A declared
   `oidc.client_secret` that resolves to a blank value fails the boot as well. Both are reported at
   `/oidc/client_secret` with a fixed text that names the keys and carries neither the secret nor the
   configured path (see link:#_oidc_client_authentication[Client authentication]).

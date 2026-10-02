@@ -573,9 +573,35 @@ class PushedAuthorizationRequestsTest {
         assertEquals(2, refusalRecords().size(), "each adapter records the reason once");
     }
 
+    /**
+     * The step-up re-drive pushes through the same adapter instance as the login, and the adapter is
+     * not told which of the two it serves. The record therefore names the consequence both share and
+     * neither caller: the same text is recorded for a refused login request and a refused step-up
+     * request.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(PushedRequest.class)
+    @DisplayName("Should record a refused push in one text for a login and a step-up request, naming neither")
+    void shouldRecordARefusedPushWithoutNamingTheCaller(PushedRequest kind) {
+        ClientConfiguration configuration = configuration();
+        ProviderMetadata metadata = metadata(null);
+        String authorizationUrl = REQUEST_BUILDER.build(configuration, metadata, kind.context());
+        PushedAuthorizationRequests adapter = adapter(configuration);
+
+        GatewayException refused = assertThrows(GatewayException.class,
+                () -> adapter.push(metadata, CLIENT_ID, authorizationUrl));
+
+        assertRefusedWithoutARequest(refused, REASON_NO_PAR_ENDPOINT);
+        String recorded = String.valueOf(refusalRecords().getFirst().getMessage());
+        assertTrue(recorded.endsWith("Pushed authorization request refused: " + REASON_NO_PAR_ENDPOINT
+                        + " — no redirect to the identity provider was issued; further refusals with this reason"
+                        + " stay at DEBUG"),
+                "the record states what holds for a login and for a step-up re-drive alike: " + recorded);
+    }
+
     @Test
     @DisplayName("Should disclose neither state, nonce, PKCE challenge and client assertion nor the request_uri")
-    void shouldDiscloseNothingOfTheRequest(URIBuilder uriBuilder) {
+    void shouldDiscloseNeitherStateNonceChallengeAndAssertionNorTheRequestUri(URIBuilder uriBuilder) {
         ClientConfiguration configuration = configuration(READ_TIMEOUT_SECONDS);
         ProviderMetadata metadata = metadata(parEndpoint(uriBuilder));
         FlowContext refusedContext = FlowContext.create(REDIRECT_URI);

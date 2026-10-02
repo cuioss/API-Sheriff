@@ -59,9 +59,11 @@ published key and a second accepted proof key.
 
 === `EdDSA`
 
-FAPI 2.0 §5.4.1 permits `EdDSA` with Ed25519. The gateway offers `PS256` and `ES256` only, because
-the engine's client-assertion signer signs the `RS`, `PS` and `ES` families and nothing else. An
-Ed25519 key file is refused at boot.
+FAPI 2.0 §5.4.1 permits `EdDSA` with Ed25519. The gateway offers `PS256` and `ES256` only. For the
+client-authentication key the reason is the engine: its client-assertion signer signs the `RS`, `PS`
+and `ES` families and nothing else. For the DPoP proof key the reason is the gateway's own rule: the
+engine's proof signer does sign `EdDSA`, and the gateway holds both keys to the same two key types
+rather than adding a third for one purpose. An Ed25519 key file is refused at boot for either key.
 
 === Binding the authorization code to the proof key
 

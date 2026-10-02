@@ -103,8 +103,9 @@ Two terms are used throughout:
 | `ClientSigningKey` derives the algorithm from the key and offers no algorithm setting. An RSA key
   of at least 2048 bits signs `PS256`. An EC key on curve P-256 signs `ES256`. Both floors are
   checked at boot, for a provided and for a generated key alike. The `RS256` family is unreachable:
-  no key type maps to it. `EdDSA` is not offered, because the engine's client-assertion signer does
-  not sign it; an Ed25519 key file is refused at boot.
+  no key type maps to it. `EdDSA` is not offered for either key: the engine's client-assertion signer
+  does not sign it, and the proof key is held to the same two key types although the engine's proof
+  signer would sign it; an Ed25519 key file is refused at boot.
 
 | Server-provided DPoP nonce (§5.3.3.1 item 8)
 | *PARTIAL*

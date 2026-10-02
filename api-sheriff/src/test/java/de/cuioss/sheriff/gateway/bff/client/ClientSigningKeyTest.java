@@ -48,6 +48,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey.Mode;
 import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey.Purpose;
+import de.cuioss.sheriff.token.client.auth.PrivateKeyJwtAuth;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.validation.util.JwkThumbprintUtil;
@@ -168,19 +169,25 @@ class ClientSigningKeyTest {
                 () -> assertNull(thrown.getCause(), "no cause should be chained, a JDK failure text carries the path"));
     }
 
-    /** Asserts a refusal decided on the file content: additionally, no line of the file is echoed. */
+    /** Asserts a refusal decided on the file content of the client-authentication key. */
     private static void assertContentRefusal(Path keyFile, String defect) throws IOException {
+        assertContentRefusal(keyFile, Purpose.CLIENT_AUTHENTICATION, CLIENT_AUTHENTICATION_FIELD, defect);
+    }
+
+    /** Asserts a refusal decided on the file content: additionally, no line of the file is echoed. */
+    private static void assertContentRefusal(Path keyFile, Purpose purpose, String field, String defect)
+            throws IOException {
         List<String> contentLines = Files.readAllLines(keyFile, StandardCharsets.US_ASCII).stream()
                 .filter(line -> !line.isBlank() && !line.startsWith("-----"))
                 .toList();
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> ClientSigningKey.resolve(keyFile.toString(), Purpose.CLIENT_AUTHENTICATION),
+                () -> ClientSigningKey.resolve(keyFile.toString(), purpose),
                 "the key file should be refused");
 
         String message = thrown.getMessage();
         assertAll("refusal of " + defect,
-                () -> assertTrue(message.startsWith(CLIENT_AUTHENTICATION_FIELD + " "),
+                () -> assertTrue(message.startsWith(field + " "),
                         "the refusal should name the field: " + message),
                 () -> assertTrue(message.contains(defect), "the refusal should name the defect: " + message),
                 () -> assertFalse(message.contains(keyFile.toString()), "the configured path should never be echoed"),
@@ -551,11 +558,50 @@ class ClientSigningKeyTest {
     @DisplayName("Refusal of an unsupported or inconsistent key")
     class KeyRefusal {
 
+        /**
+         * The reason is one text for both purposes, so it must be true of both. The engine's
+         * client-assertion signer does not sign {@code EdDSA} and its DPoP proof signer does, so a
+         * reason naming either signer would be untrue for the other key; the refusal names the
+         * gateway's own rule instead — both keys are held to the same two key types.
+         */
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(Purpose.class)
+        @DisplayName("Should refuse an Ed25519 key for either purpose, naming the purpose's field and no signer")
+        void shouldRefuseAnEd25519KeyForEitherPurpose(Purpose purpose) throws Exception {
+            Path keyFile = TestSigningKeys.writeKeyFile(directory, TestSigningKeys.ed25519KeyPair());
+            String field = switch (purpose) {
+                case CLIENT_AUTHENTICATION -> CLIENT_AUTHENTICATION_FIELD;
+                case SENDER_CONSTRAINT -> SENDER_CONSTRAINT_FIELD;
+            };
+
+            assertContentRefusal(keyFile, purpose, field, "holds an EdDSA key; EdDSA is not offered: both signing "
+                    + "keys are held to the same two key types, RSA signing PS256 and EC on curve P-256 signing "
+                    + "ES256 — provide an RSA key of at least 2048 bits or an EC key on curve P-256");
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> ClientSigningKey.resolve(keyFile.toString(), purpose));
+            assertFalse(refused.getMessage().contains("signer"),
+                    "the reason names no signer, because no one signer is the reason for both keys: "
+                            + refused.getMessage());
+        }
+
+        /**
+         * The matched control for the reason above, read from the engine itself: its DPoP proof signer
+         * accepts an Ed25519 key and its client-assertion signer refuses {@code EdDSA}. If either
+         * changes, the refusal text is due for review.
+         */
         @Test
-        @DisplayName("Should refuse an Ed25519 key and state that EdDSA is not offered")
-        void shouldRefuseAnEd25519Key() throws Exception {
-            assertContentRefusal(TestSigningKeys.writeKeyFile(directory, TestSigningKeys.ed25519KeyPair()),
-                    "holds an EdDSA key; EdDSA is not offered");
+        @DisplayName("Should find the engine signing EdDSA for a DPoP proof and refusing it for a client assertion")
+        void shouldFindTheEngineSigningEdDsaForProofsOnly() {
+            KeyPair ed25519 = TestSigningKeys.ed25519KeyPair();
+            String clientId = Generators.letterStrings(8, 24).next();
+
+            assertAll("EdDSA at the two engine signers",
+                    () -> assertFalse(new DpopProofGenerator(ed25519, "EdDSA").jkt().isBlank(),
+                            "the engine's proof signer accepts an Ed25519 key"),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> new PrivateKeyJwtAuth(clientId, "https://idp.example/realms/main",
+                                    ed25519.getPrivate(), "kid", "EdDSA"),
+                            "the engine's client-assertion signer refuses EdDSA"));
         }
 
         @Test

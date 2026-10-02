@@ -259,12 +259,13 @@ public final class ConfigValidator {
     /**
      * The fixed detail of the refusal of {@code oidc.client_secret} together with
      * {@code oidc.client_authentication.key_file}. Fixed text, so the boot log echoes neither the
-     * secret nor the configured path.
+     * secret nor the configured path. It says "at most one", not "exactly one": a document declaring
+     * neither is valid and authenticates with a generated key.
      */
     private static final String CLIENT_SECRET_WITH_KEY_FILE_DETAIL =
             "oidc.client_secret and oidc.client_authentication.key_file are both declared; the two select "
                     + "different client authentications — client_secret selects client_secret_basic, "
-                    + "client_authentication.key_file selects private_key_jwt — so exactly one of them may be "
+                    + "client_authentication.key_file selects private_key_jwt — so at most one of them may be "
                     + "configured: remove oidc.client_secret to authenticate with the key, or remove "
                     + "oidc.client_authentication.key_file to authenticate with the secret";
 
@@ -2414,12 +2415,21 @@ public final class ConfigValidator {
      * edge matches it by exact equality with the canonical request path. A path that is not itself
      * canonical — a {@code //}, a dot segment, a {@code ?} or {@code #}, a matrix parameter, a
      * percent-encoded character, or anything else {@link #clientJwksPathRefusal} names — is never
-     * matched by a request for it, with two consequences: the key set is never published, so in key
-     * mode the identity provider cannot verify the gateway's client assertion and every login fails
-     * without a boot diagnostic; and in both client-authentication modes the canonical spelling of
-     * the path is left unreserved and falls through to the route table, where a proxied upstream
-     * could answer under the client's key-set URL. Such a path is refused instead, with a fixed
-     * reason that never echoes the configured value.
+     * matched by a request that spells it as configured, with two consequences: the key set is not
+     * published at the URL the operator registers, so in key mode the identity provider cannot fetch
+     * the key that verifies the gateway's client assertion and every login fails without a boot
+     * diagnostic; and in both client-authentication modes the canonical path such a request resolves
+     * to is left unreserved and falls through to the route table, where a proxied upstream could
+     * answer under the client's key-set URL. Such a path is refused instead, with a fixed reason that
+     * never echoes the configured value.
+     * <p>
+     * The claim is about the configured spelling, not about every request. A path carrying a
+     * percent-encoded character is matched by no request at all: the request path is decoded once
+     * and a second encoding layer is refused. A path carrying a matrix parameter <em>is</em> matched
+     * by a request that percent-encodes the {@code ;}, because the canonical-path guard reads the raw
+     * path and the registry matches the decoded one — which is no URL an operator registers, so the
+     * refusal stands on the configured spelling alone
+     * ({@code GatewayEdgeRouteBffWiringTest.NonCanonicalClientJwksPath} pins both).
      * <p>
      * <strong>No collision.</strong> The reserved-path registry keeps the first registration for a
      * path and registers the client JWKS path last. A JWKS path that another key of the {@code oidc}
@@ -2449,10 +2459,10 @@ public final class ConfigValidator {
         String path = oidc.effectiveClientJwksPath();
         clientJwksPathRefusal(path).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
                 OIDC_CLIENT_JWKS_PATH_POINTER,
-                ("%s must be a canonical gateway path: %s. A request for the configured path would never "
-                        + "be answered by the key-set endpoint, and the canonical spelling of the path "
-                        + "would not be reserved — declare a canonical path, or omit the key for the "
-                        + "default %s")
+                ("%s must be a canonical gateway path: %s. A request that spells the path as configured "
+                        + "would never be answered by the key-set endpoint, and where such a request "
+                        + "resolves to a canonical path, the key-set endpoint would not be reserved "
+                        + "there — declare a canonical path, or omit the key for the default %s")
                         .formatted(OIDC_CLIENT_JWKS_PATH_KEY, reason,
                                 OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH))));
         ReservedPathRegistry.reservedKind(oidc, path)
@@ -2476,11 +2486,12 @@ public final class ConfigValidator {
      * Both name a path that could never be answered at the URL an operator would register for it:
      * <ul>
      *   <li><strong>A matrix parameter.</strong> The canonical-path guard refuses every request whose
-     *       path carries a {@code ;}, so a request for the configured URL is answered {@code 400}
+     *       raw path carries a {@code ;}, so a request for the configured URL is answered {@code 400}
      *       and never the key set.</li>
      *   <li><strong>A {@code %}.</strong> The request path is percent-decoded before it is matched, so
      *       an encoded character in the configured path never equals the decoded one the request
-     *       yields.</li>
+     *       yields; and a request path carrying a second encoding layer is refused, so no request
+     *       yields the configured string either.</li>
      * </ul>
      * Every reason is fixed text; none echoes the configured value.
      */

@@ -302,7 +302,7 @@ class BoundTokenEndpointClientTest {
 
     @Test
     @DisplayName("Should refuse the Bearer response of a call made without a sender constraint")
-    void shouldRefuseACallMadeWithoutASenderConstraint() {
+    void shouldRefuseTheBearerResponseOfACallMadeWithoutASenderConstraint() {
         Scripted scripted = script(TYPE_BEARER, AccessTokenShape.WITHOUT_CNF);
         String tokenEndpoint = stub.url(StubIdentityProvider.Endpoint.TOKEN);
         Map<String, String> form = form(REFRESH_TOKEN);

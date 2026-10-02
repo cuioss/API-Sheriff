@@ -21,8 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
@@ -43,6 +47,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -172,11 +177,36 @@ class ConfigValidatorPortalTest {
                     .build();
         }
 
+        /**
+         * The paths {@link #oidc()} reserves, one per reserved kind: the six it declares, and the client
+         * JWKS path, which it reserves at the default without declaring it.
+         */
+        private static final List<String> EVERY_RESERVED_PATH =
+                List.of(CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN, DEFAULT_CLIENT_JWKS);
+
+        static Stream<String> everyReservedPath() {
+            return EVERY_RESERVED_PATH.stream();
+        }
+
         @ParameterizedTest(name = "refuses the reserved path {0}")
-        @ValueSource(strings = {CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN})
+        @MethodSource("everyReservedPath")
         void refusesEveryReservedPathKind(String reserved) {
             assertRefused(portalErrors(gateway(portal(reserved), oidc()), List.of()),
                     PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+        }
+
+        /**
+         * What makes "every" in the test above true, and keeps it true: the parameter list is exactly
+         * the set the registry derives from the fixture, and that set holds one path per reserved
+         * kind. A reserved kind added to the registry fails here until the fixture and the list carry
+         * its path.
+         */
+        @Test
+        void everyReservedPathCoversOnePathPerReservedKind() {
+            assertEquals(ReservedPathRegistry.reservedPaths(oidc()), Set.copyOf(EVERY_RESERVED_PATH),
+                    "the parameter list is exactly what the fixture reserves");
+            assertEquals(ReservedEndpoint.values().length, EVERY_RESERVED_PATH.size(),
+                    "one path per reserved kind");
         }
 
         @ParameterizedTest(name = "accepts the non-reserved path {0}")
@@ -192,7 +222,9 @@ class ConfigValidatorPortalTest {
 
         /**
          * The client JWKS path is reserved without being declared, so the portal is refused on the
-         * default path by an {@code oidc} block that never names it.
+         * default path by an {@code oidc} block that never names it. The same path is the seventh row
+         * of {@link #refusesEveryReservedPathKind}; it is stated here once more, by name, as the
+         * counterpart of the declared-path case below.
          */
         @Test
         void refusesTheDefaultClientJwksPath() {

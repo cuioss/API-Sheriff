@@ -276,6 +276,10 @@ public final class BffLogMessages {
          * answer without a {@code request_uri}). Never records the authorization URL, a parameter
          * value or the {@code request_uri}.
          * <p>
+         * The template names the one consequence the two callers share — no redirect to the identity
+         * provider was issued — and names neither of them: the login and the step-up re-drive push
+         * through the same adapter instance, so the record cannot tell which one was refused.
+         * <p>
          * <strong>Latched per reason.</strong> The login-initiation path is reachable without a
          * credential, so the record is emitted only on the FIRST occurrence of each reason and every
          * repeat drops to {@code DEBUG} (ADR-0051) — see
@@ -286,7 +290,7 @@ public final class BffLogMessages {
         public static final LogRecord AUTHORIZATION_PUSH_REFUSED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(132)
-                .template("Pushed authorization request refused: %s — the login was not started; further refusals with this reason stay at DEBUG")
+                .template("Pushed authorization request refused: %s — no redirect to the identity provider was issued; further refusals with this reason stay at DEBUG")
                 .build();
     }
 }

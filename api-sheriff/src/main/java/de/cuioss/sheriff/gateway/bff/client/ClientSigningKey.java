@@ -290,9 +290,15 @@ public final class ClientSigningKey {
             return provided;
         }
         if (decode(EDDSA, privateSpec, KeyFactory::generatePrivate).isPresent()) {
-            throw refusal(purpose, "holds an EdDSA key; EdDSA is not offered, because the token engine's "
-                    + "client-assertion signer does not sign it — provide an RSA key of at least "
-                    + RSA_MINIMUM_MODULUS_BITS + " bits or an EC key on curve P-256");
+            // One reason for both purposes. The gateway holds the client-authentication key and the
+            // sender-constraint key to the same two key types (requireSupportedKey), so the refusal
+            // names that rule and not a signer: the engine's client-assertion signer does not sign
+            // EdDSA, while its DPoP proof signer does, and a reason naming either would be untrue
+            // for the other purpose.
+            throw refusal(purpose, "holds an EdDSA key; EdDSA is not offered: both signing keys are held "
+                    + "to the same two key types, RSA signing PS256 and EC on curve P-256 signing ES256 — "
+                    + "provide an RSA key of at least " + RSA_MINIMUM_MODULUS_BITS
+                    + " bits or an EC key on curve P-256");
         }
         throw refusal(purpose, "holds a PRIVATE KEY block that is neither an RSA nor an EC key in "
                 + "unencrypted PKCS#8 form");

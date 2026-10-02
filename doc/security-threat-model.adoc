@@ -2224,8 +2224,8 @@ path does not answer it and no proxied upstream can. And a `jwks_path` -- declar
 it resolves to -- that another reserved OIDC endpoint already claims is refused at boot, naming
 both keys: the registry keeps the first registration for a path, so the collision would otherwise
 drop the key-set endpoint without a diagnostic; a `jwks_path` that is not a canonical gateway path is
-refused at boot as well, since it would never be matched and would leave its canonical spelling
-unreserved.
+refused at boot as well, since a request that spells it as configured would never be matched and
+the canonical path that request resolves to would be left unreserved.
 
 *Control -- request forgery through the URL.* The fetch is made by the identity provider to an
 address its administrator entered. The mitigations are on the identity-provider side: its fetch

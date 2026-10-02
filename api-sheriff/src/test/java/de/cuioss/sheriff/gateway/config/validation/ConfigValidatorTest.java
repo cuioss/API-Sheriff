@@ -3579,6 +3579,9 @@ class ConfigValidatorTest {
                             () -> "the refusal must name " + SECRET_KEY + ": " + refusal.message()),
                     () -> assertTrue(refusal.message().contains(KEY_FILE_KEY),
                             () -> "the refusal must name " + KEY_FILE_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains("at most one of them may be configured"),
+                            () -> "declaring neither key is admitted (shouldAdmitNeither), so the refusal "
+                                    + "must not demand exactly one: " + refusal.message()),
                     () -> assertFalse(refusal.message().contains(SECRET),
                             "the secret value must never reach the boot log"),
                     () -> assertFalse(refusal.message().contains(KEY_FILE),
@@ -3798,8 +3801,10 @@ class ConfigValidatorTest {
 
     /**
      * The client JWKS path is registered verbatim and matched by exact equality with the canonical
-     * request path. A path that is not itself canonical is therefore never answered, and its canonical
-     * spelling is left to the route table; the rule refuses it at boot instead.
+     * request path. A request that spells a non-canonical path as configured is therefore never
+     * answered by the key-set endpoint, and the canonical path it resolves to is left to the route
+     * table; the rule refuses such a path at boot instead. What a request can and cannot reach is
+     * proven on the request side, in {@code GatewayEdgeRouteBffWiringTest.NonCanonicalClientJwksPath}.
      * <p>
      * The parameterized cases run in both client-authentication modes, because the path is reserved in
      * both. The refused spellings are literals on purpose: each is one specific shape the rule exists to refuse,
@@ -3884,12 +3889,17 @@ class ConfigValidatorTest {
 
             assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
             ConfigError refusal = errors.getFirst();
-            assertAll("the refusal of a path that can never equal a canonical request path",
+            assertAll("the refusal of a non-canonical client JWKS path",
                     () -> assertEquals("gateway.yaml", refusal.file()),
                     () -> assertTrue(refusal.message().contains(JWKS_PATH_KEY),
                             () -> "the refusal must name " + JWKS_PATH_KEY + ": " + refusal.message()),
                     () -> assertTrue(refusal.message().contains("canonical gateway path"),
                             () -> "the refusal must name the defect: " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(
+                                    "A request that spells the path as configured would never be answered"),
+                            () -> "the consequence is stated for the configured spelling only — a matrix "
+                                    + "parameter path is reachable with its ';' percent-encoded: "
+                                    + refusal.message()),
                     () -> assertTrue(refusal.message().contains(reason),
                             () -> "the refusal must carry the reason '" + reason + "': " + refusal.message()),
                     () -> assertFalse(refusal.message().contains(path),
