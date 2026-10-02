@@ -163,7 +163,7 @@ class UpstreamAssetSourceHttpFetcherTest {
         UpstreamFetcher fetcher = fetcher(Duration.ofMillis(300));
 
         // Act + Assert
-        assertThrows(UpstreamFetcher.UpstreamTimeoutException.class, () -> fetcher.fetch(target),
+        assertThrows(UpstreamAssetSource.UpstreamTimeoutException.class, () -> fetcher.fetch(target),
                 "a read-timeout on the transport surfaces as an UpstreamTimeoutException");
     }
 }

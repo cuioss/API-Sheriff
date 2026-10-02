@@ -83,6 +83,14 @@ The project is pre-1.0 and behaves like it. These override the usual instinct to
 
 A change that keeps an old surface alive "to be safe" is wrong here, not conservative.
 
+**When these rules end.** They end at the 1.0 release of the current `de.cuioss.sheriff.gateway`
+line, the release that starts API stability, and that release has not been cut. It is the open
+milestone that closes this section: from 1.0 on, a breaking change needs a deprecation strategy.
+The `de.cuioss.sheriff.api` 1.0.0 artifacts published by accident on 2026-07-12 were abandoned and
+are not that cut; the header of `.github/workflows/release.yml` and ADR-0035 carry the account.
+Until the cut happens the rules above apply unchanged, and flipping this section is part of the cut
+itself.
+
 ## Code Standards
 
 - Java 25 features are encouraged: records, sealed classes, pattern matching, text blocks,

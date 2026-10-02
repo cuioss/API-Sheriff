@@ -149,6 +149,14 @@ one is a red `main`.
 - **NEVER enforce backward compatibility** — make breaking changes freely
 - **Clean APIs aggressively** — remove unused methods, classes, patterns
 
+**When these rules end.** The 1.0 release of the current `de.cuioss.sheriff.gateway` line — the
+release that starts API stability — has not been cut. That cut is the open milestone at which this
+section ends: from 1.0 on, a breaking change needs a deprecation strategy. The
+`de.cuioss.sheriff.api` 1.0.0 artifacts published by accident on 2026-07-12 were abandoned and are
+**not** that cut; the account lives in the `.github/workflows/release.yml` header and ADR-0035.
+Until the cut happens the rules above apply unchanged, and flipping this section is part of the cut
+itself.
+
 ## Code Standards
 
 - Java 25 features encouraged (records, sealed classes, pattern matching, text blocks, virtual threads)
