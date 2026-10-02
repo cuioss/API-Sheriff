@@ -381,10 +381,10 @@ public class BffRuntimeProducer {
                 : Set.copyOf(declaredTrustedOrigins);
 
         // The base configuration carries the static oidc.scopes and serves every leg that does not
-        // request a per-request scope set: discovery, the pushed authorization request, the callback
-        // code exchange, step-up and revocation. The login and refresh legs request per scope set
-        // through ScopedEngineFlows below, whose factory is this same method — so every scoped variant
-        // carries the identical pinned posture.
+        // request a per-request scope set: discovery, the transport of the pushed authorization
+        // request, the callback code exchange, step-up and revocation. The login and refresh legs
+        // request per scope set through ScopedEngineFlows below, whose factory is this same method —
+        // so every scoped variant carries the identical pinned posture.
         reportBackChannelPosture();
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
         ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);

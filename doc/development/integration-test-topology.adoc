@@ -854,8 +854,8 @@ verification artifacts and are not committed.
 
 === Diagram check for the cookie-refresh instance
 
-This change *does* alter facts the diagram depicts: it adds a gateway instance and its published
-ports. The diagram was therefore redrawn rather than left alone.
+This change *does* alter facts the diagram depicts, so the diagram was redrawn rather than left
+alone. The redraw also added the row of `api-sheriff-no-certificate`, which the diagram had lacked.
 
 The collapsed variant group is relabelled `variant instances (11)` and grows by two rows --
 `api-sheriff-no-certificate` at `10453 · 10454 · 19010` and `api-sheriff-cookie-refresh` at

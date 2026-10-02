@@ -15,8 +15,10 @@ is met, or says plainly that it is not.
 request (PAR), binds every access token it obtains to one DPoP key, refuses a token response that is
 not bound to that key, and authenticates with `private_key_jwt`.
 
-Two statements belong to that verdict and are not optional reading:
+Three statements belong to that verdict and are not optional reading:
 
+* *Two rows of the matrix are qualified.* The server-provided DPoP nonce is supported only in part,
+  and the gateway does not enforce TLS on the URL its key set is fetched from.
 * *No conformance-suite run exists.* The profile's conformance test suite has not been run against
   the gateway. This document claims the controls it lists, each with its evidence, and makes no
   conformance claim and no certification claim.
@@ -99,7 +101,7 @@ Two terms are used throughout:
   the omit-`iss` bypass.
 
 | Signing algorithms restricted to `PS256`, `ES256`, or `EdDSA` (Ed25519) (§5.4.1)
-| *MET* (`PS256`, `ES256`)
+| *MET* for the JWTs the gateway signs (`PS256`, `ES256`)
 | `ClientSigningKey` derives the algorithm from the key and offers no algorithm setting. An RSA key
   of at least 2048 bits signs `PS256`. An EC key on curve P-256 signs `ES256`. Both floors are
   checked at boot, for a provided and for a generated key alike. The `RS256` family is unreachable:
@@ -134,10 +136,6 @@ own.
 
 The controls below are not rows of the profile's client requirements, or exceed them:
 
-* *PKCE `S256`, fail-closed.* A provider that does not advertise `S256` causes the flow to be
-  refused rather than downgraded.
-* *RFC 9207 mix-up defence*, including rejection of an omitted `iss` where the provider advertises
-  support.
 * *Browser binding.* A short-lived `__Host-`-prefixed binding cookie ties an in-flight login to the
   browser that started it. A callback is honoured only when *both* the binding cookie resolves the
   pending record *and* the returned `state` matches it (constant-time). A callback replayed in a
