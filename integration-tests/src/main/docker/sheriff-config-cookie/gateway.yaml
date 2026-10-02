@@ -112,14 +112,21 @@ token_validation:
 # --- Cookie-mode BFF confidential-client block (Variant 3, BFF-Cookie-* integration suite) --------
 # Activates the cookie-mode BffRuntime (BffRuntimeProducer builds the active runtime for either
 # recognised session.mode — server or cookie — provided a redirect_uri is configured). Confidential
-# client: integration-client / integration-secret against the compose 'integration' realm, exactly
-# as the primary instance. OIDC discovery is lazy (first engine use), so boot needs no live IdP; the
-# browser reaches this instance on the published host port 10445, while the gateway reaches Keycloak
-# container-internally at keycloak:8443.
+# client: integration-client against the compose 'integration' realm, authenticated with
+# private_key_jwt exactly as the primary instance — no client secret is declared. OIDC discovery is
+# lazy (first engine use), so boot needs no live IdP; the browser reaches this instance on the
+# published host port 10445, while the gateway reaches Keycloak container-internally at keycloak:8443.
 oidc:
   issuer: https://keycloak:8443/realms/integration
   client_id: integration-client
-  client_secret: ${OIDC_CLIENT_SECRET}
+  # The same two key files as the primary gateway.yaml, which carries the explanation: the
+  # client-authentication key by literal path, the DPoP proof key through ${OIDC_DPOP_KEY_FILE}.
+  # This instance holds the key the primary instance publishes at /auth/jwks, so the realm
+  # client's one jwks.url covers it. Its own /auth/jwks publishes the same key.
+  client_authentication:
+    key_file: /app/signing-keys/client-auth-rsa.pem
+  sender_constraint:
+    key_file: ${OIDC_DPOP_KEY_FILE}
   scopes: ["openid", "profile", "email"]
   # Full browser-facing callback URL. Its host ('localhost') is the oidc host every reserved path
   # binds to; its origin ('https://localhost:10445') is the gateway origin used for same-origin

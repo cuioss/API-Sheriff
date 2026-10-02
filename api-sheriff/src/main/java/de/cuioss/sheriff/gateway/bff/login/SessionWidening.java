@@ -54,6 +54,15 @@ import org.jspecify.annotations.Nullable;
  * the callback re-drives exactly one {@link Widening.Attempt#INTERACTIVE} request through
  * {@link #redriveInteractive}; any refusal of that attempt is terminal.
  * <p>
+ * <strong>Both attempts are pushed (ADR-0058).</strong> The runtime binds the
+ * {@link AuthorizationWidening} seam to {@link ScopedEngineFlows#widen} followed by
+ * {@link PushedAuthorizationRequests#push}, so the URL the seam yields — for the silent and for the
+ * interactive attempt alike — carries {@code client_id} and {@code request_uri} and nothing else; the
+ * scope set and the silent attempt's {@code prompt=none} travel in the pushed request. A failed push
+ * propagates out of the seam as a {@code 502} refusal. Both entry points call the seam before they
+ * store the pending record and before they set the binding cookie, so a refused push leaves nothing
+ * half-started and the live session as it was.
+ * <p>
  * <strong>What the pending record carries.</strong> The record is a widening record
  * ({@link PendingAuthorizationRecord#createWidening}): it names the live session's {@code sub}, so
  * the callback can refuse a grant for any other identity and merge into the live session instead of
@@ -89,7 +98,8 @@ public final class SessionWidening {
     /**
      * Assembles the widening coordinator with the engine authorization seam and the gateway-side stores.
      *
-     * @param authorization      the widening authorization seam (bound to {@link ScopedEngineFlows#widen})
+     * @param authorization      the widening authorization seam (bound to {@link ScopedEngineFlows#widen}
+     *                           and the push of the request it renders)
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin used to same-origin-validate the return URL
@@ -167,9 +177,9 @@ public final class SessionWidening {
     }
 
     /**
-     * The widening authorization seam. The session runtime binds it as
-     * {@code (scopes, silent) -> scopedEngineFlows.widen(providerMetadata, scopes, silent)}; a test
-     * binds it to a hand-built redirect.
+     * The widening authorization seam. The session runtime binds it to
+     * {@code scopedEngineFlows.widen(providerMetadata, scopes, silent)} followed by the push of the
+     * request that call rendered; a test binds it to a hand-built redirect.
      *
      * @author API Sheriff Team
      * @since 1.0

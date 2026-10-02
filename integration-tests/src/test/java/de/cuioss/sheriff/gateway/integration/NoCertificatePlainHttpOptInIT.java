@@ -626,6 +626,16 @@ class NoCertificatePlainHttpOptInIT {
     private static final Path CERTIFICATES = Path.of("src", "main", "docker", "certificates");
 
     /**
+     * The signing-key directory every compose gateway mounts at {@code /app/signing-keys}. Each
+     * descriptor these legs boot over names the client-authentication key by a literal path in that
+     * directory and the DPoP proof key through {@code OIDC_DPOP_KEY_FILE}, and the gateway reads both
+     * files at boot, when the BFF runtime is assembled. Without the mount the container would be
+     * refused for a key file it cannot read, which is another refusal than the one each leg puts under
+     * test.
+     */
+    private static final Path SIGNING_KEYS = Path.of("src", "main", "docker", "signing-keys");
+
+    /**
      * The no-{@code passthrough_sni} gateway.yaml the compose service overlays. Without it the shared
      * gateway.yaml starts the accept-time SNI front listener, which is a second, unrelated way for
      * this container to behave differently from the instance it is the matched negative of.
@@ -731,13 +741,18 @@ class NoCertificatePlainHttpOptInIT {
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt",
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key",
                 "-e", "SHERIFF_CONFIG_DIR=/app/sheriff-config",
-                "-e", "OIDC_CLIENT_SECRET=integration-secret"));
+                // The DPoP proof key the mounted descriptors name as ${OIDC_DPOP_KEY_FILE}; the same
+                // value the api-sheriff-no-certificate compose service sets. No client secret is
+                // passed: all three descriptors these legs mount authenticate with a key.
+                "-e", "OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem"));
         for (String entry : extraEnv) {
             command.add("-e");
             command.add(entry);
         }
         command.add("-v");
         command.add(CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro");
+        command.add("-v");
+        command.add(SIGNING_KEYS.toAbsolutePath() + ":/app/signing-keys:ro");
         command.add("-v");
         command.add(SHERIFF_CONFIG.toAbsolutePath() + ":/app/sheriff-config:ro");
         command.addAll(overlayMount);

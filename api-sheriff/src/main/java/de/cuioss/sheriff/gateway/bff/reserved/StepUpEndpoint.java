@@ -36,7 +36,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The step-up reserved endpoint ({@code oidc.step_up.path}) — the seventh reserved gateway path. It
+ * The step-up reserved endpoint ({@code oidc.step_up.path}) — one of the gateway's reserved paths. It
  * is registered exactly like the other browser-facing reserved endpoints (exact match, on the OIDC
  * host, resolved by the {@link ReservedPathRegistry} <em>before</em> the proxy route table), and it
  * is the target of the {@code step_up_url} a session route names when it refuses a non-navigation
@@ -66,6 +66,12 @@ import org.jspecify.annotations.Nullable;
  *       {@code prompt=none}-first, then exactly one interactive attempt, sequence a navigation to the
  *       route is widened through.</li>
  * </ul>
+ * <p>
+ * <strong>The widening request is pushed (ADR-0058).</strong> The redirect a widening yields carries
+ * {@code client_id} and {@code request_uri} only; the scope set and {@code prompt=none} travel in the
+ * pushed request. A push that fails is raised out of {@link #handle} as the {@code 502} refusal of
+ * {@link de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests}, before a pending record is
+ * stored and before a cookie is set; the live session is left as it was.
  * <p>
  * The endpoint is framework-agnostic (a raw {@code returnUrl} parameter and a raw {@code Cookie}
  * header in, a {@link StepUpOutcome} the edge renders out — no JAX-RS/Vert.x coupling), so it is

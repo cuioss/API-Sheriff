@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -48,7 +47,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code sheriff_it_endpoint} is optional and appears only when the grant requests it. Bearer tokens
  * are minted through the realm's password grant exactly as {@code BearerScopeIT} mints them; live
  * sessions are established through {@link BffKeycloakLoginFlow}, starting the login on the fallback
- * route itself so its SESSION-branch navigation is the one that enters the IdP.
+ * route itself so its SESSION-branch navigation is the one that enters the IdP. That navigation is
+ * answered with the redirect of a pushed authorization request, which names no scope; the scope set
+ * the SESSION branch asked for is read from the token the completed login is granted. That the
+ * request names exactly the needed set and nothing extra is proven at unit level against the pushed
+ * request body ({@code BffRuntimeProducerTest}).
  * <p>
  * <strong>The branch rule.</strong> The branch is chosen from one input only — whether the request
  * carries an {@code Authorization} header:
@@ -75,6 +78,9 @@ class BffSessionFallbackIT extends BaseIntegrationTest {
 
     /** A safe-method path on the {@code session_fallback} route; the echo upstream answers any path. */
     static final String FALLBACK_PATH = "/bff-session/fallback/get";
+
+    /** The client the primary gateway instance, which serves the route, authenticates as. */
+    private static final String FALLBACK_ROUTE_CLIENT_ID = "integration-client";
 
     /** An unsafe-method path on the {@code session_fallback} route. */
     private static final String FALLBACK_UNSAFE_PATH = "/bff-session/fallback/post";
@@ -184,7 +190,7 @@ class BffSessionFallbackIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a navigation without Authorization and without a session is redirected 302 into the IdP")
+    @DisplayName("a navigation without Authorization and without a session is redirected 302 into the IdP, and the login it starts is granted the route's scopes")
     void navigationWithoutSessionRedirectsIntoTheIdp() {
         Response initiation = BffKeycloakLoginFlow.gateway(Map.of())
                 .header("Accept", "text/html")
@@ -195,13 +201,21 @@ class BffSessionFallbackIT extends BaseIntegrationTest {
                 .statusCode(302)
                 .extract().response();
 
-        String location = initiation.getHeader("Location");
-        assertNotNull(location, "a SESSION-branch navigation challenge must carry a Location redirect");
-        assertTrue(location.contains("/protocol/openid-connect/auth"),
-                "the SESSION-branch navigation challenge must redirect into the OIDC authorization endpoint");
-        assertEquals(BffEndpointScopesIT.SCOPED_ROUTE_SCOPES, BffEndpointScopesIT.requestedScopeSet(initiation),
-                "the SESSION branch must request the route's needed set — oidc.scopes united with the "
-                        + "endpoint's scopes — exactly as a require: session route does");
+        BffLoginInitiationIT.assertPushedRequestRedirect(initiation, FALLBACK_ROUTE_CLIENT_ID);
+
+        // The redirect of a pushed request names no scope, so what the SESSION branch asked for is read
+        // from the token granted to a login that the same navigation starts.
+        Map<String, String> sessionCookies = BffKeycloakLoginFlow.login(FALLBACK_PATH).gatewayCookies();
+        Response mediated = BffKeycloakLoginFlow.gateway(sessionCookies)
+                .when()
+                .get(FALLBACK_PATH)
+                .then()
+                .statusCode(200)
+                .extract().response();
+        Set<String> granted = BffEndpointScopesIT.grantedScopes(BffEndpointScopesIT.mediatedAuthorization(mediated));
+        assertTrue(granted.containsAll(BffEndpointScopesIT.SCOPED_ROUTE_SCOPES),
+                "the SESSION branch must ask for the route's needed set — oidc.scopes united with the "
+                        + "endpoint's scopes — as a require: session route does; granted " + granted);
     }
 
     @Test

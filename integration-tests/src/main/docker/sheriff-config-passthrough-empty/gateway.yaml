@@ -287,15 +287,24 @@ token_validation:
 # reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
 # the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
 # under /auth and never collide with the /bff-session proxy anchor above. Confidential
-# client: integration-client / integration-secret against the compose 'integration'
-# realm (standardFlowEnabled, redirectUris '*'). OIDC discovery is lazy (first engine
-# use), so boot needs no live IdP; the browser reaches the gateway on the published
-# host port 10443 and Keycloak on its published host port, while the gateway reaches
-# Keycloak container-internally at keycloak:8443.
+# client: integration-client against the compose 'integration' realm (standardFlowEnabled,
+# redirectUris '*'), authenticated with private_key_jwt — no client secret is declared.
+# OIDC discovery is lazy (first engine use), so boot needs no live IdP; the browser
+# reaches the gateway on the published host port 10443 and Keycloak on its published
+# host port, while the gateway reaches Keycloak container-internally at keycloak:8443.
 oidc:
   issuer: https://keycloak:8443/realms/integration
   client_id: integration-client
-  client_secret: ${OIDC_CLIENT_SECRET}
+  # Key-based client authentication. The key file is named by a LITERAL path on the read-only
+  # signing-keys mount — a key file is a location, not a secret. No jwks_path is declared, so the
+  # public half is published at the default /auth/jwks, which answers on every host: Keycloak
+  # fetches it as https://api-sheriff:8443/auth/jwks, the jwks.url of the realm client.
+  client_authentication:
+    key_file: /app/signing-keys/client-auth-rsa.pem
+  # The DPoP proof key every access token of this instance is bound to. Named THROUGH A VARIABLE, so that
+  # both reference forms — the literal path above and this ${VAR} — run in the native image.
+  sender_constraint:
+    key_file: ${OIDC_DPOP_KEY_FILE}
   scopes: ["openid", "profile", "email"]
   # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
   # reserved path binds to; its origin ('https://localhost:10443') is the gateway

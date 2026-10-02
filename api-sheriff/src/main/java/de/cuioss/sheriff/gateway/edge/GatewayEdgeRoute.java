@@ -150,9 +150,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
  *       guard, and the framing gate;</li>
  *   <li>the gateway's own reserved paths, ahead of the route table and after the passthrough host
- *       guard: first the OIDC reserved paths (exact, on the OIDC host), then the application
- *       portal's {@code portal.path} (exact, on any host) — so a prefix route never swallows
- *       either;</li>
+ *       guard: first the OIDC reserved paths (exact; on the OIDC host, except for the two kinds the
+ *       identity provider dials server-to-server — back-channel logout and the client JWKS — which
+ *       are matched on every host), then the application portal's {@code portal.path} (exact, on
+ *       any host) — so a prefix route never swallows either;</li>
  *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
  *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
  *       then the per-route verb gate;</li>
@@ -1147,13 +1148,26 @@ public class GatewayEdgeRoute {
 
     /**
      * Writes a dispatched reserved path's normalized response. A failed OIDC callback — an error
-     * status without a {@code Location} — is the one reserved outcome that negotiates an HTML error
-     * page ({@link ErrorPageClassifier.Exit#CALLBACK_FAILURE}); its own {@code Set-Cookie} lines ride
-     * on the page. Every other reserved outcome, the user-info JSON and every redirect included, is
-     * written in its current shape.
+     * status without a {@code Location} — negotiates an HTML error page
+     * ({@link ErrorPageClassifier.Exit#CALLBACK_FAILURE}); its own {@code Set-Cookie} lines ride
+     * on the page. Every other reserved outcome written here, the user-info JSON and every redirect
+     * included, is written in its current shape.
+     * <p>
+     * <strong>One outcome is not written here at all</strong>: the {@code 404} of the client JWKS
+     * endpoint's withheld form (client-secret mode, where there is no key set to publish). It is
+     * handed to {@link #renderProblem} with {@link EventType#NO_ROUTE_MATCHED} — the renderer and the
+     * event of a path no route matches — so the status, the media type, the body, the headers and the
+     * HTML error-page negotiation are those of an unknown path by construction, not by imitation. A
+     * {@code 404} written in a shape of its own would let an anonymous caller tell a client-secret
+     * gateway from a gateway without the endpoint. The path stays reserved all the same: the request
+     * was matched by the reserved-path registry and never reaches route selection.
      */
     private void renderReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind,
             BffRuntime.ReservedHttpResponse response) {
+        if (isWithheldClientJwks(kind, response)) {
+            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
+            return;
+        }
         if (isFailedCallback(kind, response) && answeredWithErrorPage(ctx, request,
                 ErrorPageClassifier.classify(ErrorPageClassifier.Exit.CALLBACK_FAILURE), response.status(),
                 response.setCookieHeaders())) {
@@ -1183,6 +1197,15 @@ public class GatewayEdgeRoute {
     private static boolean isFailedCallback(ReservedEndpoint kind, BffRuntime.ReservedHttpResponse response) {
         return kind == ReservedEndpoint.CALLBACK && response.status() >= FIRST_ERROR_STATUS
                 && response.locationOptional().isEmpty();
+    }
+
+    /**
+     * @return {@code true} for the {@code 404} the client JWKS endpoint yields in its withheld form.
+     *         The publishing form answers {@code 200} or {@code 405} only, so the status identifies
+     *         the form
+     */
+    private static boolean isWithheldClientJwks(ReservedEndpoint kind, BffRuntime.ReservedHttpResponse response) {
+        return kind == ReservedEndpoint.CLIENT_JWKS && response.status() == NOT_FOUND;
     }
 
     /**
@@ -1528,7 +1551,8 @@ public class GatewayEdgeRoute {
 
     /**
      * Renders a gateway rejection — every {@link GatewayException} outside a gRPC route, the
-     * unrouted/unreserved {@code 404} and an unexpected internal failure ({@code eventType == null}).
+     * unrouted/unreserved {@code 404}, the {@code 404} of the withheld client JWKS path (see
+     * {@link #renderReserved}) and an unexpected internal failure ({@code eventType == null}).
      * An {@link ErrorPageClassifier#classify(EventType) HTML-eligible} event negotiates the portal's
      * HTML error page first ({@link #answeredWithErrorPage}); otherwise, or when the request does not
      * explicitly accept {@code text/html}, the RFC 9457 {@code application/problem+json} body is

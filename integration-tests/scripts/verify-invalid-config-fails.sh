@@ -4,7 +4,7 @@
 #
 # ConfigProducer validates the mounted gateway configuration at boot
 # (StartupEvent). On any violation it logs structured ERROR records and throws, so
-# Quarkus exits non-zero. This script exercises ten independent invalid
+# Quarkus exits non-zero. This script exercises twelve independent invalid
 # configurations and asserts a fail-fast non-zero exit for each:
 #   1. a schema-invalid gateway.yaml (non-integer version + an unknown top-level key,
 #      both rejected by the D2 schema);
@@ -26,7 +26,12 @@
 #   9. auth.session_fallback: true on a require: session route, refused by the ConfigValidator
 #      session_fallback rule because the key only splits a bearer posture;
 #  10. require: bearer + auth.session_fallback: true on a gateway that declares token_validation but
-#      no oidc block, refused by the same rule because the session branch needs the BFF runtime.
+#      no oidc block, refused by the same rule because the session branch needs the BFF runtime;
+#  11. oidc.client_secret together with oidc.client_authentication.key_file, refused by the
+#      ConfigValidator client-authentication rule because the two select different client
+#      authentications (ADR-0058);
+#  12. an oidc.client_authentication.key_file naming a file that holds no PEM block, refused while
+#      the BFF runtime is assembled — the key file is read there, not by the validator.
 #
 # Cases 9-10 split the session_fallback rule's two refusals the same way cases 4-6 split the
 # ADR-0024 gates: each fixture violates exactly one of them, so a regression in either refusal
@@ -36,11 +41,16 @@
 # value range (case 4) and ConfigValidator owns the posture refusal (cases 5-6), so a
 # regression in either gate fails a distinct case rather than being masked by the other.
 #
-# Case 7 is the only case that also carries a NEGATIVE leg (it publishes the management
-# port and proves nothing ever answered on it). Cases 1-6 are refused by ConfigProducer
+# Cases 11-12 split the two client-key refusals by where they are raised: the validator owns the
+# both-keys refusal (case 11), and the key file itself is judged only when the runtime that signs
+# with it is built (case 12).
+#
+# Cases 7 and 12 are the two cases that also carry a NEGATIVE leg (each publishes the management
+# port and proves nothing ever answered on it). Cases 1-6 and 8-11 are refused by ConfigProducer
 # before any bean that could open a port is created, whereas case 7 is refused later, from
-# a StartupEvent observer — so it is the case where "exited non-zero" alone would not rule
-# out a port having been served first. See assert_fails_to_boot's $4 parameter.
+# a StartupEvent observer, and case 12 while the BFF runtime is assembled — so they are the cases
+# where "exited non-zero" alone would not rule out a port having been served first. See
+# assert_fails_to_boot's $4 parameter.
 
 set -euo pipefail
 
@@ -67,7 +77,7 @@ MANAGEMENT_CONTAINER_PORT=9000
 # variable NAME, so a rename here fails the test rather than silently passing.
 # See doc/user/context-path.adoc.
 MANAGEMENT_ROOT_PATH=/q
-# Host port for case 7's negative leg, so this script can run against a live integration
+# Host port for the negative leg of cases 7 and 12, so this script can run against a live integration
 # stack without colliding with it. The invariant is positional, not a fixed range: it must
 # sit CLEAR of the contiguous management-port block docker-compose.yml publishes upward from
 # 19000, and that block grows by exactly one port for every gateway instance added to the
@@ -119,10 +129,10 @@ assert_fails_to_boot() {
         -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
         # The oidc client_secret is a secret-classified field, so ConfigLoader accepts it only as a
         # bare ${VAR} reference, and an unset variable aborts the load before ConfigValidator ever
-        # runs. A fixture that needs an oidc block to be otherwise valid (case 9) therefore needs the
+        # runs. A fixture that declares oidc.client_secret (cases 9 and 11) therefore needs the
         # variable bound, or the case would pass on the missing-variable refusal instead of the one it
         # exists to prove. The value is a fixture placeholder that never reaches an IdP, and supplying
-        # it to the fixtures that declare no oidc block is inert: no reference, no lookup.
+        # it to the fixtures that do not reference it is inert: no reference, no lookup.
         -e OIDC_CLIENT_SECRET=invalid-config-fixture-secret
         -v "${PROJECT_DIR}/src/main/docker/certificates:/app/certificates:ro"
         -v "${config_dir}:/app/sheriff-config:ro"
@@ -477,8 +487,8 @@ assert_fails_to_boot "${MINIMAL_BFF_DIR}" "profile 'minimal' on a type: bff rout
 # reports DOWN and retries. This case is the other kind of failure: a configuration the gateway can
 # never serve, which must stop the process rather than leave it running DOWN.
 #
-# This case, uniquely, passes MGMT_PROBE_PORT to get the negative leg. The reason is the seam it
-# exercises: cases 1-6 are refused by ConfigProducer while the route table is being produced —
+# This case passes MGMT_PROBE_PORT to get the negative leg; case 12 is the only other one that
+# does. The reason is the seam it exercises: cases 1-6 and 8-11 are refused by ConfigProducer —
 # before any bean that could open a port exists — whereas this one is refused from a StartupEvent
 # OBSERVER, which is late enough that "did a port open first?" is a real question rather than a
 # structurally impossible one. Asserting only the non-zero exit would leave that question
@@ -687,5 +697,148 @@ chmod 644 "${FALLBACK_NO_OIDC_DIR}/gateway.yaml" "${FALLBACK_NO_OIDC_DIR}/topolo
 # Marker: the fixed refusal fragment of the no-oidc detail — fixed text, never a configured scalar.
 assert_fails_to_boot "${FALLBACK_NO_OIDC_DIR}" "auth.session_fallback without an oidc block" \
     "declares auth.session_fallback: true but the gateway declares no oidc block"
+
+# Case 11: oidc.client_secret together with oidc.client_authentication.key_file (ADR-0058). The
+# presence of the secret selects client_secret_basic and the key file selects private_key_jwt, so a
+# document declaring both would make the gateway choose between two credentials in silence — the
+# ConfigValidator client-authentication rule refuses it at boot instead, naming both keys. The
+# fixture is otherwise a complete and valid BFF document: a type: bff anchor with a session floor,
+# the oidc block that backs it (its bare ${OIDC_CLIENT_SECRET} reference is bound by
+# assert_fails_to_boot), a topology alias and an endpoint — so the both-keys refusal is the ONLY
+# violation.
+#
+# The key file it names does not exist, and that is deliberate rather than an omission: the validator
+# judges the document and never opens the file. Should the rule ever regress, the secret would select
+# client-secret mode and the key file would not be read at all, so no missing-file refusal could
+# satisfy the case in the rule's place — the marker below would simply be absent.
+SECRET_AND_KEY_FILE_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${SECRET_AND_KEY_FILE_DIR}")
+mkdir -p "${SECRET_AND_KEY_FILE_DIR}/endpoints"
+cat > "${SECRET_AND_KEY_FILE_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "client-secret-and-key-file"
+anchors:
+  app:
+    path_prefix: /app
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  client_authentication:
+    key_file: /app/sheriff-config/client-key.pem
+  scopes: ["openid", "profile", "email"]
+  redirect_uri: https://localhost:10443/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    final_redirect: /
+    backchannel_path: /auth/backchannel
+  session:
+    mode: server
+    store: memory
+    ttl_seconds: 3600
+    csrf:
+      trusted_origins: ["https://localhost:10443"]
+  login:
+    path: /auth/login
+YAML
+cat > "${SECRET_AND_KEY_FILE_DIR}/topology.properties" <<'PROPS'
+APP_UPSTREAM=http://go-httpbin:8080/anything
+PROPS
+cat > "${SECRET_AND_KEY_FILE_DIR}/endpoints/app.yaml" <<'YAML'
+endpoint:
+  id: app
+  base_url: APP_UPSTREAM
+  anchor: app
+  routes:
+    - id: app-view
+      match:
+        path_prefix: /app/view
+YAML
+chmod 755 "${SECRET_AND_KEY_FILE_DIR}" "${SECRET_AND_KEY_FILE_DIR}/endpoints"
+chmod 644 "${SECRET_AND_KEY_FILE_DIR}/gateway.yaml" "${SECRET_AND_KEY_FILE_DIR}/topology.properties" \
+    "${SECRET_AND_KEY_FILE_DIR}/endpoints/app.yaml"
+# Marker: the fixed opening of the refusal, which names both keys — fixed text, never the secret and
+# never the configured path.
+assert_fails_to_boot "${SECRET_AND_KEY_FILE_DIR}" "oidc.client_secret together with a client-authentication key file" \
+    "oidc.client_secret and oidc.client_authentication.key_file are both declared"
+
+# Case 12: a client-authentication key file that holds no PEM block (ADR-0058). The document declares
+# no client secret, so the gateway authenticates with private_key_jwt and reads the key
+# oidc.client_authentication.key_file names. The file exists inside the mounted fixture directory and
+# is readable, but holds a line of text and no PEM block — the shape a wrong mount or a truncated
+# copy produces. A key the gateway cannot sign with must stop the process at boot; starting with a
+# generated key instead would let a deployment run on a key its identity provider was never given.
+#
+# Like case 7, this case passes MGMT_PROBE_PORT to get the negative leg, and for the same reason: the
+# refusal is not raised by ConfigProducer. The document is valid — the validator never opens the key
+# file — and the refusal comes later, while the BFF runtime is assembled, which is late enough that
+# "did a port open first?" is a real question.
+#
+# The fixture is otherwise complete and valid, and oidc.sender_constraint is omitted so that key is
+# generated: the unusable client-authentication key file is the ONLY violation.
+KEY_FILE_WITHOUT_PEM_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${KEY_FILE_WITHOUT_PEM_DIR}")
+mkdir -p "${KEY_FILE_WITHOUT_PEM_DIR}/endpoints"
+cat > "${KEY_FILE_WITHOUT_PEM_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "key-file-without-pem-block"
+anchors:
+  app:
+    path_prefix: /app
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_authentication:
+    key_file: /app/sheriff-config/client-key.pem
+  scopes: ["openid", "profile", "email"]
+  redirect_uri: https://localhost:10443/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    final_redirect: /
+    backchannel_path: /auth/backchannel
+  session:
+    mode: server
+    store: memory
+    ttl_seconds: 3600
+    csrf:
+      trusted_origins: ["https://localhost:10443"]
+  login:
+    path: /auth/login
+YAML
+cat > "${KEY_FILE_WITHOUT_PEM_DIR}/client-key.pem" <<'PEM'
+this file holds no PEM block
+PEM
+cat > "${KEY_FILE_WITHOUT_PEM_DIR}/topology.properties" <<'PROPS'
+APP_UPSTREAM=http://go-httpbin:8080/anything
+PROPS
+cat > "${KEY_FILE_WITHOUT_PEM_DIR}/endpoints/app.yaml" <<'YAML'
+endpoint:
+  id: app
+  base_url: APP_UPSTREAM
+  anchor: app
+  routes:
+    - id: app-view
+      match:
+        path_prefix: /app/view
+YAML
+chmod 755 "${KEY_FILE_WITHOUT_PEM_DIR}" "${KEY_FILE_WITHOUT_PEM_DIR}/endpoints"
+chmod 644 "${KEY_FILE_WITHOUT_PEM_DIR}/gateway.yaml" "${KEY_FILE_WITHOUT_PEM_DIR}/client-key.pem" \
+    "${KEY_FILE_WITHOUT_PEM_DIR}/topology.properties" "${KEY_FILE_WITHOUT_PEM_DIR}/endpoints/app.yaml"
+# Marker: the configuration field the refusal names followed by the fixed defect text — never the
+# configured path and never a line of the file.
+assert_fails_to_boot "${KEY_FILE_WITHOUT_PEM_DIR}" "a client-authentication key file without a PEM block" \
+    "oidc.client_authentication.key_file holds content outside a PEM block" "${MGMT_PROBE_PORT}"
 
 echo "✅ All invalid configurations correctly caused fail-fast non-zero exits."

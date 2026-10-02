@@ -26,20 +26,33 @@ import org.jspecify.annotations.Nullable;
  * The global {@code oidc} block of {@code gateway.yaml}: the confidential-client
  * configuration used by the BFF variants. Ignored when no route's effective auth
  * is {@code require: session}.
+ * <p>
+ * <strong>Client authentication is selected by the presence of {@code client_secret}.</strong> A
+ * configured secret selects client-secret authentication ({@code client_secret_basic}); an absent
+ * secret selects {@code private_key_jwt}, signed with the key the {@code client_authentication}
+ * block names or, when it names none, with a key generated at startup. There is no separate switch.
+ * Every consumer reads the mode through {@link #usesClientSecret()}.
  *
- * @param issuer       the OIDC issuer, {@code null} when omitted
- * @param clientId     the client id, {@code null} when omitted
- * @param clientSecret the client secret ({@code ${ENV_VAR}} reference), {@code null}
- *                     when omitted
- * @param scopes       the requested scopes, empty when none
- * @param redirectUri  the gateway callback URI, {@code null} when omitted
- * @param logout       the logout settings, {@code null} when omitted
- * @param session      the session settings, {@code null} when omitted
- * @param stepUp       the step-up settings, {@code null} when omitted
- * @param userInfo     the session/user-info reserved-endpoint settings, {@code null}
- *                     when omitted
- * @param login        the login-initiation reserved-path settings, {@code null} when
- *                     omitted
+ * @param issuer               the OIDC issuer, {@code null} when omitted
+ * @param clientId             the client id, {@code null} when omitted
+ * @param clientSecret         the client secret ({@code ${ENV_VAR}} reference), {@code null}
+ *                             when omitted. A configured secret selects client-secret
+ *                             authentication ({@code client_secret_basic}), which is not FAPI 2.0
+ *                             conformant; an absent secret selects {@code private_key_jwt}
+ * @param scopes               the requested scopes, empty when none
+ * @param redirectUri          the gateway callback URI, {@code null} when omitted
+ * @param logout               the logout settings, {@code null} when omitted
+ * @param session              the session settings, {@code null} when omitted
+ * @param stepUp               the step-up settings, {@code null} when omitted
+ * @param userInfo             the session/user-info reserved-endpoint settings, {@code null}
+ *                             when omitted
+ * @param login                the login-initiation reserved-path settings, {@code null} when
+ *                             omitted
+ * @param clientAuthentication the client-authentication settings — the {@code private_key_jwt}
+ *                             key file and the client JWKS path — {@code null} when omitted
+ * @param senderConstraint     the sender-constraint settings — the key file of the DPoP proof key
+ *                             the gateway's access tokens are bound to — {@code null} when omitted.
+ *                             Read in both client-authentication modes
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -55,7 +68,9 @@ List<String> scopes,
 @Nullable Session session,
 @Nullable StepUp stepUp,
 @Nullable UserInfo userInfo,
-@Nullable Login login) {
+@Nullable Login login,
+@Nullable ClientAuthenticationSettings clientAuthentication,
+@Nullable SenderConstraintSettings senderConstraint) {
 
     /**
      * Canonical constructor defensively copying {@code scopes}.
@@ -65,20 +80,54 @@ List<String> scopes,
     }
 
     /**
+     * The single client-authentication mode predicate every consumer shares — boot validation and
+     * the runtime producer both read it, so the two cannot resolve the mode differently.
+     * <p>
+     * The mode is selected by presence alone: a declared {@code client_secret} selects
+     * client-secret authentication whatever its value, and boot validation refuses a declared
+     * secret that resolves to a blank value rather than letting it fall back to the key-based mode.
+     *
+     * @return {@code true} exactly when {@link #clientSecret()} is present, selecting
+     *         {@code client_secret_basic}; {@code false} selects {@code private_key_jwt}
+     */
+    public boolean usesClientSecret() {
+        return clientSecret != null;
+    }
+
+    /**
+     * The single resolution of the path the client JWKS endpoint is reserved at — the reserved-path
+     * registry and boot validation both read it, so the two cannot resolve the default differently.
+     * <p>
+     * An absent {@code client_authentication} block and a block that declares no {@code jwks_path}
+     * both resolve to {@link ClientAuthenticationSettings#DEFAULT_JWKS_PATH}; a declared
+     * {@code jwks_path} is returned as declared. The path is resolved whatever the
+     * client-authentication mode: it stays reserved when {@code client_secret} is configured.
+     *
+     * @return the effective client JWKS path, never {@code null}
+     */
+    public String effectiveClientJwksPath() {
+        String declared = clientAuthentication == null ? null : clientAuthentication.jwksPath();
+        return declared == null ? ClientAuthenticationSettings.DEFAULT_JWKS_PATH : declared;
+    }
+
+    /**
      * Overridden to redact {@link #clientSecret()}. The default record
      * {@code toString()} would otherwise print the resolved secret value verbatim
      * — {@link de.cuioss.sheriff.gateway.config.load.ConfigLoader} substitutes the
      * {@code ${ENV_VAR}} reference with the real secret before binding, so an
      * unredacted {@code toString()} would leak it into any log line, exception
      * message, or debugger view that captures this instance.
+     * <p>
+     * {@link #clientAuthentication()} and {@link #senderConstraint()} are rendered as they are: a
+     * key file is a path, not a secret.
      *
      * @return a string representation with {@code clientSecret} redacted
      */
     @Override
     public String toString() {
-        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s]"
+        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s]"
                 .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp, userInfo,
-                        login);
+                        login, clientAuthentication, senderConstraint);
     }
 
     /**
@@ -344,5 +393,54 @@ List<String> scopes,
     // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
     public record Login(@Nullable String path, @Nullable String defaultReturnUrl) {
+    }
+
+    /**
+     * The {@code client_authentication} block: the key the gateway signs its
+     * {@code private_key_jwt} client assertion with, and the path its public half is published at.
+     * {@code keyFile} is read only when no {@code client_secret} is configured (see
+     * {@link OidcConfig#usesClientSecret()}); boot validation refuses a document that declares a key
+     * file together with a secret. {@code jwksPath} is read in both client-authentication modes.
+     * <p>
+     * The record is named {@code ClientAuthenticationSettings} so that it does not shadow the token
+     * engine's {@code ClientAuthentication} type where both are in scope.
+     *
+     * @param keyFile  the path of a PEM file on a mount holding the client-authentication key,
+     *                 {@code null} when omitted — a key is then generated at startup. The value is a
+     *                 location, not a secret: it may be written literally and is never redacted
+     * @param jwksPath the gateway path the client JWKS endpoint is reserved at, {@code null} when
+     *                 omitted — {@link #DEFAULT_JWKS_PATH} then applies. Read it through
+     *                 {@link OidcConfig#effectiveClientJwksPath()}, never directly, so the default is
+     *                 resolved in one place
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    // cui-rewrite:disable AnnotationNewlineFormat
+    @Builder
+    public record ClientAuthenticationSettings(@Nullable String keyFile, @Nullable String jwksPath) {
+
+        /** The path the client JWKS endpoint is reserved at when {@code jwks_path} is omitted. */
+        // java:S1075 — the documented default of a configuration key, not a customizable URI/filesystem path.
+        @SuppressWarnings("java:S1075")
+        public static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+    }
+
+    /**
+     * The {@code sender_constraint} block: the key the gateway signs its DPoP proofs with, and
+     * therefore the key every access token it obtains is bound to. The block is read in both
+     * client-authentication modes — a configured {@code client_secret} changes how the gateway
+     * authenticates, not whether its access tokens are sender-constrained.
+     * <p>
+     * The record is named {@code SenderConstraintSettings} so that it does not shadow the token
+     * engine's {@code SenderConstraint} type where both are in scope.
+     *
+     * @param keyFile the path of a PEM file on a mount holding the DPoP proof key, {@code null} when
+     *                omitted — a key is then generated at startup. The value is a location, not a
+     *                secret: it may be written literally and is never redacted. It may name the same
+     *                file as {@code client_authentication.key_file}; two keys are recommended
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public record SenderConstraintSettings(@Nullable String keyFile) {
     }
 }

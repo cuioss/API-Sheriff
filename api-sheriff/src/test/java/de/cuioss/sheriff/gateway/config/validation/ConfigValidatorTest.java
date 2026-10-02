@@ -32,6 +32,7 @@ import java.util.stream.Stream;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -3701,6 +3702,484 @@ class ConfigValidatorTest {
                     topologyWith());
 
             assertFalse(refused(errors));
+        }
+    }
+
+    /**
+     * {@code oidc.client_secret} and {@code oidc.client_authentication.key_file} select different
+     * client authentications. The three documents that name at most one of them are admitted; the
+     * document naming both, and a declared secret that resolves blank, are refused at
+     * {@code /oidc/client_secret} with a fixed text that carries no configured value.
+     */
+    @Nested
+    @DisplayName("oidc.client_secret and oidc.client_authentication.key_file select one client authentication")
+    class ClientAuthenticationMode {
+
+        private static final String POINTER = "/oidc/client_secret";
+        private static final String SECRET_KEY = "oidc.client_secret";
+        private static final String KEY_FILE_KEY = "oidc.client_authentication.key_file";
+        /** Distinctive values, so an echo of either into a refusal is detectable. */
+        private static final String SECRET = "configured-secret-value-7f3a";
+        private static final String KEY_FILE = "/etc/sheriff/keys/configured-key-file-91c2.pem";
+
+        private List<ConfigError> clientAuthenticationErrors(@Nullable String clientSecret,
+                OidcConfig.@Nullable ClientAuthenticationSettings clientAuthentication) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer("https://idp.example.com/realms/main")
+                    .clientId("api-sheriff")
+                    .clientSecret(clientSecret)
+                    .clientAuthentication(clientAuthentication)
+                    .build();
+            return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        private static OidcConfig.ClientAuthenticationSettings keyFile() {
+            return OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).build();
+        }
+
+        /** A declared {@code client_authentication} block that names no key file. */
+        private static OidcConfig.ClientAuthenticationSettings emptyBlock() {
+            return OidcConfig.ClientAuthenticationSettings.builder().build();
+        }
+
+        @Test
+        @DisplayName("Should admit a document declaring only the client secret")
+        void shouldAdmitSecretOnly() {
+            assertEquals(List.of(), clientAuthenticationErrors(SECRET, null),
+                    "client-secret authentication is a supported mode");
+        }
+
+        @Test
+        @DisplayName("Should admit a document declaring only the key file")
+        void shouldAdmitKeyFileOnly() {
+            assertEquals(List.of(), clientAuthenticationErrors(null, keyFile()),
+                    "private_key_jwt with a provided key is the default mode");
+        }
+
+        @Test
+        @DisplayName("Should admit a document declaring neither, with or without an empty client_authentication block")
+        void shouldAdmitNeither() {
+            assertAll("private_key_jwt with a generated key",
+                    () -> assertEquals(List.of(), clientAuthenticationErrors(null, null),
+                            "no secret and no block selects a generated key"),
+                    () -> assertEquals(List.of(), clientAuthenticationErrors(null, emptyBlock()),
+                            "a block that names no key file selects a generated key too"));
+        }
+
+        @Test
+        @DisplayName("Should admit a client secret beside a client_authentication block that names no key file")
+        void shouldAdmitSecretBesideAnEmptyBlock() {
+            assertEquals(List.of(), clientAuthenticationErrors(SECRET, emptyBlock()),
+                    "the refusal is about two credentials, and an empty block names none");
+        }
+
+        @Test
+        @DisplayName("Should refuse both keys together, naming both and echoing neither value")
+        void shouldRefuseSecretTogetherWithKeyFile() {
+            List<ConfigError> errors = clientAuthenticationErrors(SECRET, keyFile());
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            ConfigError refusal = errors.getFirst();
+            assertAll("the refusal names both keys and neither value",
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(SECRET_KEY),
+                            () -> "the refusal must name " + SECRET_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(KEY_FILE_KEY),
+                            () -> "the refusal must name " + KEY_FILE_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains("at most one of them may be configured"),
+                            () -> "declaring neither key is admitted (shouldAdmitNeither), so the refusal "
+                                    + "must not demand exactly one: " + refusal.message()),
+                    () -> assertFalse(refusal.message().contains(SECRET),
+                            "the secret value must never reach the boot log"),
+                    () -> assertFalse(refusal.message().contains(KEY_FILE),
+                            "the configured path must not be echoed either"));
+        }
+
+        @ParameterizedTest(name = "a declared secret of ''{0}''")
+        @ValueSource(strings = {"", " ", "\t "})
+        @DisplayName("Should refuse a declared client secret that resolves to a blank value")
+        void shouldRefuseBlankSecret(String blank) {
+            List<ConfigError> errors = clientAuthenticationErrors(blank, null);
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            assertAll("the refusal names the secret key and the defect",
+                    () -> assertTrue(errors.getFirst().message().contains(SECRET_KEY),
+                            () -> "the refusal must name " + SECRET_KEY + ": " + errors.getFirst().message()),
+                    () -> assertTrue(errors.getFirst().message().contains("blank"),
+                            () -> "the refusal must name the defect: " + errors.getFirst().message()));
+        }
+
+        @Test
+        @DisplayName("Should collect the blank-secret and the both-keys refusal together rather than stopping at the first")
+        void shouldCollectBothRefusalsTogether() {
+            List<ConfigError> errors = clientAuthenticationErrors("", keyFile());
+
+            assertAll("both violations of one document are reported in one pass",
+                    () -> assertEquals(2, errors.size(), () -> "two refusals at " + POINTER + ", got: " + errors),
+                    () -> assertTrue(errors.stream().anyMatch(error -> error.message().contains("blank")),
+                            () -> "the blank-secret refusal is reported, got: " + errors),
+                    () -> assertTrue(errors.stream().anyMatch(error -> error.message().contains(KEY_FILE_KEY)),
+                            () -> "the both-keys refusal is reported, got: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should hold the rule without any session route — it is a property of the document")
+        void shouldRefuseOnABearerOnlyGateway() {
+            OidcConfig oidc = OidcConfig.builder().clientSecret(SECRET).clientAuthentication(keyFile()).build();
+
+            List<ConfigError> errors = validator.validate(validGateway().oidc(oidc).build(), List.of(),
+                    topologyWith());
+
+            assertHasError(errors, POINTER, KEY_FILE_KEY);
+        }
+    }
+
+    /**
+     * The client JWKS path must not be the path of another reserved OIDC endpoint. The registry keeps
+     * the first registration for a path and registers the client JWKS path last, so a collision would
+     * drop the key-set endpoint without a diagnostic; the rule refuses it instead, naming both keys.
+     * It reads the effective path, so the default is covered exactly as a declared path is.
+     */
+    @Nested
+    @DisplayName("oidc.client_authentication.jwks_path must differ from every other reserved OIDC path")
+    class ClientJwksPathCollision {
+
+        private static final String POINTER = "/oidc/client_authentication/jwks_path";
+        private static final String JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
+        private static final String ORIGIN = "https://gateway.example.com";
+        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        private static final String DECLARED_JWKS_PATH = "/auth/client-keys";
+
+        /** The seven reserved keys a JWKS path can collide with, each placing a path under its own key. */
+        enum ReservedKey {
+
+            REDIRECT_URI("oidc.redirect_uri") {
+            @Override
+            OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                return oidc.redirectUri(ORIGIN + path);
+            }
+        },
+
+            LOGOUT_PATH("oidc.logout.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.logout(OidcConfig.Logout.builder().path(path).build());
+                }
+            },
+
+            POST_LOGOUT_REDIRECT_URI("oidc.logout.post_logout_redirect_uri") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.logout(OidcConfig.Logout.builder().postLogoutRedirectUri(ORIGIN + path).build());
+                }
+            },
+
+            BACKCHANNEL_PATH("oidc.logout.backchannel_path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.logout(OidcConfig.Logout.builder().backchannelPath(path).build());
+                }
+            },
+
+            USER_INFO_PATH("oidc.user_info.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.userInfo(OidcConfig.UserInfo.builder().path(path).build());
+                }
+            },
+
+            LOGIN_PATH("oidc.login.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.login(OidcConfig.Login.builder().path(path).build());
+                }
+            },
+
+            STEP_UP_PATH("oidc.step_up.path") {
+                @Override
+                OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path) {
+                    return oidc.stepUp(OidcConfig.StepUp.builder().path(path).build());
+                }
+            };
+
+            private final String key;
+
+            ReservedKey(String key) {
+                this.key = key;
+            }
+
+            abstract OidcConfig.OidcConfigBuilder declare(OidcConfig.OidcConfigBuilder oidc, String path);
+        }
+
+        private List<ConfigError> jwksPathErrors(OidcConfig oidc) {
+            return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        private static OidcConfig.ClientAuthenticationSettings declaring(String jwksPath) {
+            return OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build();
+        }
+
+        /** A document declaring all seven other reserved paths, none of them the default JWKS path. */
+        private static OidcConfig.OidcConfigBuilder everyOtherReservedPath() {
+            return OidcConfig.builder()
+                    .redirectUri(ORIGIN + "/auth/callback")
+                    .logout(OidcConfig.Logout.builder()
+                            .path("/auth/logout")
+                            .postLogoutRedirectUri(ORIGIN + "/auth/logout/return")
+                            .backchannelPath("/auth/backchannel")
+                            .build())
+                    .userInfo(OidcConfig.UserInfo.builder().path("/auth/userinfo").build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build())
+                    .stepUp(OidcConfig.StepUp.builder().path("/auth/step-up").build());
+        }
+
+        /**
+         * What makes "every other reserved key" true, and keeps it true: one enum constant per
+         * reserved kind other than the client JWKS path itself. A reserved kind added to the registry
+         * fails here until the enum carries the key it is declared under.
+         */
+        @Test
+        @DisplayName("Should cover one colliding key per reserved kind other than the client JWKS path")
+        void shouldCoverEveryOtherReservedKind() {
+            assertEquals(ReservedPathRegistry.ReservedEndpoint.values().length - 1, ReservedKey.values().length,
+                    "one colliding key per reserved kind, the client JWKS path excepted");
+            assertEquals(ReservedKey.values().length,
+                    ReservedPathRegistry.reservedPaths(everyOtherReservedPath()
+                            .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build()).size() - 1,
+                    "the admitted fixture declares a distinct path under every one of those keys");
+        }
+
+        @Test
+        @DisplayName("Should admit the default and a declared JWKS path beside seven distinct reserved paths")
+        void shouldAdmitDistinctPaths() {
+            assertAll("no reserved path equals the client JWKS path",
+                    () -> assertEquals(List.of(), jwksPathErrors(everyOtherReservedPath().build()),
+                            "the default path"),
+                    () -> assertEquals(List.of(), jwksPathErrors(
+                            everyOtherReservedPath().clientAuthentication(declaring(DECLARED_JWKS_PATH)).build()),
+                            "a declared path"));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ReservedKey.class)
+        @DisplayName("Should refuse a declared JWKS path that another reserved key names, naming both keys")
+        void shouldRefuseADeclaredPathAnotherKeyNames(ReservedKey reservedKey) {
+            OidcConfig oidc = reservedKey.declare(OidcConfig.builder(), DECLARED_JWKS_PATH)
+                    .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build();
+
+            List<ConfigError> errors = jwksPathErrors(oidc);
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            assertAll("the refusal names both colliding keys",
+                    () -> assertEquals("gateway.yaml", errors.getFirst().file()),
+                    () -> assertTrue(errors.getFirst().message().contains(JWKS_PATH_KEY),
+                            () -> "the refusal must name " + JWKS_PATH_KEY + ": " + errors.getFirst().message()),
+                    () -> assertTrue(errors.getFirst().message().contains(reservedKey.key),
+                            () -> "the refusal must name " + reservedKey.key + ": " + errors.getFirst().message()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ReservedKey.class)
+        @DisplayName("Should refuse another reserved key that names the default JWKS path while no jwks_path is declared")
+        void shouldRefuseACollisionWithTheDefaultPath(ReservedKey reservedKey) {
+            OidcConfig oidc = reservedKey.declare(OidcConfig.builder(), DEFAULT_JWKS_PATH).build();
+
+            List<ConfigError> errors = jwksPathErrors(oidc);
+
+            assertEquals(1, errors.size(),
+                    () -> "the default path is covered exactly as a declared one, got: " + errors);
+            assertAll("the refusal names both keys and the default the omitted key resolves to",
+                    () -> assertTrue(errors.getFirst().message().contains(JWKS_PATH_KEY)),
+                    () -> assertTrue(errors.getFirst().message().contains(reservedKey.key),
+                            () -> "the refusal must name " + reservedKey.key + ": " + errors.getFirst().message()),
+                    () -> assertTrue(errors.getFirst().message().contains(DEFAULT_JWKS_PATH),
+                            () -> "the refusal must name the default: " + errors.getFirst().message()));
+        }
+
+        /**
+         * The matched control for the default-path refusal: the same {@code logout.path} is admitted
+         * once the JWKS path is declared elsewhere, so the refusal above is about the two endpoints
+         * sharing a path and not about the literal {@code /auth/jwks}.
+         */
+        @Test
+        @DisplayName("Should admit another key on the default JWKS path once jwks_path is declared elsewhere (matched control)")
+        void shouldAdmitTheDefaultPathUnderAnotherKeyOnceJwksPathMoves() {
+            OidcConfig oidc = ReservedKey.LOGOUT_PATH.declare(OidcConfig.builder(), DEFAULT_JWKS_PATH)
+                    .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build();
+
+            assertEquals(List.of(), jwksPathErrors(oidc));
+        }
+
+        @Test
+        @DisplayName("Should hold the rule with a client secret configured — the path stays reserved in that mode")
+        void shouldRefuseTheCollisionInClientSecretMode() {
+            OidcConfig oidc = ReservedKey.LOGIN_PATH.declare(OidcConfig.builder(), DEFAULT_JWKS_PATH)
+                    .clientSecret("configured-secret-value").build();
+
+            assertEquals(1, jwksPathErrors(oidc).size(), "the rule does not read the client-authentication mode");
+        }
+
+        @Test
+        @DisplayName("Should report nothing without an oidc block")
+        void shouldReportNothingWithoutOidc() {
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> POINTER.equals(error.pointer())), errors::toString);
+        }
+    }
+
+    /**
+     * The client JWKS path is registered verbatim and matched by exact equality with the canonical
+     * request path. A request that spells a non-canonical path as configured is therefore never
+     * answered by the key-set endpoint, and the canonical path it resolves to is left to the route
+     * table; the rule refuses such a path at boot instead. What a request can and cannot reach is
+     * proven on the request side, in {@code GatewayEdgeRouteBffWiringTest.NonCanonicalClientJwksPath}.
+     * <p>
+     * The parameterized cases run in both client-authentication modes, because the path is reserved in
+     * both. The refused spellings are literals on purpose: each is one specific shape the rule exists to refuse,
+     * so the exact string is the contract under test. Each row also names the reason it must be
+     * refused for, so a spelling that one check stopped catching cannot pass on another's account.
+     */
+    @Nested
+    @DisplayName("oidc.client_authentication.jwks_path must be a canonical gateway path")
+    class ClientJwksPathCanonicalForm {
+
+        private static final String POINTER = "/oidc/client_authentication/jwks_path";
+        private static final String JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
+        private static final String ORIGIN = "https://gateway.example.com";
+        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+
+        /** Each refused spelling with a fragment of the reason it must be refused for. */
+        private static final List<List<String>> NON_CANONICAL_PATHS = List.of(
+                List.of("/keys/./client", "dot-segment"),
+                List.of("/keys/../client", "dot-segment"),
+                List.of("/keys/%2e/client", "dot-segment"),
+                List.of("/keys//client", "must not contain '//'"),
+                List.of("/keys/client;v=1", "matrix parameter"),
+                List.of("/keys/%63lient", "percent-encoded character"),
+                List.of("/keys/client%20set", "percent-encoded character"),
+                List.of("/keys%2Fclient", "percent-encoded '/'"),
+                List.of("/keys/client?v=1", "query or a fragment"),
+                List.of("/keys/client#set", "query or a fragment"),
+                List.of("keys/client", "must start with '/'"));
+
+        /** The two client-authentication modes; the path is reserved, and so judged, in both. */
+        enum Mode {
+
+            KEY {
+            @Override
+            OidcConfig.OidcConfigBuilder select(OidcConfig.OidcConfigBuilder oidc) {
+                return oidc;
+            }
+        },
+
+            CLIENT_SECRET {
+                @Override
+                OidcConfig.OidcConfigBuilder select(OidcConfig.OidcConfigBuilder oidc) {
+                    return oidc.clientSecret("configured-secret-value");
+                }
+            };
+
+            abstract OidcConfig.OidcConfigBuilder select(OidcConfig.OidcConfigBuilder oidc);
+        }
+
+        static Stream<Arguments> nonCanonicalPathsInBothModes() {
+            return Stream.of(Mode.values()).flatMap(mode -> NON_CANONICAL_PATHS.stream()
+                    .map(row -> Arguments.of(mode, row.getFirst(), row.getLast())));
+        }
+
+        static Stream<Arguments> canonicalPathsInBothModes() {
+            return Stream.of(Mode.values()).flatMap(mode -> Stream
+                    .of("/auth/jwks", "/keys/client.jwks", "/auth/client-keys", "/.well-known/client-jwks.json", "/jwks")
+                    .map(path -> Arguments.of(mode, path)));
+        }
+
+        private List<ConfigError> jwksPathErrors(OidcConfig.OidcConfigBuilder oidc) {
+            return validator.validate(validGateway().oidc(oidc.build()).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        /** An {@code oidc} block in the given mode that reserves a callback and declares no JWKS path. */
+        private static OidcConfig.OidcConfigBuilder inMode(Mode mode) {
+            return mode.select(OidcConfig.builder().redirectUri(ORIGIN + "/auth/callback"));
+        }
+
+        private static OidcConfig.OidcConfigBuilder declaring(Mode mode, String jwksPath) {
+            return inMode(mode).clientAuthentication(
+                    OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build());
+        }
+
+        @ParameterizedTest(name = "{0}: {1}")
+        @MethodSource("nonCanonicalPathsInBothModes")
+        @DisplayName("Should refuse a non-canonical path at the jwks_path pointer, for its own reason and without echoing it")
+        void shouldRefuseANonCanonicalPath(Mode mode, String path, String reason) {
+            List<ConfigError> errors = jwksPathErrors(declaring(mode, path));
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            ConfigError refusal = errors.getFirst();
+            assertAll("the refusal of a non-canonical client JWKS path",
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(JWKS_PATH_KEY),
+                            () -> "the refusal must name " + JWKS_PATH_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains("canonical gateway path"),
+                            () -> "the refusal must name the defect: " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(
+                                    "A request that spells the path as configured would never be answered"),
+                            () -> "the consequence is stated for the configured spelling only — a matrix "
+                                    + "parameter path is reachable with its ';' percent-encoded: "
+                                    + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(reason),
+                            () -> "the refusal must carry the reason '" + reason + "': " + refusal.message()),
+                    () -> assertFalse(refusal.message().contains(path),
+                            () -> "the configured value must not be echoed: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "{0}: {1}")
+        @MethodSource("canonicalPathsInBothModes")
+        @DisplayName("Should admit the default spelling and an ordinary custom path")
+        void shouldAdmitACanonicalPath(Mode mode, String path) {
+            assertEquals(List.of(), jwksPathErrors(declaring(mode, path)));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(Mode.class)
+        @DisplayName("Should admit the default path when jwks_path is omitted, with and without a client_authentication block")
+        void shouldAdmitTheDefaultPath(Mode mode) {
+            OidcConfig.OidcConfigBuilder noBlock = inMode(mode);
+            OidcConfig.OidcConfigBuilder emptyBlock = inMode(mode)
+                    .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder().build());
+
+            assertAll("the default " + DEFAULT_JWKS_PATH + " is canonical",
+                    () -> assertEquals(List.of(), jwksPathErrors(noBlock), "no client_authentication block"),
+                    () -> assertEquals(List.of(), jwksPathErrors(emptyBlock), "a block that declares no jwks_path"));
+        }
+
+        /**
+         * The two refusals of the rule are independent: a path that is not canonical and that another
+         * reserved key also names is reported for both, in one pass.
+         */
+        @Test
+        @DisplayName("Should report a non-canonical path and its collision together rather than stopping at the first")
+        void shouldCollectTheCanonicalAndTheCollisionRefusalTogether() {
+            String shared = "/keys//client";
+            OidcConfig.OidcConfigBuilder oidc = declaring(Mode.KEY, shared)
+                    .logout(OidcConfig.Logout.builder().path(shared).build());
+
+            List<ConfigError> errors = jwksPathErrors(oidc);
+
+            assertAll("both violations of one jwks_path are reported",
+                    () -> assertEquals(2, errors.size(), () -> "two refusals at " + POINTER + ", got: " + errors),
+                    () -> assertTrue(errors.stream()
+                                    .anyMatch(error -> error.message().contains("canonical gateway path")),
+                            () -> "the canonical-form refusal is reported, got: " + errors),
+                    () -> assertTrue(errors.stream()
+                                    .anyMatch(error -> error.message().contains("oidc.logout.path")),
+                            () -> "the collision refusal is reported, got: " + errors));
         }
     }
 

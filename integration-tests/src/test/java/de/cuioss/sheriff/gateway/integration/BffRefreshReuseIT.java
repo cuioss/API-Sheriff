@@ -59,8 +59,11 @@ import org.junit.jupiter.api.Test;
  * It runs against the two existing refresh instances and adds no compose instance and no realm client:
  * {@code api-sheriff-cookie-refresh} ({@link BffKeycloakLoginFlow#COOKIE_REFRESH_GATEWAY_ORIGIN},
  * stateless sealed cookie) and {@code api-sheriff-refresh}
- * ({@link BffKeycloakLoginFlow#REFRESH_GATEWAY_ORIGIN}, server mode). Both authenticate as
- * {@code refresh-client}, whose 45-second access token puts the near-expiry window at 15s..45s.
+ * ({@link BffKeycloakLoginFlow#REFRESH_GATEWAY_ORIGIN}, server mode). The two do not share a client:
+ * the server-mode instance authenticates as {@code refresh-client} with a client secret, the
+ * cookie-mode instance as {@code cookie-refresh-client} with a key. Both clients carry the 45-second
+ * {@code access.token.lifespan} that puts the near-expiry window at 15s..45s, so the timing of every
+ * leg below is the same on either instance.
  * <p>
  * <strong>What this suite proves.</strong>
  * <ul>
@@ -111,14 +114,17 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>What this suite does NOT prove.</strong>
  * <ul>
- *   <li><em>IdP-initiated back-channel logout reaching a server-mode session.</em> That path is
- *       unreachable in this topology, not merely untested: neither {@code refresh-client} nor
- *       {@code integration-client} registers a {@code backchannel.logout.url} in
- *       {@code integration-realm.json}, so Keycloak pushes no logout token to any gateway instance when a
- *       session ends. {@code BffLogoutIT} proves only that the receiver is wired and fail-closed, and
- *       {@code BffCookieBackchannelDisabledIT} that cookie mode gates it off. In this stack an
- *       IdP-side session end reaches a server-mode gateway session only through the refresh leg proven
- *       above. Registering a back-channel URL would need a realm change this suite does not make.</li>
+ *   <li><em>IdP-initiated back-channel logout reaching one of the two refresh instances.</em> That
+ *       path is unreachable for the instances this suite drives, not merely untested: neither
+ *       {@code refresh-client} nor {@code cookie-refresh-client} registers a
+ *       {@code backchannel.logout.url} in {@code integration-realm.json}, so Keycloak pushes no logout
+ *       token to either of them when a session ends. The one client that registers the URL is
+ *       {@code integration-client}, and the delivery is proven for the primary instance by
+ *       {@code BffBackchannelLogoutIT}; {@code BffLogoutIT} proves that the receiver is wired and
+ *       fail-closed, and {@code BffCookieBackchannelDisabledIT} that cookie mode gates it off. On the
+ *       two refresh instances an IdP-side session end reaches the gateway session only through the
+ *       refresh leg proven above. Registering a back-channel URL on their clients would need a realm
+ *       change this suite does not make.</li>
  *   <li><em>Cross-instance replay.</em> The replayed cookie is presented to the instance that sealed
  *       it. A replay against a peer sharing the sealing key would reach the same IdP refusal, but that
  *       is inferred here, not observed.</li>

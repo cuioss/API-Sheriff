@@ -21,8 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
@@ -43,6 +47,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -156,6 +161,9 @@ class ConfigValidatorPortalTest {
         private static final String USER_INFO = "/session/userinfo";
         private static final String LOGIN = "/session/login";
         private static final String STEP_UP = "/session/step-up";
+        /** The path the client JWKS endpoint is reserved at when {@code jwks_path} is omitted. */
+        private static final String DEFAULT_CLIENT_JWKS = "/auth/jwks";
+        private static final String DECLARED_CLIENT_JWKS = "/keys/client";
 
         private OidcConfig oidc() {
             return OidcConfig.builder()
@@ -171,11 +179,36 @@ class ConfigValidatorPortalTest {
                     .build();
         }
 
+        /**
+         * The paths {@link #oidc()} reserves, one per reserved kind: the seven it declares, and the
+         * client JWKS path, which it reserves at the default without declaring it.
+         */
+        private static final List<String> EVERY_RESERVED_PATH =
+                List.of(CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN, STEP_UP, DEFAULT_CLIENT_JWKS);
+
+        static Stream<String> everyReservedPath() {
+            return EVERY_RESERVED_PATH.stream();
+        }
+
         @ParameterizedTest(name = "refuses the reserved path {0}")
-        @ValueSource(strings = {CALLBACK, LOGOUT, LOGOUT_RETURN, BACKCHANNEL, USER_INFO, LOGIN, STEP_UP})
+        @MethodSource("everyReservedPath")
         void refusesEveryReservedPathKind(String reserved) {
             assertRefused(portalErrors(gateway(portal(reserved), oidc()), List.of()),
                     PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+        }
+
+        /**
+         * What makes "every" in the test above true, and keeps it true: the parameter list is exactly
+         * the set the registry derives from the fixture, and that set holds one path per reserved
+         * kind. A reserved kind added to the registry fails here until the fixture and the list carry
+         * its path.
+         */
+        @Test
+        void everyReservedPathCoversOnePathPerReservedKind() {
+            assertEquals(ReservedPathRegistry.reservedPaths(oidc()), Set.copyOf(EVERY_RESERVED_PATH),
+                    "the parameter list is exactly what the fixture reserves");
+            assertEquals(ReservedEndpoint.values().length, EVERY_RESERVED_PATH.size(),
+                    "one path per reserved kind");
         }
 
         @ParameterizedTest(name = "accepts the non-reserved path {0}")
@@ -187,6 +220,47 @@ class ConfigValidatorPortalTest {
         @Test
         void acceptsAnyPathWithoutOidcBlock() {
             assertEquals(List.of(), portalErrors(gateway(portal(CALLBACK), null), List.of()));
+        }
+
+        /**
+         * The client JWKS path is reserved without being declared, so the portal is refused on the
+         * default path by an {@code oidc} block that never names it. The same path is the eighth row
+         * of {@link #refusesEveryReservedPathKind}; it is stated here once more, by name, as the
+         * counterpart of the declared-path case below.
+         */
+        @Test
+        void refusesTheDefaultClientJwksPath() {
+            assertRefused(portalErrors(gateway(portal(DEFAULT_CLIENT_JWKS), oidc()), List.of()),
+                    PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+        }
+
+        /**
+         * A declared {@code jwks_path} moves the reservation: the portal is refused on the declared
+         * path and admitted on the default one, which that document no longer reserves.
+         */
+        @Test
+        void refusesTheDeclaredClientJwksPathAndReleasesTheDefault() {
+            OidcConfig declaring = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK)
+                    .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder()
+                            .jwksPath(DECLARED_CLIENT_JWKS).build())
+                    .build();
+
+            assertRefused(portalErrors(gateway(portal(DECLARED_CLIENT_JWKS), declaring), List.of()),
+                    PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
+            assertEquals(List.of(), portalErrors(gateway(portal(DEFAULT_CLIENT_JWKS), declaring), List.of()),
+                    "the default path is not reserved once jwks_path names another");
+        }
+
+        @Test
+        void refusesTheClientJwksPathWithAClientSecretConfigured() {
+            OidcConfig secretMode = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK)
+                    .clientSecret(Generators.letterStrings(16, 32).next())
+                    .build();
+
+            assertRefused(portalErrors(gateway(portal(DEFAULT_CLIENT_JWKS), secretMode), List.of()),
+                    PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
         }
     }
 

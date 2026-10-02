@@ -16,9 +16,12 @@
 /**
  * The gateway's reserved OIDC endpoints, carved out of the proxy route table (D2/D2c).
  * <p>
- * The BFF variants reserve four gateway-owned paths — the {@code oidc.redirect_uri} callback, the
- * RP-initiated logout path, its return leg, and the back-channel logout receiver — matched
- * exactly and only on the OIDC host. This package owns the carve-out and the callback landing:
+ * The BFF variants reserve up to eight gateway-owned paths — the {@code oidc.redirect_uri} callback, the
+ * RP-initiated logout path, its return leg, the back-channel logout receiver, the user-info fold,
+ * the login-initiation fold, the step-up entry point and the client JWKS endpoint — each matched
+ * exactly. The six a browser reaches are matched on the OIDC host only; the two the identity provider
+ * dials server-to-server, the back-channel logout receiver and the client JWKS endpoint, are matched
+ * on every host. This package owns the carve-out and the endpoints behind it:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry} classifies an exact
  *       host+path match to a reserved endpoint. The edge consults it <em>before</em> the route
@@ -27,7 +30,23 @@
  *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint} handles the OIDC
  *       auth-code callback: it parses the <em>raw</em> query (BFF-13 duplicate-parameter
  *       defence), resolves the browser-bound pending-authorization record, and drives the engine's
- *       code exchange and token validation.</li>
+ *       code exchange and token validation. A login callback creates the session; a widening
+ *       callback merges the grant into the live session. Both redirect to the recorded return
+ *       URL.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint} serves RP-initiated logout
+ *       and its return leg.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint} receives the
+ *       identity provider's back-channel logout token.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint} serves the curated
+ *       session/user-info view, capped by the operator claim allowlist.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint} starts a login for a
+ *       browser that asks for one.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint} starts the widening of a live
+ *       session for a browser sent to a session route's {@code step_up_url}.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.ClientJwksEndpoint} publishes the
+ *       client-authentication public key the identity provider verifies the gateway's
+ *       {@code private_key_jwt} client assertion with; with a client secret configured it answers
+ *       {@code 404} instead, and the path stays reserved.</li>
  * </ul>
  * The classes are framework-agnostic (no CDI, no JAX-RS/Vert.x coupling), so they are
  * unit-testable without a container; the session runtime wires them to the request/response edge.

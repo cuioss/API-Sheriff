@@ -40,6 +40,8 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -143,6 +145,21 @@ import org.jspecify.annotations.Nullable;
  * keep the {@code __Host-} guarantee the gateway-owned cookies carry, be writable verbatim into a
  * {@code Set-Cookie} header, and not collide with a gateway-owned cookie. The schema declares the key
  * an unrestricted string; this rule is the single enforcing authority.
+ * <p>
+ * The client-authentication refusal adds one more: {@code oidc.client_secret} and
+ * {@code oidc.client_authentication.key_file} select different client authentications, so a document
+ * declaring both is refused, and so is a declared {@code oidc.client_secret} that resolves to a blank
+ * value. The schema does not encode the exclusion; this rule owns it, because its message has to
+ * name both keys.
+ * <p>
+ * The client JWKS path rule refuses an {@code oidc.client_authentication.jwks_path} — declared, or
+ * the default it resolves to when omitted — that another reserved OIDC endpoint already claims. The
+ * reserved-path registry keeps the first registration for a path, so the collision would otherwise
+ * drop the key-set endpoint without a diagnostic. The same rule refuses a path that is not a
+ * canonical gateway path — held to the canonical-path review of {@link PortalRules}, and carrying
+ * neither a matrix parameter nor a percent-encoded character — because the path is matched by exact
+ * equality with the canonical request path and a request that spells such a value as configured
+ * would never be matched.
  * <p>
  * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
  * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect
@@ -248,6 +265,39 @@ public final class ConfigValidator {
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
+    private static final String OIDC_CLIENT_SECRET_POINTER = "/oidc/client_secret";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_CLIENT_JWKS_PATH_POINTER = "/oidc/client_authentication/jwks_path";
+    private static final String OIDC_CLIENT_JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
+
+    /** Opens a matrix parameter in a path segment; a client JWKS path must not carry one. */
+    private static final char MATRIX_PARAMETER_DELIMITER = ';';
+
+    /** Opens a percent-encoded octet; a client JWKS path must not carry one. */
+    private static final char PERCENT_SIGN = '%';
+
+    /**
+     * The fixed detail of the refusal of {@code oidc.client_secret} together with
+     * {@code oidc.client_authentication.key_file}. Fixed text, so the boot log echoes neither the
+     * secret nor the configured path. It says "at most one", not "exactly one": a document declaring
+     * neither is valid and authenticates with a generated key.
+     */
+    private static final String CLIENT_SECRET_WITH_KEY_FILE_DETAIL =
+            "oidc.client_secret and oidc.client_authentication.key_file are both declared; the two select "
+                    + "different client authentications — client_secret selects client_secret_basic, "
+                    + "client_authentication.key_file selects private_key_jwt — so at most one of them may be "
+                    + "configured: remove oidc.client_secret to authenticate with the key, or remove "
+                    + "oidc.client_authentication.key_file to authenticate with the secret";
+
+    /**
+     * The fixed detail of the refusal of a declared {@code oidc.client_secret} that resolves to a
+     * blank value. Fixed text, so the boot log never echoes a configured scalar.
+     */
+    private static final String CLIENT_SECRET_BLANK_DETAIL =
+            "oidc.client_secret is declared but resolves to a blank value; a declared client secret selects "
+                    + "client_secret_basic and must carry a value — set the variable it references, or remove "
+                    + "oidc.client_secret to authenticate with private_key_jwt";
 
     /**
      * The cookie-name prefix every gateway-owned cookie carries. A browser honours a
@@ -356,6 +406,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionCookieName(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateClientAuthentication(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateClientJwksPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateStepUpPath(gateway, errors),
@@ -2340,6 +2392,163 @@ public final class ConfigValidator {
     }
 
     /**
+     * Rule: the client-authentication mode must be unambiguous and usable.
+     * <p>
+     * The presence of {@code oidc.client_secret} selects {@code client_secret_basic}; its absence
+     * selects {@code private_key_jwt}, signed with the key {@code oidc.client_authentication.key_file}
+     * names or with a generated one. The mode is read through
+     * {@link OidcConfig#usesClientSecret()}, the predicate the runtime producer reads as well, so
+     * validation and runtime cannot resolve it differently. Two documents are refused:
+     * <ul>
+     *   <li><strong>Both keys declared.</strong> The two select different client authentications, and
+     *       preferring one would be a silent choice between two credentials. One error is collected
+     *       at {@code /oidc/client_secret}; it names both keys and neither value.</li>
+     *   <li><strong>A blank secret.</strong> A variable set to the empty string resolves to an empty
+     *       secret. It is a present key the token engine cannot use, so it is refused here instead of
+     *       surfacing as the engine's own exception while the runtime is assembled.</li>
+     * </ul>
+     * A document with only the secret, only the key file, or neither is admitted. The rule holds for
+     * a gateway whose BFF runtime is inert as well, because it is a property of the document. Both
+     * detail texts are fixed, so neither the secret nor the configured path reaches the boot log.
+     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateClientAuthentication(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null || !oidc.usesClientSecret()) {
+            return;
+        }
+        String clientSecret = oidc.clientSecret();
+        if (clientSecret != null && clientSecret.isBlank()) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER, CLIENT_SECRET_BLANK_DETAIL));
+        }
+        OidcConfig.ClientAuthenticationSettings clientAuthentication = oidc.clientAuthentication();
+        if (clientAuthentication != null && clientAuthentication.keyFile() != null) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER,
+                    CLIENT_SECRET_WITH_KEY_FILE_DETAIL));
+        }
+    }
+
+    /**
+     * Rule: the client JWKS path must be a canonical gateway path, and must not be the path of another
+     * reserved OIDC endpoint.
+     * <p>
+     * <strong>Canonical form.</strong> The reserved-path registry registers the path verbatim and the
+     * edge matches it by exact equality with the canonical request path. A path that is not itself
+     * canonical — a {@code //}, a dot segment, a {@code ?} or {@code #}, a matrix parameter, a
+     * percent-encoded character, or anything else {@link #clientJwksPathRefusal} names — is never
+     * matched by a request that spells it as configured, with two consequences: the key set is not
+     * published at the URL the operator registers, so in key mode the identity provider cannot fetch
+     * the key that verifies the gateway's client assertion and every login fails without a boot
+     * diagnostic; and in both client-authentication modes the canonical path such a request resolves
+     * to is left unreserved and falls through to the route table, where a proxied upstream could
+     * answer under the client's key-set URL. Such a path is refused instead, with a fixed reason that
+     * never echoes the configured value.
+     * <p>
+     * The claim is about the configured spelling, not about every request. A path carrying a
+     * percent-encoded character is matched by no request at all: the request path is decoded once
+     * and a second encoding layer is refused. A path carrying a matrix parameter <em>is</em> matched
+     * by a request that percent-encodes the {@code ;}, because the canonical-path guard reads the raw
+     * path and the registry matches the decoded one — which is no URL an operator registers, so the
+     * refusal stands on the configured spelling alone
+     * ({@code GatewayEdgeRouteBffWiringTest.NonCanonicalClientJwksPath} pins both).
+     * <p>
+     * <strong>No collision.</strong> The reserved-path registry keeps the first registration for a
+     * path and registers the client JWKS path last. A JWKS path that another key of the {@code oidc}
+     * block also names — the callback of {@code redirect_uri}, the logout path, its return leg, the
+     * back-channel logout path, the user-info path, the login path or the step-up path — would
+     * therefore lose silently:
+     * the other endpoint would answer there, the key set would never be published, and the identity
+     * provider could not verify the gateway's client assertion. The collision is refused instead,
+     * naming both keys.
+     * <p>
+     * The path is read through {@link OidcConfig#effectiveClientJwksPath()}, the accessor the registry
+     * resolves it with, and the owner of the path through
+     * {@link ReservedPathRegistry#reservedKind(OidcConfig, String)}, the registry's own derivation — so
+     * the rule judges exactly what the runtime would register. It therefore covers the default path as
+     * well: a document that declares no {@code jwks_path} and names {@code /auth/jwks} under another key
+     * is refused like one that declares the collision outright.
+     * <p>
+     * The rule does not read the client-authentication mode. The path is reserved with a client secret
+     * configured too, so a non-canonical path and a collision are the same defects in both modes. The
+     * two refusals are independent, and every violation collects into the shared list; the rule never
+     * fails fast (ADR-0009).
+     */
+    private static void validateClientJwksPath(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null) {
+            return;
+        }
+        String path = oidc.effectiveClientJwksPath();
+        clientJwksPathRefusal(path).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
+                OIDC_CLIENT_JWKS_PATH_POINTER,
+                ("%s must be a canonical gateway path: %s. A request that spells the path as configured "
+                        + "would never be answered by the key-set endpoint, and where such a request "
+                        + "resolves to a canonical path, the key-set endpoint would not be reserved "
+                        + "there — declare a canonical path, or omit the key for the default %s")
+                        .formatted(OIDC_CLIENT_JWKS_PATH_KEY, reason,
+                                OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH))));
+        ReservedPathRegistry.reservedKind(oidc, path)
+                .filter(owner -> owner != ReservedEndpoint.CLIENT_JWKS)
+                .ifPresent(owner -> errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_JWKS_PATH_POINTER,
+                        ("%s and %s resolve to the same gateway path; two reserved endpoints cannot share one "
+                                + "path, and the client key set would never be published there — when %s is "
+                                + "omitted it resolves to %s. Declare an %s that no other oidc key names, or "
+                                + "change %s")
+                                .formatted(OIDC_CLIENT_JWKS_PATH_KEY, reservedPathKey(owner),
+                                        OIDC_CLIENT_JWKS_PATH_KEY,
+                                        OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH,
+                                        OIDC_CLIENT_JWKS_PATH_KEY, reservedPathKey(owner)))));
+    }
+
+    /**
+     * The reason a client JWKS path is not a canonical gateway path, or empty when it is one.
+     * <p>
+     * The review is {@link PortalRules#canonicalPathRefusal(String)} — the one {@code portal.path} is
+     * held to, reused here rather than restated — followed by two refusals that review does not make.
+     * Both name a path that could never be answered at the URL an operator would register for it:
+     * <ul>
+     *   <li><strong>A matrix parameter.</strong> The canonical-path guard refuses every request whose
+     *       raw path carries a {@code ;}, so a request for the configured URL is answered {@code 400}
+     *       and never the key set.</li>
+     *   <li><strong>A {@code %}.</strong> The request path is percent-decoded before it is matched, so
+     *       an encoded character in the configured path never equals the decoded one the request
+     *       yields; and a request path carrying a second encoding layer is refused, so no request
+     *       yields the configured string either.</li>
+     * </ul>
+     * Every reason is fixed text; none echoes the configured value.
+     */
+    private static Optional<String> clientJwksPathRefusal(String path) {
+        Optional<String> shared = PortalRules.canonicalPathRefusal(path);
+        if (shared.isPresent()) {
+            return shared;
+        }
+        if (path.indexOf(MATRIX_PARAMETER_DELIMITER) >= 0) {
+            return Optional.of("a matrix parameter (';') is refused on every request path");
+        }
+        if (path.indexOf(PERCENT_SIGN) >= 0) {
+            return Optional.of("a percent-encoded character is decoded before the request path is matched");
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * The {@code gateway.yaml} key a reserved endpoint's path is declared under, for a refusal that has
+     * to name it.
+     */
+    private static String reservedPathKey(ReservedEndpoint endpoint) {
+        return switch (endpoint) {
+            case CALLBACK -> "oidc.redirect_uri";
+            case LOGOUT -> "oidc.logout.path";
+            case LOGOUT_RETURN -> "oidc.logout.post_logout_redirect_uri";
+            case BACKCHANNEL_LOGOUT -> "oidc.logout.backchannel_path";
+            case USER_INFO -> "oidc.user_info.path";
+            case LOGIN -> "oidc.login.path";
+            case STEP_UP -> "oidc.step_up.path";
+            case CLIENT_JWKS -> OIDC_CLIENT_JWKS_PATH_KEY;
+        };
+    }
+
+    /**
      * The session-cookie name the runtime will resolve, for deriving the emitted header size.
      * <p>
      * A blank declared name is folded onto the default rather than passed through: the schema
@@ -2437,7 +2646,9 @@ public final class ConfigValidator {
      * ({@link #isAbsoluteGatewayPath}), because a browser reads a {@code step_up_url} naming
      * {@code /\host} or {@code /<TAB>/host} as the scheme-relative {@code //host}. A
      * collision with the application portal needs no rule here — the portal rules compare
-     * {@code portal.path} against every reserved path, this one included.
+     * {@code portal.path} against every reserved path, this one included. A collision with the client
+     * JWKS path needs none here either: {@link #validateClientJwksPath} refuses it, naming both keys,
+     * whichever of the two the operator thinks of as the one that moved.
      */
     private static void validateStepUpPath(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();

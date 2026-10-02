@@ -53,15 +53,24 @@ import org.jspecify.annotations.Nullable;
  * flow forwards it to the seam unchanged. The caller supplies the set: the session stage passes the
  * selected route's {@code neededScopes}, the login-initiation endpoint the set
  * {@link ReturnTargetScopes} resolves for the return target. The runtime binds the seam to
- * {@link ScopedEngineFlows}, which renders an authorization URL whose {@code scope} is exactly that
- * set (ADR-0048). The same set is recorded on the {@link PendingAuthorizationRecord}, so the callback
- * can fall back to it when the access token carries no {@code scope} claim.
+ * {@link ScopedEngineFlows}, which renders an authorization request whose {@code scope} is exactly
+ * that set (ADR-0048). The same set is recorded on the {@link PendingAuthorizationRecord}, so the
+ * callback can fall back to it when the access token carries no {@code scope} claim.
  * <p>
- * <strong>Response mode.</strong> The authorization URL the seam yields carries
- * {@code response_mode=query} — see {@link QueryResponseModeAuthorizationRequestBuilder}, which the
- * runtime wires into the engine. That is what makes the later callback a top-level GET navigation,
- * the only shape on which the browser sends the {@code SameSite=Lax} binding cookie this flow sets
- * here. The mode is therefore not incidental to the binding cookie — the two are one design.
+ * <strong>The authorization URL is a pushed-request redirect (ADR-0058).</strong> The URL the seam
+ * yields carries {@code client_id} and {@code request_uri} and nothing else. The runtime pushes the
+ * request the engine rendered through {@link PushedAuthorizationRequests} before this flow sees it,
+ * so the requested scope set, {@code state}, {@code nonce}, the PKCE challenge and
+ * {@code response_mode=query} travel in the pushed request and not in that redirect. A failed
+ * push propagates out of the seam as a {@code 502} refusal: {@link #initiate} calls the seam first,
+ * so the failure is raised before the pending record is stored and before the binding cookie is set,
+ * and no login is left half-started.
+ * <p>
+ * <strong>Response mode.</strong> The pushed request carries {@code response_mode=query} — see
+ * {@link QueryResponseModeAuthorizationRequestBuilder}, which the runtime wires into the engine.
+ * That is what makes the later callback a top-level GET navigation, the only shape on which the
+ * browser sends the {@code SameSite=Lax} binding cookie this flow sets here. The mode is therefore
+ * not incidental to the binding cookie — the two are one design.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -79,7 +88,8 @@ public final class LoginFlow {
     /**
      * Assembles the login flow with the engine authorization seam and the gateway-side stores.
      *
-     * @param authorization      the engine authorization seam (bound to {@link ScopedEngineFlows#authorize})
+     * @param authorization      the engine authorization seam (bound to {@link ScopedEngineFlows#authorize}
+     *                           and the push of the request it renders)
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
@@ -135,9 +145,9 @@ public final class LoginFlow {
 
     /**
      * The engine authorization seam. The session runtime binds it to the per-scope-set engine seam
-     * as {@code scopes -> scopedEngineFlows.authorize(providerMetadata, scopes)} (ADR-0048); a test
-     * binds it to a hand-built redirect. Keeping the discovery-metadata wiring behind the seam
-     * decouples the flow from it and makes the initiation path unit-testable without a live IdP.
+     * (ADR-0048); a test binds it to a hand-built redirect. Keeping the discovery-metadata wiring
+     * behind the seam decouples the flow from it and makes the initiation path unit-testable without
+     * a live IdP.
      *
      * @author API Sheriff Team
      * @since 1.0

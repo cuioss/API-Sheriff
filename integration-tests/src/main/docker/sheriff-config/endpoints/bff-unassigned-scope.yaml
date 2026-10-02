@@ -15,7 +15,8 @@
 # endpoints/bff-scoped.yaml: sheriff_it_endpoint is optional on the client, so Keycloak grants it
 # as soon as the gateway asks, whereas an authorization request naming sheriff_it_unassigned is
 # refused with invalid_scope. No session can therefore ever carry these routes' needed set, and
-# the routes are reachable by nobody.
+# the routes are reachable by nobody. The same holds for every other realm client, the key-
+# authenticated ones and token-mint-client included: the scope is assigned to none of them.
 #
 # The explanation lives HERE and not on the scope in integration-realm.json, because that file
 # cannot hold it: JSON carries no comments, and the scope's `description` is stored in Keycloak's
@@ -24,13 +25,18 @@
 # a single integration test runs. Keep that description a one-line pointer.
 #
 # What they back is the refusal rows of BffSessionScopeParityIT. A live session navigating onto
-# either route is redirected into a session widening, the identity provider answers invalid_scope,
-# and the callback ends the attempt with a terminal 403: the session is left unchanged, no second
-# attempt is made, and the request never reaches the echo. An XHR is refused 403
-# application/problem+json naming the missing scope. The same session keeps working on
-# /bff-session/get afterwards, which is the proof that a refused widening costs the browser
-# nothing it already had. Assigning the scope to the client in the realm would turn the refusal
-# into a grant and make these routes a second copy of bff-scoped.
+# either route starts a session widening, and the gateway pushes the widening's authorization
+# request before it redirects (ADR-0058). Keycloak refuses that pushed request, so the navigation
+# is answered 502 and the instance logs the refused-push record ApiSheriff-132: no redirect is
+# issued, nothing is stored, the session is left unchanged, and the request never reaches the
+# echo. An XHR is refused 403 application/problem+json naming the missing scope. The same session
+# keeps working on /bff-session/get afterwards, which is the proof that a refused widening costs
+# the browser nothing it already had. Assigning the scope to the client in the realm would turn
+# the refusal into a grant and make these routes a second copy of bff-scoped.
+#
+# The terminal 403 a widening CALLBACK answers an identity-provider error with (ADR-0057) is not
+# reached through these routes: the scope is refused at the push, so no callback is ever made. It
+# is proven at unit level (CallbackEndpointTest).
 #
 # The step-up path the XHR answer points at is oidc.step_up.path in gateway.yaml. Both prefixes
 # nest under /bff-session and are statically disjoint from bff-session-mediated by specificity,
@@ -50,7 +56,7 @@ endpoint:
     # session_fallback (auth.session_fallback: true) — the refusal shown on the SESSION branch of a
     # require: bearer route. A request without an Authorization header takes that branch and is held
     # to the route's needed scopes exactly as on bff-unassigned-scope above, so the same widening is
-    # attempted and the same terminal 403 answers it. The grantable counterpart of this route is
+    # attempted and the same 502 answers its refused push. The grantable counterpart of this route is
     # bff-session-fallback in endpoints/bff-scoped.yaml, where the widening succeeds; a refusal
     # cannot be shown there, because the scope that endpoint adds is one Keycloak grants.
     #
