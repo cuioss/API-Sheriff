@@ -46,10 +46,18 @@ import io.restassured.response.Response;
  * <p>
  * It carries the docker process plumbing, the port and network lookups, the readiness and log polls,
  * the bearer-gated asset probe and the token mint, so each such test states only its own topology and
- * legs. Every gateway it starts runs the {@value #IMAGE} image the compose stack runs, mounts one
- * standalone {@code gateway.yaml} beside exactly one shared endpoint file
- * ({@code sheriff-config/endpoints/assets-secure.yaml}) and no {@code topology.properties}, and
- * publishes both of its ports on ephemeral loopback ports so a run cannot collide with the live stack.
+ * legs. Every gateway it starts runs the {@value #IMAGE} image the compose stack runs. It starts two
+ * shapes of gateway:
+ * <ul>
+ *   <li>{@link #startGateway(String, String, Path)} — a bearer-only gateway over one standalone
+ *       {@code gateway.yaml} beside exactly one shared endpoint file
+ *       ({@code sheriff-config/endpoints/assets-secure.yaml}) and no {@code topology.properties}, with
+ *       both ports on ephemeral loopback ports so a run cannot collide with the live stack;</li>
+ *   <li>{@link #startBffGateway(BffGateway)} — a BFF gateway over the <em>shared</em>
+ *       {@code sheriff-config} directory with one overlay descriptor, exactly as a compose variant
+ *       instance is mounted. Its application listener is published on a fixed loopback port, because
+ *       the descriptor of a BFF names its own origin; its management port stays ephemeral.</li>
+ * </ul>
  * <p>
  * Not instantiable; every member is a stateless static helper. Docker container names are global to
  * the docker daemon, so callers give each container a unique name.
@@ -74,9 +82,15 @@ final class OneOffGatewayContainers {
     /** WARN — a load attempt produced no key set and a retry was scheduled. */
     static final String RETRY_SCHEDULED_RECORD = "ApiSheriff-129";
 
+    /** The configuration directory every compose gateway mounts at {@code /app/sheriff-config}. */
+    private static final Path SHERIFF_CONFIG = DOCKER.resolve("sheriff-config");
+
     private static final Path ASSETS_SECURE_ENDPOINT =
-            DOCKER.resolve(Path.of("sheriff-config", "endpoints", "assets-secure.yaml"));
+            SHERIFF_CONFIG.resolve(Path.of("endpoints", "assets-secure.yaml"));
     private static final Path ASSETS = DOCKER.resolve("assets");
+
+    /** The demo SPA the {@code /assets/demo} route of the shared configuration serves, as compose mounts it. */
+    private static final Path DEMO_SPA = Path.of("..", "demo-client", "src", "main", "resources", "spa");
 
     /** The host-published Keycloak origin the test JVM can reach (compose {@code 1443 -> 8443}). */
     private static final String KEYCLOAK_ORIGIN = "https://localhost:1443";
@@ -137,6 +151,87 @@ final class OneOffGatewayContainers {
                 "-v", ASSETS_SECURE_ENDPOINT.toAbsolutePath() + ":/app/sheriff-config/endpoints/assets-secure.yaml:ro",
                 "-v", ASSETS.toAbsolutePath() + ":/app/assets:ro",
                 IMAGE);
+    }
+
+    /**
+     * What distinguishes one one-off BFF gateway from a compose variant instance.
+     *
+     * @param name                the unique container name
+     * @param network             the docker network the container joins — the compose network, so the
+     *                            topology aliases of the shared configuration and Keycloak resolve
+     * @param networkAlias        the name other containers of that network reach the gateway under
+     * @param applicationHostPort the fixed loopback host port the application listener is published on;
+     *                            the gateway origin its descriptor names
+     * @param descriptor          the overlay {@code gateway.yaml}; must carry
+     *                            {@link PosixFilePermission#OTHERS_READ}
+     * @param certificate         the file name, in the certificates directory, of the server
+     *                            certificate the application listener presents
+     * @param certificateKey      the file name of that certificate's private key
+     * @param environment         further environment entries, in {@code NAME=value} form
+     */
+    record BffGateway(String name, String network, String networkAlias, int applicationHostPort, Path descriptor,
+    String certificate, String certificateKey, List<String> environment) {
+    }
+
+    /**
+     * Starts a one-off BFF gateway, mounted as a compose variant instance is: the shared
+     * {@code sheriff-config} directory with one overlay descriptor, the certificates, the assets and
+     * the demo directory. Nothing else is mounted — in particular no signing-key directory, so the
+     * container holds no key file a descriptor could name.
+     * <p>
+     * The three trust-store arguments are the ones every compose gateway passes: the confidential-client
+     * engine dials Keycloak with the JVM default trust manager, and Keycloak serves the stack's
+     * self-signed certificate.
+     * <p>
+     * The management listener keeps the stack certificate; only the application listener presents the
+     * pair the caller names, which is the one another container verifies when it dials the gateway
+     * under {@link BffGateway#networkAlias()}.
+     *
+     * @param gateway what to start
+     */
+    static void startBffGateway(BffGateway gateway) {
+        assertReadableByTheGatewayUser(gateway.descriptor());
+        List<String> arguments = new ArrayList<>(List.of("run", "-d",
+                "--name", gateway.name(),
+                "--network", gateway.network(),
+                "--network-alias", gateway.networkAlias(),
+                "-p", "127.0.0.1:" + gateway.applicationHostPort() + ":8443",
+                "-p", "127.0.0.1::9000",
+                "-e", "QUARKUS_PROFILE=it",
+                "-e", "QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties",
+                "-e", "QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/" + gateway.certificate(),
+                "-e", "QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/" + gateway.certificateKey(),
+                "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt",
+                "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key",
+                "-e", "SHERIFF_CONFIG_DIR=/app/sheriff-config"));
+        for (String entry : gateway.environment()) {
+            arguments.add("-e");
+            arguments.add(entry);
+        }
+        arguments.addAll(List.of(
+                "-v", CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro",
+                "-v", SHERIFF_CONFIG.toAbsolutePath() + ":/app/sheriff-config:ro",
+                "-v", gateway.descriptor().toAbsolutePath() + ":/app/sheriff-config/gateway.yaml:ro",
+                "-v", ASSETS.toAbsolutePath() + ":/app/assets:ro",
+                "-v", DEMO_SPA.toAbsolutePath().normalize() + ":/app/demo:ro",
+                IMAGE,
+                "-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12",
+                "-Djavax.net.ssl.trustStorePassword=localhost-trust",
+                "-Djavax.net.ssl.trustStoreType=PKCS12"));
+        docker("start the one-off BFF gateway " + gateway.name(), arguments.toArray(String[]::new));
+    }
+
+    /**
+     * Restarts a one-off gateway and reads its management port again. Docker assigns an ephemeral host
+     * port anew when a container starts, so the port published before the restart is not the one the
+     * restarted gateway answers on; a fixed host port stays as it was.
+     *
+     * @param gateway the container name
+     * @return the loopback host port the management interface is published on after the restart
+     */
+    static String restartGateway(String gateway) {
+        docker("restart the one-off gateway " + gateway, "restart", gateway);
+        return publishedPort(gateway, 9000);
     }
 
     /**

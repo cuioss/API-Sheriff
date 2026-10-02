@@ -93,6 +93,32 @@
       }
     },
     {
+      "clientId": "generated-key-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-jwt",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
+      "attributes": {
+        "post.logout.redirect.uris": "*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "access.token.lifespan": "45",
+        "use.jwks.url": "true",
+        "jwks.url": "https://sheriff-generated-keys:8443/auth/client-keys",
+        "token.endpoint.auth.signing.alg": "ES256",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true"
+      }
+    },
+    {
       "clientId": "refresh-client",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",

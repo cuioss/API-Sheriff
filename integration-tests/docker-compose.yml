@@ -63,7 +63,17 @@ services:
       # The path re-uses the certificates volume already mounted above rather than adding a second
       # mount, and hostname verification stays ON: the certificate's SAN already names
       # dns:api-sheriff (see certificates/generate-certificates.sh), so the dialled name is covered.
-      - KC_TRUSTSTORE_PATHS=/opt/keycloak/certificates/localhost.crt
+      #
+      # The second entry is for a gateway that is NOT a service of this file. BffGeneratedKeysIT
+      # starts a one-off gateway under the network alias sheriff-generated-keys, and Keycloak fetches
+      # that gateway's generated client key from https://sheriff-generated-keys:8443/auth/client-keys,
+      # the jwks.url of the realm client generated-key-client. The stack certificate covers no gateway
+      # name but api-sheriff, and Keycloak verifies the name it dials, so the one-off gateway presents
+      # a certificate of its own (certificates/generate-generated-keys-gateway-certificate.sh) and
+      # that certificate is trusted here. It is a separate file so that producing it regenerates
+      # nothing else: localhost.crt and both trust stores stay byte-identical. The entry is inert
+      # for every suite that starts no such gateway.
+      - KC_TRUSTSTORE_PATHS=/opt/keycloak/certificates/localhost.crt,/opt/keycloak/certificates/generated-keys-gateway.crt
       # External hostname for Docker container well-known discovery
     networks:
       - api-sheriff

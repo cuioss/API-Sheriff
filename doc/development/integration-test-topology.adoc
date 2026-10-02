@@ -268,7 +268,7 @@ differing in exactly one scalar. Every other instance resolves the alias and sim
 Every gateway instance pushes its authorization requests (RFC 9126) and binds its tokens to a DPoP
 proof key (RFC 9449). What differs between instances is how the gateway authenticates to Keycloak
 (link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0057]).
-The `integration` realm declares four clients:
+The `integration` realm declares five clients:
 
 [cols="2,2,4"]
 |===
@@ -284,6 +284,12 @@ The `integration` realm declares four clients:
   needs. It is a client of its own because `refresh-client` carries the same lifespan but stays on
   its secret, and a realm client has one authentication method.
 
+| `generated-key-client`
+| `private_key_jwt`; a JWKS URL of its own
+| No compose instance. The one-off gateway `BffGeneratedKeysIT` starts, which generates its keys at
+  boot. It carries the same 45-second lifespan. It is a client of its own because its key is
+  fetched from that gateway and from no other. See <<generated-keys-gateway>>.
+
 | `refresh-client`
 | client secret (`client_secret_basic`)
 | `api-sheriff-refresh`, the one instance kept on client-secret authentication. The realm registers
@@ -293,13 +299,13 @@ The `integration` realm declares four clients:
 | `token-mint-client`
 | client secret, direct access grants
 | No gateway. A fixture that needs a bearer token straight from Keycloak mints it here with the
-  password grant. The three gateway clients cannot serve that purpose any more: direct access grants
+  password grant. The four gateway clients cannot serve that purpose any more: direct access grants
   are disabled on them, and a token request without a DPoP proof is refused.
 |===
 
-*Which instance publishes the key.* Both key-authenticated clients name the same JWKS URL,
-`https://api-sheriff:8443/auth/jwks` -- the primary instance, under the name Keycloak already dials
-for back-channel logout. All eleven key-authenticated instances mount the same client-authentication
+*Which instance publishes the key.* The two key-authenticated clients of the compose instances name
+the same JWKS URL, `https://api-sheriff:8443/auth/jwks` -- the primary instance, under the name
+Keycloak already dials for back-channel logout. All eleven key-authenticated instances mount the same client-authentication
 key file, so the key the primary publishes is the key each of them signs with. The URL names the
 primary and no other instance because the stack certificate's SAN list covers `api-sheriff` and no
 other gateway service name (`certificates/generate-certificates.sh`), and Keycloak verifies the name
@@ -334,9 +340,11 @@ service sets, so both ways of naming a key file run in the native image. Regener
 three needs no realm change: Keycloak holds no copy of the client key, and a DPoP proof carries its
 own public key.
 
-*The realm settings, and what Keycloak does with them.* The two key-authenticated clients declare
+*The realm settings, and what Keycloak does with them.* The three key-authenticated clients declare
 `clientAuthenticatorType: client-jwt` and the attributes `use.jwks.url: "true"`, `jwks.url` and
-`token.endpoint.auth.signing.alg: PS256`. All three gateway clients declare
+`token.endpoint.auth.signing.alg`. The algorithm is `PS256` for the two clients of the compose
+instances, whose client key is the committed RSA key, and `ES256` for `generated-key-client`, whose
+client key is generated. All four gateway clients declare
 `require.pushed.authorization.requests: "true"` and `dpop.bound.access.tokens: "true"`, and none of
 them has direct access grants enabled.
 
@@ -359,14 +367,105 @@ a scratch realm, before the stack was migrated:
   (`201`) and received DPoP-bound tokens.
 * *"Declares no secret" is a statement about the import file.* Keycloak generates a secret for a
   `client-jwt` client whose import declares none. The realm file registers no secret and no key for
-  the two key-authenticated clients; what Keycloak stores beside them is not something the file
-  controls.
+  the three key-authenticated clients; what Keycloak stores beside them is not something the file
+  controls. On the migrated stack that stored secret was read from the admin interface and presented
+  at the token endpoint, and Keycloak refused it with `invalid_client`: the authenticator type admits
+  a signed assertion only. No test asserts that last observation.
 
 Two facts need the gateway and were therefore not part of that isolated check: that the stack's
 Keycloak fetches the key over TLS from `https://api-sheriff:8443/auth/jwks`, and that the binding
 holds on the authorization-code grant. Neither is asserted by this page. No key is registered
 statically, so a login completed through a key-authenticated instance is itself the proof of the
 fetch; the decision record carries the observation entries for both.
+
+[#generated-keys-gateway]
+=== The one-off generated-keys gateway
+
+`BffGeneratedKeysIT` proves the *generated* key mode: a gateway with no signing key configured, which
+generates one key per purpose at boot. The test restarts that gateway under a live session. A compose
+service restarted under the suite would take every other suite's sessions with it, so the gateway is a
+one-off container. The test starts it through the shared harness (`OneOffGatewayContainers`) on the
+Compose network and removes it on every exit path. It is not a service of `docker-compose.yml`, and
+it adds no row to the instance table and nothing to the diagram.
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Container name and network alias
+| `sheriff-generated-keys`
+
+| Realm client
+| `generated-key-client`, whose `jwks.url` is
+  `https://sheriff-generated-keys:8443/auth/client-keys`
+
+| Descriptor
+| Derived at test time from the committed `sheriff-config-cookie-refresh/gateway.yaml`: both
+  `key_file` entries removed, the client id replaced, a `client_authentication.jwks_path` of
+  `/auth/client-keys` declared, and the gateway origin retargeted at the port below. It is written
+  below `target/` and never committed.
+
+| Server certificate
+| `certificates/generated-keys-gateway.crt` and its key, presented by the application listener. Its
+  subject alternative names are `sheriff-generated-keys`, `localhost` and `127.0.0.1`. The management
+  listener keeps the stack certificate.
+
+| Host ports
+| The application listener on the fixed loopback port `10456`; the management interface on an
+  ephemeral loopback port.
+
+| Mounts
+| The certificates, the shared configuration with the derived descriptor laid over it, the assets and
+  the demo directory. No signing-key directory is mounted.
+
+| Sealing key
+| Passed as `SESSION_ENCRYPTION_KEY`, so that the sealed session cookie stays readable after the
+  restart.
+|===
+
+*Why this gateway has a certificate of its own.* Keycloak fetches the generated client key from the
+gateway and verifies the name it dials. The stack certificate covers `api-sheriff` and no other
+gateway name, so a gateway reached under another alias cannot present it. The pair is produced by
+`certificates/generate-generated-keys-gateway-certificate.sh`, a script of its own, so that producing
+it regenerates nothing else: `localhost.crt`, `localhost.key` and both trust stores stay
+byte-identical. The Keycloak service trusts the certificate through a second entry in
+`KC_TRUSTSTORE_PATHS`. That entry, with the comment above it, is the only change this gateway brought
+to `docker-compose.yml`, and it is inert for every suite that starts no such gateway.
+
+*The port is fixed, and `docker-compose.yml` does not show it.* The descriptor of a BFF names its own
+origin, so the application port cannot be ephemeral. `10456` is the next port after the range the
+Compose stack publishes, `10443` to `10455`. The note above says to allocate host ports by reading
+`docker-compose.yml`. This port is the one that file does not list: a compose instance published on
+`10456` would collide with this test.
+
+*What guards the wiring.* The wiring is spread over the realm import, the compose file and the
+certificate. `BffClientKeyWiringTest` reads all three without a container and asserts that:
+
+* the JWKS URL of `generated-key-client` names the alias and the JWKS path the test uses;
+* the client declares no secret and requires pushed requests and DPoP-bound tokens;
+* the Keycloak service trusts the certificate, and the certificate names the alias;
+* every other realm client registered for a signed assertion is the client of a compose instance.
+
+*What the test observed.* On Keycloak 26.5.7 and the native image, in this order:
+
+. The gateway boots with no key configured. Its log carries the generated-key record once for client
+  authentication and once for the sender constraint, and no member of the published key.
+. `GET /auth/client-keys` answers one EC P-256 key with `use: sig`, `alg: ES256` and a `kid` equal to
+  its RFC 7638 thumbprint. `/auth/jwks`, the default path the descriptor moved away from, answers
+  `404`.
+. A login completes. No key is registered at Keycloak, so Keycloak fetched the generated key from the
+  gateway over TLS.
+. The mediated token carries a `cnf.jkt` that differs from the published `kid`. The proof key is a
+  second generated key.
+. After `docker restart` the published `kid` differs from the one before.
+. The session cookie from before the restart is replayed inside the near-expiry window. The refresh
+  succeeds, the session continues, and the new access token is bound to the new proof key.
+
+The last line is the restart verdict: a restart with newly generated keys does not end a live
+session. The failure message of the test names the other possible verdict -- the refresh is refused
+and the session ends through `oidc.session.refresh.on_failure` -- so a Keycloak upgrade that changes
+the behaviour turns the test red. The decision record states the limits of this observation
+(link:../adr/0057-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc#observed-on-the-integration-stack[ADR-0057: Observed on the integration stack]).
 
 === Mounted material
 
@@ -811,3 +910,17 @@ right edge of their box, and the sub-label past the edge of the network rectangl
 is now `192` wide where its two neighbours in that column are `152`: its left edge moved from `992`
 to `952`, its three text rows with it, and the egress arrow ends at `940`. Both texts now end inside
 the box on both themes. Rendered PNGs are verification artifacts and are not committed.
+
+=== Diagram check for the generated-keys gateway
+
+This change alters no fact the diagram depicts, so the diagram is deliberately not redrawn. The
+gateway of <<generated-keys-gateway>> is a one-off container and not a service of
+`docker-compose.yml`, and its host port is published by the test, not by the Compose stack. The two
+things the change did add to the stack are a second entry in the Keycloak service's
+`KC_TRUSTSTORE_PATHS` and a realm client, and the diagram draws neither trust-store entries nor realm
+clients.
+
+The `<desc>` accessibility narrative was read against the change. It states that Keycloak dials the
+primary gateway inside the network for the client key set and for back-channel logout. That stays
+true of the Compose stack. While `BffGeneratedKeysIT` runs, Keycloak dials the one-off gateway as
+well, for that gateway's key set; this leg belongs to the test and is not part of the narrative.

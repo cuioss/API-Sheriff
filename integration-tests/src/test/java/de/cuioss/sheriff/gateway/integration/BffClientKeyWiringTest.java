@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,7 +29,11 @@ import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -77,6 +82,14 @@ import org.junit.jupiter.api.Test;
  * Across both parts, every key file a descriptor or a service variable names exists in the
  * signing-keys directory and holds exactly one private and one public block, and that directory is
  * mounted into every gateway service and into no other service.
+ * <p>
+ * <strong>The third key-authenticated client.</strong> {@code generated-key-client} is named by no
+ * compose service: {@code BffGeneratedKeysIT} starts its gateway as a one-off container. Its wiring
+ * is spread over the realm import, the compose file and a certificate, so {@link GeneratedKeyClient}
+ * guards it here: the client's JWKS URL names the network alias and the JWKS path that test uses, the
+ * client declares no secret and requires both controls, and the Keycloak service trusts the
+ * certificate that covers the alias. The same group closes the set: every realm client registered for
+ * signed-JWT authentication is either the client of a key-authenticated compose service or this one.
  * <p>
  * <strong>The release lane.</strong> {@code .github/workflows/release.yml} boots the published image
  * over the base descriptor in a step no build of this repository executes, after the artifacts are
@@ -135,6 +148,17 @@ class BffClientKeyWiringTest {
 
     private static final String SMOKE_STEP = "Smoke the published image by digest";
 
+    private static final String KEYCLOAK_SERVICE = "keycloak";
+
+    /** The Keycloak setting that lists the certificates Keycloak trusts when it dials a gateway. */
+    private static final String KEYCLOAK_TRUST_VARIABLE = "KC_TRUSTSTORE_PATHS";
+
+    /** The port a gateway terminates TLS on inside the compose network. */
+    private static final int GATEWAY_TLS_PORT = 8443;
+
+    /** The {@code GeneralName} tag of a DNS subject alternative name (RFC 5280). */
+    private static final int DNS_NAME = 2;
+
     private static final String PUSHED_REQUESTS_REQUIRED = "require.pushed.authorization.requests";
     private static final String DPOP_BOUND_TOKENS = "dpop.bound.access.tokens";
 
@@ -145,7 +169,7 @@ class BffClientKeyWiringTest {
 
     @Test
     @DisplayName("the descriptors partition the gateway services into a key-authenticated part and exactly one secret-authenticated service")
-    void theDescriptorsPartitionTheGatewayServices() throws IOException {
+    void theDescriptorsPartitionTheGatewayServices() throws Exception {
         List<String> keyAuthenticated = keyAuthenticated().stream().map(Gateway::name).toList();
         List<String> secretAuthenticated = secretAuthenticated().stream().map(Gateway::name).toList();
 
@@ -159,7 +183,7 @@ class BffClientKeyWiringTest {
 
     @Test
     @DisplayName("every key file a descriptor or a service variable names holds one private and one public block")
-    void everyNamedKeyFileHoldsOnePrivateAndOnePublicBlock() throws IOException {
+    void everyNamedKeyFileHoldsOnePrivateAndOnePublicBlock() throws Exception {
         Map<Path, String> named = new LinkedHashMap<>();
         for (Gateway gateway : gateways()) {
             gateway.clientKeyFile().ifPresent(file -> named.put(gateway.hostFile(file),
@@ -177,7 +201,7 @@ class BffClientKeyWiringTest {
 
     @Test
     @DisplayName("the signing-keys directory is mounted into every gateway service and into no other service")
-    void theSigningKeysAreMountedIntoGatewayServicesOnly() throws IOException {
+    void theSigningKeysAreMountedIntoGatewayServicesOnly() throws Exception {
         Set<String> mounting = new TreeSet<>();
         for (Map.Entry<String, Object> service : composeServices().entrySet()) {
             boolean mounts = mounts(mapping(service.getValue(), service.getKey())).stream()
@@ -202,7 +226,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("names a realm client registered for signed-JWT authentication through a JWKS URL, with no secret and no static key")
-        void namesARealmClientRegisteredForSignedJwtAuthentication() throws IOException {
+        void namesARealmClientRegisteredForSignedJwtAuthentication() throws Exception {
             Map<String, Map<String, Object>> clients = realmClients();
 
             assertAll(keyAuthenticated().stream().map(gateway -> () -> {
@@ -226,7 +250,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("is verified against a JWKS URL that names a gateway service of the compose model and that service's JWKS path")
-        void jwksUrlNamesAGatewayServiceAndItsJwksPath() throws IOException {
+        void jwksUrlNamesAGatewayServiceAndItsJwksPath() throws Exception {
             Map<String, Map<String, Object>> clients = realmClients();
             List<Gateway> gateways = gateways();
 
@@ -249,7 +273,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("signs with the key file the service its JWKS URL names holds")
-        void signsWithTheKeyThePublishingServiceHolds() throws IOException {
+        void signsWithTheKeyThePublishingServiceHolds() throws Exception {
             Map<String, Map<String, Object>> clients = realmClients();
             List<Gateway> gateways = gateways();
 
@@ -270,7 +294,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("declares no client_authentication block beside its secret")
-        void declaresNoClientAuthenticationBlock() throws IOException {
+        void declaresNoClientAuthenticationBlock() throws Exception {
             assertAll(secretAuthenticated().stream().map(gateway -> () -> assertNull(
                     gateway.oidc().get("client_authentication"),
                     gateway.name() + " declares oidc.client_secret; a key file beside a secret is refused at boot")));
@@ -278,11 +302,11 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("is the only compose service that sets the client-secret variable, and sets its realm client's secret")
-        void isTheOnlyServiceSettingTheClientSecret() throws IOException {
+        void isTheOnlyServiceSettingTheClientSecret() throws Exception {
             Set<String> setting = new TreeSet<>();
             for (Map.Entry<String, Object> service : composeServices().entrySet()) {
                 boolean sets = environment(mapping(service.getValue(), service.getKey())).stream()
-                        .anyMatch(entry -> entry.equals(CLIENT_SECRET_VARIABLE)
+                        .anyMatch(entry -> CLIENT_SECRET_VARIABLE.equals(entry)
                                 || entry.startsWith(CLIENT_SECRET_VARIABLE + "="));
                 if (sets) {
                     setting.add(service.getKey());
@@ -300,7 +324,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("names a realm client that authenticates with a secret, registers no key and no JWKS URL, and requires both controls")
-        void namesARealmClientOnASecretThatRequiresBothControls() throws IOException {
+        void namesARealmClientOnASecretThatRequiresBothControls() throws Exception {
             Map<String, Map<String, Object>> clients = realmClients();
 
             assertAll(secretAuthenticated().stream().map(gateway -> () -> {
@@ -327,7 +351,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("lets only the secret-authenticated gateway client and the token-mint client authenticate with a secret")
-        void onlyTheTwoDeclaredClientsAuthenticateWithASecret() throws IOException {
+        void onlyTheTwoDeclaredClientsAuthenticateWithASecret() throws Exception {
             Set<String> expected = new TreeSet<>(secretAuthenticated().stream().map(Gateway::clientId).toList());
             expected.add(TOKEN_MINT_CLIENT);
             Set<String> onASecret = new TreeSet<>();
@@ -343,7 +367,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("enables direct access grants on the token-mint client and on no other client")
-        void onlyTheTokenMintClientAllowsDirectAccessGrants() throws IOException {
+        void onlyTheTokenMintClientAllowsDirectAccessGrants() throws Exception {
             Set<String> directGrants = new TreeSet<>();
             realmClients().forEach((clientId, client) -> {
                 if (Boolean.TRUE.equals(client.get("directAccessGrantsEnabled"))) {
@@ -358,10 +382,110 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("registers the token-mint client for no gateway service")
-        void noGatewayAuthenticatesAsTheTokenMintClient() throws IOException {
-            assertAll(gateways().stream().map(gateway -> () -> assertFalse(
-                    TOKEN_MINT_CLIENT.equals(gateway.clientId()),
-                    gateway.name() + " must not authenticate as the fixture client that allows direct access grants")));
+        void noGatewayAuthenticatesAsTheTokenMintClient() throws Exception {
+            assertAll(gateways().stream().map(gateway -> () -> assertNotEquals(TOKEN_MINT_CLIENT, gateway.clientId(), gateway.name() + " must not authenticate as the fixture client that allows direct access grants")));
+        }
+    }
+
+    /**
+     * The realm client of the gateway {@code BffGeneratedKeysIT} starts as a one-off container. No
+     * compose service names it, so its wiring is read from the realm import, the Keycloak service and
+     * the certificate that container presents.
+     */
+    @Nested
+    @DisplayName("The realm client of the one-off generated-keys gateway")
+    class GeneratedKeyClient {
+
+        @Test
+        @DisplayName("is registered for signed-JWT authentication through a JWKS URL, with no secret, and requires both controls")
+        void isRegisteredForSignedJwtAuthentication() throws Exception {
+            Map<String, Object> client = generatedKeyClient();
+            Map<String, Object> attributes = attributes(client);
+
+            assertAll("realm client " + BffGeneratedKeysIT.CLIENT_ID,
+                    () -> assertEquals("client-jwt", client.get("clientAuthenticatorType")),
+                    () -> assertEquals("true", attributes.get("use.jwks.url")),
+                    () -> assertFalse(client.containsKey("secret"), "a key-authenticated client declares no secret"),
+                    () -> assertEquals(List.of(), staticKeyAttributes(attributes),
+                            "a generated key cannot be registered: it exists only once the gateway has booted"),
+                    () -> assertEquals("ES256", attributes.get("token.endpoint.auth.signing.alg"),
+                            "a generated client key is an EC P-256 key and signs ES256"),
+                    () -> assertRequiresBothControls(attributes));
+        }
+
+        @Test
+        @DisplayName("names a JWKS URL on the one-off gateway's network alias and declared JWKS path")
+        void jwksUrlNamesTheOneOffGateway() throws Exception {
+            URI jwksUrl = URI.create(assertInstanceOf(String.class, attributes(generatedKeyClient()).get("jwks.url"),
+                    "realm client " + BffGeneratedKeysIT.CLIENT_ID + " must name a JWKS URL"));
+            List<String> composeNames = gateways().stream().flatMap(gateway -> gateway.networkNames().stream()).toList();
+
+            assertAll("the URL Keycloak fetches the generated client key from: " + jwksUrl,
+                    () -> assertEquals("https", jwksUrl.getScheme(), "the key is fetched over TLS"),
+                    () -> assertEquals(BffGeneratedKeysIT.NETWORK_ALIAS, jwksUrl.getHost(),
+                            "the host must be the network alias the one-off gateway is started under"),
+                    () -> assertEquals(GATEWAY_TLS_PORT, jwksUrl.getPort(),
+                            "the port must be the gateway's TLS port inside the compose network"),
+                    () -> assertEquals(BffGeneratedKeysIT.JWKS_PATH, jwksUrl.getPath(),
+                            "the path must be the jwks_path the one-off gateway's descriptor declares"),
+                    () -> assertFalse(composeNames.contains(jwksUrl.getHost()),
+                            "the alias must belong to the one-off gateway alone, not to a compose service"));
+        }
+
+        @Test
+        @DisplayName("is reachable for Keycloak: the Keycloak service trusts the certificate that covers the alias")
+        void keycloakTrustsTheCertificateThatCoversTheAlias() throws Exception {
+            Map<String, Object> keycloak = mapping(composeServices().get(KEYCLOAK_SERVICE), KEYCLOAK_SERVICE);
+            List<Mount> mounts = mounts(keycloak);
+            String prefix = KEYCLOAK_TRUST_VARIABLE + "=";
+            List<Path> trusted = environment(keycloak).stream().filter(entry -> entry.startsWith(prefix))
+                    .flatMap(entry -> Stream.of(entry.substring(prefix.length()).split(",")))
+                    .map(String::strip)
+                    .map(path -> hostFile(mounts, path).orElseThrow(() -> new AssertionError(
+                            "the Keycloak service mounts nothing at or above the trust path " + path)))
+                    .toList();
+            Path presented = DOCKER.resolve("certificates").resolve(BffGeneratedKeysIT.CERTIFICATE);
+
+            assertTrue(trusted.contains(presented), () -> "Keycloak verifies the gateway it fetches the key from, "
+                    + "so " + KEYCLOAK_TRUST_VARIABLE + " must list " + BffGeneratedKeysIT.CERTIFICATE
+                    + "; it lists " + trusted);
+            assertTrue(dnsNames(presented).contains(BffGeneratedKeysIT.NETWORK_ALIAS),
+                    () -> "Keycloak verifies the name it dials, so " + presented + " must name "
+                            + BffGeneratedKeysIT.NETWORK_ALIAS + " as a subject alternative name");
+        }
+
+        @Test
+        @DisplayName("is the only signed-JWT client that no compose gateway service names")
+        void everySignedJwtClientIsGuarded() throws Exception {
+            Set<String> expected = new TreeSet<>(keyAuthenticated().stream().map(Gateway::clientId).toList());
+            expected.add(BffGeneratedKeysIT.CLIENT_ID);
+            Set<String> signedJwt = new TreeSet<>();
+            realmClients().forEach((clientId, client) -> {
+                if ("client-jwt".equals(client.get("clientAuthenticatorType"))) {
+                    signedJwt.add(clientId);
+                }
+            });
+
+            assertEquals(expected, signedJwt,
+                    "a further signed-JWT client would have a JWKS URL that no guard of this class checks");
+        }
+
+        private static Map<String, Object> generatedKeyClient() throws IOException {
+            Map<String, Object> client = realmClients().get(BffGeneratedKeysIT.CLIENT_ID);
+            assertNotNull(client, "the realm import must declare " + BffGeneratedKeysIT.CLIENT_ID);
+            return client;
+        }
+
+        /** The DNS subject alternative names of a PEM certificate. */
+        private static List<String> dnsNames(Path certificate) throws IOException, CertificateException {
+            assertTrue(Files.isRegularFile(certificate), () -> "this guard reads " + certificate + ", which does not exist");
+            try (InputStream in = Files.newInputStream(certificate)) {
+                X509Certificate parsed = (X509Certificate) CertificateFactory.getInstance("X.509").generateCertificate(in);
+                Collection<List<?>> names = parsed.getSubjectAlternativeNames();
+                assertNotNull(names, () -> certificate + " carries no subject alternative name");
+                return names.stream().filter(name -> Integer.valueOf(DNS_NAME).equals(name.get(0)))
+                        .map(name -> String.valueOf(name.get(1))).toList();
+            }
         }
     }
 
@@ -375,7 +499,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("supplies every variable the base descriptor references")
-        void suppliesEveryVariableTheBaseDescriptorReferences() throws IOException {
+        void suppliesEveryVariableTheBaseDescriptorReferences() throws Exception {
             Set<String> referenced = bareReferences(loadYaml(BASE_DESCRIPTOR));
             SmokeRun run = smokeRun();
 
@@ -390,7 +514,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("mounts a directory that holds every key file the base descriptor resolves to")
-        void everyKeyFileLiesUnderAMountedDirectory() throws IOException {
+        void everyKeyFileLiesUnderAMountedDirectory() throws Exception {
             SmokeRun run = smokeRun();
             Map<String, Object> oidc = mapping(loadYaml(BASE_DESCRIPTOR).get("oidc"), "the base descriptor oidc block");
             Map<String, String> keyFiles = new LinkedHashMap<>();
@@ -413,7 +537,7 @@ class BffClientKeyWiringTest {
 
         @Test
         @DisplayName("sets no client secret")
-        void setsNoClientSecret() throws IOException {
+        void setsNoClientSecret() throws Exception {
             SmokeRun run = smokeRun();
 
             assertFalse(run.environment().containsKey(CLIENT_SECRET_VARIABLE),
@@ -446,7 +570,7 @@ class BffClientKeyWiringTest {
      * @param oidc           the {@code oidc} block of its effective descriptor
      */
     private record Gateway(String name, List<String> environment, List<Mount> mounts, Set<Integer> containerPorts,
-            Set<String> networkNames, Map<String, Object> oidc) {
+    Set<String> networkNames, Map<String, Object> oidc) {
 
         boolean secretAuthenticated() {
             return oidc.containsKey("client_secret");
@@ -573,7 +697,7 @@ class BffClientKeyWiringTest {
                 .map(mount -> containerPath.equals(mount.containerPath())
                         ? mount.hostPath()
                         : mount.hostPath().resolve(containerPath.substring(mount.containerPath().length() + 1))
-                                .normalize());
+                        .normalize());
     }
 
     private static Optional<String> keyFile(Map<String, Object> oidc, String block) {
@@ -653,7 +777,7 @@ class BffClientKeyWiringTest {
     private static Gateway publisher(List<Gateway> gateways, URI jwksUrl) {
         return gateways.stream().filter(candidate -> candidate.networkNames().contains(jwksUrl.getHost()))
                 .findFirst().orElseThrow(() -> new AssertionError("the JWKS URL " + jwksUrl
-                        + " names host " + jwksUrl.getHost() + ", which is no gateway service of the compose model"));
+                + " names host " + jwksUrl.getHost() + ", which is no gateway service of the compose model"));
     }
 
     // ---------------------------------------------------------------------------------------------
