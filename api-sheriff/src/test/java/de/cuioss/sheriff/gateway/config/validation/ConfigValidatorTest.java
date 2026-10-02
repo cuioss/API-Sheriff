@@ -96,6 +96,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 @EnableTestLogger
 class ConfigValidatorTest {
 
+    /**
+     * The part of a reserved-path refusal that names the query and fragment restriction. The three
+     * reserved-path keys share one rule, so the groups testing them share this expectation.
+     */
+    private static final String QUERY_OR_FRAGMENT_REFUSAL = "carrying no query ('?') and no fragment ('#')";
+
     private final ConfigValidator validator = new ConfigValidator();
 
     // --- fixture helpers -------------------------------------------------
@@ -1957,8 +1963,15 @@ class ConfigValidatorTest {
     @DisplayName("The BFF OIDC/session fold rules (D1)")
     class BffOidcFoldRules {
 
+        private static final String USER_INFO_PATH_POINTER = "/oidc/user_info/path";
+        private static final String LOGIN_PATH_POINTER = "/oidc/login/path";
+
         private static GatewayConfig gatewayWithOidc(OidcConfig oidc) {
             return validGateway().oidc(oidc).build();
+        }
+
+        private static List<ConfigError> errorsAt(List<ConfigError> errors, String pointer) {
+            return errors.stream().filter(error -> pointer.equals(error.pointer())).toList();
         }
 
         @Test
@@ -2019,6 +2032,73 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
             assertHasError(errors, "/oidc/user_info/path", "must be an absolute gateway path");
+        }
+
+        @ParameterizedTest(name = "user_info path \"{0}\" is rejected for its query or fragment")
+        @ValueSource(strings = {"/session/userinfo?x=1", "/session/userinfo#part", "/session/userinfo?",
+                "/session/userinfo#"})
+        @DisplayName("Should reject a user_info path carrying a query or a fragment, at its own pointer in gateway.yaml")
+        void shouldRejectUserInfoPathWithQueryOrFragment(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> refusals = errorsAt(validator.validate(gateway, List.of(), topologyWith()),
+                    USER_INFO_PATH_POINTER);
+
+            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
+            ConfigError refusal = refusals.getFirst();
+            assertAll(path,
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
+                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "user_info path \"{0}\" is accepted")
+        @ValueSource(strings = {"/session/userinfo", "/userinfo", "/"})
+        @DisplayName("Should accept a plain absolute user_info path")
+        void shouldAcceptPlainAbsoluteUserInfoPath(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errorsAt(errors, USER_INFO_PATH_POINTER).isEmpty(),
+                    () -> path + " carries no query and no fragment and must not be refused, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "login path \"{0}\" is rejected for its query or fragment")
+        @ValueSource(strings = {"/session/login?x=1", "/session/login#part", "/session/login?", "/session/login#"})
+        @DisplayName("Should reject a login path carrying a query or a fragment, at its own pointer in gateway.yaml")
+        void shouldRejectLoginPathWithQueryOrFragment(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> refusals = errorsAt(validator.validate(gateway, List.of(), topologyWith()),
+                    LOGIN_PATH_POINTER);
+
+            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
+            ConfigError refusal = refusals.getFirst();
+            assertAll(path,
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
+                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "login path \"{0}\" is accepted")
+        @ValueSource(strings = {"/session/login", "/login", "/"})
+        @DisplayName("Should accept a plain absolute login path")
+        void shouldAcceptPlainAbsoluteLoginPath(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(OidcConfig.Login.builder().path(path).build())
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errorsAt(errors, LOGIN_PATH_POINTER).isEmpty(),
+                    () -> path + " carries no query and no fragment and must not be refused, got: " + errors);
         }
 
         @ParameterizedTest(name = "off-path login value \"{0}\" is rejected")
@@ -3539,6 +3619,23 @@ class ConfigValidatorTest {
             assertTrue(errors.stream().filter(error -> POINTER.equals(error.pointer()))
                             .allMatch(error -> "gateway.yaml".equals(error.file())),
                     () -> "the refusal names gateway.yaml, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "step_up path \"{0}\" is refused for its query or fragment")
+        @ValueSource(strings = {"/auth/step-up?x=1", "/auth/step-up#part", "/auth/step-up?", "/auth/step-up#"})
+        @DisplayName("Should refuse a path carrying a query or a fragment, naming the restriction")
+        void shouldRefusePathWithQueryOrFragment(String path) {
+            List<ConfigError> refusals = validateStepUpPath(path).stream()
+                    .filter(error -> POINTER.equals(error.pointer())).toList();
+
+            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
+            ConfigError refusal = refusals.getFirst();
+            assertAll(path,
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(MESSAGE),
+                            () -> "the refusal keeps its leading wording: " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
+                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
         }
 
         @Test

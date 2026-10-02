@@ -2561,9 +2561,13 @@ link:#_oidc_back_channel_posture[The BFF OIDC back-channel].
   `application/problem+json` answer when a non-navigation request lacks a needed scope (see
   link:#_endpoint_scopes[`endpoint.scopes`]). Optional string. Its presence alone registers the
   reserved path; omitted, no step-up endpoint exists and no `step_up_url` is ever named.
-  When present it must be an absolute gateway path starting with a single `/` -- a blank, relative
-  or scheme-relative (`//host`) value is refused at boot with `ApiSheriff-200` at
-  `/oidc/step_up/path`.
+  When present it must be an absolute gateway path starting with a single `/` and carrying no query
+  (`?`) and no fragment (`#`) -- a blank, relative or scheme-relative (`//host`) value, and a value
+  holding a `?` or a `#` anywhere (a bare trailing one included), is refused at boot with
+  `ApiSheriff-200` at `/oidc/step_up/path`. The path is matched exactly against the request path,
+  which carries neither a query nor a fragment, and `step_up_url` appends `?returnUrl=...` to the
+  configured value -- so a path holding either would name an endpoint no request reaches and a
+  `step_up_url` that does not carry the return target.
 
   The endpoint serves a live session only: without one it answers `401`
   `application/problem+json` and never redirects to the IdP. `returnUrl` is same-origin-validated
@@ -3868,8 +3872,11 @@ control, which is the rule above doing exactly the work it was added for.
   omitted key resolves to `+__Host-sheriff-session+` and is never refused (see the
   link:#_oidc[`session.cookie_name`] field reference).
 * A declared `oidc.user_info.path`, `oidc.login.path` or `oidc.step_up.path` must be an absolute
-  gateway path starting with a single `/`; a blank, relative or scheme-relative (`//host`) value
-  fails the boot (see the link:#_oidc[`oidc`] field reference).
+  gateway path starting with a single `/` and carrying no query (`?`) and no fragment (`#`); a
+  blank, relative or scheme-relative (`//host`) value, and a value holding a `?` or a `#`, fails the
+  boot at the key's own pointer. A reserved path is matched exactly against the request path, which
+  carries neither, so such a value would name an endpoint no request reaches (see the
+  link:#_oidc[`oidc`] field reference).
 * `egress_tls.oidc_verify_hostname: false` together with a named `egress_tls.oidc_tls_profile`
   fails the boot with a configuration error naming both keys, and a named `oidc_tls_profile` that is
   unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime

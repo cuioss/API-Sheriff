@@ -157,7 +157,10 @@ import org.jspecify.annotations.Nullable;
  * must be same-origin with {@code redirect_uri}.
  * <p>
  * The reserved-path rules hold {@code oidc.user_info.path}, {@code oidc.login.path} and
- * {@code oidc.step_up.path} alike to an absolute gateway path starting with a single {@code /}.
+ * {@code oidc.step_up.path} alike to an absolute gateway path starting with a single {@code /} and
+ * carrying no query ({@code ?}) and no fragment ({@code #}). A reserved path is matched exactly
+ * against the canonical request path, which carries neither, so a value holding one would boot
+ * and name an endpoint no request can reach.
  * <p>
  * The JWKS egress-allowlist refusal adds one more: every {@code allowed_egress_hosts} entry of an
  * {@code http}-sourced issuer must be usable as the host-exact exemption token-sheriff's SSRF egress
@@ -209,6 +212,15 @@ public final class ConfigValidator {
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_STEP_UP_PATH_POINTER = "/oidc/step_up/path";
+
+    /**
+     * The requirement every reserved-path refusal states, shared by the three rules that apply
+     * {@link #isAbsoluteGatewayPath}. Fixed text carrying no format specifier, so it is appended to a
+     * rule's own subject and never interprets a configured scalar.
+     */
+    private static final String ABSOLUTE_GATEWAY_PATH_REQUIREMENT =
+            " must be an absolute gateway path starting with a single '/' and carrying no query ('?') and no "
+                    + "fragment ('#')";
     private static final String ENDPOINT_SCOPES_POINTER = "/endpoint/scopes";
 
     /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
@@ -2355,7 +2367,9 @@ public final class ConfigValidator {
     /**
      * Rule: the session/user-info reserved endpoint (fold, D1). When an
      * {@code oidc.user_info} block is present, its {@code path} must be an absolute
-     * gateway path, and every {@code default_view} claim must lie within the
+     * gateway path carrying no query and no fragment ({@link #isAbsoluteGatewayPath} — the
+     * path is matched exactly against the canonical request path, so a value holding either
+     * names an endpoint no request can reach), and every {@code default_view} claim must lie within the
      * {@code allowed_claims} allowlist — the operator-owned allowlist caps
      * disclosure and the default view can never exceed it. An empty allowlist is the
      * secure closed default (nothing disclosed) and is not itself an error. Every
@@ -2370,8 +2384,7 @@ public final class ConfigValidator {
         String path = userInfo.path();
         if (path != null && !isAbsoluteGatewayPath(path)) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_PATH_POINTER,
-                    "oidc user_info path '%s' must be an absolute gateway path starting with a single '/'"
-                            .formatted(path)));
+                    "oidc user_info path '%s'".formatted(path) + ABSOLUTE_GATEWAY_PATH_REQUIREMENT));
         }
         Set<String> allowed = new HashSet<>(userInfo.allowedClaims());
         for (String claim : userInfo.defaultView()) {
@@ -2387,7 +2400,10 @@ public final class ConfigValidator {
      * Rule: the login-initiation reserved path (fold, D1). When
      * {@code oidc.login.path} is present it must be an absolute gateway path — a
      * schema-relative ({@code //host}) or off-path value is rejected as an
-     * open-redirect hazard.
+     * open-redirect hazard. A value carrying a query ({@code ?}) or a fragment
+     * ({@code #}) is rejected as well: the path is matched exactly against the canonical
+     * request path, which carries neither, so such a value names an endpoint no request
+     * can reach.
      */
     private static void validateLoginPath(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();
@@ -2395,8 +2411,7 @@ public final class ConfigValidator {
         String path = login == null ? null : login.path();
         if (path != null && !isAbsoluteGatewayPath(path)) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_PATH_POINTER,
-                    "oidc login path '%s' must be an absolute gateway path starting with a single '/'"
-                            .formatted(path)));
+                    "oidc login path '%s'".formatted(path) + ABSOLUTE_GATEWAY_PATH_REQUIREMENT));
         }
     }
 
@@ -2405,8 +2420,13 @@ public final class ConfigValidator {
      * absolute gateway path, validated exactly as {@link #validateLoginPath} validates
      * {@code oidc.login.path}: a blank, relative or scheme-relative ({@code //host}) value is
      * rejected, since the path is named verbatim in the {@code step_up_url} a session route hands to
-     * the browser. A collision with the application portal needs no rule here — the portal rules
-     * compare {@code portal.path} against every reserved path, this one included.
+     * the browser. A value carrying a query ({@code ?}) or a fragment ({@code #}) is rejected too,
+     * for two reasons: the path is matched exactly against the canonical request path, which carries
+     * neither, so the endpoint would be unreachable; and {@code step_up_url} appends
+     * {@code ?returnUrl=…} to the configured value, so a query already in it would swallow the
+     * return target into its own parameter and a fragment would keep it from being sent at all. A
+     * collision with the application portal needs no rule here — the portal rules compare
+     * {@code portal.path} against every reserved path, this one included.
      */
     private static void validateStepUpPath(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();
@@ -2414,18 +2434,26 @@ public final class ConfigValidator {
         String path = stepUp == null ? null : stepUp.path();
         if (path != null && !isAbsoluteGatewayPath(path)) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_STEP_UP_PATH_POINTER,
-                    "oidc step_up path '%s' must be an absolute gateway path starting with a single '/'"
-                            .formatted(renderForMessage(path))));
+                    "oidc step_up path '%s'".formatted(renderForMessage(path))
+                            + ABSOLUTE_GATEWAY_PATH_REQUIREMENT));
         }
     }
 
     /**
-     * Whether {@code path} is an absolute gateway path: it starts with a single
-     * {@code /} and is not a schema-relative {@code //host} URL (which would be an
-     * open-redirect vector for a reserved path).
+     * Whether {@code path} is an absolute gateway path usable as a reserved path: it starts with a
+     * single {@code /}, is not a schema-relative {@code //host} URL (which would be an
+     * open-redirect vector for a reserved path), and carries neither a query ({@code ?}) nor a
+     * fragment ({@code #}).
+     * <p>
+     * The last two conditions follow from how a reserved path is served: it is registered verbatim
+     * and matched exactly against the canonical request path, which never carries the query, and a
+     * browser never sends a fragment. A value holding either delimiter would therefore boot and
+     * name an endpoint no request can reach — a bare trailing {@code ?} or {@code #} included, since
+     * the registered key would still end in a character the request path never has.
      */
     private static boolean isAbsoluteGatewayPath(String path) {
-        return path.startsWith("/") && !path.startsWith("//");
+        return path.startsWith("/") && !path.startsWith("//")
+                && path.indexOf('?') < 0 && path.indexOf('#') < 0;
     }
 
     private static void validatePassthroughHostCollision(GatewayConfig gateway, List<EndpointConfig> endpoints,
