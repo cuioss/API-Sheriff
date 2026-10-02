@@ -98,6 +98,9 @@ public final class ScopedEngineFlows {
     private static final String PAIR_SEPARATOR = "&";
     private static final char NAME_VALUE_SEPARATOR = '=';
 
+    /** The argument name a {@code null} provider metadata is reported under. */
+    private static final String METADATA_ARGUMENT = "metadata";
+
     private final Function<List<String>, ClientConfiguration> configurationFactory;
     private final TokenEndpointClient tokenEndpointClient;
     private final TokenValidationBridge tokenBridge;
@@ -141,7 +144,7 @@ public final class ScopedEngineFlows {
      */
     public AuthorizationCodeFlow.AuthorizationRedirect authorize(ProviderMetadata metadata,
             Collection<String> scopes) {
-        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(metadata, METADATA_ARGUMENT);
         return authorizationFlow(scopes).authorize(metadata);
     }
 
@@ -164,7 +167,7 @@ public final class ScopedEngineFlows {
      */
     public AuthorizationCodeFlow.AuthorizationRedirect widen(ProviderMetadata metadata, Collection<String> scopes,
             boolean silent) {
-        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(metadata, METADATA_ARGUMENT);
         AuthorizationCodeFlow.AuthorizationRedirect redirect = newAuthorizationFlow(canonical(scopes))
                 .authorize(metadata);
         if (!silent) {
@@ -184,7 +187,7 @@ public final class ScopedEngineFlows {
      * @return the engine's rotation result
      */
     public RotationResult refresh(ProviderMetadata metadata, String refreshToken, Collection<String> scopes) {
-        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(metadata, METADATA_ARGUMENT);
         Objects.requireNonNull(refreshToken, "refreshToken");
         RefreshFlow refreshFlow = new RefreshFlow(configurationFactory.apply(canonical(scopes)),
                 tokenEndpointClient, tokenBridge, clientAuthentication);

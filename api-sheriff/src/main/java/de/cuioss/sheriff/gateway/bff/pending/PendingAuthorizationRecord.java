@@ -101,7 +101,7 @@ Duration ttl,
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(flowContext, "flowContext");
         Objects.requireNonNull(returnUrl, "returnUrl");
-        requestedScopes = Set.copyOf(Objects.requireNonNull(requestedScopes, "requestedScopes"));
+        requestedScopes = immutableScopes(requestedScopes);
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(ttl, "ttl");
     }
@@ -117,9 +117,8 @@ Duration ttl,
      */
     public static PendingAuthorizationRecord create(FlowContext flowContext, String returnUrl,
             Collection<String> requestedScopes, Instant createdAt) {
-        Objects.requireNonNull(requestedScopes, "requestedScopes");
-        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, Set.copyOf(requestedScopes),
-                createdAt, FIXED_TTL, null);
+        Set<String> scopes = immutableScopes(requestedScopes);
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, scopes, createdAt, FIXED_TTL, null);
     }
 
     /**
@@ -137,9 +136,14 @@ Duration ttl,
      */
     public static PendingAuthorizationRecord createWidening(FlowContext flowContext, String returnUrl,
             Collection<String> requestedScopes, String sub, Widening.Attempt attempt, Instant createdAt) {
-        Objects.requireNonNull(requestedScopes, "requestedScopes");
-        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, Set.copyOf(requestedScopes),
-                createdAt, FIXED_TTL, new Widening(sub, attempt));
+        Set<String> scopes = immutableScopes(requestedScopes);
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, scopes, createdAt, FIXED_TTL,
+                new Widening(sub, attempt));
+    }
+
+    /** Rejects a {@code null} scope collection by argument name and copies it into an immutable set. */
+    private static Set<String> immutableScopes(Collection<String> requestedScopes) {
+        return Set.copyOf(Objects.requireNonNull(requestedScopes, "requestedScopes"));
     }
 
     /**
