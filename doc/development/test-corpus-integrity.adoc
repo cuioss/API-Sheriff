@@ -313,7 +313,7 @@ companion note link:cookie-deliverability-blindness.adoc[Cookie-Deliverability B
 | The BFF login helper replays cookies from a `Map` it manages itself, so it applies no cookie policy
   at all: no per-cookie budget, and no `SameSite` / `Secure` / `+__Host-+` enforcement. The helper's
   own class Javadoc states the limitation
-  (`integration-tests/.../BffKeycloakLoginFlow.java:43-51`).
+  (`integration-tests/.../BffKeycloakLoginFlow.java`).
 | *Deliverability leg closed*
 | The per-cookie budget is now asserted at the single seam every `Bff*IT` login funnels through --
   `assertCookiesFitBrowserBudget` at `BffKeycloakLoginFlow.java:309`, against the test's own

@@ -40,8 +40,8 @@ import io.restassured.response.Response;
 
 /**
  * The shared harness for integration tests that boot a gateway as a one-off {@code docker run}
- * container instead of as a compose service — the gateways whose readiness is {@code DOWN} by design
- * for some or all of their life, which the compose readiness gate in
+ * container instead of as a compose service — among them the gateways whose readiness is {@code DOWN}
+ * by design for some or all of their life, which the compose readiness gate in
  * {@code start-integration-container.sh} would refuse.
  * <p>
  * It carries the docker process plumbing, the port and network lookups, the readiness and log polls,

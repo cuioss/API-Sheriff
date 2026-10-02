@@ -127,7 +127,7 @@ the helper adds none, so the absence is doubly sourced rather than inherited.
 and the `__Host-` prefix rules survive only as a *name and a value*. The helper's own class Javadoc
 states this plainly: it "replays cookies from a `Map` it manages itself, so it applies no cookie
 policy: `SameSite`, `Secure` and `__Host-` are attributes it records but never enforces"
-(`BffKeycloakLoginFlow.java:43-51`). The same limitation is recorded independently in
+(`BffKeycloakLoginFlow.java`). The same limitation is recorded independently in
 link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note] at `:78-81`.
 
 Leg one hides the size. Leg two hides everything else.
@@ -318,8 +318,7 @@ budget sits in the table alongside the other five rather than outside it.
 | The browser, by refusing to send a `Secure` cookie over plain HTTP.
 | *Attribute asserted, policy unobservable*
 | `BffCookieSessionIT.sealedSessionCookieIsHardened` asserts the flag. The rejection itself is never exercised: every
-  origin in the lane is HTTPS (`BaseIntegrationTest.java:58`; `BffKeycloakLoginFlow.java:79`,
-  `:89`, `:100`, `:112`).
+  origin in the lane is HTTPS (`BaseIntegrationTest.java:58`; `BffKeycloakLoginFlow.java`).
 
 | Per-domain cookie count
 | The browser, by evicting cookies past its per-domain cap.

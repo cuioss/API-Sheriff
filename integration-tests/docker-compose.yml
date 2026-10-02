@@ -53,8 +53,8 @@ services:
       # Keycloak as a TLS *server*; there are two legs where Keycloak is the TLS *client*. On
       # back-channel logout it POSTs a logout token to the backchannel.logout.url the
       # integration-client declares (https://api-sheriff:8443/auth/backchannel). And to verify a
-      # client assertion it GETs the client's public key from the jwks.url both key-authenticated
-      # clients declare (https://api-sheriff:8443/auth/jwks). The gateway serves the same
+      # client assertion it GETs the client's public key from the jwks.url integration-client and
+      # cookie-refresh-client declare (https://api-sheriff:8443/auth/jwks). The gateway serves the same
       # self-signed localhost.crt this service does, which is in no default JVM truststore, so
       # without this both fail the handshake: no logout token is ever delivered and
       # BffBackchannelLogoutIT fails with a live session it expected destroyed, and no client
@@ -372,7 +372,8 @@ services:
       # run in the native image. Neither value is a secret: both are locations on the signing-keys
       # mount below. No client secret is set — this instance authenticates with private_key_jwt.
       # It is also the instance that PUBLISHES the client-authentication key: Keycloak fetches
-      # https://api-sheriff:8443/auth/jwks, the JWKS URL both key-authenticated realm clients name.
+      # https://api-sheriff:8443/auth/jwks, the JWKS URL integration-client and cookie-refresh-client
+      # name.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
       # Portal catalog toggle acceptance (PortalIT). endpoints/portal-hidden.yaml declares
       # `enabled: ${ENDPOINT_PORTAL_HIDDEN_ENABLED:-true}` and a catalog block; disabling it on THIS

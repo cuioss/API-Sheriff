@@ -22,7 +22,7 @@
 #                        (api-sheriff-refresh and api-sheriff-cookie-refresh). Proofs are signed with
 #                        PS256, so both algorithms run in the native image.
 #
-# REGENERATING NEEDS NO REALM CHANGE. Keycloak holds no copy of the client key: both
+# REGENERATING NEEDS NO REALM CHANGE. Keycloak holds no copy of the client key: the
 # key-authenticated clients name a JWKS URL in integration-realm.json and Keycloak fetches the public
 # key from the gateway. A DPoP proof carries its own public key. So a regenerated file takes effect
 # with the next stack start and nothing else has to be edited.

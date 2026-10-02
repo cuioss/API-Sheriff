@@ -145,9 +145,9 @@ public final class LoginFlow {
 
     /**
      * The engine authorization seam. The session runtime binds it to the per-scope-set engine seam
-     * as {@code scopes -> scopedEngineFlows.authorize(providerMetadata, scopes)} (ADR-0048); a test
-     * binds it to a hand-built redirect. Keeping the discovery-metadata wiring behind the seam
-     * decouples the flow from it and makes the initiation path unit-testable without a live IdP.
+     * (ADR-0048); a test binds it to a hand-built redirect. Keeping the discovery-metadata wiring
+     * behind the seam decouples the flow from it and makes the initiation path unit-testable without
+     * a live IdP.
      *
      * @author API Sheriff Team
      * @since 1.0

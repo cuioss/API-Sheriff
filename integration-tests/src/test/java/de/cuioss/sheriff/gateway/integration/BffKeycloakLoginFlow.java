@@ -466,9 +466,8 @@ final class BffKeycloakLoginFlow {
      */
     static RequestSpecification keycloak(Map<String, String> cookies) {
         // urlEncodingEnabled(false): the authorization URL (and the login-form action) are already
-        // percent-encoded by the gateway/Keycloak. REST Assured's default re-encoding rewrites the
-        // scope separator '+' to %2B, which Keycloak reads as a single literal scope
-        // "openid+profile+email" -> invalid_scope. Disabling it sends the URL verbatim.
+        // percent-encoded by the gateway/Keycloak, and REST Assured's default re-encoding would encode
+        // them a second time. Disabling it sends the URL verbatim.
         return given().relaxedHTTPSValidation().urlEncodingEnabled(false).cookies(cookies);
     }
 

@@ -325,7 +325,7 @@ per-instance and never shared. A login *begun* on one instance must therefore *c
 same instance; a callback landing on a different replica finds no pending authorization and the
 login fails.
 
-An *established* session is fully portable: any replica holding the sealing key can unseal the
+An *established* session is fully portable: any replica holding the same key material can unseal the
 cookie and serve the request. That is exactly the boundary the cookie-statelessness integration
 test documents -- it logs in only against the first instance, then exercises the second instance
 with the resulting cookie.

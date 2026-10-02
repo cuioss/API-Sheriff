@@ -204,11 +204,10 @@ public final class StepUpCoordinator {
     }
 
     /**
-     * The engine step-up authorization seam. The session runtime binds it to the engine as
-     * {@code challenge -> stepUpHandler.initiate(clientConfiguration, providerMetadata, challenge)};
-     * a test binds a hand-built request. The engine carries the challenge's {@code acr_values} /
-     * {@code max_age} into the authorization request; keeping the confidential-client wiring behind
-     * the seam decouples the coordinator from it.
+     * The engine step-up authorization seam. The session runtime binds it to the engine's
+     * {@code StepUpHandler#initiate}; a test binds a hand-built request. The engine carries the
+     * challenge's {@code acr_values} / {@code max_age} into the authorization request; keeping the
+     * confidential-client wiring behind the seam decouples the coordinator from it.
      *
      * @author API Sheriff Team
      * @since 1.0

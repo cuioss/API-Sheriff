@@ -10,8 +10,8 @@
 # `scopes` is ADDITIVE: the scope set both routes need is oidc.scopes united with this list,
 # i.e. exactly "openid profile email sheriff_it_endpoint". That one boot-time value is what a
 # navigation login started on either route requests from Keycloak, and what the refresh leg keeps
-# asking for afterwards. BffEndpointScopesIT captures the authorization redirect and asserts the
-# requested `scope` byte for byte; BffTokenRefreshIT asserts a refreshed token still carries the
+# asking for afterwards. BffEndpointScopesIT asserts the extra scope on the token a completed login
+# mediates; BffTokenRefreshIT asserts a refreshed token still carries the
 # extra scope. sheriff_it_endpoint is an OPTIONAL client scope in integration-realm.json, so
 # Keycloak issues it only when it is requested — its presence in a token is therefore proof the
 # gateway asked for it, not an artefact of the realm's defaults.

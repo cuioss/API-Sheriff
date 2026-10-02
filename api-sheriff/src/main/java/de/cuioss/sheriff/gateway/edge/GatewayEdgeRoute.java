@@ -1147,10 +1147,10 @@ public class GatewayEdgeRoute {
 
     /**
      * Writes a dispatched reserved path's normalized response. A failed OIDC callback — an error
-     * status without a {@code Location} — is the one reserved outcome that negotiates an HTML error
-     * page ({@link ErrorPageClassifier.Exit#CALLBACK_FAILURE}); its own {@code Set-Cookie} lines ride
-     * on the page. Every other reserved outcome, the user-info JSON and every redirect included, is
-     * written in its current shape.
+     * status without a {@code Location} — negotiates an HTML error page
+     * ({@link ErrorPageClassifier.Exit#CALLBACK_FAILURE}); its own {@code Set-Cookie} lines ride
+     * on the page. Every other reserved outcome written here, the user-info JSON and every redirect
+     * included, is written in its current shape.
      * <p>
      * <strong>One outcome is not written here at all</strong>: the {@code 404} of the client JWKS
      * endpoint's withheld form (client-secret mode, where there is no key set to publish). It is

@@ -340,5 +340,5 @@ today — the outbound header map is built fresh and framing names are in `REQUE
 * AES-GCM sealed cookie with AAD binding and deterministic key-id gating.
 * Callback flow: raw-query HPP parse, binding cookie plus constant-time state, store-invariant
   single-use.
-* Documentation honesty: Known Limitations, the FAPI non-conformance verdict, the
+* Documentation honesty: Known Limitations, the FAPI status verdict, the
   response-direction caveat, and the accepted-risk entries all match the code.

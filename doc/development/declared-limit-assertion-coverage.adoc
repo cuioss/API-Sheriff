@@ -490,7 +490,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | COVERED
 | `DeclaredLimitBoundaryIT` -- 8192 admitted and reaching bearer validation (401), 8193 rejected 400
   at the floor; the 401-vs-400 delta on a one-character change is the discriminator.
-  `BearerValidationIT:120` independently proves the carve-out is in force on a real token.
+  `BearerValidationIT` independently proves the carve-out is in force on a real token.
 
 | *G2* `token_validation.issuers[*].jwks.allowed_egress_hosts`
   `gateway.yaml` ×4 -- base:254, cookie:97, mtls:104, ws:102 (the `benchmark-keycloak` list; the
