@@ -139,11 +139,14 @@ class SessionScopeTruthfulnessFlowTest {
     void apiCallsRefreshOnceThenAreRefusedLocally() {
         bindLive(LIVE_REFRESH_TOKEN);
         SessionAuthenticationStage stage = stage(OPENID);
+        PipelineRequest firstCall = request(API_ACCEPT);
+        PipelineRequest secondCall = request(API_ACCEPT);
+        PipelineRequest thirdCall = request(API_ACCEPT);
 
-        GatewayException first = assertThrows(GatewayException.class, () -> stage.process(request(API_ACCEPT)));
+        GatewayException first = assertThrows(GatewayException.class, () -> stage.process(firstCall));
         int grantsAfterFirstCall = refreshGrants.get();
-        GatewayException second = assertThrows(GatewayException.class, () -> stage.process(request(API_ACCEPT)));
-        GatewayException third = assertThrows(GatewayException.class, () -> stage.process(request(API_ACCEPT)));
+        GatewayException second = assertThrows(GatewayException.class, () -> stage.process(secondCall));
+        GatewayException third = assertThrows(GatewayException.class, () -> stage.process(thirdCall));
 
         assertAll("the refresh token is presented for the scope once, not once per request",
                 () -> assertEquals(EventType.SCOPE_MISSING, first.getEventType(), "the first call is refused 403"),

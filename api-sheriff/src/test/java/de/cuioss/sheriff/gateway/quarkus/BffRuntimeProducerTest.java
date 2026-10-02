@@ -662,8 +662,9 @@ class BffRuntimeProducerTest {
             String cookieHeader = bindLiveSession(runtime, Set.of(OPENID_SCOPE));
             PipelineRequest request = sessionRouteRequest(cookieHeader, "application/json",
                     Set.of(OPENID_SCOPE, NEEDED_SCOPE));
+            SessionAuthenticationStage stage = runtime.sessionStage();
 
-            return assertThrows(GatewayException.class, () -> runtime.sessionStage().process(request),
+            return assertThrows(GatewayException.class, () -> stage.process(request),
                     "an under-scoped API call must be refused, never relayed");
         }
 
