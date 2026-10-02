@@ -36,7 +36,8 @@ Failures may carry fallback content for graceful degradation with cached data.
 
 NOTE: `HttpResult<T>` *materializes the whole body* into the in-memory `T`. That is exactly
 right for the *control plane* -- the small, bounded JSON calls the gateway makes itself (OIDC
-discovery, JWKS, token exchange, revocation) -- but it is *not* used for the *data plane*:
+discovery, JWKS, the pushed authorization request, token exchange, revocation) -- but it is *not*
+used for the *data plane*:
 proxied client bodies (large responses, downloads, SSE, chunked/long-lived streams) are
 *streamed* with backpressure and never buffered into an `HttpResult<byte[]>`/`HttpResult<String>`.
 The whole cui-http client stack described in this section -- `HttpHandler`,

@@ -105,11 +105,13 @@ cookie-mode instance `api-sheriff-cookie` on port 10445
 * the short binding cookie is unaffected, so the login round trip itself still completes.
 
 That last clause matters. The login chain in
-`integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffKeycloakLoginFlow.java:253-312`
-asserts only status codes on its four request steps -- `302`, `200`, `302`, `302` -- and never uses
-the session it just established. A client that drops the session cookie still walks the whole chain
-green. (The deliverability assertion this plan added at `:309` is the one thing in that method that
-is not a status code, and it did not exist while the nine were passing.)
+`integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffKeycloakLoginFlow.java`
+(the private `login` method) asserted only status codes on its four request steps -- `302`, `200`,
+`302`, `302` -- and never used the session it just established. A client that drops the session
+cookie still walks the whole chain green. (The deliverability assertion this plan added,
+`assertCookiesFitBrowserBudget`, did not exist while the nine were passing. Since the authorization
+request is pushed, the chain also follows one redirect inside Keycloak before the login page and
+checks where it leads; that step uses no session either.)
 
 === The mechanism, confirmed
 
@@ -118,16 +120,17 @@ for *deliverability* it is the whole mechanism -- but it is one leg of a two-leg
 second leg is the one that turns a single defect into a class.
 
 *Leg one -- no size policy anywhere on the path.* The helper takes the callback's cookies into a
-plain `HashMap` (`BffKeycloakLoginFlow.java:255`, `:304`) and replays them with `.cookies(cookies)`
-(`:336`). No length is read at any of those three points. The library applies no per-cookie limit and
+plain `HashMap` (`BffKeycloakLoginFlow.java`, where the private `login` method creates the jar and
+where it stores the callback's cookies) and replays them with `.cookies(cookies)` (the `gateway`
+request spec). No length is read at any of those three points. The library applies no per-cookie limit and
 the helper adds none, so the absence is doubly sourced rather than inherited.
 
 *Leg two -- the jar is keyed by name and discards every attribute.* `Session.gatewayCookies()` is a
-`Map<String, String>` (`BffKeycloakLoginFlow.java:179`), so `SameSite`, `Secure`, `Path`, `Domain`
+`Map<String, String>` (the `Session` record in `BffKeycloakLoginFlow.java`), so `SameSite`, `Secure`, `Path`, `Domain`
 and the `__Host-` prefix rules survive only as a *name and a value*. The helper's own class Javadoc
 states this plainly: it "replays cookies from a `Map` it manages itself, so it applies no cookie
 policy: `SameSite`, `Secure` and `__Host-` are attributes it records but never enforces"
-(`BffKeycloakLoginFlow.java:43-51`). The same limitation is recorded independently in
+(`BffKeycloakLoginFlow.java`). The same limitation is recorded independently in
 link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note] at `:78-81`.
 
 Leg one hides the size. Leg two hides everything else.
@@ -224,8 +227,8 @@ can be held to -- but it means the test is indifferent to whether any client acc
 `rpInitiatedLogoutClearsTheSealedCookie` is the sharper case. `LogoutEndpoint` answers a logout
 *without* a live session with a `302` to `final_redirect` carrying the same
 `clearingSetCookieHeader()` the authenticated branch emits
-(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java:96-100`
-versus `:119-121`). That header is a fixed string --
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java`, the
+no-session branch of `logout` versus its last lines). That header is a fixed string --
 `+__Host-sheriff-session=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax+` at
 `SealedSessionCookieCodec.toClearingSetCookieHeader()` -- so every one of the test's three assertions (a `Location`,
 `Max-Age=0`, an empty value) holds identically on both branches. The test cannot distinguish
@@ -249,8 +252,8 @@ trip that genuinely worked -- for RestAssured *and* for a browser. They were cor
 
 Storing the refresh token is what moved the payload. `CallbackEndpoint` now seeds
 `.refreshToken(result.refreshToken())` into the session record
-(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java:239`, with
-the mechanism documented in the comment at `:231-238`), and in cookie mode the session is the cookie
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java`, in
+`completeLogin`, with the mechanism documented in the comment above that line), and in cookie mode the session is the cookie
 -- so access + ID + refresh sealed to 5123 bytes on this instance
 (`integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml:159-164`, pre-remediation),
 which the codec emits as a 5200-byte `Set-Cookie` header once the name and attributes are counted.
@@ -318,16 +321,15 @@ budget sits in the table alongside the other five rather than outside it.
 | The browser, by refusing to send a `Secure` cookie over plain HTTP.
 | *Attribute asserted, policy unobservable*
 | `BffCookieSessionIT.sealedSessionCookieIsHardened` asserts the flag. The rejection itself is never exercised: every
-  origin in the lane is HTTPS (`BaseIntegrationTest.java:58`; `BffKeycloakLoginFlow.java:79`,
-  `:89`, `:100`, `:112`).
+  origin in the lane is HTTPS (`BaseIntegrationTest.java:58`; `BffKeycloakLoginFlow.java`).
 
 | Per-domain cookie count
 | The browser, by evicting cookies past its per-domain cap.
 | *Not covered*
 | Nowhere. The gateway sets three `__Host-` cookies --
-  `+__Host-sheriff-binding+` (`bff/pending/BindingCookieCodec.java:57`),
-  `+__Host-sheriff-session+` (`bff/session/SessionCookieCodec.java:44`) and
-  `+__Host-sheriff-logout+` (`bff/logout/RpInitiatedLogout.java:58`) -- and a `HashMap` has no cap
+  `+__Host-sheriff-binding+` (`BindingCookieCodec.COOKIE_NAME`),
+  `+__Host-sheriff-session+` (`SessionCookieCodec.DEFAULT_COOKIE_NAME`) and
+  `+__Host-sheriff-logout+` (`RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME`) -- and a `HashMap` has no cap
   to hit.
 
 | Aggregate per-domain cookie size
@@ -379,8 +381,8 @@ Coverage and enforcement are separate things here, and only the first one exists
 The server-session variant never approaches the budget, because nothing large crosses to the browser.
 `ServerSessionBinding` keeps the token material in the store and hands the browser only the opaque
 `SessionRecord.sessionId()` in the hardened `__Host-` cookie
-(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/ServerSessionBinding.java:30-32`,
-with the emission at `:66`). A handle is a handle whatever the claim set does, so the payload growth
+(`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/ServerSessionBinding.java`, the
+class documentation, with the emission in `bind`). A handle is a handle whatever the claim set does, so the payload growth
 that moved the cookie-mode seal past 4096 moved nothing at all in server mode.
 
 This is a property of the variant, not of its tests. The server-mode suites are not better written;
@@ -395,7 +397,7 @@ has one further answer, and it is the same shape rather than a different one.
 `RestAssured.useRelaxedHTTPSValidation()` for every suite that extends it
 (`integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BaseIntegrationTest.java:57`),
 and the BFF helper's own request specs relax it independently
-(`BffKeycloakLoginFlow.java:336`, `:351`). Certificate-chain validity is a *client*-enforced control,
+(`BffKeycloakLoginFlow.java`, the `gateway` and `keycloak` request specs). Certificate-chain validity is a *client*-enforced control,
 so the lane cannot observe it -- exactly as it cannot observe `SameSite`.
 
 The surface is wider than those four sites, and materially so: the substitution appears in *four
