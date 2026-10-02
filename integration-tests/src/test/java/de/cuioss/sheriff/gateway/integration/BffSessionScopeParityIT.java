@@ -309,7 +309,7 @@ class BffSessionScopeParityIT {
                 + "it must refuse the pushed authorization request, and the gateway answers a refused push 502 "
                 + "before any redirect"
                 + (refused.getHeader("Location") == null ? ""
-                        : "; the gateway redirected instead, so the identity provider accepted the pushed request"));
+                : "; the gateway redirected instead, so the identity provider accepted the pushed request"));
         assertNull(refused.getHeader("Location"),
                 "a widening whose push is refused must not redirect — not into the identity provider, not back "
                         + "to the route");

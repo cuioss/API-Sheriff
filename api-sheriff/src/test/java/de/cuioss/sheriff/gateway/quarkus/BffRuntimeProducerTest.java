@@ -2593,7 +2593,7 @@ class BffRuntimeProducerTest {
                                     .contains("on the code-exchange leg"),
                             "under the leg of the code exchange: " + refusals.getFirst().getMessage()),
                     () -> assertEquals(0, recordsContaining(TestLogLevel.INFO,
-                                    BffLogMessages.INFO.SESSION_WIDENED.resolveIdentifierString()),
+                            BffLogMessages.INFO.SESSION_WIDENED.resolveIdentifierString()),
                             "nothing was merged into the session"),
                     () -> assertEquals(granted, after.grantedScopes(), "the live session keeps its granted set"),
                     () -> assertEquals(accessTokenBefore, after.accessToken(), "and the token it held"));
@@ -2703,12 +2703,12 @@ class BffRuntimeProducerTest {
                     () -> assertEquals(1, reachableInstancesOf(runtime, ParClient.class).size(),
                             "exactly one pushed-authorization-request client is constructed"),
                     () -> assertSame(adapter, single(reachableInstancesOf(widening, PushedAuthorizationRequests.class),
-                                    "pushed-request adapter behind the widening seam"),
+                            "pushed-request adapter behind the widening seam"),
                             "a widening pushes through the adapter a login pushes through"),
                     () -> assertSame(adapter, single(reachableInstancesOf(loginFlow, PushedAuthorizationRequests.class),
                             "pushed-request adapter behind the login seam")),
                     () -> assertSame(widening, single(reachableInstancesOf(stepUpEndpoint, SessionWidening.class),
-                                    "session widening behind the step-up endpoint"),
+                            "session widening behind the step-up endpoint"),
                             "the step-up path starts its widening through the runtime's one SessionWidening"),
                     () -> assertEquals(1, tokenEndpointClients.size(),
                             "exactly one token-endpoint client is constructed — a second one would be a path "
