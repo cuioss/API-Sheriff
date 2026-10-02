@@ -275,23 +275,11 @@ class DefaultTrustSourceAuditTest {
             List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
             assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
             assertAll("the password IS set here, so its absence is a measurement rather than a vacuous pass",
-                    records.stream().map(captured -> () -> assertFalse(rendered(captured).contains(STORE_PASSWORD),
+                    records.stream().map(captured -> () -> assertFalse(
+                            SheriffDebugCapture.rendered(captured).contains(STORE_PASSWORD),
                             "a " + captured.getLevel() + " record of " + captured.getLoggerName()
                                     + " carries the trust-store password")));
         }
-    }
-
-    /**
-     * @param captured a captured log record
-     * @return its message followed by the message of every throwable it chains — everything of the
-     *         record that could carry a configured value
-     */
-    private static String rendered(LogRecord captured) {
-        StringBuilder rendered = new StringBuilder(String.valueOf(captured.getMessage()));
-        for (Throwable thrown = captured.getThrown(); thrown != null; thrown = thrown.getCause()) {
-            rendered.append('\n').append(thrown.getMessage());
-        }
-        return rendered.toString();
     }
 
     /**

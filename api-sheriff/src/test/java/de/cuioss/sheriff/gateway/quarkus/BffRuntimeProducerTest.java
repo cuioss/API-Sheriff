@@ -3002,9 +3002,7 @@ class BffRuntimeProducerTest {
 
         private StubIdentityProvider.ReceivedRequest refreshGrant(BffRuntime runtime) {
             String refreshToken = token();
-            TokenRefreshCoordinator.RefreshExchange exchange = single(
-                    reachableInstancesOf(refreshCoordinatorOf(runtime), TokenRefreshCoordinator.RefreshExchange.class),
-                    "refresh exchange the coordinator holds");
+            TokenRefreshCoordinator.RefreshExchange exchange = refreshExchangeOf(runtime);
 
             StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
                     () -> assertThrows(RuntimeException.class, () -> exchange.exchange(refreshToken, Set.of("openid")),
@@ -3107,9 +3105,7 @@ class BffRuntimeProducerTest {
         }
 
         private String keyIdOf(StubIdentityProvider.ReceivedRequest request) throws IOException {
-            String assertion = request.form().get(CLIENT_ASSERTION);
-            assertNotNull(assertion, "the request body carries no client_assertion");
-            return jwtPart(assertion, 0).path("kid").asText();
+            return jwtPart(clientAssertionOf(request), 0).path("kid").asText();
         }
 
         private static JsonNode jwtPart(String compactJwt, int index) throws IOException {
@@ -3237,19 +3233,11 @@ class BffRuntimeProducerTest {
                     URLEncoder.encode(fixture.secret(), StandardCharsets.UTF_8), fixture.basicCredential());
             assertAll("no captured record carries the client secret",
                     records.stream().map(captured -> (Executable) () -> {
-                        String rendered = rendered(captured);
+                        String rendered = SheriffDebugCapture.rendered(captured);
                         assertTrue(forbidden.stream().noneMatch(rendered::contains),
                                 "a " + captured.getLevel() + " record of " + captured.getLoggerName()
                                         + " carries the client secret");
                     }));
-        }
-
-        private static String rendered(LogRecord captured) {
-            StringBuilder rendered = new StringBuilder(String.valueOf(captured.getMessage()));
-            for (Throwable thrown = captured.getThrown(); thrown != null; thrown = thrown.getCause()) {
-                rendered.append('\n').append(thrown.getMessage());
-            }
-            return rendered.toString();
         }
     }
 

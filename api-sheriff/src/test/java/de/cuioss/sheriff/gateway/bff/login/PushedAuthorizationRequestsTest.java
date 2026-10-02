@@ -721,11 +721,8 @@ class PushedAuthorizationRequestsTest {
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
         List<Executable> checks = new ArrayList<>();
         for (LogRecord captured : records) {
-            StringBuilder rendered = new StringBuilder(String.valueOf(captured.getMessage()));
-            for (Throwable thrown = captured.getThrown(); thrown != null; thrown = thrown.getCause()) {
-                rendered.append('\n').append(thrown.getMessage());
-            }
-            checks.add(() -> assertTrue(secrets.stream().noneMatch(rendered.toString()::contains),
+            String rendered = SheriffDebugCapture.rendered(captured);
+            checks.add(() -> assertTrue(secrets.stream().noneMatch(rendered::contains),
                     "a " + captured.getLevel() + " record of " + captured.getLoggerName()
                             + " carries a value of the authorization request"));
         }

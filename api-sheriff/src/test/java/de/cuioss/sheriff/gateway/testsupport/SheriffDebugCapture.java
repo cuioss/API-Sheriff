@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 
@@ -108,5 +109,18 @@ public final class SheriffDebugCapture implements BeforeEachCallback, AfterEachC
                     "a DEBUG record of " + name + " is not captured, so the absence of a value in the captured "
                             + "records would say nothing about the DEBUG output of that logger");
         }
+    }
+
+    /**
+     * @param captured a captured log record
+     * @return its message followed by the message of every throwable it chains — everything of the
+     *         record that could carry a configured value
+     */
+    public static String rendered(LogRecord captured) {
+        StringBuilder rendered = new StringBuilder(String.valueOf(captured.getMessage()));
+        for (Throwable thrown = captured.getThrown(); thrown != null; thrown = thrown.getCause()) {
+            rendered.append('\n').append(thrown.getMessage());
+        }
+        return rendered.toString();
     }
 }

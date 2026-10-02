@@ -470,7 +470,7 @@ class BoundTokenEndpointClientTest {
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
         List<Executable> checks = new ArrayList<>();
         for (LogRecord captured : records) {
-            String rendered = rendered(captured);
+            String rendered = SheriffDebugCapture.rendered(captured);
             checks.add(() -> assertTrue(secrets.stream().noneMatch(rendered::contains),
                     "a " + captured.getLevel() + " record of " + captured.getLoggerName()
                             + " carries scripted token material"));
@@ -481,14 +481,6 @@ class BoundTokenEndpointClientTest {
                     "the refusal carries scripted token material: " + message));
         }
         assertAll("nothing the identity provider issued is disclosed", checks);
-    }
-
-    private static String rendered(LogRecord captured) {
-        StringBuilder rendered = new StringBuilder(String.valueOf(captured.getMessage()));
-        for (Throwable thrown = captured.getThrown(); thrown != null; thrown = thrown.getCause()) {
-            rendered.append('\n').append(thrown.getMessage());
-        }
-        return rendered.toString();
     }
 
     private static List<LogRecord> refusalRecords() {
