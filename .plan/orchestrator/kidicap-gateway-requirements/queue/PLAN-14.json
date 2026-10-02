@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-14",
+  "slug": "session-and-scopes",
+  "workstream": "WS-04",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-14-session-and-scopes",
+  "pr": "#337",
+  "landing": "landings/PLAN-14.md",
+  "seq": 2
+}

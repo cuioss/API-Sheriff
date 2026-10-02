@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-19",
+  "slug": "session-fallback-on-bearer",
+  "workstream": "WS-04",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-19-session-fallback-on-bearer",
+  "pr": "#356",
+  "landing": "landings/PLAN-19.md",
+  "seq": 7
+}
