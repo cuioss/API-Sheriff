@@ -2168,7 +2168,7 @@ class BffRuntimeProducerTest {
          * callback's answer.
          */
         private record WideningCallback(StubIdentityProvider.ReceivedRequest pushed, String code,
-                StubIdentityProvider.ReceivedRequest exchange, BffRuntime.ReservedHttpResponse answered) {
+        StubIdentityProvider.ReceivedRequest exchange, BffRuntime.ReservedHttpResponse answered) {
         }
 
         static Stream<Arguments> keyModesOnEveryLeg() {
