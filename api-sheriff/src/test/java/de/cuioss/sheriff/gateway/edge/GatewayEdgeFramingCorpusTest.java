@@ -454,8 +454,13 @@ class GatewayEdgeFramingCorpusTest {
             rejected.exceptionHandler(rejectedStreamEnded::complete);
             rejected.putHeader("Content-Length", String.valueOf(2 * rejectedPart.length()));
             Awaits.connect(rejected.write(rejectedPart), "the rejected stream to send part of its body");
-            HttpClientResponse rejection = Awaits.connect(rejected.response(), "the rejection to be answered");
-            String rejectionBody = Awaits.connect(rejection.body(), "the rejection body to arrive").toString();
+            // The body is subscribed inside the response callback: the edge resets the stream right after
+            // the 400 is written, and a body subscribed only after that reset is processed is discarded.
+            Map.Entry<HttpClientResponse, String> answered = Awaits.connect(rejected.response()
+                    .compose(response -> response.body().map(body -> Map.entry(response, body.toString()))),
+                    "the rejection and its body to arrive");
+            HttpClientResponse rejection = answered.getKey();
+            String rejectionBody = answered.getValue();
             Throwable streamEnd = Awaits.connect(rejectedStreamEnded, "the edge to reset the rejected stream");
 
             Awaits.connect(sibling.end(), "the sibling stream to end its body");

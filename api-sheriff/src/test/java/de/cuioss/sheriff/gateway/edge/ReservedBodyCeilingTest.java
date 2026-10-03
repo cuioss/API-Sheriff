@@ -28,6 +28,7 @@ import java.lang.annotation.Annotation;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -372,8 +373,13 @@ class ReservedBodyCeilingTest {
             CompletableFuture<Throwable> rejectedStreamEnded = new CompletableFuture<>();
             rejected.exceptionHandler(rejectedStreamEnded::complete);
             sendOversized.accept(rejected);
-            HttpClientResponse rejection = Awaits.connect(rejected.response(), "the 413 to be answered");
-            String rejectionBody = Awaits.connect(rejection.body(), "the 413 body to arrive").toString();
+            // The body is subscribed inside the response callback: the edge resets the stream right after
+            // the 413 is written, and a body subscribed only after that reset is processed is discarded.
+            Map.Entry<HttpClientResponse, String> answered = Awaits.connect(rejected.response()
+                    .compose(response -> response.body().map(body -> Map.entry(response, body.toString()))),
+                    "the 413 and its body to arrive");
+            HttpClientResponse rejection = answered.getKey();
+            String rejectionBody = answered.getValue();
             Throwable streamEnd = Awaits.connect(rejectedStreamEnded, "the edge to reset the oversized stream");
 
             HttpClientResponse siblingAnswer = Awaits.connect(sibling.end(siblingBody.substring(siblingSplit))
