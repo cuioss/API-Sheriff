@@ -514,16 +514,26 @@ but two parsers could read differently, with a `400` problem document
 | transport
 | `GatewayEdgeFramingCorpusTest` (`bareLineFeedChunkTerminator`)
 
-| Nothing behind a `FramingGate` rejection is processed: the answer carries `Connection: close`,
-  the connection is closed, and a request already queued on it is neither processed nor forwarded
+| On HTTP/1.x nothing behind a `FramingGate` rejection is processed: the answer carries
+  `Connection: close`, the connection is closed, and a request already queued on it is neither
+  processed nor forwarded
 | edge (`GatewayEdgeRoute`)
 | `GatewayEdgeFramingCorpusTest` (`requestPipelinedBehindGateRejection`)
 
-| An inbound framing failure after dispatch resets the upstream request, and the upstream
-  connection that carried it is not reused
-| edge (`DispatchStage`)
+| On HTTP/2 a `FramingGate` rejection ends only the offending stream: the answer carries no
+  `Connection` header, the stream is reset, nothing of it reaches the upstream, and a sibling
+  stream and a further stream complete on the same connection
+| edge (`GatewayEdgeRoute`)
+| `GatewayEdgeFramingCorpusTest` (`gateRejectionOnHttp2EndsOnlyTheOffendingStream`)
+
+| An inbound body failure after dispatch -- broken chunk framing, or a client that disconnects
+  mid-upload -- resets the upstream request, and the upstream connection that carried it is not
+  reused. It is reported as `INBOUND_BODY_ABORTED` (`400`), attributed to the client: it is not a
+  `SECURITY_FILTER_VIOLATION`, and the route's circuit breaker does not count it
+| edge (`DispatchStage`, `GatewayEdgeRoute`)
 | `GatewayEdgeFramingCorpusTest` (`inboundFramingFailureAfterDispatchResetsTheUpstreamRequest`,
-  `bareLineFeedChunkTerminator`)
+  `bareLineFeedChunkTerminator`, `clientDisconnectMidUploadIsNotASecurityWarning`);
+  `DispatchStageTest.BreakerAttribution`
 |===
 
 The gate runs once, at stage 1, before route selection. No later stage changes the inbound
@@ -540,16 +550,20 @@ the HTTP stack the gateway runs on, and the corpus is what turns red if a transp
 starts admitting one of those shapes. Every corpus entry writes raw bytes over a plain socket
 and asserts both the status of each response and the exact list of requests the upstream saw.
 
-The row is off COVERED because the assertion below is not pinned in full. The corpus speaks
-HTTP/1.1 on both sides of the gateway: no test drives the gate, the connection handling after a
-rejection, or the upstream reset over HTTP/2. Two clauses are pinned by `FramingGateTest` alone
-and by no corpus entry: a body on `HEAD`, and a repeated or comma-separated `Content-Length`.
+The row is off COVERED because the assertion below is not pinned in full. One corpus entry speaks
+HTTP/2 to the gateway and pins that a gate rejection ends only its own stream. Every other entry
+speaks HTTP/1.1, and the upstream side of the corpus is HTTP/1.1 throughout: no test drives the
+remaining gate clauses or an inbound body failure after dispatch over HTTP/2, and none drives the
+upstream reset against an HTTP/2 upstream. Two clauses are pinned by `FramingGateTest` alone and
+by no corpus entry: a body on `HEAD`, and a repeated or comma-separated `Content-Length`.
 
 *Assertion.* A request with both `Content-Length` and `Transfer-Encoding`, a HEAD/GET with a
 body, or a `Connection: Content-Length` cleanup attempt is rejected (400) and never produces
 two upstream requests; a smuggling test corpus (CL.TE/TE.CL/TE.TE/CL.0) run through the
 gateway produces zero desyncs; a request queued behind a rejected one is not processed; an
-upstream request whose inbound body failed is reset and its connection is not reused.
+upstream request whose inbound body failed is reset and its connection is not reused. That
+failure is reported under the dedicated event `INBOUND_BODY_ABORTED`, attributed to the client,
+and leaves the route's circuit breaker neutral.
 
 *Operator-relaxable leg (bounded).* The gateway-wide
 `security_defaults.allow_get_with_content_length_body` opt-in (default `false`) admits a
@@ -2916,7 +2930,7 @@ outstanding hardening work (next section).
 | ID | Control (short) | Owner | Status
 
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
-| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; an upstream request whose inbound body failed is reset and its connection not reused | Gateway (`FramingGate`, `GatewayEdgeRoute`, `DispatchStage`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; HTTP/2 not pinned)
+| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED` with the circuit breaker left neutral | Gateway (`FramingGate`, `GatewayEdgeRoute`, `DispatchStage`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; on HTTP/2 only the stream-scoped gate rejection is pinned)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED

@@ -362,13 +362,25 @@ reopen the desync). The gate is not run again after the forwarding headers are r
 headers are immutable, and the headers sent upstream are a separate map that never carries the
 client's framing headers.
 
-A framing rejection also ends the connection it arrived on. The `400` carries `Connection: close`,
-the connection is closed once it is written, and a request already queued behind the rejected one is
-neither processed nor forwarded. When inbound framing fails only after the request was dispatched --
-a chunked body that breaks mid-stream -- the upstream request is reset and the upstream connection
-that carried it is not reused. The HTTP transport refuses some shapes before the gate runs, with a
-bare `400`; link:security-threat-model.adoc#gw-02[GW-02] lists each clause, who enforces it and the
-test that pins it.
+A framing rejection also ends what it arrived on, and what that is depends on the protocol. On
+HTTP/1.x it is the connection: the `400` carries `Connection: close`, the connection is closed once
+it is written, and a request already queued behind the rejected one is neither processed nor
+forwarded. On HTTP/2 it is the offending stream alone: the `400` carries no connection-specific
+header, the stream is reset once it is written, and the other streams of that connection and the
+connection itself carry on. The HTTP transport refuses some shapes before the gate runs, with a bare
+`400`; link:security-threat-model.adoc#gw-02[GW-02] lists each clause, who enforces it and the test
+that pins it.
+
+[[_aborted_inbound_body]]
+*A request body that fails after dispatch is a client-caused termination.* When the inbound body
+stream fails only after the request was dispatched -- a client that disconnects mid-upload, or a
+chunked body whose framing breaks mid-stream -- the upstream request is reset, and on HTTP/1.x the
+upstream connection that carried it is not reused. The gateway reports it under its own event,
+`INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`). It is neither a security-filter violation nor an
+upstream failure: no security warning is logged, the route's circuit breaker does not count it, and
+it is never retried. `INFO` `ApiSheriff-22` records it, latched per route, and
+`sheriff_errors_total` counts every occurrence under `event="INBOUND_BODY_ABORTED"`. A body that
+keeps arriving past the route's `max_body_bytes` cap is the separate `CONTENT_TOO_LARGE` (`413`).
 
 Exactly one part of that gate is operator-relaxable, through the gateway-wide
 `security_defaults.allow_get_with_content_length_body`: the declared-`Content-Length` leg, and only
@@ -911,7 +923,9 @@ The upstream client is split by plane
   retried only for an idempotent method *and only when zero request-body bytes have been sent
   upstream* -- there is no replay buffer. The breaker is stateless per node: opens after the
   configured consecutive failures, half-opens after `reset_ms`; state transitions surface as
-  WARN LogRecords and metrics.
+  WARN LogRecords and metrics. It counts upstream failures only: a dispatch the client itself
+  ended -- a body-cap breach, or an aborted inbound body (<<_aborted_inbound_body>>) -- is neither
+  counted nor retried.
 * *Control plane -- `cui-http`.* The gateway's own small, bounded JSON calls (OIDC discovery,
   JWKS, the pushed authorization request, token exchange, revocation -- made chiefly inside the
   token-sheriff libraries) use
@@ -1068,7 +1082,8 @@ Design (the low, framework-agnostic `de.cuioss.sheriff.gateway.events` package):
   category* (per CUI logging convention) and are metric counters only -- e.g.
   `REQUEST_FORWARDED`, `TOKEN_REFRESHED`, `CONFIG_LOADED`.
 * Failure event types carry a category -- e.g. `PATH_NOT_ALLOWED` / `SECURITY_FILTER_VIOLATION`
-  / `PARAMETER_LIMIT_EXCEEDED` / `CONTENT_TOO_LARGE` (`INPUT_VALIDATION`), `NO_ROUTE_MATCHED` /
+  / `PARAMETER_LIMIT_EXCEEDED` / `CONTENT_TOO_LARGE` / `INBOUND_BODY_ABORTED` (`INPUT_VALIDATION`),
+  `NO_ROUTE_MATCHED` /
   `PASSTHROUGH_HOST_SMUGGLED` / `METHOD_NOT_ALLOWED` (`ROUTING`), `TOKEN_MISSING` / `TOKEN_INVALID`
   (`AUTHENTICATION`), `SCOPE_MISSING` / `CSRF_REJECTED` (`AUTHORIZATION`),
   `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT` (`UPSTREAM`).
@@ -1098,7 +1113,7 @@ The consolidated status mapping:
 |===
 | Status | Cause | EventCategory
 
-| `400` | Security-filter violation (path/parameter/header pipeline, collection limits) | `INPUT_VALIDATION`
+| `400` | Security-filter violation (path/parameter/header pipeline, collection limits, framing gate); a proxied request body that failed after dispatch began -- a client disconnecting mid-upload, or broken chunk framing (`INBOUND_BODY_ABORTED`, see <<_aborted_inbound_body>>) | `INPUT_VALIDATION`
 | `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
 | `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`); live session lacking one on a non-navigation request when no refresh can obtain it (no `WWW-Authenticate`; the problem body carries the extension members `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`, while a navigation is redirected into a widening of the session instead -- see <<_scope_enforcement>>); failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `ROUTING`
@@ -1165,7 +1180,8 @@ constant fails compilation until it is classified.
   asset miss (`404`).
 
 | `KEEP_SHAPE`
-| Every other event: the `400` security-filter and parameter rejections, `401` token rejections,
+| Every other event: the `400` security-filter, parameter and aborted-inbound-body rejections,
+  `401` token rejections,
   `RESERVED_BODY_TOO_LARGE`, WebSocket rejections and the rest. Every response *relayed from an
   origin* (the proxy relay, the gRPC trailer relay, a `source: upstream` asset, the WebSocket relay),
   a relay failure after the response head was sent, a gRPC trailers-only rejection, the admission
@@ -1200,7 +1216,7 @@ rejection it would render as an HTTP status for an HTTP route onto the canonical
 |===
 | gRPC status | code | Gateway rejection (the HTTP status the same cause renders on an HTTP route)
 
-| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits)
+| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits); `INBOUND_BODY_ABORTED` maps here by its `400`
 | `UNAUTHENTICATED`    | 16 | `401` -- missing/invalid bearer token; invalid or expired session on a non-navigation request
 | `PERMISSION_DENIED`  | 7  | `403` -- valid bearer token or live session lacking a needed scope (the session answer's `missing_scopes` / `step_up_url` members have no place in a gRPC status and are not rendered); failed CSRF origin check
 | `NOT_FOUND`          | 5  | `404` -- no route matched (deny-by-default routing); reserved-for-passthrough `Host`; disabled endpoint
