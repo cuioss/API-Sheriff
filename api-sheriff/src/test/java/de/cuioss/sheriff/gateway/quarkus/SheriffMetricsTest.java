@@ -191,7 +191,7 @@ class SheriffMetricsTest {
             assertAll("the placeholder series",
                     () -> assertEquals("OTHER", SheriffMetrics.METHOD_OTHER),
                     () -> assertTrue(Arrays.stream(HttpMethod.values())
-                                    .noneMatch(method -> method.name().equals(SheriffMetrics.METHOD_OTHER)),
+                                    .noneMatch(method -> SheriffMetrics.METHOD_OTHER.equals(method.name())),
                             "the placeholder must not collide with a parsed method's label"),
                     () -> assertNotNull(counter, "an unparsed method is counted under the placeholder"),
                     () -> assertEquals(2.0, counter.count(), "every unparsed method moves the one series"),
