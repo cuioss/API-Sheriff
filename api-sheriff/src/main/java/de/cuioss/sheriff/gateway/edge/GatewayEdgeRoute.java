@@ -268,10 +268,17 @@ public class GatewayEdgeRoute {
      * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
      * release site knows there is no sub-permit to return. */
     private static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
-    /** Set once the framing gate has rejected the request: the writer that answers it then retires the
-     * connection the answer is written on (see {@link #rejectFramingAndRetire}). The virtual-thread hop
-     * carries only the {@link RoutingContext}, so the marker rides on it to the event-loop writer. */
+    /** Set once the framing gate has rejected an HTTP/1.x request: the writer that answers it then
+     * retires the connection the answer is written on (see {@link #rejectFramingAndRetire}). The
+     * virtual-thread hop carries only the {@link RoutingContext}, so the marker rides on it to the
+     * event-loop writer. */
     private static final String RETIRE_CONNECTION_KEY = "sheriff.retireconnection";
+    /** Set once the framing gate has rejected an HTTP/2 request: the writer that answers it then ends
+     * that one stream and leaves the connection open (see {@link #rejectFramingAndRetire}). Rides on
+     * the {@link RoutingContext} for the same reason as {@link #RETIRE_CONNECTION_KEY}. */
+    private static final String END_STREAM_KEY = "sheriff.endstream";
+    /** The HTTP/2 error code {@code NO_ERROR}: the stream is ended without signalling a fault. */
+    private static final long HTTP2_NO_ERROR = 0L;
     /** Holds the request body armed in {@link #handle} as a {@link DispatchStage.InboundBody}, so the
      * upstream dispatch — which runs after the virtual-thread hop — streams the body through the
      * decorator that remembers an inbound failure. Absent on the reserved-body path, which reads its
@@ -316,10 +323,11 @@ public class GatewayEdgeRoute {
     private final Semaphore webSocketRelayAdmission;
     private final AtomicInteger inFlight = new AtomicInteger();
     /**
-     * The connections retired by a framing-gate rejection. A request that arrives on one of them is
-     * never processed (see {@link #handle}). Held weakly and by identity — {@link HttpConnection}
-     * implementations do not override {@code equals} — so an entry disappears with its connection and
-     * no close handler has to be claimed on a connection the edge does not own.
+     * The HTTP/1.x connections retired by a framing-gate rejection. A request that arrives on one of
+     * them is never processed (see {@link #handle}). An HTTP/2 connection is never recorded here: a
+     * framing rejection there ends only the rejected stream. Held weakly and by identity —
+     * {@link HttpConnection} implementations do not override {@code equals} — so an entry disappears
+     * with its connection and no close handler has to be claimed on a connection the edge does not own.
      */
     private final Set<HttpConnection> retiredConnections =
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
@@ -572,8 +580,8 @@ public class GatewayEdgeRoute {
     private void handle(RoutingContext ctx) {
         HttpConnection connection = ctx.request().connection();
         if (retiredConnections.contains(connection)) {
-            // The connection was retired by a framing rejection: its request boundaries are no longer
-            // trusted, so nothing that arrives on it is processed, answered or forwarded.
+            // The HTTP/1.x connection was retired by a framing rejection: its request boundaries are no
+            // longer trusted, so nothing that arrives on it is processed, answered or forwarded.
             connection.close();
             return;
         }
@@ -770,13 +778,12 @@ public class GatewayEdgeRoute {
      *       the next request framed on that connection, or pin the connection until the idle timeout —
      *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
      *       still tie up connections by repeatedly tripping the {@code 413};</li>
-     *   <li>a framing-gate rejection (see {@link #rejectFramingAndRetire}).</li>
+     *   <li>a framing-gate rejection of an HTTP/1.x request (see {@link #rejectFramingAndRetire}).</li>
      * </ul>
      */
     private static void retireConnectionAfterResponse(RoutingContext ctx) {
         HttpServerResponse response = ctx.response();
-        HttpVersion version = ctx.request().version();
-        if (!response.headWritten() && (version == HttpVersion.HTTP_1_0 || version == HttpVersion.HTTP_1_1)) {
+        if (!response.headWritten() && isHttp1(ctx.request().version())) {
             response.putHeader(CONNECTION_HEADER, CONNECTION_CLOSE);
         }
         // addEndHandler is additive, so this composes with the admission-release handler handle()
@@ -785,19 +792,46 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Runs the framing gate and, when it rejects, retires the inbound connection before the rejection
-     * is rendered.
+     * Ends the HTTP/2 stream the response under construction is written on, once that response has
+     * been written, and leaves its connection open. Must be called on the event loop, before the
+     * response is ended.
      * <p>
-     * A request the gate rejects is one whose message boundaries two parsers can read differently, so
-     * the bytes behind it on the same connection have no trustworthy framing either. The required
-     * behaviour is therefore that nothing behind a framing rejection is processed: the connection is
-     * recorded as retired at once — on this virtual thread, before any response is written, so a
-     * request already queued behind the rejected one is refused by {@link #handle} — and the writer
-     * that answers the rejection advertises {@code Connection: close} and closes the connection once
-     * the {@code 400} has been written ({@link #retireMarkedConnection}).
+     * The stream is reset with {@code NO_ERROR} after the complete response (RFC 9113 §8.1.1): the
+     * client is told to stop sending the rest of the request, and whatever it still sends on that
+     * stream is discarded by the transport. Every other stream multiplexed on the connection is
+     * untouched. No {@code Connection} header is written — it is a connection-specific field HTTP/2
+     * forbids.
+     */
+    private static void endStreamAfterResponse(RoutingContext ctx) {
+        ctx.addEndHandler(result -> ctx.response().reset(HTTP2_NO_ERROR));
+    }
+
+    private static boolean isHttp1(HttpVersion version) {
+        return version == HttpVersion.HTTP_1_0 || version == HttpVersion.HTTP_1_1;
+    }
+
+    /**
+     * Runs the framing gate and, when it rejects, marks how much of the inbound transport the
+     * rejection ends before it is rendered. The scope follows the negotiated HTTP version of the
+     * request, because that is what decides how far a framing ambiguity reaches.
      * <p>
-     * The gate itself is unchanged: the rejection is rethrown as it was raised and is metered, logged
-     * and rendered like every other {@link EventType#SECURITY_FILTER_VIOLATION}.
+     * <strong>HTTP/1.x — the connection.</strong> Requests share one byte stream there, so a request
+     * whose message boundaries two parsers can read differently leaves the bytes behind it on the same
+     * connection without trustworthy framing either. Nothing behind a framing rejection is processed:
+     * the connection is recorded as retired at once — on this virtual thread, before any response is
+     * written, so a request already queued behind the rejected one is refused by {@link #handle} — and
+     * the writer that answers the rejection advertises {@code Connection: close} and closes the
+     * connection once the {@code 400} has been written.
+     * <p>
+     * <strong>HTTP/2 — the stream.</strong> Each request is framed by the transport on its own stream,
+     * so a rejected request says nothing about its siblings. Only the rejected stream is ended: the
+     * {@code 400} is written, the stream is then reset, and nothing further arriving on it is
+     * processed. The connection stays open, it is never recorded as retired, and every other stream on
+     * it completes normally.
+     * <p>
+     * Either mark is acted on by {@link #retireMarkedConnection}. The gate itself is unchanged: the
+     * rejection is rethrown as it was raised and is metered, logged and rendered like every other
+     * {@link EventType#SECURITY_FILTER_VIOLATION}.
      *
      * @throws GatewayException the gate's own rejection, unchanged
      */
@@ -805,20 +839,26 @@ public class GatewayEdgeRoute {
         try {
             framingGate.process(request);
         } catch (GatewayException framingRejection) {
-            retiredConnections.add(ctx.request().connection());
-            ctx.put(RETIRE_CONNECTION_KEY, Boolean.TRUE);
+            if (isHttp1(ctx.request().version())) {
+                retiredConnections.add(ctx.request().connection());
+                ctx.put(RETIRE_CONNECTION_KEY, Boolean.TRUE);
+            } else {
+                ctx.put(END_STREAM_KEY, Boolean.TRUE);
+            }
             throw framingRejection;
         }
     }
 
     /**
-     * Retires the connection when the request was marked by {@link #rejectFramingAndRetire}; a no-op
-     * for every other request. Called by the gateway-originated error writers on the event loop,
-     * immediately before they end the response.
+     * Applies the mark {@link #rejectFramingAndRetire} left on the request: retires the HTTP/1.x
+     * connection, or ends the one HTTP/2 stream; a no-op for every other request. Called by the
+     * gateway-originated error writers on the event loop, immediately before they end the response.
      */
     private static void retireMarkedConnection(RoutingContext ctx) {
         if (ctx.get(RETIRE_CONNECTION_KEY) != null) {
             retireConnectionAfterResponse(ctx);
+        } else if (ctx.get(END_STREAM_KEY) != null) {
+            endStreamAfterResponse(ctx);
         }
     }
 
@@ -2208,8 +2248,10 @@ public class GatewayEdgeRoute {
     /**
      * Builds the per-shape SmallRye Fault-Tolerance guard: a circuit breaker plus an upstream
      * timeout, with retry added only for a route that enables it. Gateway rejections
-     * ({@link GatewayException}, e.g. a body-cap breach) are skipped so they never trip the breaker
-     * or trigger a retry.
+     * ({@link GatewayException}) are skipped so they never trip the breaker or trigger a retry. That
+     * covers every dispatch the client itself ended — a body-cap breach and an inbound request body
+     * that failed after dispatch began, both of which {@link DispatchStage} surfaces as a
+     * {@link GatewayException} — so the breaker counts upstream failures only.
      */
     private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
         // Include retryEnabled in the breaker name: RouteRuntimeAssembler's guardCache is keyed by the

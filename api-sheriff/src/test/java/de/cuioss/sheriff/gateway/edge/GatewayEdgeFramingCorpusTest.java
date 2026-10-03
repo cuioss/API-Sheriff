@@ -18,7 +18,10 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
@@ -59,8 +62,14 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
@@ -76,9 +85,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * The request-smuggling corpus, driven over a live Vert.x edge against a loopback stub upstream.
  * <p>
- * Every entry is written as raw bytes over a plain TCP socket, so malformed framing reaches the edge
- * exactly as an attacker would send it — an HTTP client would normalise or refuse each of these
- * shapes before a byte left the process. Each entry asserts two things: the status of every response
+ * Every HTTP/1.1 entry is written as raw bytes over a plain TCP socket, so malformed framing reaches
+ * the edge exactly as an attacker would send it — an HTTP client would normalise or refuse each of
+ * these shapes before a byte left the process. The one HTTP/2 entry drives a prior-knowledge HTTP/2
+ * client instead, because its subject is what a rejection does to the streams sharing a connection,
+ * not a byte shape. Each entry asserts two things: the status of every response
  * the edge wrote on that connection, and the exact list of requests the stub upstream saw.
  * <p>
  * <strong>How an entry is brought to a deterministic end.</strong> The corpus bytes are followed, on
@@ -105,6 +116,8 @@ class GatewayEdgeFramingCorpusTest {
     private static final String DRAIN = "GET /drain";
     /** The chunked request with broken inbound framing, as the upstream sees it once dispatched. */
     private static final String BARE_LF_POST = "POST /bare-lf";
+    /** The well-framed HTTP/2 stream sharing a connection with a rejected one, as the upstream sees it. */
+    private static final String SIBLING_POST = "POST /sibling";
     /** The response header, lower-cased, by which the edge announces it is retiring the connection. */
     private static final String CONNECTION_CLOSE = "connection: close";
     /** The gateway's own framing rejection: its problem document names the status it was sent with. */
@@ -355,6 +368,73 @@ class GatewayEdgeFramingCorpusTest {
 
         // No sentinel asks for the close here: the connection ending at all is the edge retiring it.
         assertRejectedByGate(exchange);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a gate rejection ends only its own stream; a sibling stream and the connection carry on")
+    void gateRejectionOnHttp2EndsOnlyTheOffendingStream() throws Exception {
+        // Arrange — one prior-knowledge HTTP/2 connection carrying a sibling stream whose body is
+        // still open when the rejected stream arrives.
+        String siblingBody = Generators.letterStrings(4, 12).next();
+        String rejectedPart = Generators.letterStrings(4, 12).next();
+        HttpClient http2Client = vertx.createHttpClient(new HttpClientOptions()
+                .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
+        try {
+            HttpClientRequest sibling = Awaits.connect(http2Client.request(io.vertx.core.http.HttpMethod.POST,
+                    frontPort, LoopbackHost.ADDRESS, "/echo/sibling"), "the sibling stream to open");
+            HttpConnection connection = sibling.connection();
+            Awaits.connect(sibling.setChunked(true).write(siblingBody), "the sibling stream to send its body");
+            Awaits.until(() -> upstreamStarted.contains(SIBLING_POST),
+                    "the upstream to receive the head of the sibling request", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Act — a GET the gate rejects, on the same connection, declaring twice the body it sends
+            // so its stream is still open when the rejection is written.
+            HttpClientRequest rejected = Awaits.connect(http2Client.request(io.vertx.core.http.HttpMethod.GET,
+                    frontPort, LoopbackHost.ADDRESS, "/echo/get-body"), "the rejected stream to open");
+            HttpConnection rejectedConnection = rejected.connection();
+            CompletableFuture<Throwable> rejectedStreamEnded = new CompletableFuture<>();
+            rejected.exceptionHandler(rejectedStreamEnded::complete);
+            rejected.putHeader("Content-Length", String.valueOf(2 * rejectedPart.length()));
+            Awaits.connect(rejected.write(rejectedPart), "the rejected stream to send part of its body");
+            HttpClientResponse rejection = Awaits.connect(rejected.response(), "the rejection to be answered");
+            String rejectionBody = Awaits.connect(rejection.body(), "the rejection body to arrive").toString();
+            Throwable streamEnd = Awaits.connect(rejectedStreamEnded, "the edge to reset the rejected stream");
+
+            Awaits.connect(sibling.end(), "the sibling stream to end its body");
+            HttpClientResponse siblingAnswer = Awaits.connect(sibling.response(), "the sibling to be answered");
+            Awaits.connect(siblingAnswer.body(), "the sibling response body to arrive");
+            HttpClientRequest after = Awaits.connect(http2Client.request(io.vertx.core.http.HttpMethod.GET,
+                    frontPort, LoopbackHost.ADDRESS, "/echo/after"), "a further stream to open");
+            HttpConnection afterConnection = after.connection();
+            HttpClientResponse afterAnswer = Awaits.connect(after.send(), "the further stream to be answered");
+            Awaits.connect(afterAnswer.body(), "the further response body to arrive");
+            awaitUpstreamSettled();
+
+            // Assert
+            assertAll("HTTP/2 stream-scoped rejection",
+                    () -> assertEquals(HttpVersion.HTTP_2, rejection.version()),
+                    () -> assertEquals(400, rejection.statusCode(), rejectionBody),
+                    () -> assertTrue(rejectionBody.contains(PROBLEM_JSON_400), rejectionBody),
+                    () -> assertNull(rejection.getHeader("Connection"),
+                            "an HTTP/2 rejection must not carry the connection-specific header"),
+                    () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
+                            "the rejected stream must be reset with NO_ERROR"),
+                    () -> assertEquals(200, siblingAnswer.statusCode(),
+                            "the sibling stream must complete normally"),
+                    () -> assertEquals(200, afterAnswer.statusCode(),
+                            "a further stream must succeed on the same connection"),
+                    () -> assertSame(connection, rejectedConnection,
+                            "the rejected stream must have shared the sibling's connection"),
+                    () -> assertSame(connection, afterConnection,
+                            "the further stream must reuse the connection the rejection was written on"),
+                    () -> assertEquals(List.of(SIBLING_POST, "GET /after"), upstreamStarted,
+                            "nothing of the rejected stream may reach the upstream"),
+                    () -> assertEquals(List.of(SIBLING_POST + " [" + siblingBody + "]", "GET /after []"),
+                            upstreamCompleted),
+                    () -> assertEquals(List.of(), upstreamAborted));
+        } finally {
+            Awaits.teardown(http2Client.close(), "the HTTP/2 client to close");
+        }
     }
 
     @Test
