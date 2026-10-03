@@ -322,12 +322,14 @@ class FramingGateTest {
         @Test
         @DisplayName("the opt-in does not relax it: the permissive gate rejects the same shapes")
         void optInDoesNotRelaxIt() {
+            PipelineRequest listed = chunkedPost(List.of("identity, chunked"));
+            PipelineRequest repeated = chunkedPost(List.of("chunked", "identity"));
+            PipelineRequest exact = chunkedPost(List.of("chunked"));
+
             assertAll(
-                    () -> assertThrows(GatewayException.class,
-                            () -> permissiveGate.process(chunkedPost(List.of("identity, chunked")))),
-                    () -> assertThrows(GatewayException.class,
-                            () -> permissiveGate.process(chunkedPost(List.of("chunked", "identity")))),
-                    () -> assertDoesNotThrow(() -> permissiveGate.process(chunkedPost(List.of("chunked")))));
+                    () -> assertThrows(GatewayException.class, () -> permissiveGate.process(listed)),
+                    () -> assertThrows(GatewayException.class, () -> permissiveGate.process(repeated)),
+                    () -> assertDoesNotThrow(() -> permissiveGate.process(exact)));
         }
 
         @Test

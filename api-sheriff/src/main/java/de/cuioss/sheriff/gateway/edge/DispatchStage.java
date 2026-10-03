@@ -451,7 +451,7 @@ public final class DispatchStage {
         private @Nullable Handler<Buffer> dataHandler;
         private @Nullable Handler<Throwable> failureHandler;
         private boolean aborted;
-        private volatile @Nullable GatewayException clientAbort;
+        private final AtomicReference<@Nullable GatewayException> clientAbort = new AtomicReference<>();
 
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, Runnable abortAction) {
             this(delegate, maxBytes, abortAction, length -> {
@@ -475,7 +475,7 @@ public final class DispatchStage {
         private void onInboundFailure(Throwable failure) {
             if (!aborted) {
                 aborted = true;
-                clientAbort = new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure);
+                clientAbort.set(new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure));
                 abortAction.run();
             }
             propagateFailure(failure);
@@ -487,7 +487,7 @@ public final class DispatchStage {
          */
         @Nullable
         GatewayException clientAbort() {
-            return clientAbort;
+            return clientAbort.get();
         }
 
         private void onChunk(Buffer chunk) {
@@ -500,7 +500,7 @@ public final class DispatchStage {
                 delegate.pause();
                 GatewayException breach = new GatewayException(EventType.CONTENT_TOO_LARGE,
                         "Request body exceeded max_body_bytes=" + maxBytes);
-                clientAbort = breach;
+                clientAbort.set(breach);
                 abortAction.run();
                 propagateFailure(breach);
                 return;
