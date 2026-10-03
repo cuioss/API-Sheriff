@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,11 +36,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -68,11 +73,15 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Context;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -588,6 +597,183 @@ class DispatchStageTest {
                     "the gateway overrides the upstream content type from the extension map");
             assertEquals("no-store", served.headers().get("Cache-Control"),
                     "an authenticated asset is forced to no-store regardless of the upstream's Cache-Control");
+        }
+    }
+
+    /**
+     * The upstream response is paused before any of its body or its end can be processed, whatever
+     * thread dispatched it and however late that thread catches up with the exchange. The relay is
+     * deferred onto the client connection's event loop exactly as {@code GatewayEdgeRoute} defers it,
+     * so a response that ended before the relay subscribed fails the relay with "Response already
+     * ended" and the client is never answered.
+     * <p>
+     * The interleaving that loses this race is forced rather than hoped for: the upstream client is
+     * wrapped so the dispatching virtual thread is held, right after it has chained the upstream send,
+     * until the response head has been processed and the response has had the chance to end — the
+     * state a dispatching thread that fell behind an immediately-answering upstream observes.
+     */
+    @Nested
+    @DisplayName("upstream response pause against a relay deferred onto the event loop")
+    class DeferredRelay {
+
+        private static final String TINY_BODY = "tiny";
+
+        private final AtomicReference<Throwable> relayFailure = new AtomicReference<>();
+        private final ExchangeStall stall = new ExchangeStall();
+
+        private Vertx vertx;
+        private HttpServer upstream;
+        private HttpClient upstreamClient;
+        private HttpServer front;
+        private HttpClient testClient;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.response().end(TINY_BODY))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the immediately-answering upstream to start listening");
+            upstreamClient = vertx.createHttpClient();
+            RouteRuntime route = RouteRuntime.builder()
+                    .id("deferred-relay")
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .httpClient(stallingClient(upstreamClient, stall))
+                    .resilienceGuard(Guard.create()
+                            .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
+                            .abortOn(GatewayException.class).done()
+                            .build())
+                    .build();
+            DispatchStage stage = new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
+            ResponseStage responseStage = new ResponseStage();
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                // As GatewayEdgeRoute does: pause the inbound request on its event loop, capture that
+                // loop's context, and run the dispatch on a virtual thread.
+                request.pause();
+                Context clientContext = Vertx.currentContext();
+                Thread.ofVirtual().start(
+                        () -> dispatchThenDeferRelay(stage, responseStage, route, request, clientContext));
+            }).listen(0, LoopbackHost.ADDRESS), "the dispatching front server to start listening");
+            testClient = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(testClient.close(), "the test client to close");
+            Awaits.teardown(front.close(), "the dispatching front server to close");
+            Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the upstream to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("relays a tiny body that completed before the dispatching virtual thread caught up")
+        void relaysTinyBodyThatOutranTheDispatchingThread() throws Exception {
+            String relayed = Awaits.connect(testClient
+                            .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                            .compose(HttpClientRequest::send)
+                            .compose(response -> response.body().map(body -> response.statusCode() + " " + body))
+                            .recover(noAnswer -> io.vertx.core.Future.succeededFuture("no answer: " + noAnswer.getMessage())),
+                    "the relayed response");
+
+            assertAll("the deferred relay streams the whole upstream answer",
+                    () -> assertTrue(stall.heldPastHead(),
+                            "the dispatching thread must have been held until the upstream head was processed,"
+                                    + " otherwise this run never reached the interleaving under test"),
+                    () -> assertNull(relayFailure.get(),
+                            () -> "the deferred relay must find the upstream response still paused, but it failed: "
+                                    + relayFailure.get()),
+                    () -> assertEquals("200 " + TINY_BODY, relayed,
+                            "the client receives the upstream status and body, not an abandoned connection"));
+        }
+
+        private void dispatchThenDeferRelay(DispatchStage stage, ResponseStage responseStage, RouteRuntime route,
+                HttpServerRequest request, Context clientContext) {
+            HttpClientResponse response;
+            try {
+                response = stage.dispatch(route, HttpMethod.GET, "/", Map.of(), request);
+            } catch (GatewayException dispatchFailure) {
+                abandon(request, dispatchFailure);
+                return;
+            }
+            clientContext.runOnContext(_ -> {
+                try {
+                    responseStage.relay(response, request.response(), false, null, Map.of(), Map.of())
+                            .onFailure(failure -> abandon(request, failure));
+                } catch (IllegalStateException relayStartFailure) {
+                    abandon(request, relayStartFailure);
+                }
+            });
+        }
+
+        /** Records why the relay could not answer and closes the client connection so the test fails fast. */
+        private void abandon(HttpServerRequest request, Throwable failure) {
+            relayFailure.set(failure);
+            request.connection().close();
+        }
+    }
+
+    /**
+     * Wraps {@code delegate} so every upstream request future it hands out holds the calling thread
+     * inside {@code compose(...)} — after the send has been chained, before anything else is — for
+     * {@code stall}.
+     */
+    private static HttpClient stallingClient(HttpClient delegate, ExchangeStall stall) {
+        return (HttpClient) Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                new Class<?>[]{HttpClient.class}, (_, method, args) -> {
+                    Object result = invokeOn(delegate, method, args);
+                    if ("request".equals(method.getName()) && result instanceof io.vertx.core.Future<?> requestFuture) {
+                        return stallingAfterCompose(requestFuture, stall);
+                    }
+                    return result;
+                });
+    }
+
+    private static io.vertx.core.Future<?> stallingAfterCompose(io.vertx.core.Future<?> delegate, ExchangeStall stall) {
+        return (io.vertx.core.Future<?>) Proxy.newProxyInstance(io.vertx.core.Future.class.getClassLoader(),
+                new Class<?>[]{io.vertx.core.Future.class}, (_, method, args) -> {
+                    Object result = invokeOn(delegate, method, args);
+                    if ("compose".equals(method.getName()) && result instanceof io.vertx.core.Future<?> composed) {
+                        stall.hold(composed);
+                    }
+                    return result;
+                });
+    }
+
+    private static @Nullable Object invokeOn(Object target, Method method, Object @Nullable [] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (InvocationTargetException failure) {
+            throw failure.getCause();
+        }
+    }
+
+    /**
+     * Holds the dispatching thread until the composed upstream exchange has delivered its response
+     * head, then for up to {@link #END_GRACE_MILLIS} more while that response ends. A response paused
+     * at its head cannot end while held, so for a correctly paused response the grace simply elapses.
+     */
+    private static final class ExchangeStall {
+
+        private static final long END_GRACE_MILLIS = 1000L;
+
+        private final AtomicBoolean heldPastHead = new AtomicBoolean();
+
+        void hold(io.vertx.core.Future<?> composed) throws Exception {
+            CompletableFuture<@Nullable Object> head = new CompletableFuture<>();
+            CompletableFuture<@Nullable Object> ended = new CompletableFuture<>();
+            composed.onComplete(result -> {
+                if (result.result() instanceof HttpClientResponse response) {
+                    response.end().onComplete(_ -> ended.complete(null));
+                }
+                head.complete(result.result());
+            });
+            heldPastHead.set(Awaits.connect(head, "the upstream response head to be processed") != null);
+            ended.completeOnTimeout(null, END_GRACE_MILLIS, TimeUnit.MILLISECONDS).join();
+        }
+
+        boolean heldPastHead() {
+            return heldPastHead.get();
         }
     }
 

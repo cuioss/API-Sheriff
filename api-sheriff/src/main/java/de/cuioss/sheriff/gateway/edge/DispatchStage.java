@@ -266,17 +266,23 @@ public final class DispatchStage {
                     ByteCappedBodyStream body = new ByteCappedBodyStream(requestBody, maxBodyBytes, request::reset,
                             bytesSent::addAndGet);
                     cappedBody.set(body);
-                    return request.send(body);
-                })
-                .map(received -> {
-                    // Pause the upstream body the instant its head arrives, on the client's own
-                    // event-loop context and before any body chunk is dispatched. ResponseStage#relay
-                    // is deferred onto the server request's event loop (GatewayEdgeRoute), so without
-                    // this pause a small upstream response can fully arrive and end before the deferred
-                    // pipeTo subscribes — Vert.x then fails the pipe with "Response already ended". The
+                    // ResponseStage#relay is deferred onto the server request's event loop
+                    // (GatewayEdgeRoute), so the upstream response must be paused before any of its
+                    // body or its end is processed — otherwise a small response ends before the deferred
+                    // pipeTo subscribes, its body is dropped, and the pipe fails with "Response already
+                    // ended". The pause is attached HERE, to the send future, from inside this callback:
+                    // the callback runs on the request's event-loop context before the request is
+                    // written, so the pause is registered before the response head can arrive, and the
+                    // head is delivered on that same context, so the pause runs synchronously with head
+                    // handling. Attaching it to the composed future instead would register it from the
+                    // dispatching (virtual) thread, which may only get there after the whole exchange
+                    // completed; Vert.x then defers the listener onto the event loop, after the end. The
                     // pipe re-enables the stream when it subscribes.
-                    received.pause();
-                    return received;
+                    return request.send(body)
+                            .map(received -> {
+                                received.pause();
+                                return received;
+                            });
                 });
         try {
             return response.toCompletionStage().toCompletableFuture().get();
