@@ -173,15 +173,25 @@ doc-only or build-light plan for the second and third slots.
 
 ## Open Defects
 
-15. **HIGH — OWNER: operator (not plan work) — snapshot deploy to Central fails with HTTP 401 on
-    `main`** (added 2026-10-03, found at the `PLAN-V02-08` landing). `build / deploy-snapshot` fails
+15. **HIGH — WATCHED — OWNER: operator / `cuioss-organization` (not plan work) — snapshot deploy to
+    Central fails with HTTP 401 on `main` since the Maven 3.10.0 wrapper bump** (added 2026-10-03,
+    found at the `PLAN-V02-08` landing; cause corrected the same day). `build / deploy-snapshot` fails
     in the `Maven Build` push run with `Could not transfer artifact de.cuioss.sheriff.gateway:api-sheriff:jar:0.2.4-…
     from/to central (https://central.sonatype.com/repository/maven-snapshots/): HTTP Status: 401`.
-    Three consecutive deploying runs failed this way — `8d7445c1` (run 37010757190), `e8db85bf`
-    (run 37052919689) and `cd383c2e` (run 37086429426); the last successful deploy was `e445e299`
-    (2026-10-02 12:32Z). Every other job in those runs is green, so `main` builds but no
-    `0.2.4-SNAPSHOT` is being published. A 401 is a credential answer: check the Central publishing
-    token the organisation's reusable workflow uses, then re-run the latest failed run.
+    Every other job is green, so `main` builds but no `0.2.4-SNAPSHOT` is published.
+    - **Onset coincides exactly with Dependabot's `org.apache.maven:apache-maven` 3.9.16 → 3.10.0
+      bump**, in two repositories. Here: last successful deploy `e445e299`, first failure `8d7445c1`
+      (#371, which changes only `.mvn/wrapper/maven-wrapper.properties`), then `e8db85bf` and
+      `cd383c2e`. In `cuioss/TokenSheriff`: last success `03841dba`, first failure `b83d42ba` (#768,
+      the same bump), then `fc659684`, with the same 401 against the same snapshot repository.
+    - So it is not a token expiring on its own and not caused by any plan of this epic. The
+      mechanism inside Maven 3.10.0 (how it resolves or sends the `central` server credentials) is a
+      HYPOTHESIS, not verified — confirm/refute by a `deploy-snapshot` run on 3.9.16 versus 3.10.0.
+    - Remedies, operator's choice: pin the wrapper back to 3.9.16 here (one line, and ignore the bump
+      in Dependabot until fixed), or fix credential handling for Maven 3.10 in the organisation's
+      reusable workflow, which fixes every consumer at once.
+    - **Watched:** re-read the `deploy-snapshot` conclusion of each new `Maven Build` push run on
+      `main` at every orchestrator verb, and close this entry on the first success.
 
 14. **HIGH, SECURITY — OWNER: `PLAN-V02-11` (adopted 2026-08-09) — `MtlsHandshakeIT` fails 2/3 under `-Pjfr` only: FAIL-OPEN ON HANDSHAKE
     REJECTION.** GitHub issue **[#201](https://github.com/cuioss/API-Sheriff/issues/201)**, verified
@@ -283,9 +293,6 @@ doc-only or build-light plan for the second and third slots.
   merge (`502` on a refused widening re-drive push, `400` with ApiSheriff-134 for an unbound token on
   a widening callback). No conformance-suite run was made, so no FAPI conformance claim exists.
   Stage a plan from this list when one of them is wanted; until then it is a record, not work.
-- **OBSOLETE REMOTE BRANCH `feature/plan-v02-08-fapi-2-0-conformance-docs`** (added 2026-10-03). It
-  held the documentation during the #377/#378 split. Operator to delete; the orchestrator does not.
-
 - **INHERITED TOOLING AND PROJECT-CONFIG CONSTRAINTS — not fixable by any plan here, and every plan
   in this epic runs under them.** Carried as one watch rather than five duplicated entries so the
   copies cannot drift; full text and evidence live in the `api-sheriff-roadmap` ledger under the
