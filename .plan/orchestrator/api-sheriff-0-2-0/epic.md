@@ -40,14 +40,12 @@ would otherwise force a retrofit.
   record keeps `0053`). The next free ordinal on `origin/main` at `6bb90765` is `0057`, which
   supersedes the "next free ADR is 0055" figure in the resume anchor. Re-derive it on the branch at
   implementation time; a duplicate now fails the build.
-- **PLAN-V02-08** (running since 2026-10-01): emitted under an operator override of the fail-closed
-  candidate comparison; the record is the 2026-10-01 entry in `logs/decision.log`. A follow-up to
-  align the cookie sealing key with its file-based key model is held as a Watch until it lands.
-  ADR ordinal: the mailbox finding `inbox/to/plan-v02-08-fapi-2-0-conformance/orchestrator-001.md`
-  still reads `unconsumed`, but the worktree observed later the same day carries
-  `0056-A_header_matchers…` and its own record as `0057-The_BFF_pushes…`, so the collision is
-  resolved on the branch. Every other staged spec has an overlap row against this plan's actual
-  footprint, so nothing else is emittable until it lands.
+- **PLAN-V02-08** — SHIPPED 2026-10-02 as PR #377 (`e8db85bf`, code and ADR-0058) plus PR #378
+  (`3a1182e5`, documentation), see `landings/PLAN-V02-08.md`. `PLAN-V02-12`, `PLAN-V02-09` and
+  `PLAN-V02-15` no longer wait on it. Its held follow-up is staged as `PLAN-V02-20`.
+- **PLAN-V02-20** (staged 2026-10-03): the cookie sealing key provided as a file, like the two
+  signing keys. It writes the `oidc` block and `BffRuntimeProducer`, so it is never concurrent with
+  `PLAN-V02-12` or `PLAN-V02-09`.
 
 ## Workstreams
 
@@ -175,6 +173,16 @@ doc-only or build-light plan for the second and third slots.
 
 ## Open Defects
 
+15. **HIGH — OWNER: operator (not plan work) — snapshot deploy to Central fails with HTTP 401 on
+    `main`** (added 2026-10-03, found at the `PLAN-V02-08` landing). `build / deploy-snapshot` fails
+    in the `Maven Build` push run with `Could not transfer artifact de.cuioss.sheriff.gateway:api-sheriff:jar:0.2.4-…
+    from/to central (https://central.sonatype.com/repository/maven-snapshots/): HTTP Status: 401`.
+    Three consecutive deploying runs failed this way — `8d7445c1` (run 37010757190), `e8db85bf`
+    (run 37052919689) and `cd383c2e` (run 37086429426); the last successful deploy was `e445e299`
+    (2026-10-02 12:32Z). Every other job in those runs is green, so `main` builds but no
+    `0.2.4-SNAPSHOT` is being published. A 401 is a credential answer: check the Central publishing
+    token the organisation's reusable workflow uses, then re-run the latest failed run.
+
 14. **HIGH, SECURITY — OWNER: `PLAN-V02-11` (adopted 2026-08-09) — `MtlsHandshakeIT` fails 2/3 under `-Pjfr` only: FAIL-OPEN ON HANDSHAKE
     REJECTION.** GitHub issue **[#201](https://github.com/cuioss/API-Sheriff/issues/201)**, verified
     OPEN. Opened 2026-08-09 by `PLAN-V02-16` and **correctly not fixed there** — it sits outside that
@@ -264,6 +272,19 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08`, NONE STAGED** (added 2026-10-03; the plan's claims,
+  each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
+  which now drives one outbound pushed request per call (threat model `BFF-20`); refusing a
+  configuration whose two key files name the same file; re-measuring the cookie size with the `cnf`
+  claim present; the engine's nonce-retry gaps, and a refused token response discarding its refresh
+  token instead of revoking it; no canonical-form check on `oidc.login.path` and
+  `oidc.user_info.path`; three imprecise executable texts; two answers chosen conservatively at the
+  merge (`502` on a refused widening re-drive push, `400` with ApiSheriff-134 for an unbound token on
+  a widening callback). No conformance-suite run was made, so no FAPI conformance claim exists.
+  Stage a plan from this list when one of them is wanted; until then it is a record, not work.
+- **OBSOLETE REMOTE BRANCH `feature/plan-v02-08-fapi-2-0-conformance-docs`** (added 2026-10-03). It
+  held the documentation during the #377/#378 split. Operator to delete; the orchestrator does not.
 
 - **INHERITED TOOLING AND PROJECT-CONFIG CONSTRAINTS — not fixable by any plan here, and every plan
   in this epic runs under them.** Carried as one watch rather than five duplicated entries so the
@@ -384,19 +405,6 @@ doc-only or build-light plan for the second and third slots.
   is shell-expanded into a filename list**, silently dropping real hits. That third one is a
   different mechanism from the other two (shell expansion, not tool behaviour), so knowing the first
   two does not predict it. **Run a control query before trusting any asserted absence.**
-- **FOLLOW-UP HELD UNTIL `PLAN-V02-08` LANDS — align the cookie sealing key with the file-based key
-  model** (added 2026-10-01, inbox `plan-v02-08-fapi-2-0-conformance-001.md`, `finding`, disposition
-  `observed`). Operator backlog request made during V02-08's outline, explicitly out of that plan's
-  scope. V02-08 gives its two signing keys (`private_key_jwt`, DPoP proof key) one model: a provided
-  key is a mounted PEM file referenced by path, an omitted key is generated at startup. The cookie
-  sealing key (`oidc.session.encryption_key`, `CookieKeyMaterial`) keeps a base64 value from an
-  environment variable, so provided key material would be supplied two ways. **Not staged now, on
-  the message's own instruction:** the model was still being settled when it was written (one
-  sub-point awaited operator confirmation), so read the landed plan and its ADR first. When staged
-  it is a breaking change to the `oidc` block and joins the sequential chain V02-08 → V02-12 →
-  V02-09; it must not run concurrently with them. Open design question the spec must settle: a
-  symmetric AES-256 key has no PEM form. **Retire this Watch by staging the spec at V02-08's
-  landing analysis.** The claims about V02-08's key model are the sender's, not yet corroborated.
 - **CONTRACT TESTS RUN ONLY WHEN A BUILD RUNS** (added 2026-10-01, `PLAN-V02-19` landing). The ADR
   ordinal-uniqueness test and the module-list test are Maven tests, so a documentation-only change
   — which skips the build by this repository's own rule — can still land a duplicate ordinal or a
@@ -419,6 +427,25 @@ doc-only or build-light plan for the second and third slots.
   cross-check` counts the plan-less sentinel `.plan/local/plans/NO_PLAN` (`"sentinel": true`) as a
   live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
   `next` while it exists; the operator ruled that verdict wrong and overrode it.
+
+## Inbox Drain — 2026-10-03 (sender `plan-v02-08-fapi-2-0-conformance`, at its landing)
+
+Nine messages, all valid, all consumed and archived; the queue is empty afterwards (no sender has
+filed a stream-end marker). The eight candidate lessons describe plan-marshall tooling observed
+while this plan ran; they are filed in this repository's store, where they were observed, for the
+lessons mode to route.
+
+| Message | Kind | Disposition | Where it went |
+|---|---|---|---|
+| `-010` | landing | reconciled | `landings/PLAN-V02-08.md`; queue row shipped |
+| `-002` | candidate-lesson | promoted | `2026-10-03-06-001` — pre-submission self-review does not converge on a large prose-heavy change |
+| `-003` | candidate-lesson | promoted | `2026-10-03-06-002` — main moves under a long finalize, and the baseline is only checked at entry |
+| `-004` | candidate-lesson | promoted | `2026-10-03-06-003` — review-bot size limits are met only after the pull request exists |
+| `-005` | candidate-lesson | promoted | `2026-10-03-06-004` — the queue-landing wait is shorter than the queue's own re-test, and its fallback draws on a budget other steps have already spent |
+| `-006` | candidate-lesson | promoted | `2026-10-03-06-005` — the scope-creep guard fails exactly when it has something to report, and it counts upstream merges as plan scope |
+| `-007` | candidate-lesson | promoted | `2026-10-03-06-006` — the same guessed flag is rejected again in every fresh dispatch |
+| `-008` | candidate-lesson | promoted | `2026-10-03-06-007` — module attribution does not resolve this project's Maven modules, so scoped gates silently become whole-tree gates |
+| `-009` | candidate-lesson | promoted | `2026-10-03-06-008` — a long integration run can spend its whole budget on an environment stall, and a `timeout` status says nothing about the change |
 
 ## Inbox Drain — 2026-09-24 (sender `deployment-configurability`, closing hand-off)
 

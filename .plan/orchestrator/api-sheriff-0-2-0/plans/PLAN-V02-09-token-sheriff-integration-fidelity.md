@@ -186,9 +186,10 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 
 ## Dependencies and Sequencing
 
-- Depends on: **`PLAN-V02-08` and `PLAN-V02-12`.** All three write `BffRuntimeProducer` and the
-  `oidc` block. The chain is `PLAN-V02-08` → `PLAN-V02-12` → this plan, strictly sequential, never
-  concurrent.
+- Depends on: **`PLAN-V02-12`.** Both write `BffRuntimeProducer` and the `oidc` block, and this plan
+  goes after it. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058); scope D3's discovery probe
+  against the PAR-and-DPoP login it introduced. Never concurrent with `PLAN-V02-20`, which writes the
+  same block.
 - Sequence after `PLAN-V02-01` (ADR-0005 reversal) where possible. That plan's premise is that
   hand-rolled equivalents were built where a platform mechanism already existed, and this plan asks
   the same question of token-sheriff. Its ADR verdict sets the standing rule D2 should apply rather

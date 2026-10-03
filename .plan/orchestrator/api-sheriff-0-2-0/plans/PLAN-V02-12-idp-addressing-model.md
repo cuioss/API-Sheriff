@@ -107,8 +107,10 @@ Both advertise the same issuer string.
 
 4. **Relocate the reserved BFF paths off `/auth`, and rename the info endpoint.**
 
-   D3 makes this mandatory rather than cosmetic: `/auth/*` becomes the IdP namespace, so the six
-   reserved paths must move. Three facts bound the work:
+   D3 makes this mandatory rather than cosmetic: `/auth/*` becomes the IdP namespace, so the
+   reserved paths must move. That is the six BFF paths plus the client-authentication JWKS endpoint
+   ADR-0058 added, `oidc.client_authentication.jwks_path`, whose default is `/auth/jwks`; re-count at
+   outline. Three facts bound the work:
 
    - **Reserved paths are not anchors.** They are exact-match carve-outs bound to the OIDC host
      and resolved *ahead of* the route table, so a common prefix is a naming convention that
@@ -260,10 +262,12 @@ reserved-path namespace is a broken contract rather than a partial one.
 
 ## Dependencies and Sequencing
 
-- Depends on: **`PLAN-V02-08` (FAPI 2.0 conformance).** Both write the `oidc` block, `OidcConfig`
-  and `BffRuntimeProducer`; `PLAN-V02-08` is the larger reshaping, settles client authentication
-  and sender-constrained tokens, and fixes the RFC 9207 `iss` constraint this plan inherits. The
-  chain is `PLAN-V02-08` → this plan → `PLAN-V02-09`, strictly sequential, never concurrent.
+- Depends on: none. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058): the BFF now pushes every
+  authorization request, binds its tokens with DPoP and authenticates with `private_key_jwt` unless
+  a client secret is configured. Build D1 against that `oidc` block, `OidcConfig` and
+  `BffRuntimeProducer` as they now stand, and keep the RFC 9207 `iss` constraint it relies on.
+- Never concurrent with `PLAN-V02-09` or `PLAN-V02-20`: all three write the `oidc` block and
+  `BffRuntimeProducer`. This plan goes before `PLAN-V02-09`.
 - Depended on by: `PLAN-V02-15` (bff-compose-sample), which applies this plan's D1 verdict to the
   sample's browser-versus-container issuer address rather than settling it there.
 - Not concurrent with `PLAN-V02-04` (ADR corpus audit): D5 adds a record while that plan audits the
