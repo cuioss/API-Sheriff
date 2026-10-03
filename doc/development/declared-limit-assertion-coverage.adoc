@@ -955,9 +955,11 @@ loads the properties file that binds the profile, and asserts that no gateway pa
 `-Djavax.net.ssl.*` argument on its command line. That last assertion covers two populations: the
 gateway services of the compose file, read from their `command`, and the one-off launch sites, the
 files under the module's `src/test/java` and `scripts/` that name the gateway image, which takes in
-the files that start it with `docker run` and a few that only inspect it. The second population is derived by a source-text scan with a floor and two named
-members, so an argument assembled by string concatenation would evade it. The behaviour half is the integration stack's BFF
-login suites: the Keycloak they dial serves a self-signed certificate, so a login completes only when
+the files that start it with `docker run` and a few that only inspect it. The second population is
+derived with a floor and two named members, so it cannot silently shrink; but the assertion over it is
+a source-text scan, so an argument assembled by string concatenation would evade it. The behaviour
+half is the integration stack's BFF login suites: the Keycloak they dial serves a self-signed
+certificate, so a login completes only when
 the back-channel trusts it through the named profile.
 
 The decision for the BFF leg is recorded in
