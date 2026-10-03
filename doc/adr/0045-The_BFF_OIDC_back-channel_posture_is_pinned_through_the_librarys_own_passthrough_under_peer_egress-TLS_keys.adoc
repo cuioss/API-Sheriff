@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The BFF OIDC back-channel — discovery, the authorization-code exchange and refresh — is the sixth TLS-terminating outbound leg and is bound to the global egress_tls block through two peer keys of its own, oidc_verify_hostname and oidc_tls_profile, rather than by reusing the JWKS key or inventing a third vocabulary; the hostname flag is passed straight through to the identity-provider client library's own verifyHostname builder method on every build, the true path included, a named profile supplies that builder's sslContext and replaces the JVM default trust store on the leg, and the one combination the library refuses — the relaxation together with a profile — is refused by the gateway first, at boot, with a CONFIG_INVALID naming both of its keys; the scope claim is proven by a real TLS dial at unit level, no deployment-activation instance is owed because no shipped deployment activates a relaxation, and an explicit-posture fitness function stands guard against a seventh unbound leg.
+// summary: The BFF OIDC back-channel — discovery, the authorization-code exchange and refresh — is the sixth TLS-terminating outbound leg and is bound to the global egress_tls block through two peer keys of its own, oidc_verify_hostname and oidc_tls_profile, rather than by reusing the JWKS key or inventing a third vocabulary; the hostname flag is passed straight through to the identity-provider client library's own verifyHostname builder method on every build, the true path included, a named profile supplies that builder's sslContext and replaces the JVM default trust store on the leg, and the one combination the library refuses — the relaxation together with a profile — is refused by the gateway first, at boot, with a CONFIG_INVALID naming both of its keys; the scope claim is proven by a real TLS dial at unit level, no descriptor activates the hostname relaxation so it owes no deployment-activation instance, the integration stack names the trust profile and its BFF login suites exercise it, and an explicit-posture fitness function stands guard against a seventh unbound leg.
 // tags: tls, egress, bff, oidc, configuration-surface, partial-relaxation, upstream-passthrough, fail-closed, boot-validation, mutual-exclusion, fitness-function
 // affects: api-sheriff
 // supersedes:
@@ -220,21 +220,31 @@ by constructing the library's configuration in the test:
   the producer turns the relaxed leg of the matched control red, and removing the pre-builder
   refusal turns the collision test red with the library's exception in place of `CONFIG_INVALID`.
 
-=== No deployment-activation instance is owed
+=== The relaxation owes no deployment-activation instance, and the trust profile has one
 
 The project's coverage standard asks an opt-in runtime feature for a test proving a shipped
-deployment actually activates it. That test has nothing to assert here. `oidc_verify_hostname` and
-`oidc_tls_profile` are secure-by-default *relaxations* and a deployment binding respectively, and no
-shipped deployment descriptor declares either: the default posture is the shipped one. There is no
-deployed document whose activation a wiring test could check.
+deployment actually activates it. The two keys stand differently against that standard.
 
-The two halves that are owed are both present. The behaviour half is the real TLS dial above,
+*No descriptor activates the hostname relaxation.* `oidc_verify_hostname` is a secure-by-default
+relaxation, and no shipped deployment descriptor declares it: verification on is the shipped posture.
+There is no deployed document whose activation a wiring test could check, so for this key the
+standard has nothing to assert.
+
+*The integration stack names the trust profile.* Its identity provider serves a self-signed
+certificate, so every integration descriptor that carries an `oidc` block declares
+`oidc_tls_profile`, naming the profile its JWKS issuers already name. A wiring guard pins that
+declaration on every such descriptor, together with the deployment binding of the profile, and the
+stack's BFF login suites exercise the leg through it: a login completes only when discovery, the
+pushed authorization request and the code exchange trust the provider through the named profile.
+
+The two halves the relaxation owes are both present. The behaviour half is the real TLS dial above,
 through the public producer path, with its matched control, untrusted-chain leg and falsification
 checks. The native binding half -- that the shared `egress_tls` record and its deserializer survive
-the native build -- is already exercised by the integration stack's matched egress-verification
-instance pair, which binds the same record through the same deserializer. A third integration
-instance differing only in a key no deployment sets would buy a multi-minute stack start and prove
-nothing the unit dial and that pair do not.
+the native build -- is exercised by the integration stack, whose descriptors bind that record through
+that deserializer: the matched egress-verification instance pair for the upstream keys, and every
+descriptor with an `oidc` block for `oidc_tls_profile`. A further integration instance differing only
+in a key no deployment sets would buy a multi-minute stack start and prove nothing the unit dial and
+those descriptors do not.
 
 === A fitness function guards against a seventh unbound leg
 
@@ -372,5 +382,6 @@ key governs, or pulls TLS code into the gateway.
 * link:../security-threat-model.adoc[Security threat model] -- the back-channel entries this decision
   governs and the JVM-level hostname-verification residual
 * link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] --
-  the deployment-activation standard and the recorded reason this leg owes no activation instance
+  the deployment-activation standard, the recorded reason the hostname relaxation owes no activation
+  instance, and the wiring guard of the trust profile
 * link:../LogMessages.adoc[Log messages] -- the `ApiSheriff-125` and `ApiSheriff-126` warning records

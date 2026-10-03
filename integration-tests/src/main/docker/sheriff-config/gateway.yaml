@@ -369,3 +369,11 @@ portal:
   template_dir: /app/sheriff-config/portal
   cache_seconds: 60
   error_pages: true
+# --- Trust for the BFF OIDC back-channel -------------------------------------------------------
+# Binds the BFF back-channel — the calls the oidc block above makes to Keycloak — to the trust
+# profile the JWKS issuers already name through jwks.tls_profile. Keycloak serves the same
+# self-signed certificate on both legs, so both name the same profile; the deployment binds the name
+# to a store. Last block of the document for the reason the portal block states: an insertion above
+# would shift the line-number citations of declared-limit-assertion-coverage.adoc.
+egress_tls:
+  oidc_tls_profile: benchmark-idp

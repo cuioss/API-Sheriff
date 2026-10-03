@@ -36,6 +36,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
@@ -103,6 +104,7 @@ import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Context;
+import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -226,6 +228,7 @@ public class GatewayEdgeRoute {
     /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
     private static final String VARY_HEADER = "Vary";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
+    private static final String CONTENT_LENGTH_HEADER = "Content-Length";
     private static final String CONNECTION_HEADER = "Connection";
     private static final String CONNECTION_CLOSE = "close";
     private static final String CLAIMS_PARAM = "claims";
@@ -1453,12 +1456,8 @@ public class GatewayEdgeRoute {
         // proxied response is the one path where the default-mode map defers to an origin header.
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        ctx.vertx().runOnContext(v -> {
-            applyStageSetCookies(ctx.response(), stageSetCookies);
-            responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), route.getLocationRewriter(),
-                    setHeaders, defaultHeaders)
-                    .onFailure(failure -> failRelay(ctx, failure));
-        });
+        relayOnEventLoop(ctx, stageSetCookies, () -> responseStage.relay(upstream, ctx.response(),
+                route.isNotModifiedEnabled(), route.getLocationRewriter(), setHeaders, defaultHeaders));
     }
 
     /**
@@ -1554,12 +1553,8 @@ public class GatewayEdgeRoute {
         List<String> stageSetCookies = request.responseSetCookies();
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        ctx.vertx().runOnContext(v -> {
-            applyStageSetCookies(ctx.response(), stageSetCookies);
-            responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
-                    setHeaders, defaultHeaders)
-                    .onFailure(failure -> failRelay(ctx, failure));
-        });
+        relayOnEventLoop(ctx, stageSetCookies, () -> responseStage.relayWithTrailers(upstream, ctx.response(),
+                route.isNotModifiedEnabled(), setHeaders, defaultHeaders));
     }
 
     /**
@@ -1618,7 +1613,37 @@ public class GatewayEdgeRoute {
         return armed != null ? armed : ctx.request();
     }
 
-    private void failRelay(RoutingContext ctx, Throwable failure) {
+    /**
+     * Starts a streamed response relay on the request's event loop — the relay mutates the
+     * event-loop-bound {@link HttpServerResponse} — after applying the pipeline's {@code Set-Cookie}
+     * values, and routes <em>every</em> relay failure to {@link #failRelay}: one the relay reports on
+     * its future, and one thrown while the relay is being started (an upstream response that can no
+     * longer be piped throws from {@code pipeTo} synchronously). A thrown failure must not escape this
+     * runOnContext task: it would reach only Vert.x's uncaught-exception handler, the client response
+     * would never end, and the client would wait for its own timeout.
+     *
+     * @param ctx             the request whose response the relay writes
+     * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
+     * @param relay           starts the relay and returns the future completing when it has finished
+     */
+    static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, Supplier<Future<Void>> relay) {
+        ctx.vertx().runOnContext(v -> {
+            Future<Void> relayed;
+            // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
+            // must be answered, so no narrower catch is correct. The failure is not swallowed — it is
+            // handed to failRelay exactly like a failure the relay reports on its future.
+            // cui-rewrite:disable InvalidExceptionUsageRecipe
+            try {
+                applyStageSetCookies(ctx.response(), stageSetCookies);
+                relayed = relay.get();
+            } catch (RuntimeException startFailure) {
+                relayed = Future.failedFuture(startFailure);
+            }
+            relayed.onFailure(failure -> failRelay(ctx, failure));
+        });
+    }
+
+    private static void failRelay(RoutingContext ctx, Throwable failure) {
         LOGGER.debug(failure, "Response relay failed: %s", failure.getMessage());
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
@@ -1630,6 +1655,10 @@ public class GatewayEdgeRoute {
             // is true. Only set the 502 when the head has not yet been written; either way end() the
             // (possibly truncated) response so the client connection is closed cleanly.
             if (!response.headWritten()) {
+                // The relay copies the upstream Content-Length onto the response before it streams the
+                // body. Left in place, it would frame this empty 502 as carrying the upstream body, and
+                // the client would wait for bytes that never come instead of receiving the answer.
+                response.headers().remove(CONTENT_LENGTH_HEADER);
                 response.setStatusCode(BAD_GATEWAY);
             }
             response.end();
@@ -1896,7 +1925,7 @@ public class GatewayEdgeRoute {
     }
 
     private static long parseContentLength(HttpServerRequest raw) {
-        String value = raw.getHeader("Content-Length");
+        String value = raw.getHeader(CONTENT_LENGTH_HEADER);
         if (value == null) {
             return -1L;
         }

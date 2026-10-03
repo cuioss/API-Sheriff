@@ -195,8 +195,10 @@ removed, so every key the base declares it also declares, at the base's own rela
 The two `sheriff-config-egress-verify-*/gateway.yaml` overlays are outside it too, and the `×4` rows
 are not re-cited as `×6` -- but *not* on the passthrough-empty reasoning, because neither is a copy
 of the base document. Both are built on the reduced document the mTLS and ws-admission overlays
-share: key for key, each is the ws-admission document with its `edge_hardening` block replaced by
-one `egress_tls` block. Measured against the base, each therefore *omits*:
+share: key for key, each is the ws-admission document without its `edge_hardening` block and with
+the two upstream keys added to its `egress_tls` block. The ws-admission document declares that block
+itself, as its last one and with `oidc_tls_profile` alone; the pair declares it in the position of
+the removed `edge_hardening` block. Measured against the base, each therefore *omits*:
 
 * the whole `security_defaults` block (`profile`, `max_authorization_header_value_length`,
   `allow_get_with_content_length_body`), so both resolve the shipped defaults;
@@ -227,8 +229,10 @@ declared at the same five places with the same values. The other nine -- `securi
 `security_headers.hsts.max_age`, `security_headers.cors`, `portal.cache_seconds`, G1 and G11 -- do
 *not* derive onto the egress pair, because the pair does not declare their keys.
 
-Their `egress_tls` block adds *no* limit-shaped key: neither `upstream_verify_hostname` nor
-`upstream_tls_profile` matches any alternative in the sweep pattern above. Both files are
+Their `egress_tls` block adds *no* limit-shaped key: none of its three keys --
+`upstream_verify_hostname`, `upstream_tls_profile` and `oidc_tls_profile` -- matches any alternative
+in the sweep pattern above. The same holds for the `egress_tls` block of every other descriptor that
+carries an `oidc` block, which declares `oidc_tls_profile` alone. Both files are
 limit-bearing purely on keys a row already cites -- `allowed_methods`,
 `anchors.upload.security_filter.max_body_bytes`, the `benchmark-keycloak` issuer's
 `jwks.allowed_egress_hosts`, `oidc.session.ttl_seconds`, `oidc.session.refresh.leeway_seconds` and
@@ -939,7 +943,26 @@ the rule required one per relaxation key.
 *What would reopen it.* The rationale holds only while no shipped descriptor declares either key. A
 descriptor that starts declaring `jwks_verify_hostname`, `oidc_verify_hostname` or `oidc_tls_profile`
 is a deployment activating a posture, and from that change on the rule above applies in full: add the
-wiring guard in the same change. The decision for the BFF leg is recorded in
+wiring guard in the same change.
+
+*`oidc_tls_profile` is the member of that list a deployment does activate.* It is a trust profile and
+not a relaxation, so the rationale above never covered it. Every integration descriptor that carries
+an `oidc` block declares `egress_tls.oidc_tls_profile: benchmark-idp`, and
+`ItProfileConfigBindingWiringTest` is the wiring guard the paragraph above requires. It derives the
+descriptor set by directory glob with a floor, asserts that each such descriptor names the profile and
+declares no `oidc_verify_hostname` beside it, asserts that every `QUARKUS_PROFILE=it` gateway instance
+loads the properties file that binds the profile, and asserts that no gateway passes a
+`-Djavax.net.ssl.*` argument on its command line. That last assertion covers two populations: the
+gateway services of the compose file, read from their `command`, and the one-off launch sites, the
+files under the module's `src/test/java` and `scripts/` that name the gateway image, which takes in
+the files that start it with `docker run` and a few that only inspect it. The second population is
+derived with a floor and two named members, so it cannot silently shrink; but the assertion over it is
+a source-text scan, so an argument assembled by string concatenation would evade it. The behaviour
+half is the integration stack's BFF login suites: the Keycloak they dial serves a self-signed
+certificate, so a login completes only when
+the back-channel trusts it through the named profile.
+
+The decision for the BFF leg is recorded in
 link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045];
 the security residual each relaxation concedes is recorded under
 link:../security-threat-model.adoc#gw-06[GW-06].
