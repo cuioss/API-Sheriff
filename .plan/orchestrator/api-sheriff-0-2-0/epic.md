@@ -173,23 +173,32 @@ doc-only or build-light plan for the second and third slots.
 
 ## Open Defects
 
-15. **HIGH — WATCHED — OWNER: operator / `cuioss-organization` (not plan work) — snapshot deploy to
-    Central fails with HTTP 401 on `main` since the Maven 3.10.0 wrapper bump** (added 2026-10-03,
-    found at the `PLAN-V02-08` landing; cause corrected the same day). `build / deploy-snapshot` fails
-    in the `Maven Build` push run with `Could not transfer artifact de.cuioss.sheriff.gateway:api-sheriff:jar:0.2.4-…
-    from/to central (https://central.sonatype.com/repository/maven-snapshots/): HTTP Status: 401`.
-    Every other job is green, so `main` builds but no `0.2.4-SNAPSHOT` is published.
-    - **Onset coincides exactly with Dependabot's `org.apache.maven:apache-maven` 3.9.16 → 3.10.0
-      bump**, in two repositories. Here: last successful deploy `e445e299`, first failure `8d7445c1`
-      (#371, which changes only `.mvn/wrapper/maven-wrapper.properties`), then `e8db85bf` and
-      `cd383c2e`. In `cuioss/TokenSheriff`: last success `03841dba`, first failure `b83d42ba` (#768,
-      the same bump), then `fc659684`, with the same 401 against the same snapshot repository.
-    - So it is not a token expiring on its own and not caused by any plan of this epic. The
-      mechanism inside Maven 3.10.0 (how it resolves or sends the `central` server credentials) is a
-      HYPOTHESIS, not verified — confirm/refute by a `deploy-snapshot` run on 3.9.16 versus 3.10.0.
-    - Remedies, operator's choice: pin the wrapper back to 3.9.16 here (one line, and ignore the bump
-      in Dependabot until fixed), or fix credential handling for Maven 3.10 in the organisation's
-      reusable workflow, which fixes every consumer at once.
+15. **HIGH — WATCHED — OWNER: `cuioss-organization` (not plan work) — snapshot deploy to Central fails
+    with HTTP 401 on `main` because Maven 3.10.0 scopes server credentials by origin** (added
+    2026-10-03; root cause confirmed the same day). `build / deploy-snapshot` fails with `HTTP Status:
+    401` against `https://central.sonatype.com/repository/maven-snapshots/`; every other job is green,
+    so `main` builds but no `0.2.4-SNAPSHOT` is published.
+    - **Cause, read in our own failed run 37086429426:** `[WARNING] Not using credentials of server
+      'central' for repository https://central.sonatype.com/repository/maven-releases/: the origins
+      declared for this id are [https://repo.maven.apache.org]. Add 'https://central.sonatype.com' to
+      <repositoryOrigins> of that server in settings if these credentials belong there, or set
+      maven.repository.credentialScope=id to restore legacy id-only credential matching`. Maven 3.10.0
+      (released 2026-10-02) only offers a server's credentials to origins associated with its id, and
+      the id `central` defaults to `https://repo.maven.apache.org`.
+    - **Trigger:** Dependabot's wrapper bump 3.9.16 → 3.10.0 (#371, `8d7445c1`). The same bump broke
+      `cuioss/TokenSheriff` (#768) and `cuioss/cuioss-parent-pom` (#1495) the same way.
+    - **Where the credentials come from:** the organisation's `reusable-maven-build.yml` (v0.34.0)
+      writes `~/.m2/settings.xml` through `actions/setup-java` with `server-id: central` and no
+      origins. No newer `cuioss-organization` release (latest v0.34.0) and no newer parent POM (latest
+      1.7.5, which already pins the newest `central-publishing-maven-plugin`, 0.11.0) carries a fix,
+      and a newer plugin would not help: the refusal is Maven's own credential matching.
+    - **Risk beyond snapshots (unverified):** the warning names the `maven-releases` URL too, so the
+      next release cut on Maven 3.10.0 may fail to publish the same way. Fix before cutting a release.
+    - **Remedies:** (a) in `cuioss-organization`, declare `https://central.sonatype.com` in the
+      `central` server's `<repositoryOrigins>` wherever the workflows write `settings.xml` — keeps the
+      new scoping and fixes every consumer; (b) pass `-Dmaven.repository.credentialScope=id` to the
+      deploy invocations — quick, but restores id-only matching; (c) per repository, pin the wrapper
+      back to 3.9.16 and have Dependabot ignore the bump until (a) ships.
     - **Watched:** re-read the `deploy-snapshot` conclusion of each new `Maven Build` push run on
       `main` at every orchestrator verb, and close this entry on the first success.
 
