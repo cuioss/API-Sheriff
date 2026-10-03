@@ -36,7 +36,7 @@ import org.junit.jupiter.api.Test;
 class ErrorContractIT extends BaseIntegrationTest {
 
     @Test
-    @DisplayName("an unmatched path is denied 404 as an input-validation problem, not forwarded")
+    @DisplayName("an unmatched path is denied 404 as a routing problem, not forwarded")
     void unmatchedPathProblemJson() {
         var response = given()
                 .when()
@@ -46,14 +46,14 @@ class ErrorContractIT extends BaseIntegrationTest {
                 .contentType("application/problem+json")
                 .extract();
 
-        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:input-validation"));
-        assertEquals("Input Validation", response.path("title"));
+        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:routing"));
+        assertEquals("Routing", response.path("title"));
         assertEquals(Integer.valueOf(404), response.path("status"));
         assertNull(response.path("method"), "a denied request must not reach the go-httpbin upstream");
     }
 
     @Test
-    @DisplayName("a disallowed method is rejected 405 as an input-validation problem, not forwarded")
+    @DisplayName("a disallowed method is rejected 405 as a routing problem, not forwarded")
     void disallowedMethodProblemJson() {
         var response = given()
                 .when()
@@ -63,7 +63,8 @@ class ErrorContractIT extends BaseIntegrationTest {
                 .contentType("application/problem+json")
                 .extract();
 
-        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:input-validation"));
+        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:routing"));
+        assertEquals("Routing", response.path("title"));
         assertEquals(Integer.valueOf(405), response.path("status"));
         assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
     }
