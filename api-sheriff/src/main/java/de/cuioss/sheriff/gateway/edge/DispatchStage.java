@@ -450,7 +450,11 @@ public final class DispatchStage {
         private long bytesSeen;
         private @Nullable Handler<Buffer> dataHandler;
         private @Nullable Handler<Throwable> failureHandler;
-        private boolean aborted;
+        /**
+         * The single abort claim: the trigger whose {@code compareAndSet} from {@code null} succeeds owns
+         * the abort. The inbound failure may be replayed on the thread that registers the failure handler
+         * while chunks arrive on the event loop, so the claim must be atomic across both callbacks.
+         */
         private final AtomicReference<@Nullable GatewayException> clientAbort = new AtomicReference<>();
 
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, Runnable abortAction) {
@@ -473,9 +477,8 @@ public final class DispatchStage {
          * consumer never sees a failed body whose upstream request is still open.
          */
         private void onInboundFailure(Throwable failure) {
-            if (!aborted) {
-                aborted = true;
-                clientAbort.set(new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure));
+            if (clientAbort.compareAndSet(null,
+                    new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure))) {
                 abortAction.run();
             }
             propagateFailure(failure);
@@ -491,18 +494,18 @@ public final class DispatchStage {
         }
 
         private void onChunk(Buffer chunk) {
-            if (aborted) {
+            if (clientAbort.get() != null) {
                 return;
             }
             bytesSeen += chunk.length();
             if (bytesSeen > maxBytes) {
-                aborted = true;
                 delegate.pause();
                 GatewayException breach = new GatewayException(EventType.CONTENT_TOO_LARGE,
                         "Request body exceeded max_body_bytes=" + maxBytes);
-                clientAbort.set(breach);
-                abortAction.run();
-                propagateFailure(breach);
+                if (clientAbort.compareAndSet(null, breach)) {
+                    abortAction.run();
+                    propagateFailure(breach);
+                }
                 return;
             }
             // The chunk cleared the cap and is about to cross to the upstream — record it so the
