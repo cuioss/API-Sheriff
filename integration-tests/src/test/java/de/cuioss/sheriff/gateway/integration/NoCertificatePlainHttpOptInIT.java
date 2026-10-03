@@ -757,9 +757,6 @@ class NoCertificatePlainHttpOptInIT {
         command.add(SHERIFF_CONFIG.toAbsolutePath() + ":/app/sheriff-config:ro");
         command.addAll(overlayMount);
         command.add(IMAGE);
-        command.add("-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12");
-        command.add("-Djavax.net.ssl.trustStorePassword=localhost-trust");
-        command.add("-Djavax.net.ssl.trustStoreType=PKCS12");
 
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.redirectErrorStream(true);

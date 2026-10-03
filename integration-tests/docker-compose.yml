@@ -282,20 +282,6 @@ services:
         - quay.io/quarkus/quarkus-distroless-image:2.0
         - quay.io/quarkus/ubi9-quarkus-micro-image:2.0
 
-    # Point the JVM DEFAULT truststore at the mounted private-CA PKCS12. The confidential-client
-    # OIDC engine (token-sheriff-client) performs its outbound OIDC discovery/token/refresh/logout
-    # calls with ONLY the JVM default TrustManager (TrustManagerFactory.init((KeyStore) null)) — it
-    # exposes no per-client TLS-trust seam (token-sheriff-client#597) — so the per-issuer tls_profile
-    # that already validates JWKS does NOT cover these calls. Against the self-signed IT Keycloak the
-    # login flows otherwise fail PKIX/500. The Dockerfile's ENTRYPOINT is exec-form with no CMD, so
-    # this command list appends as runtime -D args on the native runner's command line; a
-    # GraalVM/Mandrel native executable honors runtime -Djavax.net.ssl.trustStore* for the default
-    # TrustManager (JAVA_TOOL_OPTIONS is NOT honored by a native runner — command-line -D is).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
-
     # Declares the scheme this instance's MANAGEMENT interface speaks. start-integration-container.sh
     # discovers every api-sheriff* service from the resolved Compose model and builds its readiness
     # probe URL from this label plus the host port published against container port 9000 — so the
@@ -319,10 +305,12 @@ services:
       # that must carry them from exactly this entry, which is why it stays in KEY=value form.
       - QUARKUS_PROFILE=it
       # Deployment-supplied trust material for the `benchmark-idp` TLS profile. gateway.yaml names
-      # only the logical profile (jwks.tls_profile: benchmark-idp); this mounted file binds it to a
-      # concrete store, so the shipped artifact carries no benchmark-idp key and no trust password in
-      # any profile. Loaded from the already-mounted certificates/ volume — no new volume is added.
-      # Every QUARKUS_PROFILE=it gateway instance sets this. Seven of the nine carry exactly this
+      # only the logical profile, through two keys: jwks.tls_profile: benchmark-idp for the JWKS fetch
+      # and egress_tls.oidc_tls_profile: benchmark-idp for the BFF OIDC back-channel. This mounted
+      # file binds that name to a concrete store, so the shipped artifact carries no benchmark-idp key
+      # and no trust password in any profile. Loaded from the already-mounted certificates/ volume —
+      # no new volume is added.
+      # Every QUARKUS_PROFILE=it gateway instance sets this. Ten of the twelve carry exactly this
       # value; the two api-sheriff-egress-verify-* instances append a second, comma-separated entry
       # (it-upstream-trust.properties) because they are the only instances naming an
       # egress_tls.upstream_tls_profile. They extend the list rather than replacing it — the
@@ -358,7 +346,7 @@ services:
       # insecure-requests — so supplying these two keys converts port 9000 itself to HTTPS. Every
       # consumer of 9000 (host readiness probes, Prometheus, the k6 health benchmarks) must speak
       # TLS with -k / insecure_skip_verify, because the certificate is the self-signed localhost
-      # bundle. Eight of the nine gateway instances carry this pair; api-sheriff-plain-mgmt is the one
+      # bundle. Eleven of the twelve gateway instances carry this pair; api-sheriff-plain-mgmt is the one
       # deliberate exception, documented at its own service definition.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -479,14 +467,6 @@ services:
   # miss; the mutual-auth security check itself is identical on 1.2 and 1.3.
   api-sheriff-mtls:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as the primary instance: this service overlays the same oidc
-    # block (lockstep gateway.yaml) so its confidential-client engine needs the private-CA trust for
-    # any OIDC discovery/token call — harmless if the mTLS suite never exercises a login. See the
-    # primary api-sheriff service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -575,14 +555,6 @@ services:
   # nothing but this value, which is the property BffCookieStatelessnessIT proves.
   api-sheriff-cookie:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as the primary instance: this service overlays the same oidc
-    # block (lockstep gateway.yaml) so its confidential-client engine needs the private-CA trust for
-    # the OIDC discovery/token calls the cookie login flow makes. See the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -679,12 +651,6 @@ services:
   # to keep in lockstep for no gain.
   api-sheriff-cookie-2:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -768,12 +734,6 @@ services:
   # an 8-request admission budget cannot serve the rest of the IT suite; published on 10447.
   api-sheriff-ws-admission:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -863,12 +823,6 @@ services:
   # onto the MAIN TLS-terminated router, producing an HTTPS probe endpoint rather than a plain one.
   api-sheriff-plain-mgmt:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # This instance's whole purpose is that its management interface is PLAIN HTTP: it selects the
     # key-less `plain-management` TLS bucket via QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME. The label
     # is what lets the host-side readiness probe use http:// here and https:// everywhere else from
@@ -978,12 +932,6 @@ services:
   # terminated listener off 8443 with nothing left listening on it.
   api-sheriff-passthrough-empty:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -1085,12 +1033,6 @@ services:
   # passthrough_sni there is no front listener to move the terminated listener out of the way of.
   api-sheriff-no-certificate:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     # It stays HTTPS: the management interface takes its certificate from the SEPARATE
     # quarkus.management.ssl.certificate.* keys below, which the main-listener declaration gate does
@@ -1212,14 +1154,6 @@ services:
   # a pair that is never benchmarked and is compared only against each other, on equal budgets.
   api-sheriff-egress-verify-on:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597). This is the JVM DEFAULT
-    # store and is unrelated to the it-upstream profile below, which binds the Vert.x egress clients'
-    # anchors: the resolved profile REPLACES those clients' trust and never consults this one.
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -1325,12 +1259,6 @@ services:
   # working control while the knob under test was never exercised.
   api-sheriff-egress-verify-off:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597).
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -1436,14 +1364,6 @@ services:
   # would move the terminated listener off 8443 with nothing left listening on it.
   api-sheriff-refresh:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597). Load-bearing here in
-    # particular: this instance's whole purpose is to drive the confidential-client REFRESH call
-    # against the self-signed IT Keycloak, and that call uses only the JVM default TrustManager.
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
@@ -1560,14 +1480,6 @@ services:
   # that pair, not of every cookie-mode instance.
   api-sheriff-cookie-refresh:
     image: "api-sheriff:distroless"
-    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
-    # service's command comment for the mechanism (token-sheriff-client#597). Load-bearing here in
-    # particular, as on api-sheriff-refresh: this instance drives the confidential-client REFRESH
-    # call against the self-signed IT Keycloak, and that call uses only the JVM default TrustManager.
-    command:
-      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-      - -Djavax.net.ssl.trustStorePassword=localhost-trust
-      - -Djavax.net.ssl.trustStoreType=PKCS12
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"

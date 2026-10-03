@@ -199,3 +199,9 @@ oidc:
     default_view: ["sub", "preferred_username"]
   login:
     path: /auth/login
+# --- Trust for the BFF OIDC back-channel -------------------------------------------------------
+# Binds the BFF back-channel — the calls the oidc block above makes to Keycloak, the refresh call
+# this instance exists to drive among them — to the trust profile the JWKS issuers already name
+# through jwks.tls_profile. Last block of the document, as in every sibling descriptor.
+egress_tls:
+  oidc_tls_profile: benchmark-idp
