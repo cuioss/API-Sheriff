@@ -794,8 +794,8 @@ link:security-posture.adoc[SEC-5]); a boot WARN when the block is present would 
 |Location |`edge/GatewayEdgeRoute.java` (`handleGatewayRejection` vs `closeAfterOversizedReservedBody:586-595`)
 |===
 
-The reserved-body 413 path deliberately retires the connection (the file's own comment explains
-why); the proxy-path mid-stream 413 (`ByteCappedBodyStream` breach) and stage-3 declared-CL 413
+The reserved-body 413 path deliberately retires the connection on HTTP/1.x and ends only the
+offending stream on HTTP/2 (the file's own comment explains why); the proxy-path mid-stream 413 (`ByteCappedBodyStream` breach) and stage-3 declared-CL 413
 render `problem+json` without `Connection: close` — the paused, partially-read body pins the
 connection until the 60 s idle timeout. No desync (Netty keeps framing the discarded
 remainder), only per-connection resource pinning — the same half-effectiveness the

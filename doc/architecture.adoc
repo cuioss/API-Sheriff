@@ -1118,7 +1118,7 @@ The consolidated status mapping:
 | `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`); live session lacking one on a non-navigation request when no refresh can obtain it (no `WWW-Authenticate`; the problem body carries the extension members `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`, while a navigation is redirected into a widening of the session instead -- see <<_scope_enforcement>>); failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `ROUTING`
 | `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `ROUTING`
-| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed | `INPUT_VALIDATION`
+| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is ended, and the connection and its other streams carry on | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
@@ -1267,7 +1267,13 @@ The manifest requires *paths, errors, and average timing*. These map to:
   `route` (and, if wanted, a `sum by (route)` for a total-calls-per-resource view). The
   `REQUEST_FORWARDED` success event in the link:#_event_system[event system] is the same signal
   at the counter layer. Route cardinality is bounded (route id is a config-fixed label;
-  unmatched requests share the fixed `"<no-route>"` value), so this is safe to keep always on.
+  unmatched requests share the fixed `"<no-route>"` value). `method` is bounded the same way: it is
+  the name of a method the gateway parses -- one of the `HttpMethod` constants `GET`, `HEAD`, `POST`,
+  `PUT`, `PATCH`, `DELETE` and `OPTIONS` -- or the single fixed value `OTHER`. A method token the
+  gateway cannot parse (`TRACE`, `CONNECT` or any other token) is counted under `method="OTHER"`,
+  never under its own name, so the label holds at most eight values and no request-derived text
+  reaches it. Every label is therefore drawn from a fixed set, and the counter is safe to keep
+  always on.
 
 | `sheriff_request_duration_seconds{route}` (timer)
 | Latency distribution per route; the timer's mean gives "average timing", and quantiles/
@@ -1282,7 +1288,8 @@ The manifest requires *paths, errors, and average timing*. These map to:
   `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED`. Three rejections are rendered directly and are
   not counted here: the `405` for a request method the gateway cannot parse, the `404` for a reserved
   path on a gateway without an active session runtime, and the `404` of the withheld client JWKS
-  path. They appear in the `4xx` bucket of `sheriff_requests_total` only
+  path. They appear in the `4xx` bucket of `sheriff_requests_total` only, the first of them under
+  `method="OTHER"`
   (link:adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
 
 | `sheriff_security_events_total{failure_type}`
