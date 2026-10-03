@@ -29,11 +29,13 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 /**
  * D3b GW-02 anti-request-smuggling / framing gate, run once at stage 1, before route selection.
  * <p>
- * The gate rejects the four framing-desync vectors with a 400
+ * The gate rejects these framing-desync vectors with a 400
  * {@link EventType#SECURITY_FILTER_VIOLATION} before a request can reach the upstream:
  * <ul>
  *   <li><strong>CL+TE</strong>: {@code Content-Length} and {@code Transfer-Encoding} both present,
  *       the classic front-end/back-end desync primer;</li>
+ *   <li><strong>CL.CL</strong>: more than one {@code Content-Length} field, or a single field
+ *       carrying a comma-separated value list;</li>
  *   <li><strong>TE.TE</strong>: a {@code Transfer-Encoding} that is repeated, or whose single value
  *       is anything other than exactly {@code chunked} (compared case-insensitively, with no
  *       trimming and no list parsing). {@code chunked, identity}, {@code xchunked} and a second
