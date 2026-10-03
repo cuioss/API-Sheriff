@@ -27,7 +27,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * {@code allowedOrigins} is a fail-closed, deny-by-default allowlist of exact-match
  * {@code Origin} strings (scheme + host + port, no wildcards); an absent or empty
- * allowlist on a bearer WebSocket route rejects the upgrade at boot — there is no
+ * allowlist on a bearer or session WebSocket route refuses the boot — there is no
  * "any origin" default. Host matching is case-insensitive; the effective allowlist
  * is lower-cased once, at route-table assembly. {@code idleTimeoutSeconds} bounds an
  * established relay ("idle" = no frame in either direction, ping/pong counting as

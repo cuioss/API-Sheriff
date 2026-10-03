@@ -36,8 +36,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * that is not in the allowlist, rejects the upgrade with a {@link EventType#WEBSOCKET_ORIGIN_REJECTED}
  * {@link GatewayException} (rendered as HTTP {@code 403}) <em>before</em> the upstream is dialed —
  * there is no "any origin" default. A route with an empty allowlist declares no enforcement (only a
- * non-bearer route reaches boot with an empty allowlist; a bearer WebSocket route is fail-closed to a
- * non-empty allowlist at boot), so its upgrade proceeds without an Origin check.
+ * {@code require: none} route reaches boot with an empty allowlist; a bearer or session WebSocket
+ * route is fail-closed to a non-empty allowlist at boot), so its upgrade proceeds without an Origin
+ * check.
  * <p>
  * Framework-agnostic: the stage consumes the {@link PipelineRequest} carrier and the resolved
  * allowlist, and carries no Vert.x / Quarkus types. Security-relevant rejections are logged with the
@@ -60,7 +61,8 @@ public final class OriginValidationStage {
      * @param request        the pipeline request carrier
      * @param routeId        the route id, for the security-relevant rejection log
      * @param allowedOrigins the route's effective, lower-cased exact-match Origin allowlist; empty
-     *                       means no enforcement (a non-bearer route without an allowlist)
+     *                       means no enforcement (a {@code require: none} route without an
+     *                       allowlist)
      * @throws GatewayException carrying {@link EventType#WEBSOCKET_ORIGIN_REJECTED} when the origin
      *                          is absent or not in a non-empty allowlist
      */
