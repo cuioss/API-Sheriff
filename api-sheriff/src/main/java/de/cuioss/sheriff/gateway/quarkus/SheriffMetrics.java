@@ -38,8 +38,8 @@ import jakarta.inject.Inject;
  * <ul>
  *   <li>{@value #REQUESTS_TOTAL}{@code {route,method,status_family}} — the "paths" view;</li>
  *   <li>{@value #REQUEST_DURATION_SECONDS}{@code {route}} — per-route latency distribution;</li>
- *   <li>{@value #ERRORS_TOTAL}{@code {route,category}} — the "errors" view, keyed by
- *       {@link EventCategory};</li>
+ *   <li>{@value #ERRORS_TOTAL}{@code {route,category,event}} — the "errors" view, keyed by
+ *       {@link EventCategory} and the {@link EventType} name;</li>
  *   <li>{@value #SECURITY_EVENTS_TOTAL}{@code {failure_type}} — the {@code cui-http}
  *       security-filter counts;</li>
  *   <li>{@value #UPSTREAM_DURATION_SECONDS}{@code {route}} — downstream-call time, separated
@@ -53,8 +53,9 @@ import jakarta.inject.Inject;
  * </ul>
  * Route cardinality is bounded (route id is a config-fixed label; unmatched requests share the
  * fixed {@value #NO_ROUTE} value) and every other label draws from a fixed set — the
- * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values — so every meter is
- * safe to keep always on. Each record call
+ * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, and the {@code event}
+ * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries
+ * request-derived input — so every meter is safe to keep always on. Each record call
  * resolves its meter through the {@link MeterRegistry}, which caches meters by name and tag set,
  * so the recorder holds no per-meter state and is thread-safe by delegation.
  *
@@ -68,7 +69,10 @@ public class SheriffMetrics {
     public static final String REQUESTS_TOTAL = "sheriff_requests_total";
     /** Per-route request latency distribution (timer). */
     public static final String REQUEST_DURATION_SECONDS = "sheriff_request_duration_seconds";
-    /** Counter of rejected / failed requests keyed by {@link EventCategory}. */
+    /**
+     * Counter of rejected / failed requests keyed by route, {@link EventCategory} slug and the
+     * {@link EventType} name ({@code event} label).
+     */
     public static final String ERRORS_TOTAL = "sheriff_errors_total";
     /** The {@code cui-http} security-filter counts, per failure type. */
     public static final String SECURITY_EVENTS_TOTAL = "sheriff_security_events_total";
@@ -127,13 +131,31 @@ public class SheriffMetrics {
     }
 
     /**
-     * Counts one rejected / failed request against {@link #ERRORS_TOTAL}, keyed by category slug.
+     * Counts one rejected / failed request against {@link #ERRORS_TOTAL}, tagged with the route, the
+     * event's {@link EventCategory#slug() category slug} and the {@link EventType} name as the
+     * {@code event} label.
+     * <p>
+     * The edge records at two sites only: the pipeline's rendered {@code GatewayException} failure and
+     * the over-ceiling reserved-path body rejection. Three directly-rendered rejections are
+     * <em>not</em> counted here: a request method the gateway cannot parse ({@code 405}), a reserved
+     * path carved out on a gateway without an active session runtime ({@code 404}), and the withheld
+     * client-JWKS path ({@code 404}). They surface only through the {@code 4xx} bucket of
+     * {@link #REQUESTS_TOTAL}.
      *
-     * @param route    the config-fixed route id, or {@link #NO_ROUTE} when unmatched
-     * @param category the failure category
+     * @param route     the config-fixed route id, or {@link #NO_ROUTE} when unmatched
+     * @param eventType the failure event; must carry a category
+     * @throws IllegalArgumentException if {@code eventType} carries no category — a success /
+     *                                  informational event is not an error
      */
-    public void recordError(String route, EventCategory category) {
-        registry.counter(ERRORS_TOTAL, TAG_ROUTE, route, TAG_CATEGORY, category.slug()).increment();
+    public void recordError(String route, EventType eventType) {
+        Objects.requireNonNull(route, TAG_ROUTE);
+        Objects.requireNonNull(eventType, "eventType");
+        EventCategory category = eventType.category();
+        if (category == null) {
+            throw new IllegalArgumentException("sheriff_errors_total accepts only event types that carry a category");
+        }
+        registry.counter(ERRORS_TOTAL,
+                TAG_ROUTE, route, TAG_CATEGORY, category.slug(), TAG_EVENT, eventType.name()).increment();
     }
 
     /**

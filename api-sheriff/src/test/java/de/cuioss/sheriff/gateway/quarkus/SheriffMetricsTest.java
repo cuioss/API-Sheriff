@@ -25,12 +25,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 
 import de.cuioss.http.security.core.UrlSecurityFailureType;
@@ -57,6 +60,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
@@ -174,14 +178,118 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("recordError counts under sheriff_errors_total{route,category} keyed by category slug")
+        @DisplayName("recordError counts under sheriff_errors_total{route,category,event}")
         void recordErrorCountsErrorsView() {
-            metrics.recordError("api", EventCategory.UPSTREAM);
+            metrics.recordError("api", EventType.UPSTREAM_ERROR);
+            metrics.recordError("api", EventType.UPSTREAM_ERROR);
 
             var counter = registry.find("sheriff_errors_total")
-                    .tags("route", "api", "category", "upstream").counter();
-            assertNotNull(counter, "sheriff_errors_total must be keyed by the category slug");
-            assertEquals(1.0, counter.count());
+                    .tags("route", "api", "category", "upstream", "event", "UPSTREAM_ERROR").counter();
+            assertNotNull(counter, "sheriff_errors_total must be keyed by route, category slug and event name");
+            assertEquals(2.0, counter.count());
+            assertEquals(1, registry.find("sheriff_errors_total").counters().size(),
+                    "repeated calls for one event move one series");
+        }
+
+        @Test
+        @DisplayName("recordError separates two routing events on one route by the event label alone")
+        void recordErrorSeparatesRoutingEventsByEventLabel() {
+            metrics.recordError("api", EventType.NO_ROUTE_MATCHED);
+            metrics.recordError("api", EventType.PASSTHROUGH_HOST_SMUGGLED);
+
+            var noRoute = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "routing", "event", "NO_ROUTE_MATCHED").counter();
+            var smuggled = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "routing", "event", "PASSTHROUGH_HOST_SMUGGLED").counter();
+            assertAll("two routing series",
+                    () -> assertNotNull(noRoute, "the unrouted rejection has its own routing series"),
+                    () -> assertNotNull(smuggled, "the smuggled-host rejection has its own routing series"));
+            assertAll("each call moved only its own series",
+                    () -> assertEquals(1.0, noRoute.count()),
+                    () -> assertEquals(1.0, smuggled.count()),
+                    () -> assertEquals(2, registry.find("sheriff_errors_total").counters().size()));
+        }
+
+        @Test
+        @DisplayName("recordError keeps the routing series distinct from an input-validation one")
+        void recordErrorKeepsRoutingDistinctFromInputValidation() {
+            metrics.recordError("api", EventType.NO_ROUTE_MATCHED);
+            metrics.recordError("api", EventType.SECURITY_FILTER_VIOLATION);
+
+            var routing = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "routing").counters();
+            var inputValidation = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "input-validation").counters();
+            assertAll("one series per category",
+                    () -> assertEquals(1, routing.size()),
+                    () -> assertEquals(1, inputValidation.size()),
+                    () -> assertEquals("NO_ROUTE_MATCHED", routing.iterator().next().getId().getTag("event")),
+                    () -> assertEquals("SECURITY_FILTER_VIOLATION",
+                            inputValidation.iterator().next().getId().getTag("event")));
+        }
+
+        @Test
+        @DisplayName("recordError tags exactly route, category and event")
+        void recordErrorTagsExactlyRouteCategoryAndEvent() {
+            metrics.recordError("api", EventType.NO_ROUTE_MATCHED);
+            metrics.recordError("api", EventType.UPSTREAM_TIMEOUT);
+
+            var counters = registry.find("sheriff_errors_total").counters();
+            assertEquals(2, counters.size());
+            for (var counter : counters) {
+                var tagKeys = counter.getId().getTags().stream().map(Tag::getKey).collect(Collectors.toSet());
+                assertEquals(Set.of("route", "category", "event"), tagKeys,
+                        "sheriff_errors_total must carry exactly the route, category and event tags");
+            }
+        }
+
+        /** Every {@link EventType} that carries a category — the population {@code recordError} accepts. */
+        static Stream<EventType> categorisedEventTypes() {
+            List<EventType> categorised = Arrays.stream(EventType.values())
+                    .filter(eventType -> eventType.category() != null)
+                    .toList();
+            if (categorised.isEmpty()) {
+                throw new IllegalStateException("no EventType carries a category — the parameterisation is vacuous");
+            }
+            return categorised.stream();
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("categorisedEventTypes")
+        @DisplayName("recordError sets the event label to the enum name and the category label to its slug")
+        void recordErrorLabelsEventWithEnumName(EventType eventType) {
+            metrics.recordError("api", eventType);
+
+            var counters = registry.find("sheriff_errors_total").counters();
+            assertEquals(1, counters.size());
+            var id = counters.iterator().next().getId();
+            EventCategory category = Objects.requireNonNull(eventType.category());
+            assertAll("labels of " + eventType,
+                    () -> assertEquals(eventType.name(), id.getTag("event")),
+                    () -> assertEquals(category.slug(), id.getTag("category")),
+                    () -> assertEquals("api", id.getTag("route")));
+        }
+
+        @Test
+        @DisplayName("recordError rejects a null route or event type fail-closed")
+        void recordErrorRejectsNull() {
+            assertAll(
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordError(null, EventType.NO_ROUTE_MATCHED)),
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordError("api", null)));
+            assertTrue(registry.find("sheriff_errors_total").counters().isEmpty(),
+                    "a rejected null must not leave a series behind");
+        }
+
+        @Test
+        @DisplayName("recordError rejects an event type without a category and registers no series for it")
+        void recordErrorRejectsUncategorisedEventType() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> metrics.recordError("api", EventType.REQUEST_FORWARDED));
+
+            assertTrue(registry.find("sheriff_errors_total").counters().isEmpty(),
+                    "a rejected uncategorised event must not leave a series behind");
         }
 
         @Test

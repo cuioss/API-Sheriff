@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.pipeline;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("FramingGate — D3b GW-02 anti-smuggling framing gate")
 class FramingGateTest {
@@ -271,6 +273,88 @@ class FramingGateTest {
             PipelineRequest request = request(HttpMethod.GET, Map.of(), -1L, false);
 
             assertDoesNotThrow(() -> permissiveGate.process(request));
+        }
+    }
+
+    @Nested
+    @DisplayName("The TE.TE shape — a Transfer-Encoding that is repeated or not exactly chunked")
+    class AmbiguousTransferEncoding {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"chunked", "Chunked", "CHUNKED"})
+        @DisplayName("accepts a single Transfer-Encoding that is exactly chunked, in any case")
+        void acceptsExactlyChunked(String transferEncoding) {
+            PipelineRequest request = chunkedPost(List.of(transferEncoding));
+
+            assertDoesNotThrow(() -> gate.process(request),
+                    () -> "'" + transferEncoding + "' is the one coding every parser reads the same way");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"xchunked", "chunked, identity", "identity, chunked", "identity", "gzip, chunked",
+                " chunked", "chunked ", "chunked;q=1", ""})
+        @DisplayName("rejects a single Transfer-Encoding that is anything other than exactly chunked")
+        void rejectsAnythingButExactlyChunked(String transferEncoding) {
+            PipelineRequest request = chunkedPost(List.of(transferEncoding));
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request),
+                    () -> "'" + transferEncoding + "' must not be read as chunked");
+
+            assertAll(
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType()),
+                    () -> assertEquals("Framing rejected: Transfer-Encoding is not exactly chunked",
+                            thrown.getMessage()));
+        }
+
+        @Test
+        @DisplayName("rejects a repeated Transfer-Encoding field even when every value is chunked")
+        void rejectsRepeatedTransferEncoding() {
+            PipelineRequest request = chunkedPost(List.of("chunked", "chunked"));
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+            assertAll(
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType()),
+                    () -> assertEquals("Framing rejected: Multiple Transfer-Encoding headers present",
+                            thrown.getMessage()));
+        }
+
+        @Test
+        @DisplayName("the opt-in does not relax it: the permissive gate rejects the same shapes")
+        void optInDoesNotRelaxIt() {
+            assertAll(
+                    () -> assertThrows(GatewayException.class,
+                            () -> permissiveGate.process(chunkedPost(List.of("identity, chunked")))),
+                    () -> assertThrows(GatewayException.class,
+                            () -> permissiveGate.process(chunkedPost(List.of("chunked", "identity")))),
+                    () -> assertDoesNotThrow(() -> permissiveGate.process(chunkedPost(List.of("chunked")))));
+        }
+
+        @Test
+        @DisplayName("an obfuscated coding beside Content-Length keeps the CL+TE rejection's own detail")
+        void contentLengthConflictIsReportedFirst() {
+            PipelineRequest request = request(HttpMethod.POST, Map.of(
+                    "content-length", List.of("10"),
+                    "transfer-encoding", List.of("xchunked")), 10L, true);
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+            assertEquals("Framing rejected: Content-Length and Transfer-Encoding both present", thrown.getMessage());
+        }
+
+        @Test
+        @DisplayName("an obfuscated coding on a bodyless method keeps the bodyless rejection's own detail")
+        void bodylessMethodIsReportedFirst() {
+            PipelineRequest request = request(HttpMethod.GET, Map.of(
+                    "transfer-encoding", List.of("xchunked")), -1L, false);
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+            assertEquals("Framing rejected: Body present on bodyless method GET", thrown.getMessage());
+        }
+
+        private static PipelineRequest chunkedPost(List<String> transferEncodings) {
+            return request(HttpMethod.POST, Map.of("transfer-encoding", transferEncodings), -1L, true);
         }
     }
 

@@ -21,12 +21,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
@@ -106,11 +108,13 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.WebSocketClientOptions;
 import io.vertx.core.net.TrustOptions;
+import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -264,6 +268,15 @@ public class GatewayEdgeRoute {
      * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
      * release site knows there is no sub-permit to return. */
     private static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
+    /** Set once the framing gate has rejected the request: the writer that answers it then retires the
+     * connection the answer is written on (see {@link #rejectFramingAndRetire}). The virtual-thread hop
+     * carries only the {@link RoutingContext}, so the marker rides on it to the event-loop writer. */
+    private static final String RETIRE_CONNECTION_KEY = "sheriff.retireconnection";
+    /** Holds the request body armed in {@link #handle} as a {@link DispatchStage.InboundBody}, so the
+     * upstream dispatch — which runs after the virtual-thread hop — streams the body through the
+     * decorator that remembers an inbound failure. Absent on the reserved-body path, which reads its
+     * body itself and never dispatches upstream. */
+    private static final String INBOUND_BODY_KEY = "sheriff.inboundbody";
 
     private final List<RouteRuntime> routes;
     private final ExecutorService virtualThreadExecutor;
@@ -302,6 +315,14 @@ public class GatewayEdgeRoute {
      */
     private final Semaphore webSocketRelayAdmission;
     private final AtomicInteger inFlight = new AtomicInteger();
+    /**
+     * The connections retired by a framing-gate rejection. A request that arrives on one of them is
+     * never processed (see {@link #handle}). Held weakly and by identity — {@link HttpConnection}
+     * implementations do not override {@code equals} — so an entry disappears with its connection and
+     * no close handler has to be claimed on a connection the edge does not own.
+     */
+    private final Set<HttpConnection> retiredConnections =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
     private volatile boolean draining;
 
     /**
@@ -549,6 +570,13 @@ public class GatewayEdgeRoute {
     }
 
     private void handle(RoutingContext ctx) {
+        HttpConnection connection = ctx.request().connection();
+        if (retiredConnections.contains(connection)) {
+            // The connection was retired by a framing rejection: its request boundaries are no longer
+            // trusted, so nothing that arrives on it is processed, answered or forwarded.
+            connection.close();
+            return;
+        }
         if (draining || !admission.tryAcquire()) {
             reject(ctx, SERVICE_UNAVAILABLE);
             return;
@@ -580,6 +608,10 @@ public class GatewayEdgeRoute {
             // deadline, stash it, then dispatch. This avoids any paused-stream / cross-thread resume.
             readReservedBodyThenDispatch(ctx, admissionReleased);
         } else {
+            // Armed here, on the connection's own event loop and before the virtual-thread hop: an
+            // inbound failure from now on is remembered and reaches the upstream dispatch even when
+            // that dispatch subscribes to the body only later (see DispatchStage.InboundBody).
+            ctx.put(INBOUND_BODY_KEY, DispatchStage.InboundBody.arm(ctx.request()));
             ctx.request().pause();
             dispatchProcessing(ctx, admissionReleased);
         }
@@ -715,26 +747,33 @@ public class GatewayEdgeRoute {
         LOGGER.warn(ApiSheriffLogMessages.WARN.RESERVED_BODY_TOO_LARGE, ceiling, disposition);
         gatewayEventCounter.increment(EventType.RESERVED_BODY_TOO_LARGE);
         recordError(ctx, EventType.RESERVED_BODY_TOO_LARGE);
-        closeAfterOversizedReservedBody(ctx);
+        retireConnectionAfterResponse(ctx);
         // Ending the response releases the admission permit through the end handler registered in
         // handle(), exactly like every other terminal path.
         renderProblem(ctx, null, EventType.RESERVED_BODY_TOO_LARGE);
     }
 
     /**
-     * Retires the connection a {@code 413} reserved-body rejection was served on, on BOTH rejection
-     * paths (the pre-read {@code Content-Length} refusal and the mid-stream ceiling abort).
+     * Retires the connection the response under construction is written on: the response advertises
+     * {@code Connection: close} (HTTP/1.x only — the header is forbidden in HTTP/2), and the
+     * connection is closed once the response has been written. Must be called on the event loop,
+     * before the response is ended.
      * <p>
-     * The request body is deliberately left <em>unconsumed</em> — reading an attacker-supplied
-     * oversized body to completion is exactly the work the ceiling exists to avoid, so draining it is
-     * not an option. But unread bytes left pending on a reused HTTP/1.1 keep-alive connection desync
-     * the next request framed on that connection, or pin the connection until the idle timeout — which
-     * would leave the reserved-body DoS guard only half-effective, since an attacker could still tie up
-     * connections by repeatedly tripping the {@code 413}. Retiring the connection closes that gap: the
-     * response advertises {@code Connection: close} (HTTP/1.x only — the header is forbidden in
-     * HTTP/2), and the connection is closed once the response has been written.
+     * It has two callers, and both retire the connection because the bytes behind the rejected
+     * request cannot be trusted to frame the next one:
+     * <ul>
+     *   <li>a {@code 413} reserved-body rejection, on BOTH of its paths (the pre-read
+     *       {@code Content-Length} refusal and the mid-stream ceiling abort). The request body is
+     *       deliberately left <em>unconsumed</em> — reading an attacker-supplied oversized body to
+     *       completion is exactly the work the ceiling exists to avoid, so draining it is not an
+     *       option. But unread bytes left pending on a reused HTTP/1.1 keep-alive connection desync
+     *       the next request framed on that connection, or pin the connection until the idle timeout —
+     *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
+     *       still tie up connections by repeatedly tripping the {@code 413};</li>
+     *   <li>a framing-gate rejection (see {@link #rejectFramingAndRetire}).</li>
+     * </ul>
      */
-    private static void closeAfterOversizedReservedBody(RoutingContext ctx) {
+    private static void retireConnectionAfterResponse(RoutingContext ctx) {
         HttpServerResponse response = ctx.response();
         HttpVersion version = ctx.request().version();
         if (!response.headWritten() && (version == HttpVersion.HTTP_1_0 || version == HttpVersion.HTTP_1_1)) {
@@ -743,6 +782,44 @@ public class GatewayEdgeRoute {
         // addEndHandler is additive, so this composes with the admission-release handler handle()
         // registered rather than replacing it.
         ctx.addEndHandler(result -> ctx.request().connection().close());
+    }
+
+    /**
+     * Runs the framing gate and, when it rejects, retires the inbound connection before the rejection
+     * is rendered.
+     * <p>
+     * A request the gate rejects is one whose message boundaries two parsers can read differently, so
+     * the bytes behind it on the same connection have no trustworthy framing either. The required
+     * behaviour is therefore that nothing behind a framing rejection is processed: the connection is
+     * recorded as retired at once — on this virtual thread, before any response is written, so a
+     * request already queued behind the rejected one is refused by {@link #handle} — and the writer
+     * that answers the rejection advertises {@code Connection: close} and closes the connection once
+     * the {@code 400} has been written ({@link #retireMarkedConnection}).
+     * <p>
+     * The gate itself is unchanged: the rejection is rethrown as it was raised and is metered, logged
+     * and rendered like every other {@link EventType#SECURITY_FILTER_VIOLATION}.
+     *
+     * @throws GatewayException the gate's own rejection, unchanged
+     */
+    private void rejectFramingAndRetire(RoutingContext ctx, PipelineRequest request) {
+        try {
+            framingGate.process(request);
+        } catch (GatewayException framingRejection) {
+            retiredConnections.add(ctx.request().connection());
+            ctx.put(RETIRE_CONNECTION_KEY, Boolean.TRUE);
+            throw framingRejection;
+        }
+    }
+
+    /**
+     * Retires the connection when the request was marked by {@link #rejectFramingAndRetire}; a no-op
+     * for every other request. Called by the gateway-originated error writers on the event loop,
+     * immediately before they end the response.
+     */
+    private static void retireMarkedConnection(RoutingContext ctx) {
+        if (ctx.get(RETIRE_CONNECTION_KEY) != null) {
+            retireConnectionAfterResponse(ctx);
+        }
     }
 
     /**
@@ -816,14 +893,14 @@ public class GatewayEdgeRoute {
 
     /**
      * Counts one categorized failure against {@link SheriffMetrics#ERRORS_TOTAL}, keyed by the
-     * request's stashed route (or {@link SheriffMetrics#NO_ROUTE}) and the failure
-     * {@link EventCategory}. An uncategorized failure (e.g. an unexpected internal error) carries no
-     * category and surfaces only through the {@code 5xx} bucket of {@link SheriffMetrics#REQUESTS_TOTAL}.
+     * request's stashed route (or {@link SheriffMetrics#NO_ROUTE}), the failure
+     * {@link EventCategory} and the {@link EventType} name as the {@code event} label. An
+     * uncategorized failure (e.g. an unexpected internal error) carries no category, records nothing
+     * here and surfaces only through the {@code 5xx} bucket of {@link SheriffMetrics#REQUESTS_TOTAL}.
      */
     private void recordError(RoutingContext ctx, EventType eventType) {
-        EventCategory category = eventType.category();
-        if (category != null) {
-            sheriffMetrics.recordError(routeLabel(ctx), category);
+        if (eventType.category() != null) {
+            sheriffMetrics.recordError(routeLabel(ctx), eventType);
         }
     }
 
@@ -855,7 +932,7 @@ public class GatewayEdgeRoute {
             securityHeadersStage.process(request);
             basicChecksStage.process(request);
             canonicalPathGuard.process(request);
-            framingGate.process(request);
+            rejectFramingAndRetire(ctx, request);
             if (request.shortCircuitStatus().isPresent()) {
                 writeShortCircuit(ctx, request);
                 return;
@@ -1079,6 +1156,7 @@ public class GatewayEdgeRoute {
             portal.headers().forEach((name, value) -> response.putHeader(name, VARY_HEADER.equalsIgnoreCase(name)
                     ? SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), List.of(value))
                     : value));
+            retireMarkedConnection(ctx);
             response.end(portal.body());
         });
     }
@@ -1268,7 +1346,7 @@ public class GatewayEdgeRoute {
         DispatchStage dispatchStage = new DispatchStage(cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
         HttpClientResponse upstream = dispatchStage.dispatch(route, request.method(), uri, forward.headers(),
-                ctx.request());
+                inboundBody(ctx));
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The relay mutates the Vert.x HttpServerResponse (status, headers) and subscribes the
@@ -1374,7 +1452,7 @@ public class GatewayEdgeRoute {
         GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
         HttpClientResponse upstream = grpcDispatchStage.dispatch(route, request.method(), uri, forward.headers(),
-                ctx.request());
+                inboundBody(ctx));
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
@@ -1435,6 +1513,15 @@ public class GatewayEdgeRoute {
             served.headers().forEach(response::putHeader);
             response.end(Buffer.buffer(served.body()));
         });
+    }
+
+    /**
+     * The request body to stream upstream: the decorator armed in {@link #handle}, which remembers an
+     * inbound failure, or the bare request where none was armed.
+     */
+    private static ReadStream<Buffer> inboundBody(RoutingContext ctx) {
+        DispatchStage.InboundBody armed = ctx.get(INBOUND_BODY_KEY);
+        return armed != null ? armed : ctx.request();
     }
 
     private void failRelay(RoutingContext ctx, Throwable failure) {
@@ -1594,6 +1681,7 @@ public class GatewayEdgeRoute {
             responseHeaders.forEach(response::putHeader);
             applyStageSetCookies(response, setCookies);
             response.putHeader("Content-Type", PROBLEM_JSON);
+            retireMarkedConnection(ctx);
             response.end(body);
         });
     }

@@ -30,11 +30,16 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  * D3b GW-02 anti-request-smuggling / framing gate, run at stage 1 and re-runnable after any
  * header mutation.
  * <p>
- * The gate rejects the three framing-desync vectors with a 400
+ * The gate rejects the four framing-desync vectors with a 400
  * {@link EventType#SECURITY_FILTER_VIOLATION} before a request can reach the upstream:
  * <ul>
  *   <li><strong>CL+TE</strong>: {@code Content-Length} and {@code Transfer-Encoding} both present,
  *       the classic front-end/back-end desync primer;</li>
+ *   <li><strong>TE.TE</strong>: a {@code Transfer-Encoding} that is repeated, or whose single value
+ *       is anything other than exactly {@code chunked} (compared case-insensitively, with no
+ *       trimming and no list parsing). {@code chunked, identity}, {@code xchunked} and a second
+ *       {@code Transfer-Encoding} field are the shapes two parsers disagree on, so the gate admits
+ *       only the one spelling every parser reads the same way. No configuration relaxes it;</li>
  *   <li><strong>body on a bodyless method</strong>: a declared body (or {@code Transfer-Encoding})
  *       on {@code GET} or {@code HEAD}. The declared-{@code Content-Length} leg is the only part
  *       of this gate an operator can relax, and only for {@code GET}, via
@@ -60,6 +65,11 @@ public final class FramingGate {
             "content-length", "transfer-encoding", "host",
             "authorization", "forwarded",
             "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port");
+
+    private static final String TRANSFER_ENCODING = "Transfer-Encoding";
+
+    /** The only transfer coding the gate admits; any other value, or a repeated field, is rejected. */
+    private static final String CHUNKED = "chunked";
 
     private final boolean allowGetWithContentLengthBody;
 
@@ -87,7 +97,32 @@ public final class FramingGate {
         Objects.requireNonNull(request, "request");
         rejectConflictingFraming(request);
         rejectBodyOnBodylessMethod(request);
+        rejectAmbiguousTransferEncoding(request);
         rejectFramingHeaderStrip(request);
+    }
+
+    /**
+     * Rejects the TE.TE shape: a {@code Transfer-Encoding} that is repeated or is not exactly
+     * {@code chunked}.
+     * <p>
+     * It runs after the two checks above on purpose. A request that also carries
+     * {@code Content-Length}, or that uses a bodyless method, is already rejected there with the
+     * detail text those checks have always produced, so this check adds rejections without changing
+     * an existing one. The value is compared as received: it is not trimmed and not split on commas,
+     * because any leniency here is exactly the room an obfuscated coding needs to be read as
+     * {@code chunked} by one parser and as something else by the next.
+     */
+    private static void rejectAmbiguousTransferEncoding(PipelineRequest request) {
+        List<String> transferEncodings = request.headerValues(TRANSFER_ENCODING);
+        if (transferEncodings.isEmpty()) {
+            return;
+        }
+        if (transferEncodings.size() > 1) {
+            throw violation("Multiple Transfer-Encoding headers present");
+        }
+        if (!CHUNKED.equalsIgnoreCase(transferEncodings.getFirst())) {
+            throw violation("Transfer-Encoding is not exactly chunked");
+        }
     }
 
     private static void rejectConflictingFraming(PipelineRequest request) {
@@ -102,7 +137,7 @@ public final class FramingGate {
         if (!contentLengths.isEmpty() && contentLengths.getFirst().indexOf(',') >= 0) {
             throw violation("Content-Length header carries a comma-separated value list");
         }
-        if (request.hasHeader("Content-Length") && request.hasHeader("Transfer-Encoding")) {
+        if (request.hasHeader("Content-Length") && request.hasHeader(TRANSFER_ENCODING)) {
             throw violation("Content-Length and Transfer-Encoding both present");
         }
     }
@@ -123,7 +158,7 @@ public final class FramingGate {
         if (!BODYLESS_METHODS.contains(request.method())) {
             return;
         }
-        if (request.hasHeader("Transfer-Encoding")) {
+        if (request.hasHeader(TRANSFER_ENCODING)) {
             // Same detail text as the body legs below: with the opt-in off every rejection this gate
             // produced before the split is preserved bit-for-bit, message included.
             throw violation("Body present on bodyless method " + request.method());

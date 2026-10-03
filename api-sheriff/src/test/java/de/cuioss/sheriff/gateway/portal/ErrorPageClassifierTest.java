@@ -63,8 +63,8 @@ class ErrorPageClassifierTest {
         table.put(EventType.PATH_NOT_ALLOWED, KEEP_SHAPE);
         table.put(EventType.PARAMETER_LIMIT_EXCEEDED, KEEP_SHAPE);
         table.put(EventType.NO_ROUTE_MATCHED, HTML_ELIGIBLE);
-        table.put(EventType.PASSTHROUGH_HOST_SMUGGLED, KEEP_SHAPE);
-        table.put(EventType.METHOD_NOT_ALLOWED, KEEP_SHAPE);
+        table.put(EventType.PASSTHROUGH_HOST_SMUGGLED, HTML_ELIGIBLE);
+        table.put(EventType.METHOD_NOT_ALLOWED, HTML_ELIGIBLE);
         table.put(EventType.RESERVED_BODY_TOO_LARGE, KEEP_SHAPE);
         table.put(EventType.CONTENT_TOO_LARGE, HTML_ELIGIBLE);
         table.put(EventType.TOKEN_MISSING, KEEP_SHAPE);
@@ -189,13 +189,13 @@ class ErrorPageClassifierTest {
 
         @ParameterizedTest(name = "{0} -> {1}")
         @CsvSource({"400,Bad Request", "401,Unauthorized", "403,Forbidden", "404,Not Found",
-                "413,Content Too Large", "502,Bad Gateway", "503,Service Unavailable", "504,Gateway Timeout"})
+                "405,Method Not Allowed", "413,Content Too Large", "502,Bad Gateway", "503,Service Unavailable", "504,Gateway Timeout"})
         void titleForListedStatus(int status, String title) {
             assertEquals(title, ErrorPageClassifier.titleFor(status));
         }
 
         @ParameterizedTest(name = "{0} -> fallback")
-        @ValueSource(ints = {0, 200, 405, 418, 500, 599})
+        @ValueSource(ints = {0, 200, 418, 500, 599})
         void titleForUnlistedStatusFallsBack(int status) {
             assertEquals(ErrorPageClassifier.FALLBACK_TITLE, ErrorPageClassifier.titleFor(status));
             assertEquals("Error", ErrorPageClassifier.titleFor(status));

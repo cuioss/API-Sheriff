@@ -50,7 +50,21 @@ public enum EventType {
     /** A route weakens an authentication default via an explicit override. */
     AUTH_WEAKENED(EventCategory.CONFIGURATION, 0),
 
-    // --- Input validation (400 / 404 / 405 / 413) ---
+    // --- Routing (404 / 405) ---
+
+    /** No route matched the canonical path (deny-by-default routing). */
+    NO_ROUTE_MATCHED(EventCategory.ROUTING, 404),
+    /**
+     * A terminated request's {@code Host} header names a {@code passthrough_sni} hostname reserved
+     * for the accept-time L4 split (Host-vs-SNI smuggle); rejected {@code 404} before route
+     * selection so the passthrough backend identity cannot be reached through the terminated
+     * listener.
+     */
+    PASSTHROUGH_HOST_SMUGGLED(EventCategory.ROUTING, 404),
+    /** The request method is outside the route's effective {@code allowed_methods}. */
+    METHOD_NOT_ALLOWED(EventCategory.ROUTING, 405),
+
+    // --- Input validation (400 / 413) ---
 
     /** A cui-http security filter rejected the request. */
     SECURITY_FILTER_VIOLATION(EventCategory.INPUT_VALIDATION, 400),
@@ -58,17 +72,6 @@ public enum EventType {
     PATH_NOT_ALLOWED(EventCategory.INPUT_VALIDATION, 400),
     /** A collection / parameter limit was exceeded. */
     PARAMETER_LIMIT_EXCEEDED(EventCategory.INPUT_VALIDATION, 400),
-    /** No route matched the canonical path (deny-by-default routing). */
-    NO_ROUTE_MATCHED(EventCategory.INPUT_VALIDATION, 404),
-    /**
-     * A terminated request's {@code Host} header names a {@code passthrough_sni} hostname reserved
-     * for the accept-time L4 split (Host-vs-SNI smuggle); rejected {@code 404} before route
-     * selection so the passthrough backend identity cannot be reached through the terminated
-     * listener.
-     */
-    PASSTHROUGH_HOST_SMUGGLED(EventCategory.INPUT_VALIDATION, 404),
-    /** The request method is outside the route's effective {@code allowed_methods}. */
-    METHOD_NOT_ALLOWED(EventCategory.INPUT_VALIDATION, 405),
     /**
      * A gateway-terminated reserved POST path — the back-channel logout receiver, the one such path
      * that still consumes a request body now that the gateway drives {@code response_mode=query} and

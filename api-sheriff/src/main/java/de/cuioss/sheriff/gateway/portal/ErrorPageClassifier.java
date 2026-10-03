@@ -31,9 +31,14 @@ import org.jspecify.annotations.Nullable;
  * classifications cover every exit:
  * <ul>
  *   <li>{@link Classification#HTML_ELIGIBLE} — a gateway-originated rejection a browser navigation
- *       can meaningfully land on: an unrouted address, a missing scope, a CSRF rejection, a body over
- *       the route cap, an upstream failure, an open circuit or an upstream timeout, a failed OIDC
- *       callback, and a directory-asset miss.</li>
+ *       can meaningfully land on: an unrouted address, a smuggled passthrough host, a method outside
+ *       the route's allowlist, a missing scope, a CSRF rejection, a body over the route cap, an
+ *       upstream failure, an open circuit or an upstream timeout, a failed OIDC callback, and a
+ *       directory-asset miss. {@link EventType#PASSTHROUGH_HOST_SMUGGLED} is eligible because an
+ *       unrouted address answers a navigation with the HTML page; a smuggled host answering the
+ *       same navigation with {@code problem+json} would make the two {@code 404}s distinguishable
+ *       by body shape. {@link EventType#METHOD_NOT_ALLOWED} is eligible because a {@code 405} is
+ *       reachable by navigation, and a browser shown a JSON document for it has no page to read.</li>
  *   <li>{@link Classification#KEEP_SHAPE} — every other exit keeps its current body and content
  *       type. That includes, above all, every response <strong>relayed from an origin</strong>
  *       ({@link Exit#ORIGIN_RELAY}, {@link Exit#UPSTREAM_ASSET}): the gateway never replaces what an
@@ -125,13 +130,13 @@ public class ErrorPageClassifier {
      */
     public static Classification classify(EventType event) {
         return switch (event) {
-            case NO_ROUTE_MATCHED, SCOPE_MISSING, CSRF_REJECTED, CONTENT_TOO_LARGE, UPSTREAM_ERROR,
-                UPSTREAM_CIRCUIT_OPEN, UPSTREAM_TIMEOUT -> Classification.HTML_ELIGIBLE;
+            case NO_ROUTE_MATCHED, PASSTHROUGH_HOST_SMUGGLED, METHOD_NOT_ALLOWED, SCOPE_MISSING, CSRF_REJECTED,
+                CONTENT_TOO_LARGE, UPSTREAM_ERROR, UPSTREAM_CIRCUIT_OPEN, UPSTREAM_TIMEOUT ->
+                Classification.HTML_ELIGIBLE;
             case REQUEST_FORWARDED, TOKEN_REFRESHED, CONFIG_LOADED, CONFIG_INVALID, AUTH_WEAKENED,
                 SECURITY_FILTER_VIOLATION, PATH_NOT_ALLOWED, PARAMETER_LIMIT_EXCEEDED,
-                PASSTHROUGH_HOST_SMUGGLED, METHOD_NOT_ALLOWED, RESERVED_BODY_TOO_LARGE, TOKEN_MISSING,
-                TOKEN_INVALID, SESSION_CREATED, SESSION_DESTROYED, SESSION_REFRESH_FAILED,
-                BACKCHANNEL_LOGOUT, LOGOUT_TOKEN_INVALID, WEBSOCKET_ORIGIN_REJECTED,
+                RESERVED_BODY_TOO_LARGE, TOKEN_MISSING, TOKEN_INVALID, SESSION_CREATED, SESSION_DESTROYED,
+                SESSION_REFRESH_FAILED, BACKCHANNEL_LOGOUT, LOGOUT_TOKEN_INVALID, WEBSOCKET_ORIGIN_REJECTED,
                 WEBSOCKET_IDLE_TIMEOUT -> Classification.KEEP_SHAPE;
         };
     }
@@ -184,6 +189,7 @@ public class ErrorPageClassifier {
             case 401 -> "Unauthorized";
             case 403 -> "Forbidden";
             case 404 -> "Not Found";
+            case 405 -> "Method Not Allowed";
             case 413 -> "Content Too Large";
             case 502 -> "Bad Gateway";
             case 503 -> "Service Unavailable";

@@ -50,6 +50,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
@@ -97,6 +98,9 @@ class GatewayEdgeErrorPageTest {
 
     private static final String OIDC_HOST = "gw.example.com";
     private static final String CALLBACK_PATH = "/auth/callback";
+    private static final String USER_INFO_PATH = "/auth/userinfo";
+    /** The reserved passthrough hostname a terminated request must not reach by {@code Host}. */
+    private static final String PASSTHROUGH_SNI = "backend.internal.example";
     /** A policy distinct from the portal's, so the served CSP names which writer answered. */
     private static final String GLOBAL_POLICY = "default-src 'none'";
     private static final String CSP = "Content-Security-Policy";
@@ -196,6 +200,72 @@ class GatewayEdgeErrorPageTest {
     @DisplayName("an unrouted address negotiates 404")
     void unroutedAddress() throws Exception {
         assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.GET, "/nowhere", Map.of(), null, null);
+    }
+
+    @Test
+    @DisplayName("a method the route does not allow negotiates 405")
+    void methodNotAllowed() throws Exception {
+        assertNegotiates(405, Shape.PROBLEM, io.vertx.core.http.HttpMethod.DELETE, "/echo/resource", Map.of(), null,
+                null);
+    }
+
+    /**
+     * A terminated request whose {@code Host} names the reserved passthrough hostname. It must
+     * negotiate exactly as the unrouted address above does: a {@code 404} that kept
+     * {@code problem+json} for a navigation would tell a smuggled host from an address no route
+     * serves by body shape alone.
+     */
+    @Test
+    @DisplayName("a smuggled passthrough Host negotiates 404 exactly as an unrouted address does")
+    void smuggledPassthroughHost() throws Exception {
+        assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.GET, "/nowhere", Map.of(), null,
+                PASSTHROUGH_SNI);
+    }
+
+    @Test
+    @DisplayName("the HTML error page renders nothing request-derived: two differing unrouted requests get one body")
+    void htmlErrorPageEchoesNothingFromTheRequest() throws Exception {
+        List<String> firstMarkers = List.of("mkhosta1", "mkpatha2", "mkquerya3", "mkheadera4");
+        List<String> secondMarkers = List.of("mkhostb5", "mkpathb6", "mkqueryb7", "mkheaderb8");
+
+        Response first = sendMarked(firstMarkers);
+        Response second = sendMarked(secondMarkers);
+
+        assertHtmlPage(first, 404);
+        assertHtmlPage(second, 404);
+        assertEquals(first.body(), second.body(), "the page is fixed per status and carries no request input");
+        for (String marker : List.of("mkhost", "mkpath", "mkquery", "mkheader")) {
+            assertFalse(first.body().contains(marker), () -> "the error page echoed '%s'".formatted(marker));
+        }
+    }
+
+    /** Sends an unrouted navigation whose Host, path, query and a custom header each carry one marker. */
+    private Response sendMarked(List<String> markers) throws Exception {
+        return send(enabledFront, io.vertx.core.http.HttpMethod.GET,
+                "/" + markers.get(1) + "?probe=" + markers.get(2),
+                Map.of("Accept", TEXT_HTML, "X-Probe", markers.get(3)), null, markers.get(0) + ".example");
+    }
+
+    /**
+     * The user-info endpoint is an API boundary, not a navigation target: its no-session answer keeps
+     * one status, content type and body whatever the request accepts, and never redirects.
+     */
+    @Test
+    @DisplayName("/auth/userinfo answers the same status, content type and body for text/html as for */*")
+    void userInfoIsNeverNegotiated() throws Exception {
+        Response html = send(enabledFront, io.vertx.core.http.HttpMethod.GET, USER_INFO_PATH,
+                Map.of("Accept", TEXT_HTML), null, OIDC_HOST);
+        Response wildcard = send(enabledFront, io.vertx.core.http.HttpMethod.GET, USER_INFO_PATH,
+                Map.of("Accept", "*/*"), null, OIDC_HOST);
+
+        assertAll("user-info boundary",
+                () -> assertEquals(401, wildcard.status(), "the user-info handler's own no-session answer"),
+                () -> assertEquals(wildcard.status(), html.status()),
+                () -> assertEquals(wildcard.headers().get(CONTENT_TYPE), html.headers().get(CONTENT_TYPE)),
+                () -> assertEquals(wildcard.body(), html.body()),
+                () -> assertFalse(html.body().contains("<!DOCTYPE html>"), html.body()),
+                () -> assertFalse(html.headers().containsKey("Location"), "user-info never redirects"),
+                () -> assertFalse(wildcard.headers().containsKey("Location"), "user-info never redirects"));
     }
 
     /**
@@ -373,8 +443,10 @@ class GatewayEdgeErrorPageTest {
 
     private HttpServer startFront(RouteTable routes, TokenValidator tokenValidator, boolean errorPages)
             throws Exception {
-        OidcConfig oidc = OidcConfig.builder().redirectUri("https://" + OIDC_HOST + CALLBACK_PATH).build();
+        OidcConfig oidc = OidcConfig.builder().redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build()).build();
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).securityHeaders(globalHeaders()).oidc(oidc)
+                .tls(TlsConfig.builder().passthroughSni(Map.of(PASSTHROUGH_SNI, "backend")).build())
                 .build();
         PortalConfig portal = PortalConfig.builder().path("/portal").title("Portal").errorPages(errorPages).build();
         BffRuntime runtime = GatewayEdgeRouteBffWiringTest.activeRuntime(

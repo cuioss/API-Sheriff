@@ -52,7 +52,10 @@ import org.jspecify.annotations.Nullable;
  * {@link ByteCappedBodyStream} that forwards each chunk to the upstream request as it arrives and
  * enforces the {@code max_body_bytes} ceiling with a running counter. A mid-stream breach ABORTS
  * the in-flight upstream call (Vert.x {@link HttpClientRequest#reset()}) and surfaces
- * {@link EventType#CONTENT_TOO_LARGE} (413). The upstream body is <strong>never
+ * {@link EventType#CONTENT_TOO_LARGE} (413). An inbound stream that fails after dispatch has begun
+ * aborts the upstream call the same way, so a request body that did not arrive whole is never
+ * completed towards the upstream and its HTTP/1.x upstream connection is never pooled again. The
+ * upstream body is <strong>never
  * materialized</strong> into an {@code HttpResult<byte[]>} (ADR-0006/0008): the returned
  * {@link HttpClientResponse} is a live {@link ReadStream} whose body {@link ResponseStage} streams
  * back with backpressure.
@@ -301,10 +304,104 @@ public final class DispatchStage {
     }
 
     /**
+     * The inbound request body together with the memory of its failure.
+     * <p>
+     * A stream reports a failure only to the exception handler registered at that moment. The body is
+     * handed to the upstream request on a virtual thread, some time after the request arrived, so a
+     * failure in between would reach no one and the dispatch would then wait on a body that can never
+     * end. This decorator is therefore armed on the inbound stream's own event loop, before the
+     * virtual-thread hop: it records the first failure and replays it to whichever handler is
+     * registered later, so a consumer that subscribes late still learns that the body failed — and
+     * {@link ByteCappedBodyStream} then aborts the upstream request instead of leaving it open.
+     * <p>
+     * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
+     * registered from another thread; both go through the same monitor.
+     */
+    static final class InboundBody implements ReadStream<Buffer> {
+
+        private final ReadStream<Buffer> delegate;
+        private @Nullable Throwable failure;
+        private @Nullable Handler<Throwable> failureHandler;
+
+        private InboundBody(ReadStream<Buffer> delegate) {
+            this.delegate = delegate;
+        }
+
+        /**
+         * Wraps {@code delegate} and claims its exception handler, so every failure from now on is
+         * recorded.
+         *
+         * @param delegate the inbound request body stream
+         * @return the armed decorator, to be handed to {@link DispatchStage#dispatch} in its place
+         */
+        static InboundBody arm(ReadStream<Buffer> delegate) {
+            InboundBody body = new InboundBody(Objects.requireNonNull(delegate, "delegate"));
+            delegate.exceptionHandler(body::onFailure);
+            return body;
+        }
+
+        private synchronized void onFailure(Throwable cause) {
+            if (failure == null) {
+                failure = cause;
+            }
+            if (failureHandler != null) {
+                failureHandler.handle(cause);
+            }
+        }
+
+        @Override
+        public synchronized ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
+            this.failureHandler = handler;
+            if (handler != null && failure != null) {
+                handler.handle(failure);
+            }
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
+            delegate.handler(handler);
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            delegate.pause();
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            delegate.resume();
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            delegate.fetch(amount);
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
+            delegate.endHandler(endHandler);
+            return this;
+        }
+    }
+
+    /**
      * A {@link ReadStream} decorator that forwards each request-body chunk to the upstream as it
      * arrives — never accumulating the body — while counting bytes against a ceiling. On breach it
      * aborts the in-flight upstream request and fails the stream with a
      * {@link EventType#CONTENT_TOO_LARGE} {@link GatewayException}.
+     * <p>
+     * <strong>An inbound failure aborts the upstream request too.</strong> When the inbound stream
+     * itself fails after dispatch has begun — its chunk framing is malformed, or the client connection
+     * drops mid-body — the same abort action runs before the failure is propagated. A request body
+     * that did not arrive whole is therefore never completed towards the upstream: the upstream
+     * request is reset at once, which on HTTP/1.x closes that upstream connection instead of returning
+     * it to the pool, and on HTTP/2 resets the one stream. The abort action runs at most once per
+     * stream, whichever of the two triggers fires first.
      */
     static final class ByteCappedBodyStream implements ReadStream<Buffer> {
 
@@ -328,8 +425,20 @@ public final class DispatchStage {
             this.maxBytes = maxBytes;
             this.abortAction = Objects.requireNonNull(abortAction, "abortAction");
             this.bytesForwarded = Objects.requireNonNull(bytesForwarded, "bytesForwarded");
-            delegate.exceptionHandler(this::propagateFailure);
+            delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
+        }
+
+        /**
+         * The inbound stream failed: abort the upstream request first, then report the failure, so the
+         * consumer never sees a failed body whose upstream request is still open.
+         */
+        private void onInboundFailure(Throwable failure) {
+            if (!aborted) {
+                aborted = true;
+                abortAction.run();
+            }
+            propagateFailure(failure);
         }
 
         private void onChunk(Buffer chunk) {
