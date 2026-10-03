@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: A distroless native image carries no update-ca-trust and captures its trust material at build time, so every trust change an operator makes is a whole-bundle REPLACEMENT delivered as command-line -D arguments rather than an addition to an extendable OS store. A JVM artifact on a UBI-minimal base would restore that extendable store and is the obvious remedy; it is considered and DECLINED for now. The native-on-distroless artifact stays, and the operator gap is closed with documentation and boot-time reporting instead, because the attack surface and the ADR-0039 self-answering health check both rest on the current base and the -D route is the runtime's own documented one; no instance in this repository exercises that route, so it is documented and reported at boot rather than measured. What would reverse the decision is recorded rather than left to judgement.
+// summary: A distroless native image carries no update-ca-trust and captures its trust material at build time, so every trust change an operator makes is a whole-bundle REPLACEMENT delivered as command-line -D arguments rather than an addition to an extendable OS store. A JVM artifact on a UBI-minimal base would restore that extendable store and is the obvious remedy; it is considered and DECLINED for now. The native-on-distroless artifact stays, and the operator gap is closed with documentation and boot-time reporting instead, because the attack surface and the ADR-0039 self-answering health check both rest on the current base and the -D route is the runtime's own documented one; no launch of the native artifact in this repository passes the triple as command-line -D arguments (JVM tests set the same properties in-process, which launches no native artifact), so the route is documented and reported at boot rather than measured on the real artifact. What would reverse the decision is recorded rather than left to judgement.
 // tags: tls-trust, trust-store, distroless, native-image, base-image, artifact-format, attack-surface, operator-experience, container-health, image-artifact
 // affects: api-sheriff, integration-tests, deployment
 // supersedes:
@@ -77,13 +77,15 @@ constraint that made it the right answer, so the artifact change is not confined
 reopens a delivered decision. A change with that reach is not one to make as a side effect of a trust
 ergonomics fix.
 
-*The `-D` route is the runtime's own documented one, and no instance in this repository exercises
-it.* The triple on the runner's command line, appended to the exec-form `ENTRYPOINT`, is the route a
-native executable takes a runtime default trust store by. The integration stack does not take it: no
-gateway instance there passes a `-D` argument, and each binds its private certificate authority
-through named trust profiles instead -- `jwks.tls_profile` for the JWKS fetch and
-`egress_tls.oidc_tls_profile` for the BFF's own back-channel to the identity provider. The route
-therefore rests on the runtime's documented behaviour, not on a test of the real artifact. What keeps
+*The `-D` route is the runtime's own documented one, and no launch of the native artifact in this
+repository passes the triple as command-line `-D` arguments.* The triple on the runner's command
+line, appended to the exec-form `ENTRYPOINT`, is the route a native executable takes a runtime
+default trust store by. The integration stack does not take it: no gateway instance there passes a
+`-D` argument, and each binds its private certificate authority through named trust profiles
+instead -- `jwks.tls_profile` for the JWKS fetch and `egress_tls.oidc_tls_profile` for the BFF's own
+back-channel to the identity provider. JVM tests do set the same `javax.net.ssl.trustStore*`
+properties, but in-process, and they launch no native artifact with them. The route therefore rests
+on the runtime's documented behaviour, not on a test of the real artifact. What keeps
 "document it" an answer rather than a deferral is the boot-time reporting below: the store actually in
 force is named in the log of every deployment that takes the route.
 
@@ -152,9 +154,11 @@ it is not a change to make quietly.
   public roots.
 * **The two trust tiers remain independently settable**, so a half-moved posture is reachable. It is
   reported when it happens, and nothing refuses it.
-* **The route the operator is told to use is exercised by no instance in this repository.** The
-  integration stack binds its trust through named profiles and passes no `-D` argument, so the
-  documentation describes the runtime's documented behaviour rather than a measured one.
+* **The route the operator is told to use is taken by no launch of the native artifact in this
+  repository.** The integration stack binds its trust through named profiles and passes no `-D`
+  argument, and the JVM tests that set the same properties do so in-process and launch no native
+  artifact, so the documentation describes the runtime's documented behaviour rather than a measured
+  one.
 
 === Risks
 
