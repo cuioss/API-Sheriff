@@ -133,18 +133,9 @@ public class SheriffMetrics {
      *                     {@code 5xx})
      */
     public void recordRequest(String route, @Nullable HttpMethod method, String statusFamily) {
+        String methodLabel = method != null ? method.name() : METHOD_OTHER;
         registry.counter(REQUESTS_TOTAL,
-                TAG_ROUTE, route, TAG_METHOD, methodLabel(method), TAG_STATUS_FAMILY, statusFamily).increment();
-    }
-
-    /**
-     * Maps a parsed request method onto its bounded {@code method} label value.
-     *
-     * @param method the parsed request method, or {@code null} for a method the gateway does not parse
-     * @return the {@link HttpMethod} enum name, or {@value #METHOD_OTHER} for {@code null}
-     */
-    private static String methodLabel(@Nullable HttpMethod method) {
-        return method != null ? method.name() : METHOD_OTHER;
+                TAG_ROUTE, route, TAG_METHOD, methodLabel, TAG_STATUS_FAMILY, statusFamily).increment();
     }
 
     /**
