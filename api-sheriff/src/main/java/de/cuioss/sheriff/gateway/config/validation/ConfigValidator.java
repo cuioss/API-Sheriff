@@ -2766,8 +2766,9 @@ public final class ConfigValidator {
 
     /**
      * Validates a single {@code protocol: websocket} route against the fail-closed
-     * WebSocket allowlist contract (ADR-0015): a route whose effective auth is
-     * {@code require: bearer} or {@code require: session} needs a non-empty
+     * WebSocket allowlist contract (ADR-0015): a route whose effective auth is authenticated
+     * ({@link Require#isAuthenticated()} — today {@code require: bearer} or
+     * {@code require: session}) needs a non-empty
      * {@code allowed_origins}, no origin may contain a wildcard, and a declared
      * {@code idle_timeout_seconds} must be positive.
      * <p>
@@ -2784,7 +2785,7 @@ public final class ConfigValidator {
         WebSocketConfig websocket = route.websocket();
         List<String> origins = websocket == null ? List.of() : websocket.allowedOrigins();
         Require require = effectiveRequire(gateway, endpoint, route);
-        if ((require == Require.BEARER || require == Require.SESSION) && origins.isEmpty()) {
+        if (require.isAuthenticated() && origins.isEmpty()) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' with effective auth '%s' must declare a non-empty allowed_origins allowlist (fail-closed)"
                             .formatted(route.id(), require.name().toLowerCase(Locale.ROOT))));

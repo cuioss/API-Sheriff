@@ -4358,21 +4358,21 @@ class ConfigValidatorTest {
         }
 
         @ParameterizedTest(name = "require: {0}")
-        @EnumSource(value = Require.class, names = {"BEARER", "SESSION"})
+        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
         @DisplayName("Should refuse an authenticated WebSocket route that declares no websocket block")
         void shouldRefuseAbsentAllowlist(Require require) {
             assertRefusedForMissingAllowlist(require, null);
         }
 
         @ParameterizedTest(name = "require: {0}")
-        @EnumSource(value = Require.class, names = {"BEARER", "SESSION"})
+        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
         @DisplayName("Should refuse an authenticated WebSocket route whose allowed_origins is empty")
         void shouldRefuseEmptyAllowlist(Require require) {
             assertRefusedForMissingAllowlist(require, allowing());
         }
 
         @ParameterizedTest(name = "require: {0}")
-        @EnumSource(value = Require.class, names = {"BEARER", "SESSION"})
+        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
         @DisplayName("Should accept an authenticated WebSocket route that declares an exact origin")
         void shouldAcceptPopulatedAllowlist(Require require) {
             List<ConfigError> errors = allowlistErrors(require, "socket", allowing(ORIGIN));
