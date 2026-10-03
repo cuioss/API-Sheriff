@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -427,12 +428,55 @@ class DispatchStageTest {
 
             // Assert
             assertAll("client-caused inbound failures",
-                    () -> assertEquals(Collections.nCopies(REQUEST_VOLUME_THRESHOLD, EventType.SECURITY_FILTER_VIOLATION),
+                    () -> assertEquals(Collections.nCopies(REQUEST_VOLUME_THRESHOLD, EventType.INBOUND_BODY_ABORTED),
                             raised, "each failed inbound body must surface as the client-attributed rejection"),
                     () -> assertEquals(List.of(), breakerTransitions,
                             "the breaker must stay closed through a full window of inbound failures"),
                     () -> assertEquals(200, response.statusCode(),
                             "the upstream must still be called once the window is full"));
+        }
+
+        @Test
+        @DisplayName("a mid-upload inbound failure raises the dedicated event, never the security-filter violation")
+        void inboundFailureIsNotASecurityFilterViolation() throws Exception {
+            // Arrange
+            TestReadStream inbound = new TestReadStream();
+            Future<HttpClientResponse> dispatched = dispatch(ACCEPTING_PATH, inbound);
+            sendFirstChunk(inbound, 1);
+
+            // Act — the client goes away mid-upload
+            inbound.fail(new IllegalStateException("client-chosen-text"));
+            GatewayException rejection = rejectionOf(dispatched);
+
+            // Assert
+            assertAll("a failed inbound body",
+                    () -> assertEquals(EventType.INBOUND_BODY_ABORTED, rejection.getEventType(),
+                            "a failed inbound body must surface as its own client-attributed event"),
+                    () -> assertNotEquals(EventType.SECURITY_FILTER_VIOLATION, rejection.getEventType(),
+                            "a dropped upload is not a security filter violation"),
+                    () -> assertEquals(400, rejection.getEventType().httpStatus()),
+                    () -> assertFalse(rejection.getMessage().contains("client-chosen-text"),
+                            "the disposition is fixed and carries nothing from the failure itself"));
+        }
+
+        @Test
+        @DisplayName("a body crossing the cap mid-upload still surfaces as CONTENT_TOO_LARGE and leaves the breaker closed")
+        void capBreachKeepsContentTooLarge() throws Exception {
+            // Arrange — the stage caps the body at 1024 bytes
+            TestReadStream inbound = new TestReadStream();
+            Future<HttpClientResponse> dispatched = dispatch(ACCEPTING_PATH, inbound);
+            sendFirstChunk(inbound, 1);
+
+            // Act — one chunk that crosses the cap
+            inbound.emit(Buffer.buffer(new byte[2048]));
+            GatewayException rejection = rejectionOf(dispatched);
+
+            // Assert
+            assertAll("a body-cap breach",
+                    () -> assertEquals(EventType.CONTENT_TOO_LARGE, rejection.getEventType(),
+                            "the cap breach keeps its own event"),
+                    () -> assertEquals(List.of(), breakerTransitions,
+                            "a cap breach is client-caused and must not move the breaker"));
         }
 
         @Test

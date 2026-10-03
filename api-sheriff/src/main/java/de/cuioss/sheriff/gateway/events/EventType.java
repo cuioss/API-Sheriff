@@ -97,6 +97,19 @@ public enum EventType {
      * proxy-path cap.
      */
     CONTENT_TOO_LARGE(EventCategory.INPUT_VALIDATION, 413),
+    /**
+     * A proxied request's body stream failed after the upstream dispatch had begun — the client
+     * disconnected mid-upload, or the body's chunk framing broke — so the body never arrived whole.
+     * {@code DispatchStage} aborts the upstream request at once and reports this event; the
+     * {@code 400} is the status of the exchange, which a client that has already gone never reads.
+     * <p>
+     * Contrast {@link #CONTENT_TOO_LARGE}, which is a body that kept arriving past the route's
+     * {@code security_filter.max_body_bytes} cap. This event is a body that stopped arriving, whatever
+     * its size. It is <strong>not</strong> a {@link #SECURITY_FILTER_VIOLATION}: no filter judged the
+     * request, and an ordinary dropped upload raises no security warning. It is attributed to the
+     * client, never to the upstream, so it is not counted by the route's circuit breaker.
+     */
+    INBOUND_BODY_ABORTED(EventCategory.INPUT_VALIDATION, 400),
 
     // --- Authentication (401) ---
 

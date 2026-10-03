@@ -102,6 +102,7 @@ class EventTypeTest {
             arguments(EventType.METHOD_NOT_ALLOWED, 405, EventCategory.ROUTING),
             arguments(EventType.RESERVED_BODY_TOO_LARGE, 413, EventCategory.INPUT_VALIDATION),
             arguments(EventType.CONTENT_TOO_LARGE, 413, EventCategory.INPUT_VALIDATION),
+            arguments(EventType.INBOUND_BODY_ABORTED, 400, EventCategory.INPUT_VALIDATION),
             arguments(EventType.TOKEN_MISSING, 401, EventCategory.AUTHENTICATION),
             arguments(EventType.TOKEN_INVALID, 401, EventCategory.AUTHENTICATION),
             arguments(EventType.LOGOUT_TOKEN_INVALID, 400, EventCategory.AUTHENTICATION),

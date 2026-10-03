@@ -29,6 +29,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
@@ -284,6 +285,8 @@ public class GatewayEdgeRoute {
      * decorator that remembers an inbound failure. Absent on the reserved-body path, which reads its
      * body itself and never dispatches upstream. */
     private static final String INBOUND_BODY_KEY = "sheriff.inboundbody";
+    /** The fixed disposition the aborted-inbound-body record carries; nothing the client supplied. */
+    private static final String INBOUND_BODY_ABORTED_DISPOSITION = "body-stream-failed";
 
     private final List<RouteRuntime> routes;
     private final ExecutorService virtualThreadExecutor;
@@ -331,6 +334,11 @@ public class GatewayEdgeRoute {
      */
     private final Set<HttpConnection> retiredConnections =
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+    /**
+     * The route ids an aborted inbound body has already been reported for at {@code INFO} (see
+     * {@link #logInboundBodyAborted}). Bounded by the number of configured routes.
+     */
+    private final Set<String> inboundBodyAbortReported = ConcurrentHashMap.newKeySet();
     private volatile boolean draining;
 
     /**
@@ -1217,8 +1225,8 @@ public class GatewayEdgeRoute {
     /**
      * Meters and renders a categorized {@link GatewayException} rejection: increments the event counter
      * (except for upstream failures already metered inside {@code UpstreamFailureMapper}), emits the
-     * security-relevant WARN for filter violations and smuggled passthrough hosts, records the error
-     * metric, and renders the rejection.
+     * security-relevant WARN for filter violations and smuggled passthrough hosts and the latched INFO
+     * for an aborted inbound body, records the error metric, and renders the rejection.
      */
     private void handleGatewayRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
         // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
@@ -1234,12 +1242,37 @@ public class GatewayEdgeRoute {
             // message is a fixed disposition (never the raw Host value).
             case PASSTHROUGH_HOST_SMUGGLED -> LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED,
                     rejected.getMessage());
+            // A client-caused termination, not a security event: an INFO, latched per route.
+            case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx));
             default -> {
-                // Every other rejection is rendered without a security WARN; it is metered above.
+                // Every other rejection is rendered without a log record; it is metered above.
             }
         }
         recordError(ctx, rejected.getEventType());
         renderRejection(ctx, request, rejected);
+    }
+
+    /**
+     * Records one {@link EventType#INBOUND_BODY_ABORTED} — a request body that failed after dispatch
+     * began, such as a client disconnecting mid-upload.
+     * <p>
+     * <strong>Latched per route.</strong> Every caller a route admits can end its own upload at will,
+     * and on a route without authentication that is any caller at all, so a record per occurrence
+     * would hand out a log line per request (CWE-779). The first occurrence on a route is recorded at
+     * {@code INFO}; every repeat on that route is a {@code DEBUG} diagnostic. The latch is keyed by the
+     * route id, so it holds at most one entry per configured route. The absence of a repeated
+     * {@code INFO} says nothing about the rate — {@link SheriffMetrics#ERRORS_TOTAL} carries that.
+     * <p>
+     * The record carries the route id and a fixed disposition only: never the failure's message, which
+     * can describe what the client sent.
+     */
+    private void logInboundBodyAborted(String route) {
+        if (inboundBodyAbortReported.add(route)) {
+            LOGGER.info(ApiSheriffLogMessages.INFO.INBOUND_BODY_ABORTED, route, INBOUND_BODY_ABORTED_DISPOSITION);
+            return;
+        }
+        LOGGER.debug("Request body on route '%s' did not arrive whole again (%s) — already reported once for "
+                + "this route, stays at DEBUG for the rest of the process", route, INBOUND_BODY_ABORTED_DISPOSITION);
     }
 
     /**

@@ -53,8 +53,9 @@ import org.jspecify.annotations.Nullable;
  * enforces the {@code max_body_bytes} ceiling with a running counter. A mid-stream breach ABORTS
  * the in-flight upstream call (Vert.x {@link HttpClientRequest#reset()}) and surfaces
  * {@link EventType#CONTENT_TOO_LARGE} (413). An inbound stream that fails after dispatch has begun
- * aborts the upstream call the same way, so a request body that did not arrive whole is never
- * completed towards the upstream and its HTTP/1.x upstream connection is never pooled again. The
+ * aborts the upstream call the same way and surfaces {@link EventType#INBOUND_BODY_ABORTED} (400), so
+ * a request body that did not arrive whole is never completed towards the upstream and its HTTP/1.x
+ * upstream connection is never pooled again. The
  * upstream body is <strong>never
  * materialized</strong> into an {@code HttpResult<byte[]>} (ADR-0006/0008): the returned
  * {@link HttpClientResponse} is a live {@link ReadStream} whose body {@link ResponseStage} streams
@@ -68,7 +69,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>The breaker counts upstream failures only.</strong> A dispatch the client itself ended —
  * the body-cap breach, or an inbound body stream that failed after dispatch began — reaches the
  * guard as the {@link GatewayException} the {@link ByteCappedBodyStream} recorded for it
- * ({@link EventType#CONTENT_TOO_LARGE}, or {@link EventType#SECURITY_FILTER_VIOLATION} for the failed
+ * ({@link EventType#CONTENT_TOO_LARGE}, or {@link EventType#INBOUND_BODY_ABORTED} for the failed
  * inbound body), never as the transport error the aborted upstream request produced. The guard skips
  * a {@link GatewayException}, so such a dispatch neither counts as an upstream failure nor is
  * retried, whatever the client sends and however often. A failure with no client-side abort behind
@@ -430,9 +431,11 @@ public final class DispatchStage {
      * <p>
      * <strong>Either abort is recorded as client-caused.</strong> The trigger that fires first leaves a
      * {@link GatewayException} behind — {@link EventType#CONTENT_TOO_LARGE} for the cap breach,
-     * {@link EventType#SECURITY_FILTER_VIOLATION} for the failed inbound stream — readable through
+     * {@link EventType#INBOUND_BODY_ABORTED} for the failed inbound stream — readable through
      * {@link #clientAbort()} from any thread, and set before the abort action runs. The dispatch that
      * owns this stream reports that exception in place of the transport error its own abort caused.
+     * A failed inbound stream is a client-caused termination, not a security filter violation: it is
+     * reported under its own event so an ordinary dropped upload raises no security warning.
      */
     static final class ByteCappedBodyStream implements ReadStream<Buffer> {
 
@@ -472,7 +475,7 @@ public final class DispatchStage {
         private void onInboundFailure(Throwable failure) {
             if (!aborted) {
                 aborted = true;
-                clientAbort = new GatewayException(EventType.SECURITY_FILTER_VIOLATION, INBOUND_BODY_FAILED, failure);
+                clientAbort = new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure);
                 abortAction.run();
             }
             propagateFailure(failure);

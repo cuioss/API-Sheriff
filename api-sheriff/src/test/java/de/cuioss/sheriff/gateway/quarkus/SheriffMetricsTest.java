@@ -243,6 +243,25 @@ class SheriffMetricsTest {
             }
         }
 
+        @Test
+        @DisplayName("recordError counts an aborted inbound body as its own input-validation series")
+        void recordErrorCountsAbortedInboundBodyUnderItsOwnEvent() {
+            metrics.recordError("upload", EventType.INBOUND_BODY_ABORTED);
+
+            var aborted = registry.find("sheriff_errors_total")
+                    .tags("route", "upload", "category", "input-validation", "event", "INBOUND_BODY_ABORTED")
+                    .counter();
+            var counters = registry.find("sheriff_errors_total").counters();
+            assertAll("the aborted-inbound-body series",
+                    () -> assertNotNull(aborted, "the series is keyed by the literal enum name and category slug"),
+                    () -> assertEquals(1.0, aborted.count()),
+                    () -> assertEquals(1, counters.size(),
+                            "an aborted inbound body must not also move the security-filter series"),
+                    () -> assertEquals(Set.of("route", "category", "event"),
+                            counters.iterator().next().getId().getTags().stream().map(Tag::getKey)
+                                    .collect(Collectors.toSet())));
+        }
+
         /** Every {@link EventType} that carries a category — the population {@code recordError} accepts. */
         static Stream<EventType> categorisedEventTypes() {
             List<EventType> categorised = Arrays.stream(EventType.values())

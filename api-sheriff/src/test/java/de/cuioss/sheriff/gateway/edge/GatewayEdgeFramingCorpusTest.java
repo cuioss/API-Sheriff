@@ -59,6 +59,9 @@ import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -104,8 +107,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code GET /echo/smuggled} behind the framing ambiguity. The upstream never seeing that path is the
  * invariant of the corpus; the per-entry request list additionally pins that the upstream saw at
  * most the one legitimate request.
+ * <p>
+ * <strong>The one entry that is not an attack.</strong> A client that simply drops its connection
+ * mid-upload needs the same raw socket to be produced, so it is pinned here too: it is reported as
+ * the client-attributed {@code INBOUND_BODY_ABORTED}, latched per route at {@code INFO}, and never
+ * as the security-filter {@code WARN}.
  */
 @EnableGeneratorController
+@EnableTestLogger(debug = GatewayEdgeRoute.class)
 @DisplayName("GatewayEdgeRoute — request-smuggling corpus over raw sockets")
 class GatewayEdgeFramingCorpusTest {
 
@@ -130,6 +139,8 @@ class GatewayEdgeFramingCorpusTest {
     private HttpServer frontServer;
     private NetClient netClient;
     private int frontPort;
+    /** The registry the edge under test meters into. */
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     /** Every request the stub upstream received a head for, as {@code METHOD path}. */
     private final List<String> upstreamStarted = new CopyOnWriteArrayList<>();
@@ -176,7 +187,7 @@ class GatewayEdgeFramingCorpusTest {
                 .build()));
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),
                 vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
-                new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                new SheriffMetrics(meterRegistry), BffRuntime.inert(),
                 EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
@@ -353,6 +364,53 @@ class GatewayEdgeFramingCorpusTest {
                 () -> assertEquals(List.of(BARE_LF_POST, DRAIN), upstreamStarted, drained),
                 () -> assertEquals(List.of(DRAIN + " []"), upstreamCompleted, drained),
                 this::assertUpstreamConnectionRetired);
+    }
+
+    @Test
+    @DisplayName("a client that disconnects mid-upload is reported once as INFO ApiSheriff-22, never as the security WARN")
+    void clientDisconnectMidUploadIsNotASecurityWarning() throws Exception {
+        // Act — two uploads on the same route, each abandoned by its client after dispatch began
+        abandonUploadAfterDispatch(1);
+        abandonUploadAfterDispatch(2);
+
+        // Assert
+        assertAll("an abandoned upload",
+                () -> assertEquals(2.0, errorCount("INBOUND_BODY_ABORTED"),
+                        "every abandoned upload is counted under its own event"),
+                () -> assertEquals(0.0, errorCount("SECURITY_FILTER_VIOLATION"),
+                        "an abandoned upload must not count as a security filter violation"),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
+                () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO,
+                        "Request body on route 'echo' did not arrive whole (body-stream-failed)"),
+                () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG,
+                        "Request body on route 'echo' did not arrive whole again"),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, "ApiSheriff-100"));
+    }
+
+    /**
+     * Starts a chunked upload over a raw socket, waits until the edge has dispatched it and the
+     * upstream has seen its head, then closes the client connection and waits until the edge has
+     * accounted for the {@code occurrence}-th aborted inbound body.
+     */
+    private void abandonUploadAfterDispatch(int occurrence) throws Exception {
+        String path = "/abandoned-" + occurrence;
+        NetSocket socket = Awaits.connect(netClient.connect(frontPort, LoopbackHost.ADDRESS),
+                "the raw TCP client to connect to the edge");
+        socket.write("POST /echo" + path + " HTTP/1.1" + CRLF + host()
+                + "Transfer-Encoding: chunked" + CRLF + CRLF + "5" + CRLF + "hello" + CRLF);
+        Awaits.until(() -> upstreamStarted.contains("POST " + path),
+                "the upstream to receive the head of the dispatched upload", Awaits.CONNECT_CEILING_SECONDS);
+
+        Awaits.connect(socket.close(), "the client to drop its connection mid-upload");
+
+        Awaits.until(() -> errorCount("INBOUND_BODY_ABORTED") == occurrence,
+                "the edge to account for the abandoned upload", Awaits.CONNECT_CEILING_SECONDS);
+    }
+
+    /** The {@code sheriff_errors_total} count of the {@code echo} route for one event, {@code 0} when absent. */
+    private double errorCount(String event) {
+        var counter = meterRegistry.find(SheriffMetrics.ERRORS_TOTAL).tags("route", "echo", "event", event).counter();
+        return counter == null ? 0.0 : counter.count();
     }
 
     @Test
