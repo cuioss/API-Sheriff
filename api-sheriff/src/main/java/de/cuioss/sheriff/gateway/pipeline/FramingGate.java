@@ -27,8 +27,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 
 /**
- * D3b GW-02 anti-request-smuggling / framing gate, run at stage 1 and re-runnable after any
- * header mutation.
+ * D3b GW-02 anti-request-smuggling / framing gate, run once at stage 1, before route selection.
  * <p>
  * The gate rejects the four framing-desync vectors with a 400
  * {@link EventType#SECURITY_FILTER_VIOLATION} before a request can reach the upstream:
@@ -51,8 +50,9 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  *       {@code Host}) or a trust header ({@code Authorization} / {@code Forwarded} /
  *       {@code X-Forwarded-*}), which would drop that header hop-by-hop and reopen the desync.</li>
  * </ul>
- * Because the gate is stateless it is safe to re-invoke after stage 5 regenerates forwarding
- * headers, re-asserting framing integrity on the mutated header set.
+ * The gate inspects the inbound request headers, which are immutable for the lifetime of the
+ * request. The forwarding headers stage 5 regenerates are a separate set built for the upstream
+ * call, so the edge does not run the gate a second time.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -88,7 +88,7 @@ public final class FramingGate {
     }
 
     /**
-     * Re-asserts framing integrity on the current header set.
+     * Asserts framing integrity on the request's header set.
      *
      * @param request the in-flight request context
      * @throws GatewayException with {@link EventType#SECURITY_FILTER_VIOLATION} on any framing vector
