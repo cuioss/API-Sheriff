@@ -457,7 +457,7 @@ class GatewayEdgeFramingCorpusTest {
             // The body is subscribed inside the response callback: the edge resets the stream right after
             // the 400 is written, and a body subscribed only after that reset is processed is discarded.
             Map.Entry<HttpClientResponse, String> answered = Awaits.connect(rejected.response()
-                    .compose(response -> response.body().map(body -> Map.entry(response, body.toString()))),
+                            .compose(response -> response.body().map(body -> Map.entry(response, body.toString()))),
                     "the rejection and its body to arrive");
             HttpClientResponse rejection = answered.getKey();
             String rejectionBody = answered.getValue();
