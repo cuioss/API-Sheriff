@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: A distroless native image carries no update-ca-trust and captures its trust material at build time, so every trust change an operator makes is a whole-bundle REPLACEMENT delivered as command-line -D arguments rather than an addition to an extendable OS store. A JVM artifact on a UBI-minimal base would restore that extendable store and is the obvious remedy; it is considered and DECLINED for now. The native-on-distroless artifact stays, and the operator gap is closed with documentation and boot-time reporting instead, because the attack surface and the ADR-0039 self-answering health check both rest on the current base while the -D route is measured to work. What would reverse the decision is recorded rather than left to judgement.
+// summary: A distroless native image carries no update-ca-trust and captures its trust material at build time, so every trust change an operator makes is a whole-bundle REPLACEMENT delivered as command-line -D arguments rather than an addition to an extendable OS store. A JVM artifact on a UBI-minimal base would restore that extendable store and is the obvious remedy; it is considered and DECLINED for now. The native-on-distroless artifact stays, and the operator gap is closed with documentation and boot-time reporting instead, because the attack surface and the ADR-0039 self-answering health check both rest on the current base and the -D route is the runtime's own documented one; no instance in this repository exercises that route, so it is documented and reported at boot rather than measured. What would reverse the decision is recorded rather than left to judgement.
 // tags: tls-trust, trust-store, distroless, native-image, base-image, artifact-format, attack-surface, operator-experience, container-health, image-artifact
 // affects: api-sheriff, integration-tests, deployment
 // supersedes:
@@ -77,12 +77,15 @@ constraint that made it the right answer, so the artifact change is not confined
 reopens a delivered decision. A change with that reach is not one to make as a side effect of a trust
 ergonomics fix.
 
-*The `-D` route is measured to work, not assumed to.* Every gateway instance in the integration stack
-supplies its trust store exactly this way -- the triple on the runner's command line, appended to the
-exec-form `ENTRYPOINT` -- and the stack exercises the leg that depends on it, the BFF's own
-back-channel to the identity provider. The route is therefore proven on the real artifact rather than
-inferred from documentation, which is what makes "document it" a sufficient answer rather than a
-deferral.
+*The `-D` route is the runtime's own documented one, and no instance in this repository exercises
+it.* The triple on the runner's command line, appended to the exec-form `ENTRYPOINT`, is the route a
+native executable takes a runtime default trust store by. The integration stack does not take it: no
+gateway instance there passes a `-D` argument, and each binds its private certificate authority
+through named trust profiles instead -- `jwks.tls_profile` for the JWKS fetch and
+`egress_tls.oidc_tls_profile` for the BFF's own back-channel to the identity provider. The route
+therefore rests on the runtime's documented behaviour, not on a test of the real artifact. What keeps
+"document it" an answer rather than a deferral is the boot-time reporting below: the store actually in
+force is named in the log of every deployment that takes the route.
 
 *What the documentation-and-reporting answer consists of.* The gap is an operator-knowledge gap, and
 it is closed where operator knowledge lives:
@@ -136,8 +139,6 @@ it is not a change to make quietly.
   second binary -- and the property survives this requirement rather than being spent on it.
 * ADR-0039's health-check mechanism keeps the constraint that made it correct, so no delivered
   decision is reopened as a side effect.
-* The route the operator is told to use is the route the integration stack actually exercises, so the
-  documentation describes a measured behaviour rather than an intended one.
 * The trade-off is now *written down*. A future contributor who proposes a JVM artifact is arguing
   against a recorded position with stated reversal conditions rather than rediscovering the question.
 
@@ -151,6 +152,9 @@ it is not a change to make quietly.
   public roots.
 * **The two trust tiers remain independently settable**, so a half-moved posture is reachable. It is
   reported when it happens, and nothing refuses it.
+* **The route the operator is told to use is exercised by no instance in this repository.** The
+  integration stack binds its trust through named profiles and passes no `-D` argument, so the
+  documentation describes the runtime's documented behaviour rather than a measured one.
 
 === Risks
 
@@ -166,7 +170,7 @@ it is not a change to make quietly.
 extendable OS trust store, makes `update-ca-trust` available, and removes the replacement hazard at
 its root rather than documenting around it. Declined for now on the three supports above -- the
 permanent attack-surface cost paid for a rare operation, the reach into ADR-0039's delivered
-decision, and the fact that the current route is measured to work. It is the alternative most likely
+decision, and the current route being the runtime's own documented one. It is the alternative most likely
 to be adopted later, which is why its reversal conditions are enumerated rather than implied.
 
 **Keep the native executable but move it to UBI-minimal.** Buys `update-ca-trust` without giving up
