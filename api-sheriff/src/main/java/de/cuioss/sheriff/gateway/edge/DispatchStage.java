@@ -485,7 +485,8 @@ public final class DispatchStage {
          * @return the client-caused reason this stream aborted the upstream request, or {@code null}
          *         while it has not aborted it
          */
-        @Nullable GatewayException clientAbort() {
+        @Nullable
+        GatewayException clientAbort() {
             return clientAbort;
         }
 
