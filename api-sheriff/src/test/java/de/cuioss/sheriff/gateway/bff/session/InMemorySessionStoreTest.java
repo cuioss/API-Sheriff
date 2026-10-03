@@ -26,12 +26,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for the D3 server-side session store: {@link SessionRecord} (credential redaction, TTL,
@@ -42,11 +47,21 @@ import org.junit.jupiter.api.Test;
  * reclaims the slots of sessions expired at its reference instant, while a bound genuinely full of
  * live sessions still refuses fail-closed. Both directions are asserted, because reclamation that
  * quietly stopped refusing would turn the DoS guard off rather than make it accurate.
+ * <p>
+ * The {@code ConditionalReplace} cases cover the write a refresh or a widening makes:
+ * {@code replaceIfPresent} replaces a stored record and never creates one, so a session destroyed by
+ * id, by {@code sid} or by {@code sub} is not written back. Each refusal is paired with the
+ * replacement that succeeds on a stored record, so a method that refused everything would fail too.
  */
 class InMemorySessionStoreTest {
 
     private static final Instant T0 = Instant.parse("2026-07-23T10:00:00Z");
     private static final Instant FUTURE = T0.plusSeconds(3600);
+    private static final String SESSION_ID = "s1";
+    private static final String OLD_SUB = "old-sub";
+    private static final String NEW_SUB = "new-sub";
+    private static final String OLD_SID = "old-sid";
+    private static final String NEW_SID = "new-sid";
 
     private static SessionRecord session(String sessionId, String sub, @Nullable String sid, Instant expiresAt) {
         return SessionRecord.builder()
@@ -198,7 +213,7 @@ class InMemorySessionStoreTest {
             store.create(session("s1", "sub1", "new-sid", FUTURE), T0);
 
             assertEquals(0, store.destroyBySid("old-sid"),
-                    "an IdP that rotates sid on refresh must not leave the old sid destroying the new session");
+                    "a create replacing a stored id must not leave the old sid destroying the new record");
             assertTrue(store.resolve("s1", T0).isPresent(), "the replacement survived the stale-sid destroy");
             assertEquals(1, store.destroyBySid("new-sid"), "the replacement is reachable under its own sid");
         }
@@ -260,8 +275,8 @@ class InMemorySessionStoreTest {
             store.create(session("s2", "sub2", null, FUTURE), T0);
 
             assertDoesNotThrow(() -> store.create(session("s1", "sub1", null, FUTURE), T0),
-                    "an upsert replaces a record already counted against the bound, so it consumes no"
-                            + " new capacity — this is the path a rotated session takes at a full store");
+                    "a create naming an already-stored id replaces a record already counted against the"
+                            + " bound, so it consumes no new capacity");
             assertEquals(2, store.size(), "the upsert replaced in place rather than adding an entry");
         }
 
@@ -311,18 +326,21 @@ class InMemorySessionStoreTest {
         @DisplayName("Should accept absent nullable components and reject null mandatory components")
         void shouldAcceptAbsentAndReject() {
             SessionRecord sparse = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
-                    null);
+                    null, null);
             assertNull(sparse.refreshToken());
             assertNull(sparse.sid());
             assertNull(sparse.acr());
             assertNull(sparse.authTime());
             assertNull(sparse.sessionNonce(), "an absent session nonce stays null");
             assertTrue(sparse.activeScopes().isEmpty(), "an absent active scope set normalizes to empty");
+            assertTrue(sparse.grantedScopes().isEmpty(), "an absent granted scope set normalizes to empty");
 
             assertThrows(NullPointerException.class,
-                    () -> new SessionRecord(null, "at", null, "it", "sub", null, FUTURE, null, null, null, Set.of()));
+                    () -> new SessionRecord(null, "at", null, "it", "sub", null, FUTURE, null, null, null, Set.of(),
+                            Set.of()));
             assertThrows(NullPointerException.class,
-                    () -> new SessionRecord("s", "at", null, "it", null, null, FUTURE, null, null, null, Set.of()));
+                    () -> new SessionRecord("s", "at", null, "it", null, null, FUTURE, null, null, null, Set.of(),
+                            Set.of()));
         }
 
         @Test
@@ -330,7 +348,7 @@ class InMemorySessionStoreTest {
         void shouldCopyActiveScopes() {
             Set<String> source = new HashSet<>(Set.of("openid", "orders:read"));
             SessionRecord session = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
-                    source);
+                    source, Set.of());
             source.add("profile");
 
             assertEquals(Set.of("openid", "orders:read"), session.activeScopes());
@@ -339,13 +357,41 @@ class InMemorySessionStoreTest {
         }
 
         @Test
-        @DisplayName("Should render the active scope names in toString — they are not credentials")
-        void shouldRenderActiveScopes() {
+        @DisplayName("Should hold the granted scope set as an immutable defensive copy, independent of A")
+        void shouldCopyGrantedScopes() {
+            Set<String> source = new HashSet<>(Set.of("openid", "orders:read", "orders:write"));
+            SessionRecord session = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null,
+                    Set.of("openid"), source);
+            source.add("profile");
+
+            assertEquals(Set.of("openid", "orders:read", "orders:write"), session.grantedScopes());
+            assertEquals(Set.of("openid"), session.activeScopes(), "S never leaks into A");
+            Set<String> held = session.grantedScopes();
+            assertThrows(UnsupportedOperationException.class, () -> held.add("email"));
+        }
+
+        @Test
+        @DisplayName("Should reject a null element in the granted scope set")
+        void shouldRejectNullGrantedScope() {
+            Set<String> withNull = new HashSet<>();
+            withNull.add(null);
+
+            assertThrows(NullPointerException.class, () -> new SessionRecord("s", "at", null, "it", "sub", null,
+                    FUTURE, null, null, null, Set.of(), withNull));
+        }
+
+        @Test
+        @DisplayName("Should render the active and granted scope names in toString — they are not credentials")
+        void shouldRenderScopeSets() {
             SessionRecord session = SessionRecord.builder()
                     .sessionId("s").accessToken("AT-SECRET").idToken("IT-SECRET").sub("user-123")
-                    .expiresAt(FUTURE).activeScopes(Set.of("orders:read")).build();
+                    .expiresAt(FUTURE).activeScopes(Set.of("orders:read"))
+                    .grantedScopes(Set.of("orders:read", "orders:write")).build();
 
-            assertTrue(session.toString().contains("orders:read"), session.toString());
+            String rendered = session.toString();
+            assertTrue(rendered.contains("activeScopes=[orders:read]"), rendered);
+            assertTrue(rendered.contains("grantedScopes="), rendered);
+            assertTrue(rendered.contains("orders:write"), rendered);
         }
     }
 
@@ -368,17 +414,167 @@ class InMemorySessionStoreTest {
         }
 
         @Test
-        @DisplayName("Should resolve the replaced active scope set after an upsert")
-        void shouldReplaceActiveScopesOnUpsert() {
+        @DisplayName("Should resolve the replaced active scope set after a replacement")
+        void shouldReplaceActiveScopesOnReplacement() {
             InMemorySessionStore store = new InMemorySessionStore(16);
             store.create(SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
                     .expiresAt(FUTURE).activeScopes(Set.of("openid", "orders:read")).build(), T0);
 
-            store.create(SessionRecord.builder().sessionId("s1").accessToken("at2").idToken("it").sub("sub1")
-                    .expiresAt(FUTURE).activeScopes(Set.of("openid")).build(), T0);
+            boolean replaced = store.replaceIfPresent(SessionRecord.builder().sessionId("s1").accessToken("at2")
+                    .idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(Set.of("openid")).build());
 
+            assertTrue(replaced, "the session is stored, so the refresh's write replaces it");
             assertEquals(Set.of("openid"), store.resolve("s1", T0).orElseThrow().activeScopes(),
-                    "a refresh persisted through an upsert carries the narrowed set to the next request");
+                    "a refresh persisted through a replacement carries the narrowed set to the next request");
+        }
+
+        @Test
+        @DisplayName("Should resolve the granted scope set a stored session was created with, and its replacement")
+        void shouldKeepGrantedScopesAcrossStore() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            Set<String> granted = Set.of("openid", "orders:read");
+            Set<String> widened = Set.of("openid", "orders:read", "orders:write");
+            store.create(SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
+                    .expiresAt(FUTURE).activeScopes(granted).grantedScopes(granted).build(), T0);
+            SessionRecord created = store.resolve("s1", T0).orElseThrow();
+
+            boolean replaced = store.replaceIfPresent(SessionRecord.builder().sessionId("s1").accessToken("at2")
+                    .idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(widened).grantedScopes(widened)
+                    .build());
+
+            assertTrue(replaced, "the session is stored, so the widening's write replaces it");
+            assertEquals(granted, created.grantedScopes());
+            assertEquals(widened, store.resolve("s1", T0).orElseThrow().grantedScopes(),
+                    "a widening persisted through a replacement carries the widened S to the next request");
+        }
+    }
+
+    /**
+     * The conditional write: {@code replaceIfPresent} is how a refresh and a widening update a session
+     * that already exists. It never creates, which is what keeps a destroyed session destroyed.
+     */
+    @Nested
+    @DisplayName("Conditional replace (the write of a refresh or a widening)")
+    class ConditionalReplace {
+
+        @Test
+        @DisplayName("Should replace a stored record in place and report the replacement")
+        void shouldReplaceStoredRecord() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            store.create(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            SessionRecord replacement = SessionRecord.builder().sessionId(SESSION_ID).accessToken("rotated-access")
+                    .idToken("rotated-id").sub(OLD_SUB).sid(OLD_SID).expiresAt(FUTURE).build();
+
+            boolean replaced = store.replaceIfPresent(replacement);
+
+            assertTrue(replaced, "a stored id is replaced");
+            assertEquals(1, store.size(), "the replacement took the stored record's place, adding no entry");
+            assertEquals(replacement, store.resolve(SESSION_ID, T0).orElseThrow(),
+                    "the next resolve sees the replacement");
+        }
+
+        @Test
+        @DisplayName("Should refuse an id the store does not hold, report it and leave the store empty")
+        void shouldRefuseAbsentId() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+
+            boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE));
+
+            assertFalse(replaced, "nothing is stored under the id, so nothing is replaced");
+            assertEquals(0, store.size(), "the conditional write never creates");
+            assertTrue(store.resolve(SESSION_ID, T0).isEmpty(), "no session resolves afterwards");
+            assertEquals(0, store.destroyBySid(OLD_SID), "the refused record was not indexed by sid");
+            assertEquals(0, store.destroyBySub(OLD_SUB), "the refused record was not indexed by sub");
+        }
+
+        @Test
+        @DisplayName("Should find a replacement carrying another sid and sub under the new keys only")
+        void shouldReindexWhenSidAndSubChange() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            store.create(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+
+            boolean replaced = store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
+
+            assertTrue(replaced);
+            assertEquals(0, store.destroyBySid(OLD_SID), "the previous sid no longer resolves to the session");
+            assertEquals(0, store.destroyBySub(OLD_SUB), "the previous sub no longer resolves to the session");
+            assertTrue(store.resolve(SESSION_ID, T0).isPresent(),
+                    "a destroy on the previous keys left the replacement in place");
+            assertEquals(1, store.destroyBySid(NEW_SID), "the new sid destroys the session");
+            assertTrue(store.resolve(SESSION_ID, T0).isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should destroy a replaced session through its new sub")
+        void shouldDestroyReplacedSessionByNewSub() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            store.create(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
+
+            int destroyed = store.destroyBySub(NEW_SUB);
+
+            assertEquals(1, destroyed, "the new sub destroys the session");
+            assertTrue(store.resolve(SESSION_ID, T0).isEmpty());
+            assertEquals(0, store.destroyBySid(NEW_SID), "the sid index was cleaned with the session");
+        }
+
+        static Stream<Arguments> destructions() {
+            Consumer<InMemorySessionStore> byId = store -> store.destroyById(SESSION_ID);
+            Consumer<InMemorySessionStore> bySid = store -> store.destroyBySid(OLD_SID);
+            Consumer<InMemorySessionStore> bySub = store -> store.destroyBySub(OLD_SUB);
+            return Stream.of(Arguments.of("destroyById", byId), Arguments.of("destroyBySid", bySid),
+                    Arguments.of("destroyBySub", bySub));
+        }
+
+        @ParameterizedTest(name = "{0} followed by the conditional write leaves the session gone")
+        @MethodSource("destructions")
+        @DisplayName("Should not write a destroyed session back, however it was destroyed")
+        void shouldNotRecreateDestroyedSession(String label, Consumer<InMemorySessionStore> destruction) {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            store.create(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            destruction.accept(store);
+
+            boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE));
+
+            assertFalse(replaced, () -> "after " + label + " there is no record to replace");
+            assertEquals(0, store.size(), () -> label + " must not be undone by a write that was in flight");
+            assertTrue(store.resolve(SESSION_ID, T0).isEmpty(), () -> "the session stays gone after " + label);
+        }
+
+        @Test
+        @DisplayName("Should replace at the max-session bound without sweeping and without refusing")
+        void shouldReplaceAtTheBound() {
+            InMemorySessionStore store = new InMemorySessionStore(2);
+            store.create(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            store.create(session("expired", "sub2", null, T0.plusSeconds(5)), T0);
+
+            boolean replaced = store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
+
+            assertTrue(replaced, "a replacement consumes no capacity, so the bound does not refuse it");
+            assertEquals(2, store.size(),
+                    "the expired neighbour still holds its slot — a replacement never triggers the sweep");
+        }
+
+        @Test
+        @DisplayName("Should replace a lapsed record nothing has evicted yet, and keep refusing it on resolve")
+        void shouldReplaceLapsedRecordWithoutRevivingIt() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            Instant expiry = T0.plusSeconds(5);
+            store.create(session(SESSION_ID, OLD_SUB, OLD_SID, expiry), T0);
+
+            boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, expiry));
+
+            assertTrue(replaced, "the check is on presence, not on liveness");
+            assertTrue(store.resolve(SESSION_ID, T0.plusSeconds(10)).isEmpty(),
+                    "the absolute TTL is still enforced on resolve against the expiry the replacement carries");
+        }
+
+        @Test
+        @DisplayName("Should reject a null replacement")
+        void shouldRejectNullReplacement() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+
+            assertThrows(NullPointerException.class, () -> store.replaceIfPresent(null));
         }
     }
 }

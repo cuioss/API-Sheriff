@@ -21,7 +21,8 @@ import lombok.experimental.UtilityClass;
 
 /**
  * DSL-style {@link LogRecord} catalogue for the Backend-for-Frontend {@code require: session}
- * surface — the session lifecycle, transparent token refresh, CSRF defence, and logout events.
+ * surface — the session lifecycle, transparent token refresh, CSRF defence, logout events, and the
+ * confidential client's own key material.
  * <p>
  * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the shared
  * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and assertable.
@@ -32,7 +33,7 @@ import lombok.experimental.UtilityClass;
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
  * ({@code sid}), token material, and raw offending values never appear in a template: a rejection
  * records only its non-sensitive <em>disposition</em> ({@code untrusted-origin} / {@code signature}
- * / …), a lifecycle event records only a non-sensitive reason or a bounded count. Exception-bearing
+ * / …). Exception-bearing
  * {@code WARN}s pass the throwable first, per the CUI logging contract; callers must not attach a
  * raw, unsanitized IdP exception whose message could re-inject untrusted content. {@code DEBUG} /
  * {@code TRACE} diagnostics use the logger directly and are not catalogued here.
@@ -46,7 +47,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-16).
+     * Info-level messages (INFO range 1-99; this catalogue owns 10-16, 20 and 21).
      */
     @UtilityClass
     public static final class INFO {
@@ -118,10 +119,35 @@ public final class BffLogMessages {
                 .identifier(16)
                 .template("Cookie-mode sealing key generated at startup (%s) — sessions do not survive a restart")
                 .build();
+
+        /**
+         * A live session was widened: the identity provider granted the scopes a route needed, and
+         * the grant was merged into the same session (same identity, same absolute expiry). The
+         * template carries only the sorted names of the scopes the widening added to the session's
+         * granted set — never a token, the session id or the subject.
+         */
+        public static final LogRecord SESSION_WIDENED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(20)
+                .template("Live session widened for a require:session route — scopes added: %s")
+                .build();
+
+        /**
+         * No {@code key_file} was configured for one of the confidential client's signing keys, so
+         * the key was generated at startup. The first substitution is the bounded purpose label
+         * ({@code client-authentication} / {@code sender-constraint}), the second the mode's
+         * diagnostic name. Records only those two non-sensitive facts — never key material, and
+         * never the key id.
+         */
+        public static final LogRecord SIGNING_KEY_GENERATED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(21)
+                .template("Signing key for %s generated at startup (%s) — the key is not shared with other instances and is replaced on every restart")
+                .build();
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114 and 127).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127, 130-132 and 134).
      */
     @UtilityClass
     public static final class WARN {
@@ -138,15 +164,13 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A transparent token refresh failed and its session was destroyed; the caller
-         * re-authenticates. The session is destroyed for exactly three reasons, each recorded as a
-         * bounded, non-sensitive reason: the identity provider rejected the presented refresh token
-         * ({@code credential-rejected}, which includes a replayed token rejected under strict
-         * rotation), the gateway refused a response the provider had already redeemed
-         * ({@code redeemed-response-refused}), or the rotated session could not be persisted
-         * ({@code persist-failure}). A failure before the provider processed the grant never
-         * destroys the session and is recorded as {@link #SESSION_REFRESH_DEFERRED} instead. Never
-         * records the presented refresh token or session id.
+         * A transparent token refresh ended with its session destroyed; the caller
+         * re-authenticates. The record carries exactly one bounded, non-sensitive reason. The
+         * reasons are defined by {@code de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator}
+         * and described in the {@code ApiSheriff-111} entry of {@code doc/LogMessages.adoc}. A
+         * failure before the provider processed the grant never destroys the session and is
+         * recorded as {@link #SESSION_REFRESH_DEFERRED} instead. Never records the presented
+         * refresh token or session id.
          */
         public static final LogRecord SESSION_REFRESH_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
@@ -221,6 +245,89 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(127)
                 .template("Token refresh failed before the identity provider processed it — session kept, next attempt in %s seconds")
+                .build();
+
+        /**
+         * A session widening was refused because the identity the widening grant names differs from
+         * the live session's (or from the one the widening was issued for). The session is left
+         * unchanged and is never swapped to another identity. The template carries no value at all —
+         * never a token, the session id or either subject.
+         */
+        public static final LogRecord SESSION_WIDENING_IDENTITY_MISMATCH = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(130)
+                .template("Session widening refused — the granted identity differs from the live session; session unchanged")
+                .build();
+
+        /**
+         * A session widening was refused and its grant was not merged into a session. The refusal
+         * is terminal. The template carries only a bounded reason token — never the raw IdP error
+         * description, a token, the session id or the subject. The reason tokens are defined by
+         * {@code de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint} and described in the
+         * {@code ApiSheriff-131} entry of {@code doc/LogMessages.adoc}.
+         */
+        public static final LogRecord SESSION_WIDENING_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(131)
+                .template("Session widening refused (%s) — no grant was merged into a session")
+                .build();
+
+        /**
+         * The identity provider answered a token request with success, and the gateway refused the
+         * response because the token is not bound to the gateway's DPoP proof key: the login or the
+         * widening is refused, or the session is ended.
+         * <p>
+         * The first substitution is the leg, a closed set mapped from the request's
+         * {@code grant_type} by an allow-list: {@code code-exchange} (the callback of a login and of
+         * a session widening alike), {@code refresh} (the near-expiry and the scope-driven refresh
+         * alike) or {@code other}. The second is the reason, a closed set: {@code token-type} (the response's
+         * {@code token_type} is not {@code DPoP}), {@code unreadable-access-token} (the access token
+         * is absent, is not a compact JWS with a parsable JSON payload, or could not be read for any
+         * other reason), {@code cnf-absent} (the access token carries no {@code cnf.jkt}) or
+         * {@code cnf-mismatch} (its {@code cnf.jkt} names another key).
+         * <p>
+         * <strong>Never carries token material.</strong> Neither the access token, the refresh
+         * token, the ID token, a claim value, the received {@code jkt} nor the received token type
+         * appears in the record — both substitutions are fixed tokens chosen by the gateway.
+         * <p>
+         * <strong>Not latched.</strong> The refusal is reached only on a success answer of the token
+         * endpoint, which takes an authorization code or a refresh token the identity provider
+         * issued. A caller without such a credential cannot reach it, so the record is no
+         * log-amplification lever and is emitted on every occurrence (ADR-0051).
+         */
+        public static final LogRecord TOKEN_RESPONSE_NOT_BOUND = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(134)
+                .template("Token response on the %s leg refused — the token is not bound to the gateway's DPoP proof key (%s)")
+                .build();
+
+        /**
+         * An authorization request could not be pushed to the identity provider, so the login, the
+         * session widening or the RFC 9470 step-up re-drive was refused with {@code 502} before
+         * anything was stored and before a cookie was set. The only substitution is the reason, a closed set: {@code no-par-endpoint}
+         * (the provider metadata advertises no {@code pushed_authorization_request_endpoint}),
+         * {@code invalid-request} (the engine-built authorization request could not be split into
+         * its parameters, or names one parameter twice) or {@code push-failed} (the push itself
+         * failed: a transport failure, a timeout, a non-success answer, an unparsable answer or an
+         * answer without a {@code request_uri}). Never records the authorization URL, a parameter
+         * value or the {@code request_uri}.
+         * <p>
+         * The template names the one consequence the callers share — no redirect to the identity
+         * provider was issued — and names none of them: the login, the session widening and the
+         * step-up re-drive push through the same adapter instance, so the record cannot tell which
+         * one was refused.
+         * <p>
+         * <strong>Latched per reason.</strong> The login-initiation path is reachable without a
+         * credential, so the record is emitted only on the FIRST occurrence of each reason and every
+         * repeat drops to {@code DEBUG} (ADR-0051) — see
+         * {@code de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests}. Absence of a
+         * repeated {@code WARN} therefore says nothing about the refusal <em>rate</em>; read the
+         * DEBUG channel for that.
+         */
+        public static final LogRecord AUTHORIZATION_PUSH_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(132)
+                .template("Pushed authorization request refused: %s — no redirect to the identity provider was issued; further refusals with this reason stay at DEBUG")
                 .build();
     }
 }

@@ -53,6 +53,17 @@ import org.junit.jupiter.api.Test;
  * {@code access.token.lifespan} is 45, so the window is 15s..45s after issuance and a test can reach
  * it with a bounded wait.
  * <p>
+ * <strong>This instance authenticates with a client secret.</strong> It is the one gateway instance
+ * of the stack whose descriptor declares {@code oidc.client_secret}; every other instance
+ * authenticates with {@code private_key_jwt}. Only the client authentication differs: the realm
+ * requires {@code refresh-client} to push its authorization requests and to have its access tokens
+ * bound to a DPoP proof key, like the key-authenticated clients. Every login of this suite therefore
+ * drives the pushed request and the code exchange, and every {@code REFRESHED} leg the refresh grant,
+ * with {@code client_secret_basic}, and the two token requests with a DPoP proof. A green run is the
+ * evidence that Keycloak accepts a pushed request and a DPoP-carrying code exchange and refresh from
+ * a secret-authenticated client; the proofs that name those properties one by one are
+ * {@code BffClientSecretModeIT}'s.
+ * <p>
  * <strong>What this suite proves.</strong> Each of the three terminal outcomes is reached through the
  * real edge and asserted by an observable that would differ had the branch not been taken:
  * <ul>
@@ -84,14 +95,14 @@ import org.junit.jupiter.api.Test;
  * a targeted revocation of one refresh grant — those are {@code BffRefreshReuseIT}'s, which drives
  * the realm's strict refresh-token rotation directly. It does not exercise cookie-mode re-seal on
  * rotation ({@code BffCookieRefreshIT}), a refresh racing session expiry, concurrent requests
- * coalescing onto one single-flight refresh, or an IdP refusal other than {@code invalid_grant}: the
- * pre-redemption back-off, the redeemed-response and the persist-failure dispositions are proven
- * at unit level only. It also asserts nothing about browser cookie policy — it replays a cookie
- * map, exactly as {@link BffKeycloakLoginFlow} documents.
+ * coalescing onto one single-flight refresh, or an IdP refusal other than {@code invalid_grant}:
+ * every disposition {@code TokenRefreshCoordinator} documents other than the credential-rejected one
+ * is proven at unit level only. It also asserts nothing about browser cookie policy —
+ * it replays a cookie map, exactly as {@link BffKeycloakLoginFlow} documents.
  * <p>
  * <strong>Why the realm-wide admin logout is safe to use here.</strong> The {@code FAILED} legs end
  * <em>every</em> Keycloak session of {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, which
- * {@code BffCookieRefreshIT} logs in as too. The two suites cannot overlap: the
+ * other suites log in as too. The suites cannot overlap: the
  * {@code integration-tests} Failsafe execution declares no {@code forkCount} (so the default of one
  * fork at a time applies), sets {@code reuseForks=false}, and configures no JUnit parallel execution,
  * so test classes run strictly one after another and every test logs in afresh. A logout therefore
@@ -173,6 +184,9 @@ class BffTokenRefreshIT {
      */
     private static final String SESSION_COOKIE_NAME = "__Host-sheriff-session";
 
+    /** The client this instance authenticates as (see {@code sheriff-config-refresh/gateway.yaml}). */
+    private static final String REFRESH_CLIENT_ID = "refresh-client";
+
     /** The client-level {@code access.token.lifespan} declared on {@code refresh-client}. */
     private static final int ACCESS_TOKEN_LIFESPAN_SECONDS = 45;
 
@@ -195,8 +209,8 @@ class BffTokenRefreshIT {
     /**
      * The bounded reason {@code ApiSheriff-111} renders when the IdP rejected the presented refresh
      * token. Spelled out as it appears in the record's template — parenthesised — so the match
-     * cannot be satisfied by the other reasons ({@code redeemed-response-refused},
-     * {@code persist-failure}).
+     * cannot be satisfied by any other reason {@code TokenRefreshCoordinator} defines for the
+     * record.
      */
     private static final String CREDENTIAL_REJECTED_REASON = "(credential-rejected)";
 
@@ -270,8 +284,9 @@ class BffTokenRefreshIT {
         // Arrange — first confirm this instance serves the scoped session route at all. It mounts the
         // shared endpoints/ tree under its own gateway.yaml, so bff-scoped is present only if that
         // overlay still declares the bff-session anchor; an unauthenticated navigation that is
-        // redirected into the IdP requesting the endpoint scope proves both the route and its
-        // scope set, and rules out a 404 masquerading as a scope failure further down.
+        // redirected into the IdP proves the route exists and rules out a 404 masquerading as a scope
+        // failure further down. The redirect is that of a pushed request and names no scope, so the
+        // scope set the route asks for is proven by the granted token of the login below.
         Response initiation = BffKeycloakLoginFlow
                 .gateway(Map.of(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
                 .header("Accept", "text/html")
@@ -279,16 +294,17 @@ class BffTokenRefreshIT {
                 .when().get(BffEndpointScopesIT.SCOPED_SESSION_PATH)
                 .then().statusCode(302)
                 .extract().response();
-        assertEquals(BffEndpointScopesIT.SCOPED_ROUTE_SCOPES, BffEndpointScopesIT.requestedScopeSet(initiation),
-                "the refresh instance must serve /bff-session/scoped and request its united scope set");
+        BffLoginInitiationIT.assertPushedRequestRedirect(initiation, REFRESH_CLIENT_ID);
 
         Session session = BffKeycloakLoginFlow.login(BffEndpointScopesIT.SCOPED_SESSION_PATH,
                 BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
                 BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
         String beforeRefresh = authorizationOf(mediatedCall(session, BffEndpointScopesIT.SCOPED_SESSION_PATH));
-        assertTrue(BffEndpointScopesIT.grantedScopes(beforeRefresh).contains(BffEndpointScopesIT.ENDPOINT_SCOPE),
-                "precondition: the login on the scoped route must mediate a token carrying "
-                        + BffEndpointScopesIT.ENDPOINT_SCOPE);
+        Set<String> grantedAtLogin = BffEndpointScopesIT.grantedScopes(beforeRefresh);
+        assertTrue(grantedAtLogin.containsAll(BffEndpointScopesIT.SCOPED_ROUTE_SCOPES),
+                "the login on the scoped route must be granted oidc.scopes united with the endpoint's "
+                        + "scopes, so the refresh instance requests that route's needed set; granted "
+                        + grantedAtLogin);
 
         // Act
         sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);

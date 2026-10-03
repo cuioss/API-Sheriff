@@ -33,9 +33,10 @@ import org.junit.jupiter.api.Test;
  * <strong>The fixture.</strong> {@code endpoints/secure-scoped.yaml} declares the bearer route
  * {@code /secure/scoped} with {@code scopes: ["sheriff_it_endpoint"]}, so a presented token must
  * carry {@code openid profile email sheriff_it_endpoint}. Both tokens below come from the
- * {@code integration} realm's password grant for {@code integration-client}; they differ only in
- * the {@code scope} the grant requests. {@code sheriff_it_endpoint} is an <em>optional</em> client
- * scope, so a token carries it exactly when the grant asked for it — each test first asserts that on
+ * {@code integration} realm's password grant for {@code token-mint-client}, the realm client the
+ * fixtures mint from (see {@code BearerValidationIT}); they differ only in the {@code scope} the
+ * grant requests. {@code sheriff_it_endpoint} is an <em>optional</em> client scope of that client,
+ * so a token carries it exactly when the grant asked for it — each test first asserts that on
  * the token itself, so a realm change that issued it by default would fail loudly here rather than
  * turn the rejection case vacuous.
  * <p>

@@ -36,8 +36,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link ReservedPathRegistry}: the exact-match carve-out (D2) that guarantees a proxy
  * route such as {@code path_prefix: /auth} never swallows the exact {@code /auth/callback}, the
- * OIDC-host gate that the five browser-facing endpoints carry and the back-channel receiver
- * deliberately does not, plus the empty registry when no OIDC callback is configured.
+ * OIDC-host gate that the six browser-facing endpoints carry and the two the identity provider
+ * dials — the back-channel receiver and the client JWKS endpoint — deliberately do not, the client
+ * JWKS path that is reserved without being declared, plus the empty registry when no OIDC callback
+ * is configured.
  */
 class ReservedPathRegistryTest {
 
@@ -52,6 +54,13 @@ class ReservedPathRegistryTest {
     private static final String LOGOUT_PATH = "/auth/logout";
     private static final String LOGOUT_RETURN_PATH = "/auth/logout/return";
     private static final String BACKCHANNEL_PATH = "/auth/backchannel";
+    private static final String STEP_UP_PATH = "/auth/step-up";
+    /**
+     * Deliberately the literal and not {@code ClientAuthenticationSettings.DEFAULT_JWKS_PATH}: the
+     * default is a documented contract of the configuration surface, so a change of the constant must
+     * turn these tests red rather than follow it.
+     */
+    private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
 
     private static ReservedPathRegistry fullyConfigured() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
@@ -62,6 +71,7 @@ class ReservedPathRegistryTest {
         OidcConfig oidc = OidcConfig.builder()
                 .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
                 .logout(logout)
+                .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                 .build();
         return ReservedPathRegistry.from(oidc);
     }
@@ -80,15 +90,46 @@ class ReservedPathRegistryTest {
         }
 
         @ParameterizedTest(name = "reserved path \"{0}\" is matched exactly")
-        @ValueSource(strings = {LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH})
+        @ValueSource(strings = {LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, STEP_UP_PATH})
         @DisplayName("Should resolve each configured reserved path exactly")
         void shouldResolveEachReservedPath(String path) {
             assertTrue(registry.isReserved(OIDC_HOST, path), path);
         }
 
+        @Test
+        @DisplayName("Should resolve oidc.step_up.path to the STEP_UP endpoint")
+        void shouldResolveStepUpPath() {
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP), registry.match(OIDC_HOST, STEP_UP_PATH));
+        }
+
+        @Test
+        @DisplayName("Should register STEP_UP from the path alone, whatever the RFC 9470 step-up keys say")
+        void shouldRegisterStepUpIndependentlyOfEnabled() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                    .stepUp(new OidcConfig.StepUp(false, false, STEP_UP_PATH))
+                    .build();
+
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                    ReservedPathRegistry.from(oidc).match(OIDC_HOST, STEP_UP_PATH));
+        }
+
+        @Test
+        @DisplayName("Should register no STEP_UP endpoint when the step_up block declares no path")
+        void shouldNotRegisterStepUpWithoutPath() {
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                    .stepUp(new OidcConfig.StepUp(true, true, null))
+                    .build();
+
+            assertEquals(Set.of(CALLBACK_PATH, DEFAULT_JWKS_PATH), ReservedPathRegistry.reservedPaths(oidc),
+                    "the callback and the client JWKS path, which needs no declaration — and no step-up path");
+            assertTrue(ReservedPathRegistry.from(oidc).match(OIDC_HOST, STEP_UP_PATH).isEmpty());
+        }
+
         @ParameterizedTest(name = "prefix/sibling path \"{0}\" is not reserved")
         @ValueSource(strings = {"/auth", "/auth/", "/auth/callbacks", "/auth/callback/extra", "/auth/other",
-                "/authcallback", "/"})
+                "/authcallback", "/", "/auth/step-up/", "/auth/step-up/extra", "/auth/step"})
         @DisplayName("Should not match a prefix, sibling, or extended path — the exact carve-out")
         void shouldNotMatchPrefixOrSibling(String path) {
             assertFalse(registry.isReserved(OIDC_HOST, path), path);
@@ -103,7 +144,7 @@ class ReservedPathRegistryTest {
         private final ReservedPathRegistry registry = fullyConfigured();
 
         @ParameterizedTest(name = "browser-facing path \"{0}\" is not reserved on a foreign host")
-        @ValueSource(strings = {CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH})
+        @ValueSource(strings = {CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, STEP_UP_PATH})
         @DisplayName("Should not match a browser-facing reserved path on a foreign host")
         void shouldNotMatchForeignHost(String path) {
             assertTrue(registry.match(FOREIGN_HOST, path).isEmpty(), path);
@@ -195,7 +236,8 @@ class ReservedPathRegistryTest {
         private static final String USER_INFO_PATH = "/session/userinfo";
         private static final String LOGIN_PATH = "/session/login";
 
-        private OidcConfig allSixKinds() {
+        /** Declares the seven paths that need a declaration; the eighth, the client JWKS path, defaults. */
+        private OidcConfig allEightKinds() {
             OidcConfig.Logout logout = OidcConfig.Logout.builder()
                     .path(LOGOUT_PATH)
                     .postLogoutRedirectUri("https://" + OIDC_HOST + LOGOUT_RETURN_PATH)
@@ -206,14 +248,31 @@ class ReservedPathRegistryTest {
                     .logout(logout)
                     .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
                     .login(new OidcConfig.Login(LOGIN_PATH, null))
+                    .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                     .build();
         }
 
         @Test
-        @DisplayName("Should return every configured reserved path in declaration order")
-        void shouldReturnEveryConfiguredPath() {
+        @DisplayName("Should return every reserved path in declaration order, the client JWKS path last")
+        void shouldReturnEveryReservedPathInDeclarationOrderWithTheClientJwksPathLast() {
             assertEquals(List.of(CALLBACK_PATH, LOGOUT_PATH, LOGOUT_RETURN_PATH, BACKCHANNEL_PATH, USER_INFO_PATH,
-                    LOGIN_PATH), List.copyOf(ReservedPathRegistry.reservedPaths(allSixKinds())));
+                            LOGIN_PATH, STEP_UP_PATH, DEFAULT_JWKS_PATH),
+                    List.copyOf(ReservedPathRegistry.reservedPaths(allEightKinds())));
+        }
+
+        @Test
+        @DisplayName("Should carry exactly eight reserved kinds, two of them matched on every host")
+        void shouldCarryEightKindsTwoOfThemOnEveryHost() {
+            ReservedPathRegistry registry = ReservedPathRegistry.from(allEightKinds());
+
+            List<String> onEveryHost = ReservedPathRegistry.reservedPaths(allEightKinds()).stream()
+                    .filter(path -> registry.isReserved(FOREIGN_HOST, path)).toList();
+
+            assertEquals(8, ReservedEndpoint.values().length,
+                    "a ninth kind must decide its host rule and its collision rules before this number moves");
+            assertEquals(List.of(BACKCHANNEL_PATH, DEFAULT_JWKS_PATH), onEveryHost,
+                    "only the two endpoints the identity provider dials are matched off the OIDC host — "
+                            + "the step-up path is browser-facing and stays host-gated");
         }
 
         @Test
@@ -225,10 +284,11 @@ class ReservedPathRegistryTest {
         @Test
         @DisplayName("Should agree with the registry: every returned path matches on the OIDC host")
         void shouldAgreeWithRegistryMatching() {
-            OidcConfig oidc = allSixKinds();
+            OidcConfig oidc = allEightKinds();
             ReservedPathRegistry registry = ReservedPathRegistry.from(oidc);
             Set<String> paths = ReservedPathRegistry.reservedPaths(oidc);
-            assertEquals(6, paths.size());
+            assertEquals(ReservedEndpoint.values().length, paths.size(),
+                    "one path per reserved kind — a kind added to the registry is a path this fixture must carry");
             for (String path : paths) {
                 assertTrue(registry.isReserved(OIDC_HOST, path), path);
             }
@@ -240,14 +300,153 @@ class ReservedPathRegistryTest {
             OidcConfig oidc = OidcConfig.builder()
                     .logout(OidcConfig.Logout.builder().path(LOGOUT_PATH).build())
                     .build();
-            assertEquals(Set.of(LOGOUT_PATH), ReservedPathRegistry.reservedPaths(oidc));
+            assertEquals(Set.of(LOGOUT_PATH, DEFAULT_JWKS_PATH), ReservedPathRegistry.reservedPaths(oidc));
         }
 
         @Test
         @DisplayName("Should return an unmodifiable set")
         void shouldBeUnmodifiable() {
-            Set<String> paths = ReservedPathRegistry.reservedPaths(allSixKinds());
+            Set<String> paths = ReservedPathRegistry.reservedPaths(allEightKinds());
             assertThrows(UnsupportedOperationException.class, () -> paths.add("/x"));
+        }
+    }
+
+    /**
+     * The client JWKS path is the one reserved path that needs no declaration, and the one whose
+     * key is proven here to <em>act</em> rather than merely parse: a declared {@code jwks_path} moves
+     * the endpoint, so the default path is then no longer reserved.
+     */
+    @Nested
+    @DisplayName("Client JWKS path — reserved by default, moved by jwks_path, matched on every host")
+    class ClientJwksPath {
+
+        private static final String DECLARED_JWKS_PATH = "/auth/client-keys";
+
+        private static OidcConfig.OidcConfigBuilder withRedirectUri() {
+            return OidcConfig.builder().redirectUri("https://" + OIDC_HOST + CALLBACK_PATH);
+        }
+
+        private static OidcConfig.ClientAuthenticationSettings declaring(String jwksPath) {
+            return OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build();
+        }
+
+        @Test
+        @DisplayName("Should reserve the default path when no client_authentication block is declared")
+        void shouldReserveTheDefaultPathWithoutABlock() {
+            ReservedPathRegistry registry = ReservedPathRegistry.from(withRedirectUri().build());
+
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(OIDC_HOST, DEFAULT_JWKS_PATH));
+        }
+
+        @Test
+        @DisplayName("Should reserve the default path when the block declares a key file and no jwks_path")
+        void shouldReserveTheDefaultPathWithoutAJwksPath() {
+            OidcConfig oidc = withRedirectUri().clientAuthentication(OidcConfig.ClientAuthenticationSettings
+                    .builder().keyFile("/etc/sheriff/keys/client-auth.pem").build()).build();
+
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS),
+                    ReservedPathRegistry.from(oidc).match(OIDC_HOST, DEFAULT_JWKS_PATH));
+        }
+
+        @Test
+        @DisplayName("Should reserve a declared jwks_path, and then no longer the default path")
+        void shouldMoveTheEndpointToADeclaredPath() {
+            ReservedPathRegistry registry = ReservedPathRegistry
+                    .from(withRedirectUri().clientAuthentication(declaring(DECLARED_JWKS_PATH)).build());
+
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(OIDC_HOST, DECLARED_JWKS_PATH),
+                    "the declared path is the reserved one");
+            assertFalse(registry.isReserved(OIDC_HOST, DEFAULT_JWKS_PATH),
+                    "the key acts: declaring a path releases the default, it does not add a second one");
+        }
+
+        @Test
+        @DisplayName("Should match the client JWKS path on the OIDC host, on a foreign host and without a Host")
+        void shouldMatchOnEveryHost() {
+            ReservedPathRegistry registry = ReservedPathRegistry.from(withRedirectUri().build());
+
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(OIDC_HOST, DEFAULT_JWKS_PATH),
+                    "the OIDC host");
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(FOREIGN_HOST, DEFAULT_JWKS_PATH),
+                    "the identity provider may dial the key set by an internal name, not the OIDC host");
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(null, DEFAULT_JWKS_PATH),
+                    "the endpoint compares no host, so an absent Host is admitted too");
+        }
+
+        @Test
+        @DisplayName("Should keep the browser-facing callback host-gated in the same registry (matched control)")
+        void shouldKeepTheCallbackHostGated() {
+            ReservedPathRegistry registry = ReservedPathRegistry.from(withRedirectUri().build());
+
+            assertFalse(registry.isReserved(FOREIGN_HOST, CALLBACK_PATH),
+                    "the every-host match is the property of two kinds, not of the registry");
+        }
+
+        @ParameterizedTest(name = "\"{0}\" is not the client JWKS path")
+        @ValueSource(strings = {"/auth", "/auth/", "/auth/jwk", "/auth/jwks/", "/auth/jwks.json", "/auth/jwks/keys"})
+        @DisplayName("Should not match a prefix, a sibling or an extension of the client JWKS path")
+        void shouldNotMatchAPrefixOrSibling(String path) {
+            ReservedPathRegistry registry = ReservedPathRegistry.from(withRedirectUri().build());
+
+            assertTrue(registry.match(OIDC_HOST, path).isEmpty(), path);
+            assertTrue(registry.match(FOREIGN_HOST, path).isEmpty(), path);
+        }
+
+        @Test
+        @DisplayName("Should reserve nothing without a redirect_uri, a declared jwks_path included")
+        void shouldReserveNothingWithoutRedirectUri() {
+            ReservedPathRegistry registry = ReservedPathRegistry
+                    .from(OidcConfig.builder().clientAuthentication(declaring(DECLARED_JWKS_PATH)).build());
+
+            assertTrue(registry.isEmpty(), "no redirect_uri -> the gateway serves no BFF variant");
+            assertFalse(registry.isReserved(OIDC_HOST, DECLARED_JWKS_PATH));
+            assertFalse(registry.isReserved(FOREIGN_HOST, DEFAULT_JWKS_PATH));
+        }
+
+        @Test
+        @DisplayName("Should reserve the path with a client secret configured — the registry does not read the mode")
+        void shouldReserveThePathInClientSecretMode() {
+            ReservedPathRegistry registry = ReservedPathRegistry
+                    .from(withRedirectUri().clientSecret("configured-secret").build());
+
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS), registry.match(FOREIGN_HOST, DEFAULT_JWKS_PATH));
+        }
+
+        @Test
+        @DisplayName("Should resolve the kind a path is reserved as, keeping the first registration on a collision")
+        void shouldResolveTheReservedKind() {
+            OidcConfig distinct = withRedirectUri()
+                    .logout(OidcConfig.Logout.builder().path(LOGOUT_PATH).build()).build();
+            OidcConfig colliding = withRedirectUri()
+                    .logout(OidcConfig.Logout.builder().path(DEFAULT_JWKS_PATH).build()).build();
+
+            assertEquals(Optional.of(ReservedEndpoint.CLIENT_JWKS),
+                    ReservedPathRegistry.reservedKind(distinct, DEFAULT_JWKS_PATH),
+                    "no other key names the path, so the client JWKS endpoint owns it");
+            assertEquals(Optional.of(ReservedEndpoint.LOGOUT),
+                    ReservedPathRegistry.reservedKind(colliding, DEFAULT_JWKS_PATH),
+                    "the logout path was registered first, so the client JWKS endpoint lost the path");
+            assertEquals(Optional.empty(), ReservedPathRegistry.reservedKind(distinct, "/not-reserved"));
+            assertEquals(Optional.empty(), ReservedPathRegistry.reservedKind(null, DEFAULT_JWKS_PATH));
+        }
+
+        @Test
+        @DisplayName("Should give a path named by both step_up.path and jwks_path to the step-up endpoint")
+        void shouldRegisterTheStepUpPathBeforeTheClientJwksPath() {
+            OidcConfig onTheDefault = withRedirectUri()
+                    .stepUp(OidcConfig.StepUp.builder().path(DEFAULT_JWKS_PATH).build()).build();
+            OidcConfig onADeclaredPath = withRedirectUri()
+                    .stepUp(OidcConfig.StepUp.builder().path(DECLARED_JWKS_PATH).build())
+                    .clientAuthentication(declaring(DECLARED_JWKS_PATH)).build();
+
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                    ReservedPathRegistry.reservedKind(onTheDefault, DEFAULT_JWKS_PATH),
+                    "the client JWKS path is registered last, so a step-up path on it is what boot "
+                            + "validation sees as the collision");
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP),
+                    ReservedPathRegistry.reservedKind(onADeclaredPath, DECLARED_JWKS_PATH));
+            assertTrue(ReservedPathRegistry.from(onTheDefault).match(FOREIGN_HOST, DEFAULT_JWKS_PATH).isEmpty(),
+                    "the colliding path is then host-gated like any step-up path — no key set is served on it");
         }
     }
 }

@@ -15,16 +15,21 @@
  */
 package de.cuioss.sheriff.gateway.bff.login;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,10 +40,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
 import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
 import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
+import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
+import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
@@ -46,6 +57,7 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.sheriff.token.validation.util.JwkThumbprintUtil;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.mockwebserver.EnableMockWebServer;
@@ -62,22 +74,26 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link ScopedEngineFlows}: the per-scope-set seam over the unchanged engine carries the
- * requested scope set onto the authorization URL and onto the refresh grant, and reuses one login flow
- * per canonical scope set.
+ * requested scope set onto the authorization URL and onto the refresh grant, reuses one login flow
+ * per canonical scope set, and builds the widening flow per call with {@code prompt=none} on the silent
+ * attempt only.
  * <p>
- * The login leg is local (the engine only renders a URL), so it runs against hand-built provider
- * metadata. The refresh leg posts a real grant to an in-process token endpoint that records the form
- * body and refuses the grant, which is all the {@code scope} assertion needs.
+ * The login and widening legs are local (the engine only renders a URL), so they run against
+ * hand-built provider metadata. The refresh leg posts a real grant to an in-process token endpoint that
+ * records the form body and the {@code DPoP} header and refuses the grant, which is all the
+ * {@code scope} and the proof-key assertions need.
  */
 @EnableGeneratorController
 @EnableMockWebServer
 @ModuleDispatcher
-@DisplayName("ScopedEngineFlows — per-request scope on the login and refresh legs")
+@DisplayName("ScopedEngineFlows — per-request scope on the login, widening and refresh legs")
 class ScopedEngineFlowsTest {
 
     private static final String ISSUER = "https://idp.example.com";
     private static final String REDIRECT_URI = "https://gw.example.com/auth/callback";
     private static final String TOKEN_PATH = "/token";
+    private static final String DPOP_HEADER = "DPoP";
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final List<String> BASE_SCOPES = List.of("openid", "profile", "email");
     private static final List<String> SCOPED = List.of("openid", "profile", "email", "orders:read");
 
@@ -87,10 +103,15 @@ class ScopedEngineFlowsTest {
     private final List<List<String>> factoryCalls = new CopyOnWriteArrayList<>();
     /** Every form body the stub token endpoint received. */
     private final List<String> tokenRequestBodies = new CopyOnWriteArrayList<>();
+    /** The {@code DPoP} header of every request the stub token endpoint received, empty when absent. */
+    private final List<String> tokenRequestProofs = new CopyOnWriteArrayList<>();
+    /** The proof key every flow of one fixture shares; its thumbprint is what each proof must name. */
+    private final DpopProofGenerator proofGenerator = new DpopProofGenerator(TestSigningKeys.ecKeyPair(), "ES256");
 
     /**
-     * The stub token endpoint: records each form body and refuses the grant with {@code invalid_grant},
-     * so the refresh leg's request is observable without minting a validatable token.
+     * The stub token endpoint: records each form body and {@code DPoP} header and refuses the grant
+     * with {@code invalid_grant}, so the refresh leg's request is observable without minting a
+     * validatable token.
      *
      * @return the token-endpoint dispatcher
      */
@@ -106,6 +127,8 @@ class ScopedEngineFlowsTest {
             public Optional<MockResponse> handlePost(RecordedRequest request) {
                 ByteString body = request.getBody();
                 tokenRequestBodies.add(body == null ? "" : body.utf8());
+                String proof = request.getHeaders().get(DPOP_HEADER);
+                tokenRequestProofs.add(proof == null ? "" : proof);
                 return Optional.of(new MockResponse.Builder()
                         .code(400)
                         .addHeader("Content-Type", "application/json")
@@ -140,7 +163,21 @@ class ScopedEngineFlowsTest {
         return new ScopedEngineFlows(this::configuration, new TokenEndpointClient(base),
                 new TokenValidationBridge(tokenValidator), new IdTokenValidationBridge(tokenValidator),
                 new QueryResponseModeAuthorizationRequestBuilder(),
-                new ClientSecretBasicAuth("gateway-client", "gateway-secret"));
+                new ClientSecretBasicAuth("gateway-client", "gateway-secret"),
+                SenderConstraint.dpop(proofGenerator));
+    }
+
+    /** The decoded JOSE header of a compact DPoP proof. */
+    private static JsonNode proofHeader(String proof) throws IOException {
+        return JSON.readTree(Base64.getUrlDecoder().decode(proof.split("\\.")[0]));
+    }
+
+    /** The RFC 7638 thumbprint of the public key a DPoP proof embeds in its header. */
+    private static String proofKeyThumbprint(String proof) throws IOException {
+        Map<String, Object> jwk = JSON.convertValue(proofHeader(proof).path("jwk"),
+                new TypeReference<Map<String, Object>>() {
+                });
+        return JwkThumbprintUtil.computeThumbprint(jwk);
     }
 
     private static ProviderMetadata metadata(String tokenEndpoint) {
@@ -262,6 +299,175 @@ class ScopedEngineFlowsTest {
 
         assertEquals(2, factoryCalls.size(), "each refresh asks the factory for its own configuration");
         assertEquals(2, tokenRequestBodies.size(), "each refresh posts its own grant");
+    }
+
+    @Test
+    @DisplayName("Refresh leg: should present a DPoP proof on the refresh grant of every scope set")
+    void shouldPresentAProofOnEveryRefreshGrant(URIBuilder uriBuilder) throws Exception {
+        ScopedEngineFlows flows = flows();
+        String tokenEndpoint = uriBuilder.addPathSegment("token").buildAsString();
+        ProviderMetadata metadata = metadata(tokenEndpoint);
+
+        assertThrows(TransportException.class, () -> flows.refresh(metadata, "base-refresh-token", BASE_SCOPES));
+        assertThrows(TransportException.class, () -> flows.refresh(metadata, "scoped-refresh-token", SCOPED));
+
+        assertEquals(2, tokenRequestProofs.size(), "each refresh grant reached the token endpoint");
+        for (String proof : tokenRequestProofs) {
+            assertFalse(proof.isEmpty(), "a refresh grant was posted without a DPoP header");
+            assertEquals("dpop+jwt", proofHeader(proof).path("typ").asText(),
+                    "the header carries a DPoP proof JWT");
+        }
+    }
+
+    @Test
+    @DisplayName("Refresh leg: two scope sets should present proofs signed with the one shared key")
+    void shouldSignEveryScopeSetWithTheSharedKey(URIBuilder uriBuilder) throws Exception {
+        ScopedEngineFlows flows = flows();
+        ProviderMetadata metadata = metadata(uriBuilder.addPathSegment("token").buildAsString());
+
+        assertThrows(TransportException.class, () -> flows.refresh(metadata, "base-refresh-token", BASE_SCOPES));
+        assertThrows(TransportException.class, () -> flows.refresh(metadata, "scoped-refresh-token", SCOPED));
+
+        assertEquals(2, tokenRequestProofs.size(), "each refresh grant reached the token endpoint");
+        String baseThumbprint = proofKeyThumbprint(tokenRequestProofs.getFirst());
+        String scopedThumbprint = proofKeyThumbprint(tokenRequestProofs.getLast());
+        assertAll("the sender constraint is shared across scope sets, not built per set",
+                () -> assertEquals(proofGenerator.jkt(), baseThumbprint,
+                        "the base scope set proves possession of the key the seam was given"),
+                () -> assertEquals(baseThumbprint, scopedThumbprint,
+                        "a second scope set proves possession of the same key"),
+                () -> assertNotEquals(tokenRequestProofs.getFirst(), tokenRequestProofs.getLast(),
+                        "each grant carries its own single-use proof"));
+    }
+
+    @Nested
+    @DisplayName("Widening leg")
+    class WideningLeg {
+
+        /** The parameters the engine derives afresh for every authorization request. */
+        private static final Set<String> PER_REQUEST_PARAMETERS = Set.of("state", "nonce", "code_challenge");
+
+        private static List<String> rawPairs(String authorizationUrl) {
+            return List.of(URI.create(authorizationUrl).getRawQuery().split("&"));
+        }
+
+        private static long promptCount(String authorizationUrl) {
+            return rawPairs(authorizationUrl).stream().filter(pair -> pair.startsWith("prompt=")).count();
+        }
+
+        /** The raw pairs of the parameters that do not vary per request, in emission order. */
+        private static List<String> stablePairs(String authorizationUrl) {
+            return rawPairs(authorizationUrl).stream()
+                    .filter(pair -> !PER_REQUEST_PARAMETERS.contains(pair.split("=", 2)[0]))
+                    .filter(pair -> !pair.startsWith("prompt="))
+                    .toList();
+        }
+
+        @Test
+        @DisplayName("Should build a new flow for every widening and never grow the login-flow cache")
+        void shouldBuildFlowPerCall() {
+            ScopedEngineFlows flows = flows();
+            ProviderMetadata metadata = metadata(ISSUER + TOKEN_PATH);
+
+            flows.widen(metadata, SCOPED, true);
+            flows.widen(metadata, SCOPED, false);
+            flows.widen(metadata, SCOPED, true);
+
+            assertEquals(3, factoryCalls.size(), "every widening asks the factory for its own configuration");
+            assertEquals(0, flows.cachedAuthorizationFlowCount(),
+                    "an IdP-derived widening set never enters the boot-bounded login-flow cache");
+        }
+
+        @Test
+        @DisplayName("Should put the canonical form of the widening set on the authorization URL")
+        void shouldRequestCanonicalSet() {
+            List<String> unordered = List.of("orders:read", "openid", "email", "profile", "openid");
+
+            String url = flows().widen(metadata(ISSUER + TOKEN_PATH), unordered, false).authorizationUrl();
+
+            assertEquals(Set.copyOf(SCOPED), scopeSet(formPairs(URI.create(url).getRawQuery()).get("scope")),
+                    "the widening requests exactly the named set, deduplicated");
+            assertEquals(List.of(ScopedEngineFlows.canonical(unordered)), factoryCalls,
+                    "the configuration is built for the canonical, sorted list");
+        }
+
+        @Test
+        @DisplayName("Should carry exactly one prompt=none on the silent attempt")
+        void shouldCarryPromptNoneWhenSilent() {
+            AuthorizationCodeFlow.AuthorizationRedirect silent = flows().widen(metadata(ISSUER + TOKEN_PATH),
+                    SCOPED, true);
+
+            assertEquals(1, promptCount(silent.authorizationUrl()), "exactly one prompt parameter");
+            assertEquals("none", formPairs(URI.create(silent.authorizationUrl()).getRawQuery()).get("prompt"));
+            assertEquals(silent.context().state(),
+                    formPairs(URI.create(silent.authorizationUrl()).getRawQuery()).get("state"),
+                    "the rewrite keeps the URL bound to the transaction context it was built with");
+        }
+
+        @Test
+        @DisplayName("Should carry no prompt parameter on the interactive attempt")
+        void shouldCarryNoPromptWhenInteractive() {
+            String url = flows().widen(metadata(ISSUER + TOKEN_PATH), SCOPED, false).authorizationUrl();
+
+            assertEquals(0, promptCount(url), "the interactive attempt lets the IdP interact");
+        }
+
+        @Test
+        @DisplayName("Should leave every other parameter of the silent URL byte-identical to the interactive one")
+        void shouldLeaveOtherParametersUntouched() {
+            ScopedEngineFlows flows = flows();
+            ProviderMetadata metadata = metadata(ISSUER + TOKEN_PATH);
+
+            String silent = flows.widen(metadata, SCOPED, true).authorizationUrl();
+            String interactive = flows.widen(metadata, SCOPED, false).authorizationUrl();
+
+            assertEquals(stablePairs(interactive), stablePairs(silent),
+                    "only prompt differs, apart from the per-request state/nonce/code_challenge");
+            assertEquals(interactive.substring(0, interactive.indexOf('?')), silent.substring(0, silent.indexOf('?')),
+                    "the authorization endpoint is unchanged");
+        }
+
+        @Test
+        @DisplayName("Should copy every pair through verbatim and append prompt=none when none is present")
+        void shouldAppendPromptNoneVerbatim() {
+            String url = "https://idp.example.com/authorize?scope=openid%20orders%3Aread"
+                    + "&redirect_uri=https%3A%2F%2Fgw.example.com%2Fauth%2Fcallback&flag";
+
+            assertEquals(url + "&prompt=none", ScopedEngineFlows.withPromptNone(url),
+                    "encoded values and a valueless pair survive untouched");
+        }
+
+        @Test
+        @DisplayName("Should replace an existing prompt in place and drop any further prompt pair")
+        void shouldReplaceExistingPrompt() {
+            String url = "https://idp.example.com/authorize?prompt=login&scope=openid&prompt=consent&promptx=1";
+
+            assertEquals("https://idp.example.com/authorize?prompt=none&scope=openid&promptx=1",
+                    ScopedEngineFlows.withPromptNone(url),
+                    "the parameter name is compared literally, never as a prefix");
+        }
+
+        @Test
+        @DisplayName("Should add prompt=none to a URL without a query or with an empty one")
+        void shouldHandleMissingQuery() {
+            assertEquals("https://idp.example.com/authorize?prompt=none",
+                    ScopedEngineFlows.withPromptNone("https://idp.example.com/authorize"));
+            assertEquals("https://idp.example.com/authorize?prompt=none",
+                    ScopedEngineFlows.withPromptNone("https://idp.example.com/authorize?"));
+        }
+
+        @Test
+        @DisplayName("Should leave the login leg untouched: authorize still carries no prompt and stays cached")
+        void shouldLeaveLoginLegUntouched() {
+            ScopedEngineFlows flows = flows();
+            ProviderMetadata metadata = metadata(ISSUER + TOKEN_PATH);
+
+            flows.widen(metadata, SCOPED, true);
+            String login = flows.authorize(metadata, SCOPED).authorizationUrl();
+
+            assertEquals(0, promptCount(login), "a widening never leaks prompt=none into a login");
+            assertEquals(1, flows.cachedAuthorizationFlowCount(), "only the login flow is cached");
+        }
     }
 
     @Nested

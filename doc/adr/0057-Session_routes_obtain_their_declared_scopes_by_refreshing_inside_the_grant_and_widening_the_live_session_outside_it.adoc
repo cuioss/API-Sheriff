@@ -1,0 +1,352 @@
+= ADR-0057: Session routes obtain their declared scopes by refreshing inside the grant and widening the live session outside it
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A session route, and the SESSION branch of a session_fallback route, never relays a session that lacks a scope the route needs; on every request, whatever token_relay says, the session's active scope set A is compared against the route's boot-derived neededScopes, a satisfied route makes no identity-provider call, a scope missing from A but inside the session's granted scope set S costs a refresh requesting A ∪ missing, and a scope outside S widens the live session: a navigation is redirected into an authorization request for S ∪ needed, prompt=none first and then exactly one interactive attempt, merged into the same session after the subject is re-checked, while every other request gets 403 application/problem+json with missing_scopes and a step_up_url on the reserved oidc.step_up.path; an identity-provider refusal is a terminal 403 with the session unchanged; S is kept truthful -- a widening replaces it with the granted scope and a processed scope refresh removes the scopes it did not return -- so a scope the identity provider stops granting ends in that 403 instead of a redirect loop, and the merged session takes the sid of the grant's ID token so a back-channel logout still finds it; this supersedes the session half of ADR-0049, whose bearer half and neededScopes derivation stand; relaying and letting the upstream refuse, per-endpoint token narrowing, probing with a refresh instead of tracking S, and reusing the RFC 9470 step-up coordinator are rejected.
+// tags: auth, scopes, bff, session, oidc, step-up
+// affects: api-sheriff, integration-tests
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+[NOTE]
+====
+*Amended.* The set of identity-provider errors that earn the one interactive re-drive of a silent
+widening now also includes `account_selection_required`, alongside `login_required`,
+`interaction_required` and `consent_required`. It is the fourth "interaction needed" error OpenID
+Connect Core 1.0 §3.1.2.6 defines for a `prompt=none` request, and it calls for the same recovery.
+
+Unchanged and still in force: there is exactly one interactive attempt, and any error on that attempt
+is terminal.
+
+*Amended.* In server mode a widening merge no longer brings a terminated session back. The merge is
+written through the `SessionBinding` seam's updating write, which never creates a session
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]):
+when a logout or a back-channel logout destroyed the session between the callback resolving it and
+writing the merge, nothing is stored and the callback answers the terminal `403`. The scope-driven
+refresh leg behaves the same way and ends the request as session-ended
+(link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+
+Unchanged and still in force: the race between a widening merge and a concurrent refresh, in which
+the last writer wins, and cookie mode, whose binding cannot observe a termination and re-seals the
+merged session.
+====
+
+== Context
+
+A session outlives the route that started it. The login that established it requested one route's
+scope set, and the same session is later presented to routes that need other scopes.
+link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]
+derives one set per route at boot, `neededScopes = oidc.scopes ∪ endpoint.scopes`, and lets a session
+route use it only to decide what its login requests. A live session is never compared against it.
+
+That leaves a declared requirement the gateway does not hold its own sessions to:
+
+* *Under-check.* A session that logged in on a route needing fewer scopes reaches a route needing
+  more, and its token is relayed without them. Whether the request is refused depends on an upstream
+  that may not check.
+* *Two answers for one route.* A bearer caller whose token lacks the scope is refused `403` before any
+  upstream contact. A browser session lacking the same scope is relayed. On a `session_fallback`
+  route the two outcomes sit on one route and differ only by the kind of caller.
+
+ADR-0049 considered a session pre-check and deferred it, because a pre-check needs a way to widen a
+*live* session. A new login replaces the session rather than adding to it, and RFC 6749 §6 forbids a
+refresh grant from widening the original grant. A pre-check that can only refuse turns every scope
+mismatch into a dead end.
+
+Two facts about a session's tokens make the mismatch recoverable, and they are different facts:
+
+* the *active scope set* `A`: the scopes the mediated access token was granted. A refresh response
+  can narrow it.
+* the *granted scope set* `S`: the scopes the identity provider is known to grant this session. It
+  equals `A` at login and after a widening. A refresh can never add to it.
+
+A scope missing from `A` but inside `S` needs no user: a refresh grant may name any subset of what
+was originally granted. A scope outside `S` needs a new authorization. The question this ADR settles
+is what a session route does when `A` lacks a scope the route needs, given that both recoveries
+exist.
+
+`S` is only useful while it is true. An identity provider can stop granting a scope during a
+session's life: an entitlement is removed, a consent is withdrawn, a client scope is unassigned. A
+set that still names such a scope sends every request for it into a recovery that cannot succeed,
+so the decision also has to say when a scope leaves `S`.
+
+== Decision
+
+*A session route never relays a session that lacks a scope the route needs. It compares on every
+request, obtains what is missing -- by a refresh when it lies inside `S`, by widening the
+live session when not -- and refuses when the identity provider does.*
+
+* *The comparison runs on every session request.* After the session is resolved and the near-expiry
+  refresh has run, `SessionAuthenticationStage` computes `missing = neededScopes − A`. It does so
+  whatever `auth.token_relay` says and before any bearer is recorded, so `token_relay: false` withholds
+  the token from the upstream but not the check from the request. With nothing missing the request
+  continues and no identity-provider call is made.
+* *Inside the grant, a refresh.* When every missing scope lies inside `S`, the stage makes exactly
+  one call through the scope-driven leg of `TokenRefreshCoordinator`, requesting `A ∪ missing`. The
+  leg shares the near-expiry leg's per-session single-flight, re-checks the re-resolved session under
+  that exclusion, and never adds to `S`. The stage compares the returned session again, so no
+  outcome of the refresh can cause an under-scoped session to be relayed. Navigations and API calls
+  take this path alike.
+* *`S` is kept truthful.* It records what the identity provider last showed it grants, not
+  everything it ever granted, and exactly two events change it after login:
+** *A widening replaces it.* The merge sets `S` to the scope of the new grant. It is not united with
+   the earlier set, so a scope the provider no longer returns leaves `S`.
+** *A processed scope refresh reduces it.* When the provider processes the scope-driven grant and its
+   response `scope` lacks a requested member, every such member is removed from `S` before the
+   rotated session is persisted. Nothing else is removed, and nothing is ever added.
+
++
+A response that omits `scope` refuses nothing (RFC 6749 §5.1), and a grant the provider never
+processed proves nothing, so neither changes `S`. The near-expiry leg never changes `S` either, even
+when its response narrows `A`: it asked for the session's current scopes, not for a scope a route
+needs, and the first scope-driven refresh that does ask settles the question.
+* *Outside the grant, the live session is widened.* When a missing scope lies outside `S`, or the
+  refresh did not obtain the set, the answer depends on what the caller can do with it:
+** A *navigation* (its `Accept` offers `text/html`) is redirected `302` into an authorization request
+   for `S ∪ neededScopes` that returns to the requested URL. The first attempt carries `prompt=none`.
+   If the identity provider answers `login_required`, `interaction_required`, `consent_required` or
+   `account_selection_required`, exactly one interactive attempt follows.
+** Every other request is refused `403` `application/problem+json`, with two RFC 9457 extension
+   members. `missing_scopes` lists the missing names, sorted and taken from the route's
+   boot-configured set, never from a token. `step_up_url` is the same-origin URL a browser follows to
+   widen the session for the refused request; it is present only when `oidc.step_up.path` is
+   configured. The answer carries no `WWW-Authenticate` challenge, which belongs to the bearer
+   posture.
+* *A widening merges into the session it started from.* The widening callback is bound to the
+  browser exactly like a login callback: a pending record, the binding cookie and the `state` are
+  checked before anything else, an identity-provider error included, so a forged error can never
+  start a re-drive. A successful grant is merged only when the new ID token's subject, the live
+  session's subject and the subject recorded when the widening started are the same. The merge keeps
+  the session's identity, its authentication time and its absolute expiry, takes the new tokens, and
+  sets both `A` and `S` to the granted scope. It never mints a second session and never moves a
+  session to another identity.
+* *The merged session takes the `sid` of the grant.* The tokens a widening merges belong to the
+  identity-provider session that answered it. That need not be the session the gateway session was
+  created from: the original can have ended, and the user authenticated again, which is what the
+  interactive attempt produces. The merge takes the `sid` of the new ID token when it carries one
+  and keeps the session's own otherwise. In server mode the store re-indexes the session on that
+  write, so a back-channel logout for the answering identity-provider session destroys it.
+* *A refusal is terminal.* Any other identity-provider error, any error on the interactive attempt,
+  a subject mismatch, a missing live session, and a grant that still lacks a scope sought beyond `S`
+  all answer `403`. The session is left unchanged and stays usable on every route it satisfies. No
+  further redirect follows, so a scope the identity provider will not grant cannot loop the browser.
+* *A terminated session is not brought back by the merge.* The merge is the seam's updating write,
+  which never creates a session. In server mode a session that a logout or a back-channel logout
+  destroyed after the callback resolved it is reported gone at that write: nothing is stored, the
+  callback answers the same terminal `403` with no `Location` and no `Set-Cookie`, the refusal is
+  recorded with the reason `session-terminated`, and the tokens of the refused grant are dropped as
+  the other refusals drop theirs. The session stays terminated. In cookie mode the binding holds no
+  state a logout could have removed, cannot observe one, and re-seals the merged session; that is a
+  residual of the stateless variant
+  (link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]).
+* *A scope the provider stopped granting reaches that refusal.* Because `S` is truthful, such a scope
+  is sought beyond `S` by the time a widening callback checks its grant. When a scope refresh ran
+  first and was answered with a narrower grant, the scope has already left `S`: the widening that
+  follows is refused. When no refresh ran -- the session holds no refresh token, transparent refresh
+  is off, or the near-expiry refresh had just re-bound the cookie -- the first widening is merged,
+  the merge takes the scope out of `S`, and the next round is the refused one. A navigation ends in
+  the `403` after at most two rounds.
+* *The step-up path is a reserved path that serves a live session only.* `oidc.step_up.path` is
+  registered from the key's presence and matched like the other browser-facing reserved paths.
+  Without a live session it answers `401` with no identity-provider redirect and no pending record.
+  Its `returnUrl` is same-origin-validated and falls back to the configured default. When the target
+  route's needed scopes already lie inside `S` it redirects straight back, because the route then
+  refreshes by itself; otherwise it starts the same silent-first widening a navigation gets.
+* *The session carries `S` in both session modes.* The session record and the sealed cookie payload
+  hold the granted set next to the active set. A sealed cookie without the field belongs to an older
+  format version and is refused at the version gate, so its browser re-authenticates.
+
+One case skips the refresh although everything missing lies inside `S`. When the near-expiry refresh
+has just re-bound the session under a new cookie, the request's own `Cookie` header still names the
+binding that refresh rotated away, and a second exchange started from it would present a refresh
+token the identity provider has already retired. Such a request takes the widening branch. The next
+request carries the new cookie and is refreshed normally.
+
+With transparent refresh switched off, the scope-driven leg is bound to a pass-through that hands the
+session back unchanged, and the stage goes straight to widening.
+
+=== How this relates to earlier decisions
+
+* *ADR-0049.* This decision supersedes its session half. The precondition that decision deferred its
+  session pre-check on, a way to widen a live session, is met by the merge described above. The
+  `neededScopes` derivation, the bearer check, and the boot refusal of `endpoint.scopes` on an
+  endpoint with only `none` routes stand. Requesting and checking still read one set; a session route
+  now does both.
+* *ADR-0055.* The SESSION branch of a `session_fallback` route is exactly a session route, so it
+  inherits all of the above. Both branches of such a route now enforce the same set, each with its
+  own posture's answer.
+* *ADR-0046.* The scope-driven leg keeps every per-kind refusal disposition and adds one outcome that
+  is not a refusal: the session is kept but does not carry the requested set, because the identity
+  provider granted a narrower scope, the session holds no refresh token, or the request coalesced
+  with a refresh that did not ask for it. That outcome records no back-off and no warning, and the
+  stage widens. An outright `invalid_scope` answer is *not* part of it; see the Negative
+  consequences.
+* *ADR-0048.* The widening authorization flow is built on `ScopedEngineFlows` per call and never
+  cached. The login-flow cache is bounded because a login set is always fixed at boot;
+  `S ∪ neededScopes` contains scopes that come from the identity provider, so caching it would remove
+  that bound. `prompt=none` is added to the rendered authorization URL by a parameter-aware rewrite on
+  the gateway side, which leaves the engine unchanged.
+
+== Consequences
+
+=== Positive
+
+* The under-check is closed on session routes. A scope declared on an endpoint is enforced for every
+  authenticated caller of its routes, and no token lacking it reaches the upstream.
+* A satisfied route costs nothing. The comparison is a set containment check on values the session
+  already holds: no identity-provider call, no rotated token, no `Set-Cookie`.
+* A mismatch is recoverable. A user reaches a scoped route from any session with at most one consent.
+* The session stays the same session across a widening. Its identifier, authentication time and
+  absolute expiry are kept, so a widening neither creates a second session to track nor extends how
+  long the session lives.
+* A navigation for a scope the identity provider stops granting ends in the terminal `403` after at
+  most two widening rounds.
+* A back-channel logout finds a widened session. The session is indexed under the `sid` of the
+  identity-provider session its tokens belong to, so a logout for that session destroys it instead of
+  matching nothing.
+* Logins stay minimal. A login still requests only the scope set of the route it is for, and further
+  scopes are requested when a route first needs them.
+* One route gives one answer about a scope, whichever authentication branch the request takes.
+
+=== Negative
+
+* *An API client cannot recover by retrying.* A widening needs a browser navigation to the identity
+  provider. A script that receives the `403` has to send the browser to `step_up_url`, and when no
+  step-up path is configured the response names the missing scopes and nothing to follow.
+* *An `invalid_scope` refresh answer arms the refresh back-off.* The engine surfaces that answer as a
+  transport failure without the OAuth error code, so it is classified `PRE_REDEMPTION` like an outage
+  and takes that kind's back-off and warning. The request is still never relayed short of a scope,
+  because the stage compares the session again whichever outcome it receives. The cost is that the
+  session's next near-expiry refresh waits out the same back-off window. Telling the two apart needs
+  the error code from the engine.
+* *The first request for a new scope is slower.* It pays one token-endpoint round trip inside the
+  grant, or a redirect through the identity provider outside it.
+* *A session can lose a scope.* A widening whose grant no longer returns a member of `S`, and a
+  scope refresh answered with a narrower grant, both take that scope out of `S`. A route that needs
+  it afterwards is served by a widening, not by a refresh, and the user may be asked to consent
+  again. `S` is evidence about the identity provider, so a provider that returns a scope
+  inconsistently moves it in and out of `S`.
+* *A scope that left the grant can cost one merged round before the refusal.* When no scope refresh
+  ran first, the widening callback cannot yet tell that the scope is gone: it merges the grant, sends
+  the browser back to the route once, and refuses on the round after. Telling it on the first round
+  would need the route's needed set on the pending record.
+* *A logout token for the previous identity-provider session no longer matches a widened session.*
+  After a widening answered by a different identity-provider session, the session is indexed under
+  the new `sid` only. Its tokens belong to that session, so this is the correct match, but a logout
+  for the earlier session that is delivered late destroys nothing.
+* *A near-expiry refresh that narrows `A` leaves `S` untouched.* The scope stays in `S` until a route
+  needs it and a scope refresh asks for it.
+* *The sealed cookie format is not migrated.* A cookie-mode session sealed without the granted set
+  is refused, and its browser logs in again.
+
+=== Risks
+
+* *Session-wide scope growth is larger, not smaller.* ADR-0049 accepts that every scope a session
+  holds is relayed to every session-route upstream. Widening adds scopes to a live session, so a
+  session that visited a scoped route presents that route's scopes everywhere afterwards. The bounds
+  are unchanged: the identity provider grants only what is requested, a widening can only request a
+  route's boot-declared set united with what was already granted, and `token_relay: false` withholds
+  the token from origins that need none. It stays tracked as BFF-15.
+* *A cross-site navigation can start a widening.* A link to a scoped route or to the step-up path
+  makes the browser request more scopes for the user's session. It cannot choose them: the set is the
+  target route's boot-declared set, the return URL is same-origin-validated, and consent stays with
+  the identity provider.
+* *A widening merge and a concurrent refresh race.* Both resolve the session, then persist it, and the
+  last writer wins. Either result is an identity-provider-fresh token set of the same identity, and
+  the subject is re-checked on the resolved session, not taken from the pending record. The loss is
+  one abandoned refresh token. The loser's `S` can be overwritten too; a scope it wrongly keeps is
+  removed again the next time it is asked for and not returned. This race between the two writers is
+  unchanged. A *termination* is no longer part of it in server mode: neither writer can bring back a
+  session a logout destroyed, because both write through the updating write and a write that finds
+  the session gone stores nothing.
+* *In cookie mode a merge or a refresh can outlast a logout.* The stateless binding cannot observe a
+  logout, so a widening callback or a refresh that was in flight when the browser logged out still
+  re-seals a session cookie. If that response reaches the browser after the logout response, the
+  browser holds a cookie the gateway resolves again, until the session's absolute lifetime. The
+  mitigations are the stateless variant's own: a short `ttl_seconds`, short access-token lifetimes,
+  and the session-based variant where immediate termination is required. It is tracked as BFF-09.
+* *A refresh inside the grant depends on the identity provider honouring it.* A provider that
+  declines to restore a previously granted scope returns a narrower grant or refuses the request, and
+  the session is widened instead. The outcome is slower, not wrong. A narrower grant also takes the
+  scope out of `S`. An outright `invalid_scope` refusal does not: it arrives as an outage (see the
+  Negative consequences), leaves `S` unchanged, and is retried once per back-off window.
+
+== Alternatives Considered
+
+*Relay and let the upstream refuse.* This is the session half of ADR-0049. It needs no extra
+mechanism and never interrupts a request. It also leaves the enforcement of a gateway-declared scope
+to a component the gateway does not control, and gives a bearer caller and a browser session
+different answers on the same route. Rejected now that a live session can be widened.
+
+*Narrow the token per endpoint.* Relaying each route a token restricted to that route's scopes,
+through a scope-restricted refresh or RFC 8693 token exchange, is ADR-0049's third alternative. It
+addresses session-wide scope growth, which is a different problem: a session that lacks a scope
+still lacks it after narrowing. It also still costs a token-endpoint round trip per route or
+per-route token caching, and needs identity-provider support that cannot be assumed. Still excluded.
+
+*Probe with a refresh instead of tracking `S`.* The stage could request `A ∪ missing` on every miss
+and treat a failure as "outside the grant". That removes the second scope set from the session. It
+replaces a local set comparison with a token-endpoint round trip for every request on a scope the
+user never granted, and it cannot read the answer reliably: a refused scope and an unreachable
+provider arrive as the same failure kind, and the back-off for the second would throttle the first.
+Rejected.
+
+*Reuse the RFC 9470 step-up coordinator.* `StepUpCoordinator` already re-drives an authorization
+request for a live session. It is the `acr` leg: it builds its request from the static `oidc.scopes`
+through the engine's step-up handler, and its re-drive lands as a new session. A widening needs a
+per-request scope set and a merge into the session it started from, which is the login re-drive's
+shape -- pending record, binding cookie, callback -- with a different landing. Rejected; the two legs
+stay separate.
+
+*Let `S` only ever grow.* Uniting each widening's grant with the earlier set, and never changing `S`
+on a refresh, keeps every scope the user once authorized available to a refresh. It also keeps a
+scope the identity provider has stopped granting. Nothing then seeks that scope beyond `S`: the
+refresh returns a narrower grant, the widening is merged without the scope, and the browser is sent
+round until its redirect limit, while every API call for the scope starts its own refresh grant.
+Rejected: the terminal refusal above depends on `S` being true.
+
+*Carry the route's needed set on the widening pending record.* The callback could refuse any grant
+lacking a needed scope and so end a navigation on the first round. It leaves `S` naming a scope the
+provider no longer grants, so API calls for it would still refresh on every request, and the
+step-up path would still answer such a target with a direct redirect. Rejected in favour of fixing
+`S`.
+
+*Refuse a widening whose ID token names another `sid`.* It would keep a session bound to the
+identity-provider session it was created from. It would also turn the interactive attempt into a
+dead end in exactly the case it exists for: the original identity-provider session is gone and the
+user has authenticated again. Rejected; the subject check is what binds a widening to the session.
+
+The rejected alternatives either leave the decision to someone else, or learn what the user granted
+by asking the identity provider each time, or keep an answer in the session that has stopped being
+true. The decision keeps the answer in the session and keeps it current: what the token carries,
+what the identity provider grants, and one comparison that decides which of the two recoveries
+applies.
+
+== References
+
+* link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]: the `neededScopes` derivation and the bearer check, whose session half this decision supersedes
+* link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]: the SESSION branch that inherits the enforcement
+* link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]: the refusal dispositions the scope-driven refresh leg keeps
+* link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: the per-scope-set engine seam the refresh and the widening ride on
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the `SessionBinding` seam and the reserved-path model the step-up path joins
+* link:../security-threat-model.adoc#bff-15[Threat model BFF-15] (scope over-request, under-check and session-wide scope growth) and link:../security-threat-model.adoc#bff-16[BFF-16] (authentication-branch downgrade)
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`: the comparison, the refresh and widening seams, and the `403` problem members
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/TokenRefreshCoordinator.java`: the scope-driven refresh leg
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/SessionWidening.java`: the widening initiation
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java`: the widening callback, the merge and the terminal refusals
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/StepUpEndpoint.java`: the reserved step-up path
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/SessionRecord.java`: the active and granted scope sets

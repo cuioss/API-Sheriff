@@ -28,11 +28,19 @@ import org.jspecify.annotations.Nullable;
  * foundation binds.
  * <p>
  * The contract deliberately mentions <strong>no store and no opaque id</strong>: it describes only
- * how a {@link SessionRecord} is bound to the browser, read back from a request, re-bound after a
- * rotation, and destroyed. That makes a stateless variant representable — a server-mode
- * implementation keeps the record in a {@link SessionStore} and hands the browser an opaque handle,
- * while a stateless implementation seals the record into the cookie itself. Login, CSRF, step-up,
- * scope enforcement, and logout orchestration stay single-sourced above this seam.
+ * how a {@link SessionRecord} is bound to the browser, read back from a request, updated after its
+ * token material changed, and destroyed. That makes a stateless variant representable — a
+ * server-mode implementation keeps the record in a {@link SessionStore} and hands the browser an
+ * opaque handle, while a stateless implementation seals the record into the cookie itself. Login,
+ * CSRF, step-up, scope enforcement, and logout orchestration stay single-sourced above this seam.
+ * <p>
+ * <strong>One creating write, one updating write.</strong> {@link #bind} creates a session and is the
+ * login's write. {@link #persist} updates a session that already exists and <em>never creates
+ * one</em>: an implementation that can observe that the session was destroyed since the caller
+ * resolved it reports that instead of writing, so a refresh or a widening that was in flight during a
+ * logout cannot bring the session back. Whether an implementation can observe it is a property of
+ * the mode — a server-mode binding can, a stateless one holds nothing to observe it with — and is
+ * stated on {@link #persist}.
  * <p>
  * <strong>Session identity.</strong> Every implementation populates {@link SessionRecord#sessionId()}
  * with a stable per-session identity, so callers that need to key per-session work — notably the
@@ -76,14 +84,30 @@ public interface SessionBinding {
     Optional<SessionRecord> resolve(@Nullable String cookieHeader, Instant now);
 
     /**
-     * Re-binds a session whose token material was rotated, without extending its absolute lifetime.
+     * Updates a session that already exists with new token material — after a refresh or a widening
+     * merge — without extending its absolute lifetime, and <strong>without ever creating a
+     * session</strong>.
+     * <p>
+     * <strong>The session may be gone.</strong> The caller resolved the session earlier; a logout or a
+     * back-channel logout may have destroyed it since. An implementation that holds server-side state
+     * checks for the session and writes in one atomic step, and returns an empty result when the
+     * session is no longer there: nothing was written, and the caller must treat the session as ended
+     * rather than hand out the new token material. A stateless implementation holds nothing a
+     * destruction could have removed, cannot observe one, and therefore always writes and never
+     * returns empty.
+     * <p>
+     * Thread-safe, like every operation of this seam.
      *
-     * @param rotated the session carrying the rotated token material
+     * @param updated the session carrying the new token material; it keeps the identity and the
+     *                absolute expiry of the session it updates
      * @param now     the reference instant
-     * @return the re-bound session and the {@code Set-Cookie} header value(s) the caller emits
-     *         (empty for an implementation whose re-bind is invisible to the browser)
+     * @return the updated session and the {@code Set-Cookie} header value(s) the caller emits (an
+     *         empty list for an implementation whose update is invisible to the browser); empty when
+     *         the implementation observed that the session no longer exists
+     * @throws IllegalStateException when the binding cannot hold the updated session — for example a
+     *         stateless implementation whose sealed representation exceeds the cookie size budget
      */
-    BoundSession persist(SessionRecord rotated, Instant now);
+    Optional<BoundSession> persist(SessionRecord updated, Instant now);
 
     /**
      * Destroys the given session (RP-initiated logout or a failed refresh). A no-op when the
@@ -141,7 +165,7 @@ public interface SessionBinding {
     }
 
     /**
-     * The result of binding or re-binding a session: the session as bound, plus the
+     * The result of binding or updating a session: the session as bound, plus the
      * {@code Set-Cookie} header values the caller emits so the browser carries the new binding.
      * Token material never appears in the headers — a server-mode binding emits an opaque handle
      * and a stateless binding emits an authenticated-encrypted value.

@@ -1,0 +1,109 @@
+{
+  "source_documents": [
+    {
+      "id": "kidicap-api-sheriff-aenderungen",
+      "title": "Änderungen an API Sheriff (KIDICAP Gateway requirements AS-1..AS-14)",
+      "language": "de",
+      "origin_repo": "https://gitlab.intern.gipmbh.de/gip/projects/kidicap-apigateway/kidicap-gateway.git",
+      "origin_path": "doc/api-sheriff-aenderungen.adoc",
+      "origin_branch": "feature/initial-structure",
+      "origin_commit": "bb4a4a9415829ef7bdfa6aa9c586df905c4ac622",
+      "document_date": "2026-09-15",
+      "baseline_api_sheriff_version": "0.2.1",
+      "archived_copy": "archive/api-sheriff-aenderungen.adoc"
+    }
+  ],
+  "repos": [
+    {
+      "name": "API-Sheriff",
+      "role": "implementing repository",
+      "head_at_init": "fb9e774c21eb97d106d5e7ce8a6a4a901e32cff0"
+    },
+    {
+      "name": "kidicap-gateway",
+      "role": "consumer; migrates on parent-version bump",
+      "local_path": "/home/oliver/git/kidicap-gateway"
+    },
+    {
+      "name": "cui-http",
+      "role": "library dependency (inbound security filter, forwarded-header resolver); 3.1 resolved via cui-quarkus-parent 1.7.5",
+      "local_path": "/home/oliver/git/cui-http",
+      "main_at_analysis": "d385aa3",
+      "resolved_release": "3.1",
+      "release_notes": "https://github.com/cuioss/cui-http/releases/tag/3.1"
+    }
+  ],
+  "issues": [
+    {
+      "id": "API-Sheriff#194",
+      "topic": "Readiness reports UP although the first JWKS fetch failed",
+      "as_item": "AS-10"
+    },
+    {
+      "id": "cuioss/cui-http#236",
+      "url": "https://github.com/cuioss/cui-http/issues/236",
+      "topic": "Option to reject decoded CR/LF in parameter values",
+      "as_item": "AS-13",
+      "consumed_by": "PLAN-13",
+      "created": "2026-09-15",
+      "state": "closed 2026-09-16 by cuioss/cui-http PR #239",
+      "shipped_in": "cui-http 3.1 (released 2026-09-16)",
+      "implemented_as": "SecurityConfiguration.allowLineBreaksInParameterValues (default true)"
+    },
+    {
+      "id": "API-Sheriff#323",
+      "url": "https://github.com/cuioss/API-Sheriff/issues/323",
+      "topic": "sameOrigin encoded-spelling blind spot",
+      "source": "PLAN-15 landing follow-up",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "API-Sheriff#324",
+      "url": "https://github.com/cuioss/API-Sheriff/issues/324",
+      "topic": "declaresLimitShapedKey file-level granularity",
+      "source": "PLAN-15 landing follow-up",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "API-Sheriff#325",
+      "url": "https://github.com/cuioss/API-Sheriff/issues/325",
+      "topic": "anchor-coverage rule restated four times",
+      "source": "PLAN-15 landing follow-up",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "API-Sheriff#326",
+      "url": "https://github.com/cuioss/API-Sheriff/issues/326",
+      "topic": "hand-mirrored IT security_headers/cors fixtures",
+      "source": "PLAN-15 landing follow-up",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "API-Sheriff#327",
+      "url": "https://github.com/cuioss/API-Sheriff/issues/327",
+      "topic": "five slash-stripping helpers",
+      "source": "PLAN-15 landing follow-up",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "API-Sheriff#328",
+      "url": "https://github.com/cuioss/API-Sheriff/issues/328",
+      "topic": "no native IT assertion for redirect no-store",
+      "source": "PLAN-15 landing follow-up",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "API-Sheriff#329",
+      "url": "https://github.com/cuioss/API-Sheriff/issues/329",
+      "topic": "forward block on a redirect route is inert",
+      "source": "PLAN-15 landing follow-up",
+      "created": "2026-09-18"
+    },
+    {
+      "id": "API-Sheriff#320",
+      "url": "https://github.com/cuioss/API-Sheriff/pull/320",
+      "topic": "PLAN-15 merged PR (93a4b3e): AS-3, AS-4, AS-8, AS-9, AS-11, AS-12",
+      "created": "2026-09-17"
+    }
+  ]
+}

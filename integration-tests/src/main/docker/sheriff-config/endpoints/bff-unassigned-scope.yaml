@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The routes that need a scope the identity provider will NOT grant (ADR-0057).
+# Anchored to the 'bff-session' anchor (type: bff, access: authenticated, auth: require:
+# session) declared in gateway.yaml, and routed to the same go-httpbin echo backend (the
+# UPSTREAM topology alias) as endpoints/bff-session.yaml and endpoints/bff-scoped.yaml, so an
+# upstream contact would be observable — and its absence is what these routes are for. Two
+# routes live here: bff-unassigned-scope (the session floor as inherited) and
+# bff-unassigned-scope-fallback (a require: bearer route with auth.session_fallback: true).
+#
+# `scopes` is ADDITIVE: the scope set both routes need is oidc.scopes united with this list, i.e.
+# exactly "openid profile email sheriff_it_unassigned". sheriff_it_unassigned EXISTS in
+# integration-realm.json but is assigned to no client — neither a default nor an optional client
+# scope of integration-client or refresh-client, and not a member of the realm-wide
+# defaultDefaultClientScopes list either. That is deliberate, and it is the whole difference from
+# endpoints/bff-scoped.yaml: sheriff_it_endpoint is optional on the client, so Keycloak grants it
+# as soon as the gateway asks, whereas an authorization request naming sheriff_it_unassigned is
+# refused with invalid_scope. No session can therefore ever carry these routes' needed set, and
+# the routes are reachable by nobody. The same holds for every other realm client, the key-
+# authenticated ones and token-mint-client included: the scope is assigned to none of them.
+#
+# The explanation lives HERE and not on the scope in integration-realm.json, because that file
+# cannot hold it: JSON carries no comments, and the scope's `description` is stored in Keycloak's
+# CLIENT_SCOPE.DESCRIPTION column, which is 255 characters wide. A longer description does not
+# truncate — it aborts the realm import, Keycloak exits, and the whole stack fails to start before
+# a single integration test runs. Keep that description a one-line pointer.
+#
+# What they back is the refusal rows of BffSessionScopeParityIT. A live session navigating onto
+# either route starts a session widening, and the gateway pushes the widening's authorization
+# request before it redirects (ADR-0058). Keycloak refuses that pushed request, so the navigation
+# is answered 502 and the instance logs the refused-push record ApiSheriff-132: no redirect is
+# issued, nothing is stored, the session is left unchanged, and the request never reaches the
+# echo. An XHR is refused 403 application/problem+json naming the missing scope. The same session
+# keeps working on /bff-session/get afterwards, which is the proof that a refused widening costs
+# the browser nothing it already had. Assigning the scope to the client in the realm would turn
+# the refusal into a grant and make these routes a second copy of bff-scoped.
+#
+# The terminal 403 a widening CALLBACK answers an identity-provider error with (ADR-0057) is not
+# reached through these routes: the scope is refused at the push, so no callback is ever made. It
+# is proven at unit level (CallbackEndpointTest).
+#
+# The step-up path the XHR answer points at is oidc.step_up.path in gateway.yaml. Both prefixes
+# nest under /bff-session and are statically disjoint from bff-session-mediated by specificity,
+# exactly as /bff-session/scoped is; the fallback prefix nests one level further and is disjoint
+# from bff-unassigned-scope the same way, as /secure/filtered is from /secure in
+# endpoints/secure.yaml. No forward block: nothing here is ever forwarded.
+endpoint:
+  id: bff-unassigned-scope
+  enabled: true
+  base_url: UPSTREAM
+  anchor: bff-session
+  scopes: ["sheriff_it_unassigned"]
+  routes:
+    - id: bff-unassigned-scope
+      match:
+        path_prefix: /bff-session/unassigned
+    # session_fallback (auth.session_fallback: true) — the refusal shown on the SESSION branch of a
+    # require: bearer route. A request without an Authorization header takes that branch and is held
+    # to the route's needed scopes exactly as on bff-unassigned-scope above, so the same widening is
+    # attempted and the same 502 answers its refused push. The grantable counterpart of this route is
+    # bff-session-fallback in endpoints/bff-scoped.yaml, where the widening succeeds; a refusal
+    # cannot be shown there, because the scope that endpoint adds is one Keycloak grants.
+    #
+    # The route-level auth block REPLACES the anchor's wholesale, exactly as on bff-session-fallback:
+    # it declares require: bearer in place of the anchor's session floor, which the anchor floor rule
+    # admits, and session_fallback is backed by the global oidc block. The BEARER branch of this
+    # route is reachable by nobody either — no token the realm mints carries sheriff_it_unassigned —
+    # and nothing drives it. Every request on this route records sheriff_auth_branch_total, as on any
+    # session_fallback route, so the refusal row moves this route's branch="session" series; that is
+    # why MetricsIT accepts this route id next to bff-session-fallback.
+    - id: bff-unassigned-scope-fallback
+      match:
+        path_prefix: /bff-session/unassigned/fallback
+      auth:
+        require: bearer
+        session_fallback: true

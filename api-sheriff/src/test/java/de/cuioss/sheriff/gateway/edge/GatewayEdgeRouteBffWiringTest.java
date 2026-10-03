@@ -18,27 +18,33 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
+import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -49,10 +55,12 @@ import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ClaimAllowlistFilter;
+import de.cuioss.sheriff.gateway.bff.reserved.ClientJwksEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -72,6 +80,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
@@ -92,12 +101,14 @@ import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
+import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
@@ -108,6 +119,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Covers the D16 edge wiring of the server-mode BFF runtime: the {@link ReservedPathRegistry} now
@@ -123,7 +137,7 @@ class GatewayEdgeRouteBffWiringTest {
 
     private static final String OIDC_HOST = "gw.example.com";
     private static final String ORIGIN = "https://gw.example.com";
-    /** The fixture's configured post-login fallback — the resolved {@code oidc.login.default_return_url} when unset. */
+    /** The fixture's configured fallback — the resolved {@code oidc.login.default_return_url} when unset. */
     private static final String ROOT_RETURN_TARGET = "/";
     private static final String CALLBACK_PATH = "/auth/callback";
     private static final String LOGOUT_PATH = "/auth/logout";
@@ -131,9 +145,14 @@ class GatewayEdgeRouteBffWiringTest {
     private static final String BACKCHANNEL_PATH = "/auth/backchannel";
     private static final String USER_INFO_PATH = "/auth/userinfo";
     private static final String LOGIN_PATH = "/auth/login";
+    private static final String STEP_UP_PATH = "/auth/step-up";
+    /** Where the engine-free session stage redirects an unauthenticated navigation. */
+    private static final String LOGIN_CHALLENGE_LOCATION = "/login";
+    /** Where the engine-free session stage redirects a navigation whose session needs widening. */
+    private static final String WIDENING_CHALLENGE_LOCATION = "/widen";
 
     @Nested
-    @DisplayName("ReservedPathRegistry registers the user_info and login folds (D11/D12)")
+    @DisplayName("ReservedPathRegistry registers the user_info, login and step-up folds")
     class RegistryFolds {
 
         private final ReservedPathRegistry registry = ReservedPathRegistry.from(fullOidc());
@@ -145,13 +164,19 @@ class GatewayEdgeRouteBffWiringTest {
         }
 
         @Test
+        @DisplayName("Should register the step-up path as STEP_UP")
+        void shouldRegisterStepUp() {
+            assertEquals(Optional.of(ReservedEndpoint.STEP_UP), registry.match(OIDC_HOST, STEP_UP_PATH));
+        }
+
+        @Test
         @DisplayName("Should register the login fold path as LOGIN")
         void shouldRegisterLogin() {
             assertEquals(Optional.of(ReservedEndpoint.LOGIN), registry.match(OIDC_HOST, LOGIN_PATH));
         }
 
         @Test
-        @DisplayName("Should keep the original four reserved paths alongside the two new folds")
+        @DisplayName("Should keep the original four reserved paths")
         void shouldKeepOriginalReserved() {
             assertEquals(Optional.of(ReservedEndpoint.CALLBACK), registry.match(OIDC_HOST, CALLBACK_PATH));
             assertEquals(Optional.of(ReservedEndpoint.LOGOUT), registry.match(OIDC_HOST, LOGOUT_PATH));
@@ -454,6 +479,103 @@ class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * Drives the step-up path through a live edge: the reserved registry resolves it to
+     * {@link ReservedEndpoint#STEP_UP} ahead of route selection, and the edge hands the decoded
+     * {@code returnUrl} to the step-up endpoint exactly as it does for login initiation. With a live
+     * session the fixture's endpoint answers a direct redirect whose {@code Location} IS the extracted
+     * return URL — the observable that proves the parameter arrived — and without one it answers
+     * {@code 401}.
+     */
+    @Nested
+    @DisplayName("step-up path reaches the STEP_UP dispatch with its returnUrl")
+    class StepUpOverEdge {
+
+        private static final String RETURN_TARGET = "/dashboard";
+        private static final String ENCODED_RETURN_TARGET = "%2Fdashboard";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private HttpClient client;
+        private String sessionCookie;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+
+            SessionStore store = new InMemorySessionStore(16);
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), Instant.now());
+            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("returnUrl reaches the step-up endpoint and becomes the redirect target")
+        void shouldHandReturnUrlToStepUp() throws Exception {
+            HttpClientResponse response = stepUp("?returnUrl=" + ENCODED_RETURN_TARGET, sessionCookie);
+
+            assertEquals(302, response.statusCode(), "a live session is answered with a redirect");
+            assertEquals(RETURN_TARGET, response.getHeader("Location"),
+                    "the decoded returnUrl must reach the STEP_UP dispatch");
+        }
+
+        @Test
+        @DisplayName("a retired return_to spelling is ignored and degrades to the default return URL")
+        void shouldIgnoreRetiredSpelling() throws Exception {
+            HttpClientResponse response = stepUp("?return_to=" + ENCODED_RETURN_TARGET, sessionCookie);
+
+            assertEquals(ROOT_RETURN_TARGET, response.getHeader("Location"),
+                    "only returnUrl is the wire parameter, so the positive case above is about the name");
+        }
+
+        @Test
+        @DisplayName("without a session the step-up path answers 401 and never redirects")
+        void shouldAnswer401WithoutSession() throws Exception {
+            HttpClientResponse response = stepUp("?returnUrl=" + ENCODED_RETURN_TARGET, null);
+
+            assertEquals(401, response.statusCode());
+            assertNull(response.getHeader("Location"), "no IdP redirect without a live session");
+        }
+
+        private HttpClientResponse stepUp(String query, @Nullable String cookie) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(STEP_UP_PATH + query);
+            return Awaits.connect(client.request(options).compose(request -> {
+                if (cookie != null) {
+                    request.putHeader("Cookie", cookie);
+                }
+                return request.send();
+            }), "the step-up response for " + query);
+        }
+    }
+
     @Nested
     @DisplayName("BffRuntime.dispatch routes each reserved path to its handler (not NO_ROUTE_MATCHED)")
     class ReservedDispatch {
@@ -526,6 +648,54 @@ class GatewayEdgeRouteBffWiringTest {
                     "control: a cross-origin return URL is refused and replaced by the default, which is "
                             + "what makes the assertion above one about validation rather than about "
                             + "there being any Location header at all");
+        }
+
+        @Test
+        @DisplayName("CLIENT_JWKS reaches the client JWKS handler — 404 from this fixture's withheld form, no header, no JSON body")
+        void shouldDispatchClientJwks() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CLIENT_JWKS,
+                    request(null, null), now);
+
+            assertAll("the withheld form through the dispatch",
+                    () -> assertEquals(404, response.status()),
+                    () -> assertEquals(Map.of(), response.headers(),
+                            "the dispatch adds no header: the edge answers this outcome as an unrouted path"),
+                    () -> assertEquals(Optional.empty(), response.jsonBodyOptional(),
+                            "an absent document stays absent rather than being serialized as the JSON literal null"));
+        }
+
+        @Test
+        @DisplayName("STEP_UP without a session yields 401 problem+json and no redirect")
+        void shouldDispatchStepUpWithoutSession() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/home", null, null, "GET"), now);
+
+            assertAll(
+                    () -> assertEquals(401, response.status()),
+                    () -> assertEquals("application/problem+json", response.headers().get("Content-Type")),
+                    () -> assertTrue(response.locationOptional().isEmpty(), "no IdP redirect without a session"),
+                    () -> assertTrue(response.setCookieHeaders().isEmpty()));
+        }
+
+        @Test
+        @DisplayName("STEP_UP with a live session redirects (302) to the validated return URL")
+        void shouldDispatchStepUpWithSession() {
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(now.plus(Duration.ofHours(1))).build(), now);
+            String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
+            BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.STEP_UP,
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
+                            null, null, "GET"), now);
+
+            assertEquals(302, response.status());
+            assertEquals(Optional.of("/home"), response.locationOptional(),
+                    "a target whose route needs nothing outside the granted set is answered straight back");
+            assertEquals(Optional.of(ROOT_RETURN_TARGET), crossOrigin.locationOptional(),
+                    "control: a cross-origin return URL is replaced by the default, never followed");
         }
 
         private BffRuntime.ReservedHttpRequest request(String cookie, String claims) {
@@ -639,6 +809,7 @@ class GatewayEdgeRouteBffWiringTest {
         }
 
         private BffRuntime callbackRuntime() {
+            SessionWidening widening = engineFreeSessionWidening(pendingStore, bindingCodec);
             CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
                 Map<String, ClaimValue> accessClaims = new HashMap<>();
                 accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
@@ -650,14 +821,9 @@ class GatewayEdgeRouteBffWiringTest {
                 // path, so the exchange grants no refresh token — the shape an authorization server
                 // that issues none produces, and the one that keeps this runtime's session inert.
                 return new AuthorizationCodeFlow.AuthenticationResult(access, id, null);
-            }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1));
+            }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1), widening);
 
-            SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
-                    (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
-                            new SessionBinding.BoundSession(session, List.of())),
-                    (returnUrl, scopes, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
-                    SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
-                    Clock.systemUTC());
+            SessionAuthenticationStage sessionStage = engineFreeSessionStage(sessionBinding);
             StepUpCoordinator stepUp = new StepUpCoordinator(
                     (session, challenge, instant) -> Optional.empty(),
                     challenge -> {
@@ -680,7 +846,428 @@ class GatewayEdgeRouteBffWiringTest {
                     engineFreeReturnTargetScopes());
 
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
-                    () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login);
+                    () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
+                    engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld());
+        }
+    }
+
+    /**
+     * The client JWKS endpoint at the edge, driven over a live Vert.x server against a stub upstream.
+     * <p>
+     * Three properties are only observable here, one layer out from {@link ClientJwksEndpoint} and
+     * {@link ReservedPathRegistry}: the path is answered on a host that is <em>not</em> the OIDC host,
+     * it is answered to a request carrying no credential at all, and it is answered <em>ahead of</em> the
+     * route table — the proxy route below claims the whole {@code /auth} prefix on every host, so a
+     * request the carve-out missed would reach the stub upstream and be counted there.
+     * <p>
+     * Each form is a matched pair with the control request beside it: the same edge forwards an
+     * ordinary {@code /auth} path to the upstream, so an upstream count of zero for the JWKS path is
+     * attributable to the carve-out rather than to a route that forwards nothing.
+     */
+    @Nested
+    @DisplayName("client JWKS endpoint: answered on every host, ahead of the route table, without a credential")
+    class ClientJwksAtTheEdge {
+
+        /** The path the endpoint is reserved at when {@code jwks_path} is omitted — {@link #fullOidc()} omits it. */
+        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        private static final String ROUTED_CONTROL_PATH = "/auth/not-reserved";
+        /** A path outside the {@code /auth} route that nothing reserves: the gateway does not know it. */
+        private static final String UNKNOWN_PATH = "/not-a-route";
+        /** A host the identity provider might dial that is not the host of {@code oidc.redirect_uri}. */
+        private static final String FOREIGN_HOST = "gateway.internal";
+
+        /** Counts the requests that actually reached the stub upstream. */
+        private final AtomicInteger upstreamHits = new AtomicInteger();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpServer publishingFront;
+        private HttpServer withheldFront;
+        private HttpClient client;
+        private ClientSigningKey signingKey;
+
+        /** What the edge answered: the status, the response headers and the body as text. */
+        private record EdgeAnswer(int status, MultiMap headers, String body) {
+        }
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
+                    request.body().onComplete(_ -> {
+                        upstreamHits.incrementAndGet();
+                        request.response().end("upstream");
+                    })).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+            signingKey = ClientSigningKey.resolve(null, ClientSigningKey.Purpose.CLIENT_AUTHENTICATION);
+            publishingFront = startEdge(new ClientJwksEndpoint(signingKey.publicJwk()));
+            withheldFront = startEdge(ClientJwksEndpoint.withheld());
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(publishingFront.close(), "the publishing edge front server to close");
+            Awaits.teardown(withheldFront.close(), "the withheld edge front server to close");
+            Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("GET on a foreign host without a credential is answered 200 with the key set, and never proxied")
+        void shouldPublishOnAForeignHostWithoutACredential() throws Exception {
+            EdgeAnswer answer = get(publishingFront, FOREIGN_HOST, DEFAULT_JWKS_PATH);
+
+            assertAll("the published client key set",
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertEquals("no-store", answer.headers().get("Cache-Control")),
+                    () -> assertEquals("application/json", answer.headers().get("Content-Type")),
+                    () -> assertEquals(Map.of("keys", List.of(signingKey.publicJwk())),
+                            new JsonObject(answer.body()).getMap(),
+                            "the body is the key set holding exactly the one public key the runtime was built with"),
+                    () -> assertEquals(0, upstreamHits.get(),
+                            "the /auth proxy route never sees the reserved path"));
+        }
+
+        @Test
+        @DisplayName("GET on the OIDC host is answered the same key set")
+        void shouldPublishOnTheOidcHost() throws Exception {
+            EdgeAnswer onOidcHost = get(publishingFront, OIDC_HOST, DEFAULT_JWKS_PATH);
+            EdgeAnswer onForeignHost = get(publishingFront, FOREIGN_HOST, DEFAULT_JWKS_PATH);
+
+            assertAll("one key set whatever host it is fetched on",
+                    () -> assertEquals(200, onOidcHost.status()),
+                    () -> assertEquals(onForeignHost.body(), onOidcHost.body()),
+                    () -> assertEquals(0, upstreamHits.get(), "neither request is proxied"));
+        }
+
+        @Test
+        @DisplayName("control: an ordinary path under the same prefix on the foreign host IS proxied")
+        void shouldProxyAnOrdinaryPathUnderTheSamePrefix() throws Exception {
+            EdgeAnswer answer = get(publishingFront, FOREIGN_HOST, ROUTED_CONTROL_PATH);
+
+            assertAll("the /auth proxy route serves the foreign host",
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertEquals("upstream", answer.body()),
+                    () -> assertEquals(1, upstreamHits.get(),
+                            "so the zero upstream count for the JWKS path is the carve-out's doing"));
+        }
+
+        @Test
+        @DisplayName("a method other than GET is answered 405 with Allow: GET by the endpoint, and never proxied")
+        void shouldRefuseAnotherMethodAtTheEndpoint() throws Exception {
+            EdgeAnswer answer = send(publishingFront, io.vertx.core.http.HttpMethod.POST, FOREIGN_HOST,
+                    DEFAULT_JWKS_PATH);
+
+            assertAll("POST on the JWKS path — a method the /auth proxy route itself allows",
+                    () -> assertEquals(405, answer.status()),
+                    () -> assertEquals("GET", answer.headers().get("Allow")),
+                    () -> assertEquals("", answer.body()),
+                    () -> assertEquals(0, upstreamHits.get(), "the reserved path is not handed to the route"));
+        }
+
+        /**
+         * The withheld form must not be told apart from a path the gateway does not know: an anonymous
+         * caller who could tell would read the client-authentication mode off the JWKS path. So the
+         * answer is compared with the answer the same edge gives, to the same method on the same host,
+         * for {@link #UNKNOWN_PATH} — a real unrouted request, not a restated literal. The comparison
+         * covers every header line in both directions, so a header the unknown path does not carry
+         * ({@code Cache-Control}, {@code Allow}) fails it as surely as a differing media type.
+         * <p>
+         * The three leading assertions are the control: they pin the reference to the route table's own
+         * {@code 404} problem document, so two answers that agreed on some other shape would not pass.
+         * The upstream count is what keeps the equality from being bought by releasing the path — the
+         * {@code /auth} proxy route covers the JWKS path and allows both methods, and still sees
+         * nothing.
+         */
+        @ParameterizedTest(name = "{1} on host {0}")
+        @CsvSource({OIDC_HOST + ",GET", OIDC_HOST + ",POST", FOREIGN_HOST + ",GET", FOREIGN_HOST + ",POST"})
+        @DisplayName("the withheld form is answered exactly as a path the gateway does not know, and the path still does not proxy")
+        void shouldAnswerTheWithheldFormAsAnUnknownPath(String host, String methodName) throws Exception {
+            io.vertx.core.http.HttpMethod method = io.vertx.core.http.HttpMethod.valueOf(methodName);
+
+            EdgeAnswer unknown = send(withheldFront, method, host, UNKNOWN_PATH);
+            EdgeAnswer withheld = send(withheldFront, method, host, DEFAULT_JWKS_PATH);
+
+            Map<String, Object> unknownProblem = new JsonObject(unknown.body()).getMap();
+            assertAll("the JWKS path in its withheld form",
+                    () -> assertEquals(404, unknown.status(), "control: the reference is the unrouted 404"),
+                    () -> assertEquals("application/problem+json", unknown.headers().get("Content-Type"),
+                            "control: in the route table's problem media type"),
+                    () -> assertEquals(Set.of("type", "title", "status"), unknownProblem.keySet(),
+                            "control: carrying the route table's problem document"),
+                    () -> assertEquals(unknown.status(), withheld.status(), "the same status"),
+                    () -> assertEquals(headerLines(unknown), headerLines(withheld),
+                            "the same header lines, media type included, and none the unknown path does not carry"),
+                    () -> assertEquals(unknownProblem, new JsonObject(withheld.body()).getMap(),
+                            "the same problem document, member for member"),
+                    () -> assertEquals(unknown.body(), withheld.body(), "and the same bytes"),
+                    () -> assertEquals(0, upstreamHits.get(),
+                            "the path stays reserved: the route that covers it is never reached"));
+        }
+
+        @Test
+        @DisplayName("control: the withheld edge proxies an ordinary path under the same prefix")
+        void shouldProxyAnOrdinaryPathOnTheWithheldEdge() throws Exception {
+            EdgeAnswer answer = get(withheldFront, FOREIGN_HOST, ROUTED_CONTROL_PATH);
+
+            assertAll("the /auth proxy route is live on the withheld edge too",
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertEquals(1, upstreamHits.get(),
+                            "so the 404 above cannot be a route that reaches no upstream"));
+        }
+
+        private HttpServer startEdge(ClientJwksEndpoint jwksEndpoint) throws Exception {
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(authPrefixRoute(upstream.actualPort()))),
+                    GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(new InMemorySessionStore(16)), jwksEndpoint),
+                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            return Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+        }
+
+        private EdgeAnswer get(HttpServer front, String host, String uri) throws Exception {
+            return send(front, io.vertx.core.http.HttpMethod.GET, host, uri);
+        }
+
+        /** Sends a request carrying no {@code Authorization} and no {@code Cookie} — no credential of any kind. */
+        private EdgeAnswer send(HttpServer front, io.vertx.core.http.HttpMethod method, String host, String uri)
+                throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(host).setPort(front.actualPort())
+                    .setMethod(method).setURI(uri);
+            return Awaits.connect(client.request(options).compose(HttpClientRequest::send)
+                            .compose(response -> response.body().map(body ->
+                                    new EdgeAnswer(response.statusCode(), response.headers(), body.toString()))),
+                    "the edge response to " + method + " " + uri + " on host " + host);
+        }
+
+        /**
+         * Every response header line as lower-cased name to values, so two answers compare as whole
+         * sets: a header present on one side only is a difference, whichever side it is on.
+         */
+        private static Map<String, List<String>> headerLines(EdgeAnswer answer) {
+            Map<String, List<String>> lines = new TreeMap<>();
+            for (String name : answer.headers().names()) {
+                lines.put(name.toLowerCase(Locale.ROOT), answer.headers().getAll(name));
+            }
+            return lines;
+        }
+
+        /** A credential-free proxy route claiming the whole {@code /auth} prefix on every host. */
+        private static ResolvedRoute authPrefixRoute(int upstreamPort) {
+            return ResolvedRoute.builder()
+                    .id("auth-proxy")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/auth").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                    .build();
+        }
+    }
+
+    /**
+     * What a request reaches when the client JWKS path is one the boot refuses as non-canonical.
+     * <p>
+     * The configuration validator refuses such a path, so no booted gateway carries one. The edge is
+     * handed the {@code oidc} block directly here, which stages the state the refusal prevents: a
+     * publishing key-set endpoint reserved at the non-canonical path, next to a proxy route that claims
+     * the {@code /keys} prefix. Each request is answered in one of three ways, told apart by the answer
+     * itself — the key set, the stub upstream, or the {@code 400} of the pre-route floor.
+     * <p>
+     * Two findings are pinned, under the {@code strict} and the {@code lenient} baseline alike:
+     * <ul>
+     *   <li><strong>A path carrying a percent-encoded character is reached by no spelling.</strong> The
+     *       request spelled as configured decodes to the canonical spelling, which is not reserved and
+     *       is proxied; a spelling that would decode to the configured string is refused as double
+     *       encoding.</li>
+     *   <li><strong>A path carrying a matrix parameter is not reached by the request spelled as
+     *       configured</strong>, which the canonical-path guard refuses. It <em>is</em> reached by the
+     *       spelling that percent-encodes the {@code ;}: the guard reads the raw path, and the registry
+     *       matches the decoded one.</li>
+     * </ul>
+     * The paths and the request spellings are literals on purpose: each is the one spelling the claim
+     * is about.
+     */
+    @Nested
+    @DisplayName("a client JWKS path the boot refuses as non-canonical: which request spellings reach the key set")
+    class NonCanonicalClientJwksPath {
+
+        private static final String CANONICAL_PATH = "/keys/client";
+        private static final String PERCENT_ENCODED_PATH = "/keys/%63lient";
+        private static final String MATRIX_PARAMETER_PATH = "/keys/client;v=1";
+        /** The host an identity provider dials: the client JWKS path is matched on every host. */
+        private static final String FOREIGN_HOST = "gateway.internal";
+        private static final String UPSTREAM_BODY = "upstream";
+
+        /** How the edge answered one request. */
+        enum Answered {
+
+            /** The key-set endpoint answered with the published key set. */
+            KEY_SET,
+
+            /** The request was routed to the {@code /keys} proxy route and reached the stub upstream. */
+            PROXIED,
+
+            /** The pre-route floor refused the request with {@code 400}. */
+            REFUSED
+        }
+
+        private final List<HttpServer> fronts = new ArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpClient client;
+        private ClientSigningKey signingKey;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
+                    request.body().onComplete(_ -> request.response().end(UPSTREAM_BODY)))
+                    .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+            signingKey = ClientSigningKey.resolve(null, ClientSigningKey.Purpose.CLIENT_AUTHENTICATION);
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            for (HttpServer front : fronts) {
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+            Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @ParameterizedTest(name = "profile {0}")
+        @ValueSource(strings = {"strict", "lenient"})
+        @DisplayName("control: a canonical path is answered with the key set, and a sibling path is proxied")
+        void shouldAnswerACanonicalPathWithTheKeySet(String profile) throws Exception {
+            HttpServer front = startEdge(profile, CANONICAL_PATH);
+
+            assertAll("the fixture tells the three answers apart",
+                    () -> assertEquals(Answered.KEY_SET, answered(front, CANONICAL_PATH),
+                            "the reserved path is answered by the key-set endpoint"),
+                    () -> assertEquals(Answered.PROXIED, answered(front, "/keys/other"),
+                            "an unreserved path under the same prefix reaches the upstream"));
+        }
+
+        @ParameterizedTest(name = "profile {0}: GET {1} is {2}")
+        @CsvSource({
+                "strict,/keys/%63lient,PROXIED",
+                "strict,/keys/%2563lient,REFUSED",
+                "strict,/keys/%25%36%33lient,REFUSED",
+                "lenient,/keys/%63lient,PROXIED",
+                "lenient,/keys/%2563lient,REFUSED",
+                "lenient,/keys/%25%36%33lient,REFUSED"})
+        @DisplayName("a path with a percent-encoded character: neither the configured spelling nor a double-encoded one reaches the key set")
+        void shouldReachAPercentEncodedPathWithNoSpelling(String profile, String requestUri, Answered expected)
+                throws Exception {
+            HttpServer front = startEdge(profile, PERCENT_ENCODED_PATH);
+
+            assertEquals(expected, answered(front, requestUri),
+                    "the request path is decoded once and a second encoding layer is refused, so no "
+                            + "canonical request path carries the '%' the configured path does");
+        }
+
+        @ParameterizedTest(name = "profile {0}: GET {1} is {2}")
+        @CsvSource({
+                "strict,/keys/client;v=1,REFUSED",
+                "strict,/keys/client%3Bv=1,KEY_SET",
+                "strict,/keys/client%3bv=1,KEY_SET",
+                "lenient,/keys/client;v=1,REFUSED",
+                "lenient,/keys/client%3Bv=1,KEY_SET",
+                "lenient,/keys/client%3bv=1,KEY_SET"})
+        @DisplayName("a path with a matrix parameter: the configured spelling is refused, the spelling with the ';' percent-encoded reaches the key set")
+        void shouldReachAMatrixParameterPathOnlyWithTheSemicolonEncoded(String profile, String requestUri,
+                Answered expected) throws Exception {
+            HttpServer front = startEdge(profile, MATRIX_PARAMETER_PATH);
+
+            assertEquals(expected, answered(front, requestUri),
+                    "the canonical-path guard reads the raw path, the registry matches the decoded one");
+        }
+
+        /**
+         * Starts an edge whose {@code oidc} block reserves {@code jwksPath} verbatim, under the given
+         * {@code security_defaults.profile}, with a publishing key-set endpoint and the {@code /keys}
+         * proxy route. The block is handed to the edge without passing the configuration validator.
+         */
+        private HttpServer startEdge(String profile, String jwksPath) throws Exception {
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+            OidcConfig oidc = OidcConfig.builder()
+                    .redirectUri(ORIGIN + CALLBACK_PATH)
+                    .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build())
+                    .build();
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
+                    .securityDefaults(new SecurityDefaultsConfig(profile, null, null, null)).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(keysPrefixRoute(upstream.actualPort()))),
+                    gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(new InMemorySessionStore(16)),
+                            new ClientJwksEndpoint(signingKey.publicJwk())),
+                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            fronts.add(front);
+            return front;
+        }
+
+        /** Sends a credential-free {@code GET} for {@code uri}, spelled exactly as given, and classifies the answer. */
+        private Answered answered(HttpServer front, String uri) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(FOREIGN_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+            return Awaits.connect(client.request(options).compose(HttpClientRequest::send)
+                            .compose(response -> response.body().map(body ->
+                                    classify(uri, response.statusCode(), body.toString()))),
+                    "the edge response to GET " + uri);
+        }
+
+        private Answered classify(String uri, int status, String body) {
+            if (status == 400) {
+                return Answered.REFUSED;
+            }
+            if (status == 200 && UPSTREAM_BODY.equals(body)) {
+                return Answered.PROXIED;
+            }
+            if (status == 200 && Map.of("keys", List.of(signingKey.publicJwk())).equals(new JsonObject(body).getMap())) {
+                return Answered.KEY_SET;
+            }
+            throw new AssertionError("GET " + uri + " was answered " + status + ", which is none of the three "
+                    + "answers this fixture produces");
+        }
+
+        /** A credential-free proxy route claiming the whole {@code /keys} prefix on every host. */
+        private static ResolvedRoute keysPrefixRoute(int upstreamPort) {
+            return ResolvedRoute.builder()
+                    .id("keys-proxy")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/keys").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
+                    .build();
         }
     }
 
@@ -882,6 +1469,147 @@ class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * The session-route scope enforcement end to end, over a live Vert.x server against a stub
+     * upstream: the stage's {@code 403} reaches the client as {@code application/problem+json} carrying
+     * the stage's extension members, and the request never reaches the upstream.
+     * <p>
+     * The first two tests are a matched pair. The same API call on the same route is refused for a
+     * session that lacks the route's scope and forwarded for one that carries it, so the refusal is
+     * attributable to the scope comparison and to nothing else on the session path.
+     */
+    @Nested
+    @DisplayName("session route: an under-scoped session is refused before any upstream contact")
+    class SessionScopeEnforcement {
+
+        private static final String NEEDED_SCOPE = "orders:read";
+
+        /** Counts the requests that actually reached the stub upstream. */
+        private final AtomicInteger upstreamHits = new AtomicInteger();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpServer front;
+        private HttpClient client;
+        private String underScopedCookie;
+        private String coveringCookie;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
+                    request.body().onComplete(body -> {
+                        upstreamHits.incrementAndGet();
+                        request.response().end("upstream");
+                    })).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+
+            SessionStore store = new InMemorySessionStore(16);
+            underScopedCookie = createSession(store, Set.of());
+            coveringCookie = createSession(store, Set.of(NEEDED_SCOPE));
+
+            ResolvedRoute scopedRoute = ResolvedRoute.builder()
+                    .id("scoped")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/scoped").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .neededScopes(Set.of(NEEDED_SCOPE))
+                    .build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(scopedRoute)),
+                    GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("an API call missing a needed scope answers 403 problem+json with the extension members and no upstream contact")
+        void underScopedApiCallIsRefusedWithProblemMembers() throws Exception {
+            EdgeAnswer answer = get("/scoped/orders?tab=a", underScopedCookie, "application/json");
+
+            assertAll("the stage's refusal is rendered by the edge and never forwarded",
+                    () -> assertEquals(403, answer.status(), "an under-scoped session is refused"),
+                    () -> assertEquals("application/problem+json", answer.contentType(),
+                            "the refusal is an RFC 9457 problem"),
+                    () -> assertEquals("""
+                            {"type":"urn:api-sheriff:problem:authorization","title":"Authorization","status":403,\
+                            "missing_scopes":["orders:read"],\
+                            "step_up_url":"/auth/step-up?returnUrl=%2Fscoped%2Forders%3Ftab%3Da"}""", answer.body(),
+                            "the body names the missing scope and the step-up URL for the refused request"),
+                    () -> assertNull(answer.wwwAuthenticate(), "a session refusal carries no bearer challenge"),
+                    () -> assertEquals(0, upstreamHits.get(), "the request never reaches the upstream"));
+        }
+
+        @Test
+        @DisplayName("control: the same API call with a session carrying the scope is forwarded")
+        void coveringSessionIsForwarded() throws Exception {
+            EdgeAnswer answer = get("/scoped/orders?tab=a", coveringCookie, "application/json");
+
+            assertAll("the refusal above is the scope comparison's own",
+                    () -> assertEquals(200, answer.status(), "a session covering the scope is served"),
+                    () -> assertEquals(1, upstreamHits.get(), "the request is forwarded upstream"));
+        }
+
+        @Test
+        @DisplayName("a navigation missing a needed scope is redirected into the widening with no upstream contact")
+        void underScopedNavigationIsRedirectedIntoWidening() throws Exception {
+            EdgeAnswer answer = get("/scoped/orders", underScopedCookie, "text/html");
+
+            assertAll("a browser navigation is widened rather than refused",
+                    () -> assertEquals(302, answer.status(), "the navigation is redirected"),
+                    () -> assertEquals(WIDENING_CHALLENGE_LOCATION, answer.location(),
+                            "the target is the session stage's widening challenge, not its login challenge"),
+                    () -> assertEquals(0, upstreamHits.get(), "the request never reaches the upstream"));
+        }
+
+        /** Creates a live session whose active and granted scope sets are {@code scopes}; returns its cookie. */
+        private static String createSession(SessionStore store, Set<String> scopes) {
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1)))
+                    .activeScopes(scopes).grantedScopes(scopes).build(), Instant.now());
+            return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+        }
+
+        private EdgeAnswer get(String uri, String cookie, String accept) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+            return Awaits.connect(client.request(options)
+                            .compose(request -> request.putHeader("Cookie", cookie).putHeader("Accept", accept).send())
+                            .compose(response -> response.body().map(body -> new EdgeAnswer(response.statusCode(),
+                                    response.getHeader("Content-Type"), response.getHeader("WWW-Authenticate"),
+                                    response.getHeader("Location"), body.toString()))),
+                    "the edge response to GET " + uri);
+        }
+
+        /** The parts of an edge response these tests assert, read off the wire in one step. */
+        private record EdgeAnswer(int status, @Nullable String contentType, @Nullable String wwwAuthenticate,
+        @Nullable String location, String body) {
+        }
+    }
+
     private static OidcConfig fullOidc() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
                 .path(LOGOUT_PATH)
@@ -893,6 +1621,7 @@ class GatewayEdgeRouteBffWiringTest {
                 .logout(logout)
                 .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
                 .login(OidcConfig.Login.builder().path(LOGIN_PATH).build())
+                .stepUp(OidcConfig.StepUp.builder().path(STEP_UP_PATH).build())
                 .build();
     }
 
@@ -910,13 +1639,22 @@ class GatewayEdgeRouteBffWiringTest {
      * Assembles a fully-wired active runtime with engine-free test seams — every reserved-endpoint
      * handler is real, but the seams that would reach the confidential-client engine throw or no-op,
      * so the paths these tests drive (no-session, no-input, live-session short-circuit) never touch a
-     * live IdP.
+     * live IdP. The client JWKS handler is the withheld form: these fixtures hold no client key.
      * <p>
      * Package-private so {@code GatewayEdgeRouteTest} can assert the cookie-mode header carve-out —
      * which is gated on {@link BffRuntime#isActive()} — against a real active runtime rather than
      * duplicating this assembly.
      */
     static BffRuntime activeRuntime(SessionBinding binding) {
+        return activeRuntime(binding, ClientJwksEndpoint.withheld());
+    }
+
+    /**
+     * The same engine-free active runtime as {@link #activeRuntime(SessionBinding)}, with the client
+     * JWKS handler the caller chooses — the publishing form over a real public key, or the withheld
+     * form — for the tests that drive the client JWKS path through the edge.
+     */
+    private static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(16);
         Duration ttl = Duration.ofHours(1);
@@ -925,12 +1663,7 @@ class GatewayEdgeRouteBffWiringTest {
             throw new AssertionError("engine authorize must not be reached");
         }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
 
-        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
-                (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
-                        new SessionBinding.BoundSession(session, List.of())),
-                (returnUrl, scopes, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
-                SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
-                Clock.systemUTC());
+        SessionAuthenticationStage sessionStage = engineFreeSessionStage(binding);
 
         CsrfDefence csrf = new CsrfDefence(Set.of(ORIGIN));
 
@@ -941,9 +1674,10 @@ class GatewayEdgeRouteBffWiringTest {
                 },
                 pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
 
+        SessionWidening widening = engineFreeSessionWidening(pendingStore, bindingCodec);
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
             throw new AssertionError("engine exchange must not be reached");
-        }, pendingStore, bindingCodec, binding, ttl);
+        }, pendingStore, bindingCodec, binding, ttl, widening);
 
         BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
                 rawToken -> {
@@ -959,7 +1693,39 @@ class GatewayEdgeRouteBffWiringTest {
                 engineFreeReturnTargetScopes());
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
-                userInfo, login);
+                userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint);
+    }
+
+    /**
+     * The session stage for the engine-free fixtures. Both refresh seams hand the session back
+     * unchanged, so a session short of a needed scope is never refreshed into one that carries it; the
+     * login and widening seams answer fixed, distinguishable redirect targets instead of reaching the
+     * engine; and the stage names {@link #STEP_UP_PATH} on a {@code 403}, the path {@link #fullOidc()}
+     * reserves.
+     */
+    private static SessionAuthenticationStage engineFreeSessionStage(SessionBinding binding) {
+        return new SessionAuthenticationStage(binding,
+                (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(session, List.of())),
+                (session, cookieHeader, requestedScopes, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
+                        new SessionBinding.BoundSession(session, List.of())),
+                (returnUrl, scopes, instant) ->
+                        new SessionAuthenticationStage.LoginChallenge(LOGIN_CHALLENGE_LOCATION, List.of()),
+                (live, returnUrl, neededScopes, instant) ->
+                        new SessionAuthenticationStage.LoginChallenge(WIDENING_CHALLENGE_LOCATION, List.of()),
+                SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
+                STEP_UP_PATH,
+                Clock.systemUTC());
+    }
+
+    /**
+     * The step-up endpoint for the engine-free fixtures, over the runtime's one {@link SessionWidening}.
+     * Its return-target resolver maps every target to the empty scope set, which every granted set
+     * covers, so a live-session request always takes the direct redirect and the widening seam — which
+     * throws — is never reached.
+     */
+    private static StepUpEndpoint engineFreeStepUpEndpoint(SessionWidening widening, SessionBinding binding) {
+        return new StepUpEndpoint(widening, binding, engineFreeReturnTargetScopes(), ORIGIN, ROOT_RETURN_TARGET);
     }
 
     /**
@@ -969,6 +1735,18 @@ class GatewayEdgeRouteBffWiringTest {
      */
     private static ReturnTargetScopes engineFreeReturnTargetScopes() {
         return new ReturnTargetScopes(new RouteTable(List.of()), ORIGIN, List.of());
+    }
+
+    /**
+     * The session widening the callback's interactive re-drive goes through, over the fixture's own
+     * pending store and binding-cookie codec. No path these fixtures drive lands on a widening pending
+     * record, so its authorization seam must never be reached.
+     */
+    private static SessionWidening engineFreeSessionWidening(PendingAuthorizationStore pendingStore,
+            BindingCookieCodec bindingCodec) {
+        return new SessionWidening((scopes, silent) -> {
+            throw new AssertionError("engine widening authorize must not be reached");
+        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
     }
 
     private static LogoutEndpoint logoutEndpoint(SessionBinding binding) {

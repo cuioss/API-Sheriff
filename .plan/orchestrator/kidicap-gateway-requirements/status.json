@@ -1,0 +1,31 @@
+{
+  "kind": "orchestrator",
+  "title": "KIDICAP Gateway requirements on API Sheriff (AS-1..AS-14)",
+  "phase": "orchestrating",
+  "workstreams": [
+    {
+      "id": "WS-01",
+      "slug": "defect-fixes",
+      "status": "active"
+    },
+    {
+      "id": "WS-02",
+      "slug": "routing-primitives",
+      "status": "active"
+    },
+    {
+      "id": "WS-03",
+      "slug": "application-portal",
+      "status": "active"
+    },
+    {
+      "id": "WS-04",
+      "slug": "session-and-scopes",
+      "status": "active"
+    }
+  ],
+  "metadata": {
+    "parallelization_scope": "2"
+  },
+  "created": "2026-09-15T13:35:50Z"
+}

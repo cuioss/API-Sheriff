@@ -36,5 +36,7 @@ oidc:
   issuer: "https://issuer.example.com"
   client_id: "sheriff"
   client_secret: "${OIDC_CLIENT_SECRET}"
+  sender_constraint:
+    key_file: "/etc/sheriff/keys/dpop.pem"
   scopes: ["openid", "profile"]
   redirect_uri: "https://gw.example.com/callback"

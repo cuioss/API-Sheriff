@@ -157,7 +157,11 @@ collapsed into one annotated group that names each of them with its port pair:
   near-expiry refresh window 870s into a session -- unreachable in a test. This instance
   authenticates as `refresh-client`, whose client-level `access.token.lifespan` is 45, moving that
   window to 15s--45s so `BffTokenRefreshIT` can drive all three `RefreshOutcome.Kind` branches. It
-  stays in server session mode; only the minting client and the origin differ.
+  stays in server session mode. It is also *the one instance on client-secret authentication*: every
+  other instance authenticates with `private_key_jwt`, and this one keeps `oidc.client_secret` so
+  that the client-secret mode the gateway still supports is proven against a real identity provider
+  rather than at unit level alone. Only the client authentication differs -- its requests are pushed
+  and its access tokens are DPoP-bound like every other instance's. See <<realm-clients>>.
 
 | `api-sheriff-no-certificate`
 | 10453 (plain HTTP) +
@@ -179,8 +183,9 @@ collapsed into one annotated group that names each of them with its port pair:
   also refreshes* -- fits on neither sibling: `api-sheriff-cookie` holds refresh off and
   `api-sheriff-refresh` stays in server mode. This instance is the proof rig for that combination.
   It overlays the cookie document with exactly
-  three behavioural differences -- `refresh-client` as the minting client, `session.refresh.enabled:
-  true`, and the 10455 gateway origin -- and declares *no* `max_cookie_size` override, so it runs on
+  three behavioural differences -- `cookie-refresh-client` as the minting client,
+  `session.refresh.enabled: true`, and the 10455 gateway origin -- and declares *no*
+  `max_cookie_size` override, so it runs on
   the lowered 4019-byte browser-safe default and the size question `BffCookieRefreshIT` exists to
   answer is measured rather than assumed.
 |===
@@ -257,16 +262,236 @@ and ADR-0007 requires the anchor to be declared in every gateway document that r
 which would mean editing all nine, two of which are the matched pair whose entire value rests on
 differing in exactly one scalar. Every other instance resolves the alias and simply never dials it.
 
+[#realm-clients]
+=== The realm clients and the signing keys
+
+Every gateway instance pushes its authorization requests (RFC 9126) and binds its access tokens to a
+DPoP proof key (RFC 9449). What differs between instances is how the gateway authenticates to Keycloak
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
+The `integration` realm declares five clients:
+
+[cols="2,2,4"]
+|===
+| Client | Authentication | Who uses it
+
+| `integration-client`
+| `private_key_jwt`; Keycloak fetches the key from a JWKS URL
+| The ten gateway instances other than `api-sheriff-refresh` and `api-sheriff-cookie-refresh`.
+
+| `cookie-refresh-client`
+| `private_key_jwt`; the same JWKS URL
+| `api-sheriff-cookie-refresh`. It carries the 45-second `access.token.lifespan` that instance
+  needs. It is a client of its own because `refresh-client` carries the same lifespan but stays on
+  its secret, and a realm client has one authentication method.
+
+| `generated-key-client`
+| `private_key_jwt`; a JWKS URL of its own
+| No compose instance. The one-off gateway `BffGeneratedKeysIT` starts, which generates its keys at
+  boot. It carries the same 45-second lifespan. It is a client of its own because its key is
+  fetched from that gateway and from no other. See <<generated-keys-gateway>>.
+
+| `refresh-client`
+| client secret (`client_secret_basic`)
+| `api-sheriff-refresh`, the one instance kept on client-secret authentication. The realm registers
+  no key and no JWKS URL for it, and still requires it to push its authorization requests and to
+  have its access tokens bound to DPoP.
+
+| `token-mint-client`
+| client secret, direct access grants
+| No gateway. A fixture that needs a bearer token straight from Keycloak mints it here with the
+  password grant. The four gateway clients cannot serve that purpose any more: direct access grants
+  are disabled on them, and a token request without a DPoP proof is refused.
+|===
+
+*The two endpoint scopes.* The realm defines two client scopes for the suites.
+`sheriff_it_endpoint` is an *optional* client scope of all five clients, so Keycloak issues it only
+when a request names it; `endpoints/bff-scoped.yaml` declares it. `sheriff_it_unassigned` exists in
+the realm and is assigned to no client, so no client may request it; `endpoints/bff-unassigned-scope.yaml`
+declares it, and `BffSessionScopeParityIT` drives the refusal. Both endpoint files sit in the shared
+`endpoints/` directory, so every gateway instance loads their routes. `oidc.step_up.path` is declared
+by the base document and its `passthrough-empty` mirror only; under every other overlay a session
+route's `403` names the missing scopes and no `step_up_url`.
+
+*Which instance publishes the key.* The two key-authenticated clients of the compose instances name
+the same JWKS URL, `https://api-sheriff:8443/auth/jwks` -- the primary instance, under the name
+Keycloak already dials for back-channel logout. All eleven key-authenticated instances mount the same client-authentication
+key file, so the key the primary publishes is the key each of them signs with. The URL names the
+primary and no other instance because the stack certificate's SAN list covers `api-sheriff` and no
+other gateway service name (`certificates/generate-certificates.sh`), and Keycloak verifies the name
+it dials. A consequence worth knowing when a variant instance's login fails: Keycloak verifies that
+instance's client assertion with a key it fetches from the *primary* instance.
+
+*The signing keys.* `integration-tests/src/main/docker/signing-keys/` holds three committed,
+unencrypted key files -- test material, regenerated by `generate-signing-keys.sh` in the same
+directory. Each holds one PKCS#8 private key followed by its public key; the gateway derives the
+algorithm and the key id from the key.
+
+[cols="2,2,4"]
+|===
+| File | Key | What it signs
+
+| `client-auth-rsa.pem`
+| RSA-2048
+| The `private_key_jwt` client assertion of the eleven key-authenticated instances, with `PS256`.
+  Named in the descriptors by a literal path.
+
+| `dpop-ec.pem`
+| EC P-256
+| The DPoP proofs of the ten instances whose client is `integration-client`, with `ES256`.
+
+| `dpop-rsa.pem`
+| RSA-2048
+| The DPoP proofs of `api-sheriff-refresh` and `api-sheriff-cookie-refresh`, with `PS256`.
+|===
+
+The DPoP key file is named in the descriptors through the variable `OIDC_DPOP_KEY_FILE`, which each
+service sets, so both ways of naming a key file run in the native image. Regenerating any of the
+three needs no realm change: the realm holds no copy of the client key, and a DPoP proof carries its
+own public key.
+
+*The realm settings, and what Keycloak does with them.* The three key-authenticated clients declare
+`clientAuthenticatorType: client-jwt` and the attributes `use.jwks.url: "true"`, `jwks.url` and
+`token.endpoint.auth.signing.alg`. The algorithm is `PS256` for the two clients of the compose
+instances, whose client key is the committed RSA key, and `ES256` for `generated-key-client`, whose
+client key is generated. All four gateway clients declare
+`require.pushed.authorization.requests: "true"` and `dpop.bound.access.tokens: "true"`, and none of
+them has direct access grants enabled.
+
+These settings were established on the pinned image, Keycloak 26.5.7, on a throwaway container with
+a scratch realm, before the stack was migrated:
+
+* *They survive a realm import.* All five attributes, the two JWKS URL attributes included, read back
+  unchanged after `--import-realm`.
+* *Signed-JWT authentication through a JWKS URL works.* A pushed request authenticated by a `PS256`
+  client assertion whose audience is the issuer was accepted (`201`), and Keycloak had fetched the
+  JWKS URL. The same request signed with another key, and one presenting a Basic credential on that
+  client, were refused (`401`).
+* *The push requirement is enforced.* An authorization request with its parameters in the URL was
+  refused with `invalid_request`, "Pushed Authorization Request is only allowed."; the same client
+  presenting `client_id` and `request_uri` alone was redirected on into the login flow.
+* *The binding requirement is enforced.* A token request without a proof was refused with "DPoP proof
+  is missing"; with a proof the response is of type `DPoP` and the access token's `cnf.jkt` is the
+  thumbprint of the proof key.
+* *A secret-authenticated client can carry both requirements.* It pushed with `client_secret_basic`
+  (`201`) and received DPoP-bound access tokens.
+* *"Declares no secret" is a statement about the import file.* Keycloak generates a secret for a
+  `client-jwt` client whose import declares none. The realm file registers no secret and no key for
+  the three key-authenticated clients; what Keycloak stores beside them is not something the file
+  controls. On the migrated stack that stored secret was read from the admin interface and presented
+  at the token endpoint, and Keycloak refused it with `invalid_client`: the authenticator type admits
+  a signed assertion only. No test asserts that last observation.
+
+Two facts need the gateway and were therefore not part of that isolated check: that the stack's
+Keycloak fetches the key over TLS from `https://api-sheriff:8443/auth/jwks`, and that the binding
+holds on the authorization-code grant. Neither is asserted by this page. No key is registered
+statically, so a login completed through a key-authenticated instance is itself the proof of the
+fetch; the decision record carries the observation entries for both.
+
+[#generated-keys-gateway]
+=== The one-off generated-keys gateway
+
+`BffGeneratedKeysIT` proves the *generated* key mode: a gateway with no signing key configured, which
+generates one key per purpose at boot. The test restarts that gateway under a live session. A compose
+service restarted under the suite would take every other suite's sessions with it, so the gateway is a
+one-off container. The test starts it through the shared harness (`OneOffGatewayContainers`) on the
+Compose network and removes it on every exit path. It is not a service of `docker-compose.yml`, and
+it adds no row to the instance table and nothing to the diagram.
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Container name and network alias
+| `sheriff-generated-keys`
+
+| Realm client
+| `generated-key-client`, whose `jwks.url` is
+  `https://sheriff-generated-keys:8443/auth/client-keys`
+
+| Descriptor
+| Derived at test time from the committed `sheriff-config-cookie-refresh/gateway.yaml`: both
+  `key_file` entries removed, the client id replaced, a `client_authentication.jwks_path` of
+  `/auth/client-keys` declared, and the gateway origin retargeted at the port below. It is written
+  below `target/` and never committed.
+
+| Server certificate
+| `certificates/generated-keys-gateway.crt` and its key, presented by the application listener. Its
+  subject alternative names are `sheriff-generated-keys`, `localhost` and `127.0.0.1`. The management
+  listener keeps the stack certificate.
+
+| Host ports
+| The application listener on the fixed loopback port `10456`; the management interface on an
+  ephemeral loopback port.
+
+| Mounts
+| The certificates, the shared configuration with the derived descriptor laid over it, the assets and
+  the demo directory. No signing-key directory is mounted.
+
+| Sealing key
+| Passed as `SESSION_ENCRYPTION_KEY`, so that the sealed session cookie stays readable after the
+  restart.
+|===
+
+*Why this gateway has a certificate of its own.* Keycloak fetches the generated client key from the
+gateway and verifies the name it dials. The stack certificate covers `api-sheriff` and no other
+gateway name, so a gateway reached under another alias cannot present it. The pair is produced by
+`certificates/generate-generated-keys-gateway-certificate.sh`, a script of its own, so that producing
+it regenerates nothing else: `localhost.crt`, `localhost.key` and both trust stores stay
+byte-identical. The Keycloak service trusts the certificate through a second entry in
+`KC_TRUSTSTORE_PATHS`. That entry, with the comment above it, is the only change this gateway brought
+to `docker-compose.yml`, and it is inert for every suite that starts no such gateway.
+
+*The port is fixed, and `docker-compose.yml` does not show it.* The descriptor of a BFF names its own
+origin, so the application port cannot be ephemeral. `10456` is the next port after the range the
+Compose stack publishes, `10443` to `10455`. The note above says to allocate host ports by reading
+`docker-compose.yml`. This port is the one that file does not list: a compose instance published on
+`10456` would collide with this test.
+
+*What guards the wiring.* The wiring is spread over the realm import, the compose file and the
+certificate. `BffClientKeyWiringTest` reads all three without a container and asserts that:
+
+* the JWKS URL of `generated-key-client` names the alias and the JWKS path the test uses;
+* the client declares no secret and requires pushed requests and DPoP-bound access tokens;
+* the Keycloak service trusts the certificate, and the certificate names the alias;
+* every other realm client registered for a signed assertion is the client of a compose instance.
+
+*What the test observed.* On Keycloak 26.5.7 and the native image, in this order:
+
+. The gateway boots with no key configured. Its log carries the generated-key record once for client
+  authentication and once for the sender constraint, and no member of the published key.
+. `GET /auth/client-keys` answers one EC P-256 key with `use: sig`, `alg: ES256` and a `kid` equal to
+  its RFC 7638 thumbprint. `/auth/jwks`, the default path the descriptor moved away from, answers
+  `404`.
+. A login completes. No key is registered at Keycloak, so Keycloak fetched the generated key from the
+  gateway over TLS.
+. The mediated token carries a `cnf.jkt` that differs from the published `kid`. The proof key is a
+  second generated key.
+. After `docker restart` the published `kid` differs from the one before.
+. The session cookie from before the restart is replayed inside the near-expiry window. The refresh
+  succeeds, the session continues, and the new access token is bound to the new proof key.
+
+The last line is the restart verdict: a restart with newly generated keys does not end a live
+session. The failure message of the test names the other possible verdict -- the refresh is refused
+and the session ends through `oidc.session.refresh.on_failure` -- so a Keycloak upgrade that changes
+the behaviour turns the test red. The decision record states the limits of this observation
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc#observed-on-the-integration-stack[ADR-0058: Observed on the integration stack]).
+
 === Mounted material
 
-Three read-only volumes are mounted into every gateway instance and are drawn as pills rather than
-boxes, because they are inert material rather than components: `certificates/`, `sheriff-config/`
-and `assets/`. That the mounted-material set is *still exactly three* is the point of recording it:
-the egress hostname-verification control added new key material and a new trust-binding properties
-file, and every one of them went into the already-mounted `certificates/` directory rather than
-bringing a fourth volume with it. The variant instances additionally overlay a single file --
-`sheriff-config-<variant>/gateway.yaml` on top of the shared `sheriff-config/` mount -- which is the
-whole mechanism by which they differ.
+Four read-only volumes are mounted into every gateway instance. They are inert material rather than
+components: `certificates/`, `sheriff-config/`, `assets/` and `signing-keys/`. The variant instances
+additionally overlay a single file -- `sheriff-config-<variant>/gateway.yaml` on top of the shared
+`sheriff-config/` mount -- which is the whole mechanism by which they differ.
+
+The set stayed at three for a long time, and deliberately: the egress hostname-verification control
+added new key material and a new trust-binding properties file, and every one of them went into the
+already-mounted `certificates/` directory rather than bringing a volume with it. The signing keys are
+the one addition that could not go there. `certificates/` is also mounted into Keycloak and into the
+`mismatched-tls-backend` fixture, and the private keys the gateway signs with must reach the gateway
+instances and nothing else -- Keycloak is given the public client key over the JWKS URL, never the
+file. A directory of its own is what makes "mounted into the gateway instances only" checkable in
+`docker-compose.yml`, and `BffClientKeyWiringTest` checks it there. The diagram draws the fourth pill;
+see <<diagram-check-signing-keys>>.
 
 [#readiness-contract]
 == The Readiness Contract
@@ -638,45 +863,74 @@ verification artifacts and are not committed.
 
 === Diagram check for the cookie-refresh instance
 
-This change *does* alter facts the diagram depicts: it adds one gateway instance and one published
-port pair. The diagram was therefore redrawn rather than left alone.
+This change *does* alter facts the diagram depicts, so the diagram was redrawn rather than left
+alone. The redraw also added the row of `api-sheriff-no-certificate`, which the diagram had lacked.
 
-The collapsed variant group is relabelled `variant instances (10)` and grows by one row --
-`api-sheriff-cookie-refresh` at `10455 · 19011` -- on the group's existing 18-pixel row pitch. The
+The collapsed variant group is relabelled `variant instances (11)` and grows by two rows --
+`api-sheriff-no-certificate` at `10453 · 10454 · 19010` and `api-sheriff-cookie-refresh` at
+`10455 · 19011` -- and its row pitch tightens from 18 to 16 pixels. The
 growth is taken *upwards* rather than downwards, and that direction is the one number worth stating
 because it is what could have gone wrong quietly: the group's bottom edge at `826` already sits only
 `10` pixels inside the compose-network rectangle's bottom edge at `836`, so growing downwards by a
 row pitch would have pushed the group through its own enclosure. The rectangle's top edge therefore
 moves from `600` to `582` and its height from `226` to `244`, leaving the bottom edge unmoved at
-`826`; every text row inside the group moves up by the same `18`, so the appended row lands on the
-coordinate the previous last row vacated, and the own-bar's top edge moves with them while its
+`826`; the group's label and its first row move up by the same `18`, the last row sits at `810`,
+and the own-bar's top edge moves with them while its
 bottom edge stays at `818` with the rectangle's. Above the
 group, the mounted-material pills end at `566`, so the gap there narrows from `34` to `16` pixels
 and no element overlaps. The `viewBox` is unchanged. The `<desc>` accessibility narrative carries
 the new counts and names `api-sheriff-cookie-refresh` last in the member enumeration, with the
 sentence explaining what the instance is for.
 
-[WARNING]
+[NOTE]
 ====
-*The two-theme read-back is owed for this edit and has NOT been performed.* The environment this
-edit was made in has no SVG renderer, so the geometry above was placed by coordinate arithmetic
-against the existing elements rather than by rendering the result and looking at it -- the same
-situation the egress-control edit was in, and it is recorded here for the same reason rather than
-being quietly skipped.
-
-What *was* checked is mechanical and is stated so it is not mistaken for the visual check: the
-document parses as well-formed XML; the added row reuses the existing `.item` class and the
-theme-neutral palette, so it introduces no colour that resolves differently on a light or a dark
-background; the arithmetic above keeps every element inside the `viewBox` and inside its own
-enclosing rectangle; and the two added text rows sit on the same `x` coordinates (`76` and `304`) as
-the nine above them.
-
-What is *not* established is everything only a render shows: actual glyph advance width against the
-group rectangle's right edge, legibility at the published size, and the absence of collision with
-the neighbouring L4-relay polyline and the `mismatched-tls-backend` egress arrow after the upward
-shift. Re-render at 1200px against the GitHub light (`#ffffff`) and dark (`#0d1117`) backgrounds per
-the deployment diagram-type standard
-(`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`), read both renders back, and
-replace this warning with the result. Rendered PNGs remain verification artifacts and are never
-committed.
+*The read-back for this edit was owed for a time, and is now discharged.* The edit was made without
+an SVG renderer, so its geometry was placed by coordinate arithmetic and this section carried a
+standing warning that the visual check was still owed. It was performed during the signing-keys edit
+recorded below, which rendered the whole diagram against both themes. The three points the warning
+had named are clear: every row of the variant group ends well inside the group rectangle's right
+edge, all eleven rows are legible at the published size on a consistent pitch, and neither the
+L4-relay polyline nor the `mismatched-tls-backend` egress arrow collides with the group after its
+upward shift.
 ====
+
+[#diagram-check-signing-keys]
+=== Diagram check for the signing-keys mount
+
+This change *does* alter a fact the diagram depicts: every gateway instance mounts a fourth
+read-only volume. The diagram was therefore redrawn.
+
+A fourth mounted-material pill, `signing-keys/`, is drawn under the primary instance, on the same
+row as the three before it and at the same 16-pixel spacing: its rectangle runs from `392` to `488`,
+inside the instance's right edge at `544`, and its dashed stem leaves the instance's bottom edge at
+`440`. The `<desc>` accessibility narrative names the four volumes, states that the signing keys
+reach the gateway instances and nothing else, and records two facts the migration changed about the
+refresh pair: `api-sheriff-refresh` is the one instance that keeps a client secret, and
+`api-sheriff-cookie-refresh` mints with `cookie-refresh-client`. It also states that Keycloak dials
+the primary gateway inside the network for the client key set and for back-channel logout, and that
+neither leg is drawn as an arrow.
+
+*The read-back was performed for this edit, and it found one defect that predates it.* The diagram
+was rendered against the GitHub light (`#ffffff`) and dark (`#0d1117`) backgrounds per the
+deployment diagram-type standard
+(`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`) and both renders were read
+back. The four pills are legible on both themes, share one baseline and do not touch the variant
+group below them. The label and the sub-label of `mismatched-tls-backend`, however, ran past the
+right edge of their box, and the sub-label past the edge of the network rectangle as well. The box
+is now `192` wide where its two neighbours in that column are `152`: its left edge moved from `992`
+to `952`, its three text rows with it, and the egress arrow ends at `940`. Both texts now end inside
+the box on both themes. Rendered PNGs are verification artifacts and are not committed.
+
+=== Diagram check for the generated-keys gateway
+
+This change alters no fact the diagram depicts, so the diagram is deliberately not redrawn. The
+gateway of <<generated-keys-gateway>> is a one-off container and not a service of
+`docker-compose.yml`, and its host port is published by the test, not by the Compose stack. The two
+things the change did add to the stack are a second entry in the Keycloak service's
+`KC_TRUSTSTORE_PATHS` and a realm client, and the diagram draws neither trust-store entries nor realm
+clients.
+
+The `<desc>` accessibility narrative was read against the change. It states that Keycloak dials the
+primary gateway inside the network for the client key set and for back-channel logout. That stays
+true of the Compose stack. While `BffGeneratedKeysIT` runs, Keycloak dials the one-off gateway as
+well, for that gateway's key set; this leg belongs to the test and is not part of the narrative.

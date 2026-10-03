@@ -42,8 +42,7 @@
     {
       "clientId": "integration-client",
       "enabled": true,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "integration-secret",
+      "clientAuthenticatorType": "client-jwt",
       "redirectUris": ["*"],
       "webOrigins": ["*"],
       "protocol": "openid-connect",
@@ -51,7 +50,7 @@
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
       "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
       "attributes": {
@@ -59,7 +58,64 @@
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.revoke.offline.tokens": "false",
         "backchannel.logout.url": "https://api-sheriff:8443/auth/backchannel",
-        "backchannel.logout.session.required": "true"
+        "backchannel.logout.session.required": "true",
+        "use.jwks.url": "true",
+        "jwks.url": "https://api-sheriff:8443/auth/jwks",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true"
+      }
+    },
+    {
+      "clientId": "cookie-refresh-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-jwt",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
+      "attributes": {
+        "post.logout.redirect.uris": "*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "access.token.lifespan": "45",
+        "use.jwks.url": "true",
+        "jwks.url": "https://api-sheriff:8443/auth/jwks",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true"
+      }
+    },
+    {
+      "clientId": "generated-key-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-jwt",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
+      "attributes": {
+        "post.logout.redirect.uris": "*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "access.token.lifespan": "45",
+        "use.jwks.url": "true",
+        "jwks.url": "https://sheriff-generated-keys:8443/auth/client-keys",
+        "token.endpoint.auth.signing.alg": "ES256",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true"
       }
     },
     {
@@ -74,14 +130,35 @@
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
       "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
       "attributes": {
         "post.logout.redirect.uris": "*",
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.revoke.offline.tokens": "false",
-        "access.token.lifespan": "45"
+        "access.token.lifespan": "45",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true"
+      }
+    },
+    {
+      "clientId": "token-mint-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "token-mint-secret",
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt", "sheriff_it_endpoint"],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false"
       }
     }
   ],
@@ -280,7 +357,16 @@
     },
     {
       "name": "sheriff_it_endpoint",
-      "description": "Endpoint-specific scope the gateway requests only for routes declaring endpoint.scopes (BffEndpointScopesIT, BearerScopeIT, BffTokenRefreshIT). Optional on both clients, so it is issued only when requested.",
+      "description": "Endpoint-specific scope the gateway requests only for routes declaring endpoint.scopes (BffEndpointScopesIT, BearerScopeIT, BffTokenRefreshIT). Optional on every client, so it is issued only when requested.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
+    },
+    {
+      "name": "sheriff_it_unassigned",
+      "description": "Endpoint-specific scope assigned to NO client - neither default nor optional on integration-client or refresh-client - so an authorization request naming it is refused with invalid_scope (BffSessionScopeParityIT).",
       "protocol": "openid-connect",
       "attributes": {
         "include.in.token.scope": "true",

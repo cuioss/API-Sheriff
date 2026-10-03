@@ -62,6 +62,13 @@ import org.jspecify.annotations.Nullable;
  *       elevated parameters. The recorded return URL is same-origin-validated so the post-step-up
  *       redirect is never an open redirect.</li>
  * </ol>
+ * <strong>The re-drive location is a pushed-request redirect (ADR-0058).</strong> The runtime pushes
+ * the step-up authorization request before this coordinator sees it, so the location carries
+ * {@code client_id} and {@code request_uri} only and the elevated {@code acr_values} / {@code max_age}
+ * travel in the pushed request. A failed push propagates out of the {@link StepUpInitiation} seam as
+ * a {@code 502} refusal: {@link #coordinate} calls the seam before it stores the pending record, so
+ * nothing is stored and no cookie is minted for a request that was never pushed.
+ * <p>
  * The class is framework-agnostic — it consumes a raw {@code WWW-Authenticate} header value and
  * returns a {@link StepUpOutcome} the edge renders, so it is unit-testable without a container or a
  * live IdP. It is exercised only when {@code session.step_up.honor_upstream_challenge} is enabled;
@@ -96,7 +103,8 @@ public final class StepUpCoordinator {
      * @param silentSatisfaction the silent-step-up seam (bound to the engine's silent elevation; a
      *                           test binds a fixed present/absent result)
      * @param stepUpInitiation   the engine step-up authorization seam (bound to
-     *                           {@code StepUpHandler#initiate}; a test binds a hand-built request)
+     *                           {@code StepUpHandler#initiate} and the push of the request it builds;
+     *                           a test binds a hand-built request)
      * @param pendingStore       the single-use pending-authorization store the re-drive transaction
      *                           is persisted to
      * @param bindingCookieCodec the browser-binding cookie codec
@@ -197,11 +205,11 @@ public final class StepUpCoordinator {
     }
 
     /**
-     * The engine step-up authorization seam. The session runtime binds it to the engine as
-     * {@code challenge -> stepUpHandler.initiate(clientConfiguration, providerMetadata, challenge)};
-     * a test binds a hand-built request. The engine carries the challenge's {@code acr_values} /
-     * {@code max_age} into the authorization request; keeping the confidential-client wiring behind
-     * the seam decouples the coordinator from it.
+     * The engine step-up authorization seam. The session runtime binds it to the engine's
+     * {@code StepUpHandler#initiate} and the push of the request it builds; a test binds a hand-built
+     * request. The engine carries the challenge's {@code acr_values} / {@code max_age} into the
+     * authorization request; keeping the confidential-client wiring behind the seam decouples the
+     * coordinator from it.
      *
      * @author API Sheriff Team
      * @since 1.0

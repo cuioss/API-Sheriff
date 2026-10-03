@@ -40,9 +40,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * {@code neededScopes} is the scope set a request on this route needs:
  * the union of {@code oidc.scopes} and the owning endpoint's {@code scopes}, or the latter alone when
- * no {@code oidc} block is configured. It is derived exactly once, here, so the session-route
- * login request, the {@code /auth/login?returnUrl=} resolution and the bearer-route
- * {@code insufficient_scope} check all read one value and can never drift apart.
+ * no {@code oidc} block is configured. It is derived exactly once, here, so every reader reads one
+ * value and they can never drift apart.
  *
  * @param id                     the route id (mandatory)
  * @param protocol               the effective protocol (defaults to

@@ -103,7 +103,7 @@ public class PortalRules {
         if (portal == null) {
             return;
         }
-        canonicalRefusal(portal.path()).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
+        canonicalPathRefusal(portal.path()).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
                 PORTAL_PATH_POINTER, ("portal.path must be a canonical gateway path, otherwise it can never equal a "
                 + "canonical request path: %s").formatted(reason))));
     }
@@ -122,8 +122,9 @@ public class PortalRules {
         if (ReservedPathRegistry.reservedPaths(gateway.oidc()).contains(portal.path())) {
             errors.add(new ConfigError(GATEWAY_FILE, PORTAL_PATH_POINTER,
                     "portal.path equals a reserved OIDC path (callback, logout, logout return, back-channel "
-                            + "logout, user-info or login); the portal matches on any host and would collide "
-                            + "with the reserved endpoint"));
+                            + "logout, user-info, login, step-up or client JWKS); the portal matches on any host "
+                            + "and would "
+                            + "collide with the reserved endpoint"));
         }
     }
 
@@ -174,7 +175,21 @@ public class PortalRules {
         }
     }
 
-    private static Optional<String> canonicalRefusal(String path) {
+    /**
+     * The canonical-path review of a gateway-owned path that is matched by exact string equality with
+     * the canonical request path: a single leading {@code /}, no {@code //}, no {@code ?} or
+     * {@code #}, and a path the {@link LocationPathReview} admits (no dot segment, no percent-encoded
+     * separator, nothing the {@code cui-http} URL path review refuses).
+     * <p>
+     * {@link #validatePortalPathCanonical} applies it to {@code portal.path}; the configuration
+     * validator applies it to the client JWKS path and adds two refusals of its own there. It judges
+     * a path and canonicalizes nothing.
+     * The returned reason is fixed text and never echoes the reviewed value.
+     *
+     * @param path the configured path to review, never {@code null}
+     * @return the refusal reason, or {@link Optional#empty()} when the path is canonical
+     */
+    public static Optional<String> canonicalPathRefusal(String path) {
         if (!path.startsWith(SLASH)) {
             return Optional.of("it must start with '/'");
         }

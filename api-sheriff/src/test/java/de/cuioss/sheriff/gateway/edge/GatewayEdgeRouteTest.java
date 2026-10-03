@@ -35,7 +35,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -70,6 +72,9 @@ import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.events.EventCategory;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.portal.PortalRenderer;
@@ -376,6 +381,68 @@ class GatewayEdgeRouteTest {
             return Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
+        }
+    }
+
+    /**
+     * The RFC 9457 body the edge writes for a rejection, asserted directly on the rendering seam. The
+     * expected bodies are exact literals because the wire form is the contract: member order, the
+     * absence of whitespace and the escaping are all what a client parses. The same rendering over a
+     * live server, for the session-route {@code 403}, is driven by
+     * {@code GatewayEdgeRouteBffWiringTest}.
+     */
+    @Nested
+    @DisplayName("problem+json body rendering (RFC 9457 extension members)")
+    class ProblemBodyRendering {
+
+        private static final String TYPE = EventCategory.AUTHORIZATION.problemType();
+        private static final String TITLE = EventCategory.AUTHORIZATION.title();
+        private static final String LOG_MESSAGE = "internal detail that is logged, never rendered";
+
+        @Test
+        @DisplayName("renders exactly the three standard members for a rejection without extension members")
+        void rendersUnchangedBodyWithoutMembers() {
+            GatewayException rejected = new GatewayException(EventType.SCOPE_MISSING, LOG_MESSAGE);
+
+            String body = GatewayEdgeRoute.problemBody(TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
+                    rejected.getProblemExtensions());
+
+            assertEquals("""
+                    {"type":"urn:api-sheriff:problem:authorization","title":"Authorization","status":403}""", body,
+                    "a rejection without members keeps the pre-existing body byte for byte");
+        }
+
+        @Test
+        @DisplayName("appends a rejection's extension members after the standard members, in insertion order")
+        void rendersExtensionMembersInInsertionOrder() {
+            Map<String, Object> members = new LinkedHashMap<>();
+            members.put("missing_scopes", List.of("orders:read", "orders:write"));
+            members.put("step_up_url", "/auth/step-up?returnUrl=%2Fapp%2Forders");
+            GatewayException rejected = new GatewayException(EventType.SCOPE_MISSING, LOG_MESSAGE, members);
+
+            String body = GatewayEdgeRoute.problemBody(TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
+                    rejected.getProblemExtensions());
+
+            assertAll(
+                    () -> assertEquals("""
+                            {"type":"urn:api-sheriff:problem:authorization","title":"Authorization","status":403,\
+                            "missing_scopes":["orders:read","orders:write"],\
+                            "step_up_url":"/auth/step-up?returnUrl=%2Fapp%2Forders"}""", body,
+                            "the members follow the standard ones in the order they were added"),
+                    () -> assertFalse(body.contains(LOG_MESSAGE), "the log message never reaches the body"));
+        }
+
+        @Test
+        @DisplayName("escapes extension member names and values as JSON strings")
+        void escapesExtensionMemberNamesAndValues() {
+            Map<String, Object> members = Map.of("quoted\"name", "back\\slash and\nnewline");
+
+            String body = GatewayEdgeRoute.problemBody(TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(), members);
+
+            assertEquals("""
+                    {"type":"urn:api-sheriff:problem:authorization","title":"Authorization","status":403,\
+                    "quoted\\"name":"back\\\\slash and\\nnewline"}""", body,
+                    "a member can never break out of its JSON string");
         }
     }
 

@@ -25,6 +25,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashSet;
@@ -41,12 +42,13 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link SealedSessionPayload} — the plaintext the cookie-mode codec seals. Covers the
- * ten-field length-prefixed framing (its width, its endianness, and that field values stay raw), the
- * encoding round trip including absent optionals, the active scope set and values carrying bytes that
- * would have collided with the retired newline separator, every way the reader refuses a foreign
- * frame, the {@link SealedSessionPayload#MAX_PLAINTEXT_BYTES} bound at both ends, the absolute-TTL
- * check anchored on the login instant, the mandatory-component contract, and the redaction of every
- * credential from {@code toString()}.
+ * eleven-field length-prefixed framing (its width, its endianness, and that field values stay raw),
+ * the encoding round trip including absent optionals, the active scope set {@code A} and the granted
+ * scope set {@code S} as two independent fields, values carrying bytes that would have collided with
+ * the retired newline separator, every way the reader refuses a foreign frame (including the previous
+ * ten-field shape), the {@link SealedSessionPayload#MAX_PLAINTEXT_BYTES} bound at both ends, the
+ * absolute-TTL check anchored on the login instant, the mandatory-component contract, and the
+ * redaction of every credential from {@code toString()}.
  */
 class SealedSessionPayloadTest {
 
@@ -58,29 +60,45 @@ class SealedSessionPayloadTest {
     private static final String SUB = "user-sub-1";
     private static final String SESSION_NONCE = "session-nonce-SECRET-material";
     private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
+    private static final Set<String> GRANTED_SCOPES = Set.of("openid", "profile", "email", "orders:read",
+            "orders:write");
+
+    /** The index of the active scope field ({@code A}) in the wire form. */
+    private static final int ACTIVE_FIELD = 9;
+
+    /** The index of the granted scope field ({@code S}) in the wire form — the last one. */
+    private static final int GRANTED_FIELD = 10;
 
     private static SealedSessionPayload full() {
         return new SealedSessionPayload(ACCESS_TOKEN, REFRESH_TOKEN, ID_TOKEN, SUB,
                 "idp-sid-9", "urn:acr:silver",
-                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE, ACTIVE_SCOPES);
+                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE, ACTIVE_SCOPES, GRANTED_SCOPES);
     }
 
     private static SealedSessionPayload minimal() {
         return new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
-                null, null, null, LOGIN, SESSION_NONCE, Set.of());
+                null, null, null, LOGIN, SESSION_NONCE, Set.of(), Set.of());
     }
 
     private static SealedSessionPayload withScopes(Set<String> activeScopes) {
-        return new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
-                null, null, null, LOGIN, SESSION_NONCE, activeScopes);
+        return withScopes(activeScopes, Set.of());
     }
 
-    /** The 2-byte big-endian length prefix each field carries, times the ten fields. */
-    private static final int FRAMING_BYTES = 20;
+    private static SealedSessionPayload withScopes(Set<String> activeScopes, Set<String> grantedScopes) {
+        return new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
+                null, null, null, LOGIN, SESSION_NONCE, activeScopes, grantedScopes);
+    }
+
+    private static SealedSessionPayload withGranted(Set<String> grantedScopes) {
+        return withScopes(Set.of(), grantedScopes);
+    }
+
+    /** The 2-byte big-endian length prefix each field carries, times the eleven fields. */
+    private static final int FRAMING_BYTES = 22;
 
     /**
      * Builds the wire form {@code decode()} reads directly from raw field values, so a test can
-     * express a payload shape {@code encode()} could never produce — a field count other than ten,
+     * express a payload shape {@code encode()} could never produce — a field count other than eleven,
      * an epoch second outside {@link Instant}'s supported range, or a frame past
      * {@link SealedSessionPayload#MAX_PLAINTEXT_BYTES}.
      * <p>
@@ -103,27 +121,27 @@ class SealedSessionPayloadTest {
         return wire.array();
     }
 
-    /** The ten-field wire form with only the mandatory components populated. */
+    /** The eleven-field wire form with only the mandatory components populated. */
     private static byte[] minimalWireForm() {
-        return scopedWireForm("");
+        return scopedWireForm("", "");
     }
 
-    /** The ten-field wire form with the mandatory components and the given raw scope field. */
-    private static byte[] scopedWireForm(String scopeField) {
+    /** The eleven-field wire form with the mandatory components and the given raw scope fields. */
+    private static byte[] scopedWireForm(String activeField, String grantedField) {
         return wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
-                Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE, scopeField);
+                Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE, activeField, grantedField);
     }
 
-    /** Reads the raw bytes of the last (tenth) field back out of an encoded frame. */
-    private static String lastField(byte[] encoded) {
+    /** Reads the raw bytes of every field back out of an encoded frame, in wire order. */
+    private static List<String> fields(byte[] encoded) {
         ByteBuffer buffer = ByteBuffer.wrap(encoded);
-        String value = "";
+        List<String> values = new ArrayList<>();
         while (buffer.hasRemaining()) {
             byte[] field = new byte[Short.toUnsignedInt(buffer.getShort())];
             buffer.get(field);
-            value = new String(field, StandardCharsets.UTF_8);
+            values.add(new String(field, StandardCharsets.UTF_8));
         }
-        return value;
+        return values;
     }
 
     @Nested
@@ -151,6 +169,7 @@ class SealedSessionPayloadTest {
             assertNull(decoded.acr());
             assertNull(decoded.authTime());
             assertTrue(decoded.activeScopes().isEmpty(), "an empty active scope set stays empty");
+            assertTrue(decoded.grantedScopes().isEmpty(), "an empty granted scope set stays empty");
             assertEquals(SESSION_NONCE, decoded.sessionNonce(),
                     "the session nonce is mandatory and survives the round trip verbatim");
         }
@@ -160,7 +179,7 @@ class SealedSessionPayloadTest {
         void shouldRoundTripSeparatorBearingValues() {
             SealedSessionPayload original = new SealedSessionPayload("token\nwith\nnewlines", "a=b;c",
                     ID_TOKEN, "sub\nwith\nnewline", "sid\n1", null, null, LOGIN,
-                    "nonce\nwith\nnewline", Set.of());
+                    "nonce\nwith\nnewline", Set.of(), Set.of());
 
             assertEquals(Optional.of(original), SealedSessionPayload.decode(original.encode()),
                     "each field's length is stated up front, so no value can be confused with a delimiter — "
@@ -197,27 +216,37 @@ class SealedSessionPayloadTest {
         }
 
         @Test
-        @DisplayName("Should decode nothing when bytes trail the tenth field")
+        @DisplayName("Should decode nothing when bytes trail the eleventh field")
         void shouldDecodeNothingFromTrailingBytes() {
             byte[] wellFormed = minimalWireForm();
             byte[] withTrailer = Arrays.copyOf(wellFormed, wellFormed.length + 1);
 
             assertTrue(SealedSessionPayload.decode(withTrailer).isEmpty(),
-                    "the buffer must be consumed exactly — an eleventh field smuggled behind the tenth is a "
+                    "the buffer must be consumed exactly — a twelfth field smuggled behind the eleventh is a "
                             + "foreign shape, not surplus to be ignored");
         }
 
         @Test
-        @DisplayName("Should decode nothing from a frame lacking the tenth field, the active scope set")
-        void shouldDecodeNothingFromFrameWithoutActiveScopes() {
+        @DisplayName("Should decode nothing from the previous ten-field shape, which lacks the granted scope set")
+        void shouldDecodeNothingFromTenFieldShape() {
+            byte[] tenFields = wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
+                    Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE, "openid");
+
+            assertTrue(SealedSessionPayload.decode(scopedWireForm("openid", "openid")).isPresent(),
+                    "positive control: the same material with the eleventh field decodes");
+            assertTrue(SealedSessionPayload.decode(tenFields).isEmpty(),
+                    "a frame without the granted scope set is rejected outright — there is no legacy "
+                            + "acceptance path that would synthesize S, so the browser simply re-authenticates");
+        }
+
+        @Test
+        @DisplayName("Should decode nothing from a nine-field frame lacking both scope sets")
+        void shouldDecodeNothingFromFrameWithoutScopeSets() {
             byte[] withoutScopes = wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
                     Long.toString(LOGIN.getEpochSecond()), SESSION_NONCE);
 
-            assertTrue(SealedSessionPayload.decode(minimalWireForm()).isPresent(),
-                    "positive control: the same material with the tenth field decodes");
             assertTrue(SealedSessionPayload.decode(withoutScopes).isEmpty(),
-                    "a frame without the active scope set is rejected outright — there is no dual-format "
-                            + "reader behind the format-version gate, so the browser simply re-authenticates");
+                    "a frame without the active scope set is a foreign shape as well");
         }
 
         @Test
@@ -256,16 +285,16 @@ class SealedSessionPayloadTest {
 
             assertTrue(SealedSessionPayload
                             .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "", beyondInstantMax,
-                                    SESSION_NONCE, "")).isEmpty(),
+                                    SESSION_NONCE, "", "")).isEmpty(),
                     "DateTimeException is not an IllegalArgumentException, so an out-of-range login instant "
                             + "must still decode to no session rather than escaping unseal()");
             assertTrue(SealedSessionPayload
                     .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "", beyondInstantMin, SESSION_NONCE,
-                            ""))
+                            "", ""))
                     .isEmpty());
             assertTrue(SealedSessionPayload
                             .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", beyondInstantMax, login,
-                                    SESSION_NONCE, "")).isEmpty(),
+                                    SESSION_NONCE, "", "")).isEmpty(),
                     "the optional authTime field carries the same overflow risk as the login instant");
         }
     }
@@ -281,7 +310,7 @@ class SealedSessionPayloadTest {
 
             byte[] encoded = original.encode();
 
-            assertEquals("", lastField(encoded), "an empty set is written as a zero-length field");
+            assertEquals("", fields(encoded).get(ACTIVE_FIELD), "an empty set is written as a zero-length field");
             assertEquals(Optional.of(original), SealedSessionPayload.decode(encoded));
         }
 
@@ -314,15 +343,15 @@ class SealedSessionPayloadTest {
             Set<String> forward = new LinkedHashSet<>(List.of("profile", "email", "openid"));
             Set<String> backward = new LinkedHashSet<>(List.of("openid", "email", "profile"));
 
-            assertEquals("email openid profile", lastField(withScopes(forward).encode()));
-            assertEquals("email openid profile", lastField(withScopes(backward).encode()),
+            assertEquals("email openid profile", fields(withScopes(forward).encode()).get(ACTIVE_FIELD));
+            assertEquals("email openid profile", fields(withScopes(backward).encode()).get(ACTIVE_FIELD),
                     "the encoding is deterministic, so an unchanged session re-seals to the same plaintext");
         }
 
         @Test
         @DisplayName("Should decode a space-joined scope field into its names")
         void shouldDecodeSpaceJoinedScopeField() {
-            SealedSessionPayload decoded = SealedSessionPayload.decode(scopedWireForm("openid orders:read"))
+            SealedSessionPayload decoded = SealedSessionPayload.decode(scopedWireForm("openid orders:read", ""))
                     .orElseThrow();
 
             assertEquals(Set.of("openid", "orders:read"), decoded.activeScopes());
@@ -332,9 +361,9 @@ class SealedSessionPayloadTest {
         @ValueSource(strings = {" openid", "openid ", "openid  profile", "openid openid", " "})
         @DisplayName("Should decode nothing from a scope field encode() could never write")
         void shouldDecodeNothingFromMalformedScopeField(String malformed) {
-            assertTrue(SealedSessionPayload.decode(scopedWireForm("openid profile")).isPresent(),
+            assertTrue(SealedSessionPayload.decode(scopedWireForm("openid profile", "")).isPresent(),
                     "positive control: a well-formed scope field decodes");
-            assertTrue(SealedSessionPayload.decode(scopedWireForm(malformed)).isEmpty(),
+            assertTrue(SealedSessionPayload.decode(scopedWireForm(malformed, "")).isEmpty(),
                     "an empty name (stray or doubled delimiter) or a duplicated name is a foreign shape");
         }
 
@@ -352,7 +381,7 @@ class SealedSessionPayloadTest {
         @DisplayName("Should normalize an absent active scope set to empty")
         void shouldNormalizeAbsentScopesToEmpty() {
             SealedSessionPayload payload = new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
-                    null, null, null, LOGIN, SESSION_NONCE, null);
+                    null, null, null, LOGIN, SESSION_NONCE, null, Set.of());
 
             assertTrue(payload.activeScopes().isEmpty());
         }
@@ -371,6 +400,97 @@ class SealedSessionPayloadTest {
     }
 
     @Nested
+    @DisplayName("Granted scope set")
+    class GrantedScopes {
+
+        @Test
+        @DisplayName("Should round-trip an empty granted scope set as a zero-length eleventh field")
+        void shouldRoundTripEmptyGrantedScopes() {
+            SealedSessionPayload original = withScopes(ACTIVE_SCOPES, Set.of());
+
+            byte[] encoded = original.encode();
+
+            assertEquals(11, fields(encoded).size(), "the frame carries exactly eleven fields");
+            assertEquals("", fields(encoded).get(GRANTED_FIELD), "an empty set is written as a zero-length field");
+            assertEquals(Optional.of(original), SealedSessionPayload.decode(encoded));
+        }
+
+        @Test
+        @DisplayName("Should round-trip a granted set independently of the active set")
+        void shouldRoundTripGrantedScopesIndependently() {
+            SealedSessionPayload original = withScopes(Set.of("openid"), GRANTED_SCOPES);
+
+            SealedSessionPayload decoded = SealedSessionPayload.decode(original.encode()).orElseThrow();
+
+            assertEquals(Set.of("openid"), decoded.activeScopes(), "A is its own field");
+            assertEquals(GRANTED_SCOPES, decoded.grantedScopes(), "S is its own field, never derived from A");
+        }
+
+        @Test
+        @DisplayName("Should write the granted names sorted and space-joined into the eleventh field")
+        void shouldWriteSortedSpaceJoinedGrantedScopes() {
+            Set<String> granted = new LinkedHashSet<>(List.of("profile", "email", "openid"));
+
+            List<String> written = fields(withGranted(granted).encode());
+
+            assertEquals("email openid profile", written.get(GRANTED_FIELD));
+            assertEquals("", written.get(ACTIVE_FIELD), "the granted set does not leak into the active field");
+        }
+
+        @Test
+        @DisplayName("Should decode a space-joined granted field into its names")
+        void shouldDecodeSpaceJoinedGrantedField() {
+            SealedSessionPayload decoded = SealedSessionPayload
+                    .decode(scopedWireForm("openid", "openid orders:read")).orElseThrow();
+
+            assertEquals(Set.of("openid"), decoded.activeScopes());
+            assertEquals(Set.of("openid", "orders:read"), decoded.grantedScopes());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {" openid", "openid ", "openid  profile", "openid openid", " "})
+        @DisplayName("Should decode nothing from a granted field encode() could never write")
+        void shouldDecodeNothingFromMalformedGrantedField(String malformed) {
+            assertTrue(SealedSessionPayload.decode(scopedWireForm("", "openid profile")).isPresent(),
+                    "positive control: a well-formed granted field decodes");
+            assertTrue(SealedSessionPayload.decode(scopedWireForm("", malformed)).isEmpty(),
+                    "an empty name (stray or doubled delimiter) or a duplicated name is a foreign shape");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"", "open id", "openid\t", "\nopenid"})
+        @DisplayName("Should reject a granted scope name that is empty or carries whitespace")
+        void shouldRejectAmbiguousGrantedScopeName(String ambiguous) {
+            Set<String> scopes = Set.of(ambiguous);
+
+            IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                    () -> withGranted(scopes), "a name carrying the delimiter would decode as different scopes");
+            assertTrue(rejection.getMessage().startsWith("granted"), rejection.getMessage());
+        }
+
+        @Test
+        @DisplayName("Should normalize an absent granted scope set to empty")
+        void shouldNormalizeAbsentGrantedScopesToEmpty() {
+            SealedSessionPayload payload = new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of("openid"), null);
+
+            assertTrue(payload.grantedScopes().isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should hold the granted scope set immutably")
+        void shouldHoldGrantedScopesImmutably() {
+            Set<String> source = new LinkedHashSet<>(List.of("openid"));
+            SealedSessionPayload payload = withGranted(source);
+            source.add("profile");
+
+            assertEquals(Set.of("openid"), payload.grantedScopes(), "the component is a defensive copy");
+            Set<String> held = payload.grantedScopes();
+            assertThrows(UnsupportedOperationException.class, () -> held.add("email"));
+        }
+    }
+
+    @Nested
     @DisplayName("Length-prefixed framing")
     class Framing {
 
@@ -382,7 +502,7 @@ class SealedSessionPayloadTest {
                     + Long.toString(LOGIN.getEpochSecond()).length() + SESSION_NONCE.length();
 
             assertEquals(valueBytes + FRAMING_BYTES, encoded.length,
-                    "ten 2-byte prefixes are the whole framing cost: absent optionals and an empty scope set "
+                    "eleven 2-byte prefixes are the whole framing cost: absent optionals and empty scope sets "
                             + "contribute their prefix and no value bytes, and there is no separator or padding on top");
         }
 
@@ -411,12 +531,12 @@ class SealedSessionPayloadTest {
         @DisplayName("Should refuse a frame past the plaintext bound while reading one exactly at it")
         void shouldBoundThePlaintextItReads() {
             String login = Long.toString(LOGIN.getEpochSecond());
-            int fixed = wireForm(ACCESS_TOKEN, "", "", SUB, "", "", "", login, SESSION_NONCE, "").length;
+            int fixed = wireForm(ACCESS_TOKEN, "", "", SUB, "", "", "", login, SESSION_NONCE, "", "").length;
             int headroom = SealedSessionPayload.MAX_PLAINTEXT_BYTES - fixed;
             byte[] atBound = wireForm(ACCESS_TOKEN, "", "x".repeat(headroom), SUB, "", "", "", login,
-                    SESSION_NONCE, "");
+                    SESSION_NONCE, "", "");
             byte[] pastBound = wireForm(ACCESS_TOKEN, "", "x".repeat(headroom + 1), SUB, "", "", "", login,
-                    SESSION_NONCE, "");
+                    SESSION_NONCE, "", "");
 
             assertEquals(SealedSessionPayload.MAX_PLAINTEXT_BYTES, atBound.length);
             assertTrue(SealedSessionPayload.decode(atBound).isPresent(),
@@ -431,7 +551,7 @@ class SealedSessionPayloadTest {
         void shouldRefuseToEncodePastThePlaintextBound() {
             SealedSessionPayload oversized = new SealedSessionPayload(
                     "x".repeat(SealedSessionPayload.MAX_PLAINTEXT_BYTES), null, ID_TOKEN, SUB,
-                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of(), Set.of());
 
             IllegalStateException refusal = assertThrows(IllegalStateException.class, oversized::encode);
 
@@ -462,7 +582,7 @@ class SealedSessionPayloadTest {
         @DisplayName("Should anchor the deadline on the login instant, so it cannot drift")
         void shouldAnchorDeadlineOnLoginInstant() {
             SealedSessionPayload resealed = new SealedSessionPayload("rotated-access", "rotated-refresh",
-                    ID_TOKEN, SUB, null, null, null, LOGIN, SESSION_NONCE, ACTIVE_SCOPES);
+                    ID_TOKEN, SUB, null, null, null, LOGIN, SESSION_NONCE, ACTIVE_SCOPES, GRANTED_SCOPES);
 
             assertTrue(resealed.isExpired(TTL, LOGIN.plus(TTL)),
                     "re-sealing rotated material does not move the absolute deadline");
@@ -477,15 +597,15 @@ class SealedSessionPayloadTest {
         @DisplayName("Should reject an absent mandatory component")
         void shouldRejectAbsentMandatoryComponents() {
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(null, null, ID_TOKEN,
-                    SUB, null, null, null, LOGIN, SESSION_NONCE, Set.of()));
+                    SUB, null, null, null, LOGIN, SESSION_NONCE, Set.of(), Set.of()));
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
-                    null, SUB, null, null, null, LOGIN, SESSION_NONCE, Set.of()));
+                    null, SUB, null, null, null, LOGIN, SESSION_NONCE, Set.of(), Set.of()));
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
-                    ID_TOKEN, null, null, null, null, LOGIN, SESSION_NONCE, Set.of()));
+                    ID_TOKEN, null, null, null, null, LOGIN, SESSION_NONCE, Set.of(), Set.of()));
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
-                    ID_TOKEN, SUB, null, null, null, null, SESSION_NONCE, Set.of()));
+                    ID_TOKEN, SUB, null, null, null, null, SESSION_NONCE, Set.of(), Set.of()));
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
-                            ID_TOKEN, SUB, null, null, null, LOGIN, null, Set.of()),
+                            ID_TOKEN, SUB, null, null, null, LOGIN, null, Set.of(), Set.of()),
                     "the session nonce is mandatory — it keys the derived session identity");
         }
 
@@ -495,7 +615,7 @@ class SealedSessionPayloadTest {
         void shouldRejectBlankSessionNonce(String blank) {
             assertThrows(IllegalArgumentException.class, () -> new SealedSessionPayload(ACCESS_TOKEN,
                             null, ID_TOKEN, SUB, null, null, null,
-                            LOGIN, blank, Set.of()),
+                            LOGIN, blank, Set.of(), Set.of()),
                     "a blank nonce would silently degrade the derived identity to the colliding pre-nonce shape");
         }
 
@@ -504,7 +624,7 @@ class SealedSessionPayloadTest {
         void shouldNotLeakNonceIntoRejectionMessage() {
             IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
                     () -> new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB, null,
-                            null, null, LOGIN, "   ", Set.of()));
+                            null, null, LOGIN, "   ", Set.of(), Set.of()));
 
             assertEquals("sessionNonce must not be blank", rejection.getMessage());
         }
@@ -513,7 +633,7 @@ class SealedSessionPayloadTest {
         @DisplayName("Should decode nothing from authenticated bytes carrying a blank session nonce")
         void shouldDecodeNothingFromBlankNonce() {
             byte[] blankNonce = wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
-                    Long.toString(LOGIN.getEpochSecond()), "", "");
+                    Long.toString(LOGIN.getEpochSecond()), "", "", "");
 
             assertTrue(SealedSessionPayload.decode(blankNonce).isEmpty(),
                     "the constructor rejection surfaces as no session, never as an escaping exception");
@@ -523,7 +643,7 @@ class SealedSessionPayloadTest {
         @DisplayName("Should accept an absent nullable component as null")
         void shouldAcceptNullNullableComponents() {
             SealedSessionPayload payload = new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
-                    null, null, null, LOGIN, SESSION_NONCE, Set.of());
+                    null, null, null, LOGIN, SESSION_NONCE, Set.of(), Set.of());
 
             assertNull(payload.refreshToken());
             assertNull(payload.sid());
@@ -564,6 +684,8 @@ class SealedSessionPayloadTest {
             assertTrue(rendered.contains(SUB), "the subject is an identity anchor, not a credential");
             assertTrue(rendered.contains(LOGIN.toString()), rendered);
             assertTrue(rendered.contains("orders:read"), "scope names are not credentials: " + rendered);
+            assertTrue(rendered.contains("grantedScopes="), rendered);
+            assertTrue(rendered.contains("orders:write"), "granted scope names are rendered too: " + rendered);
         }
     }
 }

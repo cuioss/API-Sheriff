@@ -10,8 +10,8 @@
 # `scopes` is ADDITIVE: the scope set both routes need is oidc.scopes united with this list,
 # i.e. exactly "openid profile email sheriff_it_endpoint". That one boot-time value is what a
 # navigation login started on either route requests from Keycloak, and what the refresh leg keeps
-# asking for afterwards. BffEndpointScopesIT captures the authorization redirect and asserts the
-# requested `scope` byte for byte; BffTokenRefreshIT asserts a refreshed token still carries the
+# asking for afterwards. BffEndpointScopesIT asserts the extra scope on the token a completed login
+# mediates; BffTokenRefreshIT asserts a refreshed token still carries the
 # extra scope. sheriff_it_endpoint is an OPTIONAL client scope in integration-realm.json, so
 # Keycloak issues it only when it is requested — its presence in a token is therefore proof the
 # gateway asked for it, not an artefact of the realm's defaults.
@@ -38,7 +38,9 @@ endpoint:
     # a failed bearer. Without it the route behaves exactly like a require: session route — CSRF, login
     # redirect for a navigation or 401 for an XHR, and the mediated session bearer upstream.
     # BffSessionFallbackIT asserts every row of that branch table against this route, and MetricsIT
-    # asserts the sheriff_auth_branch_total{route,branch} series it alone emits.
+    # drives the sheriff_auth_branch_total{route,branch} series on it. The meter is recorded on
+    # session_fallback routes only, and this route is one of two: the other is
+    # bff-unassigned-scope-fallback in endpoints/bff-unassigned-scope.yaml.
     #
     # It lives in THIS descriptor for the endpoint's `scopes`: every token the integration realm mints
     # carries openid, profile and email as default client scopes, so a route needing only oidc.scopes

@@ -50,8 +50,8 @@ import jakarta.inject.Inject;
  * sets of outbound legs, and neither one moves the other:
  * <ul>
  *   <li>The runtime {@code javax.net.ssl.trustStore} system property governs every leg that holds a
- *       raw JDK {@code TrustManager}. The confidential-client OIDC engine — its discovery, token,
- *       refresh and refresh-token revocation calls — is among them only while no
+ *       raw JDK {@code TrustManager}. The confidential-client OIDC engine — its discovery, pushed
+ *       authorization request, token, refresh and refresh-token revocation calls — is among them only while no
  *       {@code egress_tls.oidc_tls_profile} is named: a named profile is resolved to its own trust
  *       anchors and handed to the engine's client configuration as the {@code SSLContext} every one of
  *       those calls dials with, replacing the JVM default anchors on that leg (ADR-0045). With no

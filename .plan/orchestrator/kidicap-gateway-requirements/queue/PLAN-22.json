@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-22",
+  "slug": "websocket-early-frame-race",
+  "workstream": "WS-02",
+  "status": "shipped",
+  "plan_marshall_plan_id": "websocket-early-frame-race",
+  "pr": "#350",
+  "landing": "landings/PLAN-22.md",
+  "seq": 10
+}

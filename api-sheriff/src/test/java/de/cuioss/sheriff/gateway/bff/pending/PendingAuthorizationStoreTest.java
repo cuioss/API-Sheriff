@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.pending;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,6 +31,7 @@ import java.util.Optional;
 import java.util.Set;
 
 
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord.Widening;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -40,7 +42,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for the D2b pending-authorization primitives: the bounded single-use
  * {@link PendingAuthorizationStore.InMemory}, the {@link PendingAuthorizationRecord} contract
- * (single-use enforcement, TTL expiry, same-origin return-URL validation), and the
+ * (single-use enforcement, TTL expiry, same-origin return-URL validation, the login-versus-widening
+ * marker), and the
  * security-critical cross-browser callback rejection (a valid {@code state} presented in a
  * browser without the matching binding cookie is refused).
  */
@@ -245,20 +248,88 @@ class PendingAuthorizationStoreTest {
             FlowContext flow = flow();
             Set<String> scopes = Set.of("openid");
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord(null, flow, "/a", scopes, T0, ttl));
+                    () -> new PendingAuthorizationRecord(null, flow, "/a", scopes, T0, ttl, null));
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord("id", null, "/a", scopes, T0, ttl));
+                    () -> new PendingAuthorizationRecord("id", null, "/a", scopes, T0, ttl, null));
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord("id", flow, null, scopes, T0, ttl));
+                    () -> new PendingAuthorizationRecord("id", flow, null, scopes, T0, ttl, null));
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord("id", flow, "/a", null, T0, ttl),
+                    () -> new PendingAuthorizationRecord("id", flow, "/a", null, T0, ttl, null),
                     "the requested scope set is mandatory — the callback falls back to it");
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord("id", flow, "/a", scopes, null, ttl));
+                    () -> new PendingAuthorizationRecord("id", flow, "/a", scopes, null, ttl, null));
             assertThrows(NullPointerException.class,
-                    () -> new PendingAuthorizationRecord("id", flow, "/a", scopes, T0, null));
+                    () -> new PendingAuthorizationRecord("id", flow, "/a", scopes, T0, null, null));
             assertThrows(NullPointerException.class,
                     () -> PendingAuthorizationRecord.create(flow, "/a", null, T0));
+        }
+
+        @Test
+        @DisplayName("Should accept an absent widening marker — a plain login record")
+        void shouldAcceptAbsentWidening() {
+            PendingAuthorizationRecord pending = new PendingAuthorizationRecord("id", flow(), "/a", Set.of("openid"),
+                    T0, PendingAuthorizationRecord.FIXED_TTL, null);
+
+            assertNull(pending.widening());
+        }
+
+        @Test
+        @DisplayName("Should create a plain login record without a widening marker")
+        void shouldCreateLoginWithoutWidening() {
+            assertNull(pendingRecord("/app", T0).widening(), "create(...) always yields a plain login");
+        }
+    }
+
+    @Nested
+    @DisplayName("Widening record")
+    class WideningRecord {
+
+        private static final String SUBJECT = "user-sub-1";
+
+        @Test
+        @DisplayName("Should round-trip a widening record through the store with its subject and attempt")
+        void shouldRoundTripWideningRecord() {
+            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(4);
+            FlowContext flow = flow();
+            PendingAuthorizationRecord stored = PendingAuthorizationRecord.createWidening(flow, "/orders",
+                    REQUESTED_SCOPES, SUBJECT, Widening.Attempt.SILENT, T0);
+            store.store(stored);
+
+            PendingAuthorizationRecord consumed = store.consume(stored.id(), T0.plusSeconds(1)).orElseThrow();
+
+            assertEquals(new Widening(SUBJECT, Widening.Attempt.SILENT), consumed.widening(),
+                    "the callback reads the live identity and the attempt back");
+            assertSame(flow, consumed.flowContext());
+            assertEquals("/orders", consumed.returnUrl());
+            assertEquals(Set.copyOf(REQUESTED_SCOPES), consumed.requestedScopes());
+            assertEquals(PendingAuthorizationRecord.FIXED_TTL, consumed.ttl(),
+                    "a widening record expires as fast as a login record");
+            assertTrue(store.consume(stored.id(), T0).isEmpty(), "a widening record is single-use too");
+        }
+
+        @Test
+        @DisplayName("Should record the interactive attempt and a fresh id per widening record")
+        void shouldRecordInteractiveAttempt() {
+            PendingAuthorizationRecord silent = PendingAuthorizationRecord.createWidening(flow(), "/orders",
+                    REQUESTED_SCOPES, SUBJECT, Widening.Attempt.SILENT, T0);
+            PendingAuthorizationRecord interactive = PendingAuthorizationRecord.createWidening(flow(), "/orders",
+                    REQUESTED_SCOPES, SUBJECT, Widening.Attempt.INTERACTIVE, T0);
+
+            assertEquals(Widening.Attempt.INTERACTIVE, interactive.widening().attempt());
+            assertNotEquals(silent.id(), interactive.id());
+        }
+
+        @Test
+        @DisplayName("Should reject a widening marker without a subject or an attempt")
+        void shouldRejectIncompleteWidening() {
+            FlowContext flow = flow();
+
+            assertThrows(NullPointerException.class, () -> new Widening(null, Widening.Attempt.SILENT));
+            assertThrows(NullPointerException.class, () -> new Widening(SUBJECT, null));
+            assertThrows(NullPointerException.class, () -> PendingAuthorizationRecord.createWidening(flow,
+                    "/orders", REQUESTED_SCOPES, null, Widening.Attempt.SILENT, T0));
+            assertThrows(NullPointerException.class, () -> PendingAuthorizationRecord.createWidening(flow,
+                    "/orders", null, SUBJECT, Widening.Attempt.SILENT, T0));
         }
     }
 

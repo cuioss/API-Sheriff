@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -25,6 +26,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import io.restassured.http.Cookie;
 import io.restassured.http.Cookies;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
@@ -33,6 +35,15 @@ import io.restassured.specification.RequestSpecification;
  * Drives a scripted, browser-less OIDC authorization-code flow against the compose Keycloak
  * {@code integration} realm and the server-mode BFF gateway, following the {@code 302} chain with a
  * cookie jar exactly as a browser would.
+ * <p>
+ * <strong>A pushed-request redirect.</strong> The gateway pushes its authorization request to
+ * Keycloak over the back channel (RFC 9126) before it redirects, so the {@code 302} this helper follows
+ * in step 1 targets the authorization endpoint with {@code client_id} and {@code request_uri} only.
+ * The helper does not read that URL; it follows it, exactly as a browser does, and Keycloak resolves
+ * the request the {@code request_uri} names. Keycloak answers that navigation with a second
+ * {@code 302}, into its own authentication flow, where a request carried in the URL was answered
+ * with the login form directly; the helper follows that one redirect too. From the login form on,
+ * the flow is the same.
  * <p>
  * <strong>response_mode=query.</strong> The gateway drives the authorization request with
  * {@code response_mode=query}, so after a successful credential POST Keycloak answers a {@code 302}
@@ -61,7 +72,11 @@ import io.restassured.specification.RequestSpecification;
  * <strong>Two disjoint cookie jars.</strong> RFC 6265 cookies are port-agnostic, so a single
  * {@code localhost} jar would mix the gateway session cookie ({@code localhost:10443}) with the
  * Keycloak {@code AUTH_SESSION_ID} ({@code localhost:1443}). The helper therefore keeps the gateway
- * jar and the Keycloak jar separate and replays only the gateway jar on the returned session.
+ * jar and the Keycloak jar separate, and the returned {@link Session} carries both: the gateway jar
+ * is what a protected request replays, and the Keycloak jar holds the realm SSO cookies the
+ * credential response set. A later authorization request that must be answered from that SSO session
+ * without a login form — a {@code prompt=none} session widening — replays the Keycloak jar, exactly
+ * as the browser that just logged in would.
  * <p>
  * <strong>Origin-parameterized.</strong> The flow is identical for every gateway instance, so the
  * browser-facing origin is a parameter: {@link #login(String)} drives the primary server-mode
@@ -134,6 +149,12 @@ final class BffKeycloakLoginFlow {
 
     /** The host-published Keycloak authority the test JVM can actually reach (compose {@code 1443 -> 8443}). */
     static final String KEYCLOAK_HOST_AUTHORITY = "localhost:1443";
+
+    /** Where every realm of the stack's Keycloak lives, as Keycloak itself names it in a redirect. */
+    private static final String KEYCLOAK_AUTHENTICATION_FLOW_PREFIX = "https://" + KEYCLOAK_INTERNAL_AUTHORITY + "/realms/";
+
+    /** The path Keycloak's browser authentication flow is served at, below a realm. */
+    private static final String KEYCLOAK_AUTHENTICATION_FLOW_PATH = "/login-actions/authenticate";
 
     /** The seeded confidential-realm test user (see {@code integration-realm.json}). */
     static final String USERNAME = "integration-user";
@@ -219,8 +240,14 @@ final class BffKeycloakLoginFlow {
      * @param callbackLocation the {@code Location} the callback's {@code 302} sends the browser to —
      *                        the post-login return target the gateway recorded when the login
      *                        started, exactly as emitted (not followed, not re-encoded)
+     * @param keycloakCookies the Keycloak cookie jar as the login left it: the cookies of the login
+     *                        page plus the realm SSO cookies the credential response set, with every
+     *                        cookie that response expired removed. Replaying it on an authorization
+     *                        request lets Keycloak answer from the live SSO session, which is what a
+     *                        silent ({@code prompt=none}) session widening depends on. Immutable
      */
-    record Session(Map<String, String> gatewayCookies, Cookies callbackCookies, String callbackLocation) {
+    record Session(Map<String, String> gatewayCookies, Cookies callbackCookies, String callbackLocation,
+    Map<String, String> keycloakCookies) {
     }
 
     /**
@@ -316,12 +343,9 @@ final class BffKeycloakLoginFlow {
         gatewayCookies.putAll(initiation.getCookies());
         String authorizationUrl = rewriteToHost(location(initiation));
 
-        // Step 2 — GET the Keycloak login page and scrape the form action.
-        Response loginPage = keycloak(keycloakCookies)
-                .redirects().follow(false)
-                .when().get(authorizationUrl)
-                .then().statusCode(200).extract().response();
-        keycloakCookies.putAll(loginPage.getCookies());
+        // Step 2 — navigate to the authorization endpoint, follow Keycloak into its authentication flow
+        // and scrape the form action of the login page.
+        Response loginPage = loginPage(keycloakCookies, authorizationUrl);
         String formAction = rewriteToHost(extractFormAction(loginPage.asString()));
 
         // Step 3 — POST the credentials. The gateway drives the authorization request with
@@ -334,6 +358,11 @@ final class BffKeycloakLoginFlow {
                 .redirects().follow(false)
                 .when().post(formAction)
                 .then().statusCode(302).extract().response();
+        // The credential response is the one that establishes the realm SSO session: it sets the
+        // identity and session cookies and expires the login-restart cookie. Without them the jar
+        // holds only the login page's cookies, and a later prompt=none authorization request would
+        // find no SSO session to answer from.
+        absorbSetCookies(keycloakCookies, credentials);
         String callbackUrl = rewriteToHost(location(credentials));
 
         // Step 4 — follow that redirect to the gateway callback exactly as a browser would: a plain
@@ -358,7 +387,90 @@ final class BffKeycloakLoginFlow {
         // cookie the browser would actually keep.
         assertCookiesFitBrowserBudget(callback);
 
-        return new Session(gatewayCookies, callback.getDetailedCookies(), location(callback));
+        return new Session(gatewayCookies, callback.getDetailedCookies(), location(callback),
+                Map.copyOf(keycloakCookies));
+    }
+
+    /**
+     * Applies the cookies a response set to a cookie jar the way a browser does: a cookie the response
+     * expires — an empty value or {@code Max-Age=0} — is removed from the jar, every other one is
+     * stored under its name.
+     * <p>
+     * A plain {@code jar.putAll(response.getCookies())} keeps an expired cookie in the jar with an
+     * empty value and goes on sending it, which a browser never does. The Keycloak jar must not carry
+     * such a leftover: the credential response expires the login-restart cookie, and the jar is
+     * replayed on a later authorization request.
+     *
+     * @param jar      the cookie jar to update
+     * @param response the response whose {@code Set-Cookie} headers are applied
+     */
+    static void absorbSetCookies(Map<String, String> jar, Response response) {
+        for (Cookie cookie : response.getDetailedCookies()) {
+            String value = cookie.getValue();
+            if (value == null || value.isEmpty() || cookie.getMaxAge() == 0) {
+                jar.remove(cookie.getName());
+            } else {
+                jar.put(cookie.getName(), value);
+            }
+        }
+    }
+
+    /**
+     * Navigates to the authorization endpoint and returns the Keycloak login page, following the one
+     * redirect Keycloak answers a pushed request with.
+     * <p>
+     * Keycloak does not render the login form at the authorization endpoint when the request names a
+     * {@code request_uri}: it creates the authentication session, sets its session cookies and answers
+     * a {@code 302} to its own {@code login-actions/authenticate} URL, which serves the form. A
+     * browser follows that redirect without the user noticing, carrying the cookies the {@code 302}
+     * set, and so does this method. Observed on Keycloak 26.5.7; the request the gateway used to carry
+     * in the URL was answered with the form directly.
+     * <p>
+     * <strong>What is followed, and what is not.</strong> At most one redirect, and only one whose
+     * target is Keycloak's own authentication flow on the realm's authority. Keycloak answers a
+     * <em>refused</em> authorization request with a {@code 302} as well — to the client's redirect URI,
+     * carrying {@code error} — and that one must fail the login here instead of being followed to the
+     * gateway callback. A login page served directly, with {@code 200}, is accepted too, as a browser
+     * accepts it.
+     * <p>
+     * The failure messages name the status and the path of a redirect target, never its query: the
+     * query of an authentication-flow URL identifies a pending login.
+     *
+     * @param keycloakCookies  the Keycloak cookie jar; it gains every cookie the navigation sets
+     * @param authorizationUrl the host-rewritten URL the gateway redirected the browser to
+     * @return the response that carries the login form
+     */
+    private static Response loginPage(Map<String, String> keycloakCookies, String authorizationUrl) {
+        Response answered = keycloak(keycloakCookies)
+                .redirects().follow(false)
+                .when().get(authorizationUrl)
+                .then().extract().response();
+        keycloakCookies.putAll(answered.getCookies());
+
+        if (answered.statusCode() == 302) {
+            String target = location(answered);
+            assertTrue(target.startsWith(KEYCLOAK_AUTHENTICATION_FLOW_PREFIX)
+                    && pathOf(target).endsWith(KEYCLOAK_AUTHENTICATION_FLOW_PATH),
+                    () -> "Keycloak redirected the authorization request away from its own authentication "
+                            + "flow, to " + pathOf(target) + " — a refused request is answered to the client's "
+                            + "redirect URI, so this login was not admitted");
+            answered = keycloak(keycloakCookies)
+                    .redirects().follow(false)
+                    .when().get(rewriteToHost(target))
+                    .then().extract().response();
+            keycloakCookies.putAll(answered.getCookies());
+        }
+
+        int status = answered.statusCode();
+        assertEquals(200, status, () -> "Keycloak must serve its login page after at most one redirect into "
+                + "its authentication flow, but answered " + status);
+        return answered;
+    }
+
+    /** The part of a URL before its query, which is all a failure message may name. */
+    private static String pathOf(String url) {
+        int query = url.indexOf('?');
+        return query < 0 ? url : url.substring(0, query);
     }
 
     /**
@@ -395,9 +507,8 @@ final class BffKeycloakLoginFlow {
      */
     static RequestSpecification keycloak(Map<String, String> cookies) {
         // urlEncodingEnabled(false): the authorization URL (and the login-form action) are already
-        // percent-encoded by the gateway/Keycloak. REST Assured's default re-encoding rewrites the
-        // scope separator '+' to %2B, which Keycloak reads as a single literal scope
-        // "openid+profile+email" -> invalid_scope. Disabling it sends the URL verbatim.
+        // percent-encoded by the gateway/Keycloak, and REST Assured's default re-encoding would encode
+        // them a second time. Disabling it sends the URL verbatim.
         return given().relaxedHTTPSValidation().urlEncodingEnabled(false).cookies(cookies);
     }
 

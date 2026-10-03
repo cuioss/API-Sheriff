@@ -184,7 +184,7 @@ class ConfigModelContractTest {
                         .refresh(new OidcConfig.Refresh(true, 60, "reauthenticate"))
                         .maxSessions(10000)
                         .build())
-                .stepUp(new OidcConfig.StepUp(true, false))
+                .stepUp(new OidcConfig.StepUp(true, false, "/session/step-up"))
                 .userInfo(userInfo())
                 .login(new OidcConfig.Login("/session/login", null))
                 .build();
@@ -418,14 +418,57 @@ class ConfigModelContractTest {
                             new OidcConfig.Refresh(true, 60, "reject"),
                             new OidcConfig.Refresh(true, 60, "reject"),
                             new OidcConfig.Refresh(false, null, null)),
-                    voCase("OidcConfig.StepUp", new OidcConfig.StepUp(true, false),
-                            new OidcConfig.StepUp(true, false),
-                            new OidcConfig.StepUp(false, true)),
+                    voCase("OidcConfig.StepUp", new OidcConfig.StepUp(true, false, null),
+                            new OidcConfig.StepUp(true, false, null),
+                            new OidcConfig.StepUp(false, true, null)),
+                    // The step-up path participates in identity: the unequal instance varies only that
+                    // component, so dropping it from equals() fails this case alone.
+                    voCase("OidcConfig.StepUp (path)", new OidcConfig.StepUp(null, null, "/auth/step-up"),
+                            new OidcConfig.StepUp(null, null, "/auth/step-up"),
+                            new OidcConfig.StepUp(null, null, "/auth/other")),
                     voCase("OidcConfig.UserInfo", userInfo(), userInfo(),
                             new OidcConfig.UserInfo("/other", List.of("sub"), List.of())),
                     voCase("OidcConfig.Login", new OidcConfig.Login("/session/login", "/home"),
                             new OidcConfig.Login("/session/login", "/home"),
                             new OidcConfig.Login("/session/login", "/elsewhere")),
+                    // One case per component: each unequal instance varies exactly one of the two, so a
+                    // component dropped from equals() fails its own case alone.
+                    voCase("OidcConfig.ClientAuthenticationSettings (key_file)",
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/other.pem",
+                                    "/auth/client-keys")),
+                    voCase("OidcConfig.ClientAuthenticationSettings (jwks_path)",
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/client-keys"),
+                            new OidcConfig.ClientAuthenticationSettings("/etc/sheriff/keys/client-auth.pem",
+                                    "/auth/other-keys")),
+                    // client_authentication participates in identity: the unequal instance varies only
+                    // that component, so dropping it from equals() fails this case alone.
+                    voCase("OidcConfig (client_authentication)",
+                            OidcConfig.builder().clientAuthentication(
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem", null)).build(),
+                            OidcConfig.builder().clientAuthentication(
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/a.pem", null)).build(),
+                            OidcConfig.builder().clientAuthentication(
+                                    new OidcConfig.ClientAuthenticationSettings("/keys/b.pem", null)).build()),
+                    voCase("OidcConfig.SenderConstraintSettings",
+                            new OidcConfig.SenderConstraintSettings("/etc/sheriff/keys/dpop.pem"),
+                            new OidcConfig.SenderConstraintSettings("/etc/sheriff/keys/dpop.pem"),
+                            new OidcConfig.SenderConstraintSettings("/etc/sheriff/keys/other.pem")),
+                    // sender_constraint participates in identity: the unequal instance varies only that
+                    // component, so dropping it from equals() fails this case alone.
+                    voCase("OidcConfig (sender_constraint)",
+                            OidcConfig.builder().senderConstraint(
+                                    new OidcConfig.SenderConstraintSettings("/keys/a.pem")).build(),
+                            OidcConfig.builder().senderConstraint(
+                                    new OidcConfig.SenderConstraintSettings("/keys/a.pem")).build(),
+                            OidcConfig.builder().senderConstraint(
+                                    new OidcConfig.SenderConstraintSettings("/keys/b.pem")).build()),
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
@@ -604,6 +647,19 @@ class ConfigModelContractTest {
                     () -> assertEquals("default-src 'self'", viaCtor.contentSecurityPolicy()),
                     () -> assertEquals(frameDenyDefault(), viaCtor.headerModes()),
                     () -> assertNull(viaCtor.cors()));
+        }
+
+        @Test
+        void stepUpBuilderMatchesConstructorAndCarriesThePath() {
+            OidcConfig.StepUp viaCtor = new OidcConfig.StepUp(null, null, "/auth/step-up");
+            OidcConfig.StepUp viaBuilder = OidcConfig.StepUp.builder().path("/auth/step-up").build();
+            assertAll("the step-up path is the third component and is independent of the RFC 9470 keys",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals("/auth/step-up", viaCtor.path()),
+                    () -> assertNull(viaCtor.enabled(), "the path does not imply enabled"),
+                    () -> assertNull(viaCtor.honorUpstreamChallenge()),
+                    () -> assertNull(new OidcConfig.StepUp(true, true, null).path(),
+                            "an omitted path stays absent"));
         }
 
         @Test
@@ -1700,6 +1756,194 @@ class ConfigModelContractTest {
             assertTrue(rendered.contains("maxSessions="), "Session toString must surface the max_sessions bound");
             assertTrue(rendered.contains("***REDACTED***"), "the encryption key must stay redacted");
             assertFalse(rendered.contains("${SESSION_KEY}"), "the raw encryption-key reference must never appear");
+        }
+    }
+
+    // --- Client-authentication selection ------------------------------------
+
+    @Nested
+    @DisplayName("Client authentication — the client_authentication block and the mode predicate")
+    class ClientAuthenticationSelection {
+
+        private static final String KEY_FILE = "/etc/sheriff/keys/client-auth.pem";
+        private static final String JWKS_PATH = "/auth/client-keys";
+        private static final String SECRET = "resolved-client-secret-value";
+        /**
+         * Deliberately the literal and not {@code ClientAuthenticationSettings.DEFAULT_JWKS_PATH}: the
+         * default is a documented contract of the configuration surface, so a change of the constant
+         * must turn these tests red rather than follow it.
+         */
+        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+
+        private static OidcConfig.ClientAuthenticationSettings keyFileOnly() {
+            return OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).build();
+        }
+
+        @Test
+        void clientAuthenticationSettingsBuilderMatchesConstructor() {
+            OidcConfig.ClientAuthenticationSettings viaCtor =
+                    new OidcConfig.ClientAuthenticationSettings(KEY_FILE, JWKS_PATH);
+            OidcConfig.ClientAuthenticationSettings viaBuilder =
+                    OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).jwksPath(JWKS_PATH).build();
+
+            assertAll("the builder and the canonical constructor agree",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals(KEY_FILE, viaBuilder.keyFile()),
+                    () -> assertEquals(JWKS_PATH, viaBuilder.jwksPath()));
+        }
+
+        @Test
+        void clientAuthenticationSettingsKeepsAbsentComponentsAbsent() {
+            OidcConfig.ClientAuthenticationSettings empty = OidcConfig.ClientAuthenticationSettings.builder().build();
+
+            assertAll("the record applies no default of its own",
+                    () -> assertNull(empty.keyFile(),
+                            "an omitted key_file stays absent; the runtime then generates a key on startup"),
+                    () -> assertNull(empty.jwksPath(),
+                            "an omitted jwks_path stays absent; the default is resolved by the one accessor"));
+        }
+
+        @Test
+        void defaultJwksPathIsTheDocumentedDefault() {
+            assertEquals(DEFAULT_JWKS_PATH, OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH);
+        }
+
+        @Test
+        void effectiveClientJwksPathResolvesTheDefaultForAnAbsentBlockAndAnAbsentKey() {
+            assertAll("both absences resolve to the one default",
+                    () -> assertEquals(DEFAULT_JWKS_PATH, OidcConfig.builder().build().effectiveClientJwksPath(),
+                            "no client_authentication block"),
+                    () -> assertEquals(DEFAULT_JWKS_PATH,
+                            OidcConfig.builder().clientAuthentication(keyFileOnly()).build().effectiveClientJwksPath(),
+                            "a block that declares a key file and no jwks_path"));
+        }
+
+        @Test
+        void effectiveClientJwksPathReturnsADeclaredPath() {
+            OidcConfig oidc = OidcConfig.builder().clientAuthentication(
+                    OidcConfig.ClientAuthenticationSettings.builder().jwksPath(JWKS_PATH).build()).build();
+
+            assertEquals(JWKS_PATH, oidc.effectiveClientJwksPath(), "a declared jwks_path is returned as declared");
+        }
+
+        @Test
+        void effectiveClientJwksPathDoesNotReadTheClientAuthenticationMode() {
+            assertAll("the path is resolved the same with a client secret configured",
+                    () -> assertEquals(DEFAULT_JWKS_PATH,
+                            OidcConfig.builder().clientSecret(SECRET).build().effectiveClientJwksPath()),
+                    () -> assertEquals(JWKS_PATH, OidcConfig.builder().clientSecret(SECRET).clientAuthentication(
+                            OidcConfig.ClientAuthenticationSettings.builder().jwksPath(JWKS_PATH).build())
+                            .build().effectiveClientJwksPath()));
+        }
+
+        @Test
+        void oidcConfigKeepsAnAbsentClientAuthenticationBlockAbsent() {
+            assertNull(OidcConfig.builder().build().clientAuthentication(),
+                    "an omitted client_authentication block binds as absent");
+        }
+
+        /**
+         * The two neighbouring components are rendered by opposite rules, and the rendering must keep
+         * them apart: the key file is a location an operator needs to see in a diagnostic, the secret is
+         * a credential that must never reach one.
+         */
+        @Test
+        void oidcToStringRendersTheKeyFilePathAndStillRedactsTheSecret() {
+            String rendered = OidcConfig.builder()
+                    .clientSecret(SECRET)
+                    .clientAuthentication(keyFileOnly())
+                    .build().toString();
+
+            assertAll("a path is rendered, a secret is not",
+                    () -> assertTrue(rendered.contains("clientAuthentication="),
+                            "toString must surface the client_authentication block: " + rendered),
+                    () -> assertTrue(rendered.contains(KEY_FILE), "the key-file path is a location and is rendered"),
+                    () -> assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted"),
+                    () -> assertFalse(rendered.contains(SECRET), "the client-secret value must never appear"));
+        }
+
+        @Test
+        void usesClientSecretIsFalseWhenNoSecretIsDeclared() {
+            assertAll("an absent secret selects private_key_jwt, with or without a key file",
+                    () -> assertFalse(OidcConfig.builder().build().usesClientSecret()),
+                    () -> assertFalse(OidcConfig.builder()
+                            .clientAuthentication(keyFileOnly())
+                            .build().usesClientSecret()));
+        }
+
+        @Test
+        void usesClientSecretIsTrueWhenASecretIsDeclared() {
+            assertTrue(OidcConfig.builder().clientSecret(SECRET).build().usesClientSecret(),
+                    "a declared secret selects client_secret_basic");
+        }
+
+        /**
+         * The mode is selected by presence alone. A blank secret must NOT read as "no secret" here:
+         * that would let a variable set to the empty string fall back to the key-based mode silently,
+         * where boot validation is meant to refuse it.
+         */
+        @ParameterizedTest(name = "a declared secret of ''{0}'' still selects client-secret mode")
+        @ValueSource(strings = {"", " ", "\t"})
+        void usesClientSecretIsTrueForADeclaredButBlankSecret(String blank) {
+            assertTrue(OidcConfig.builder().clientSecret(blank).build().usesClientSecret(),
+                    "presence selects the mode whatever the value; the blank value is refused by validation");
+        }
+    }
+
+    // --- Sender constraint ---------------------------------------------------
+
+    @Nested
+    @DisplayName("Sender constraint — the sender_constraint block")
+    class SenderConstraintBlock {
+
+        private static final String KEY_FILE = "/etc/sheriff/keys/dpop.pem";
+        private static final String SECRET = "resolved-client-secret-value";
+
+        @Test
+        void senderConstraintSettingsExposesTheKeyFileAndKeepsAnAbsentOneAbsent() {
+            assertAll("the record applies no default of its own",
+                    () -> assertEquals(KEY_FILE, new OidcConfig.SenderConstraintSettings(KEY_FILE).keyFile()),
+                    () -> assertNull(new OidcConfig.SenderConstraintSettings(null).keyFile(),
+                            "an omitted key_file stays absent; the runtime then generates a key on startup"));
+        }
+
+        @Test
+        void oidcConfigKeepsAnAbsentSenderConstraintBlockAbsent() {
+            assertNull(OidcConfig.builder().build().senderConstraint(),
+                    "an omitted sender_constraint block binds as absent");
+        }
+
+        @Test
+        void oidcConfigCarriesTheSenderConstraintBlockInBothClientAuthenticationModes() {
+            OidcConfig.SenderConstraintSettings settings = new OidcConfig.SenderConstraintSettings(KEY_FILE);
+            OidcConfig keyMode = OidcConfig.builder().senderConstraint(settings).build();
+            OidcConfig secretMode = OidcConfig.builder().clientSecret(SECRET).senderConstraint(settings).build();
+
+            assertAll("the block does not depend on the client-authentication mode, and does not select it",
+                    () -> assertEquals(settings, keyMode.senderConstraint()),
+                    () -> assertEquals(settings, secretMode.senderConstraint()),
+                    () -> assertFalse(keyMode.usesClientSecret(),
+                            "a sender-constraint key file is not a client secret"),
+                    () -> assertTrue(secretMode.usesClientSecret()));
+        }
+
+        /**
+         * The sender-constraint key file is a location, exactly as the client-authentication one is: an
+         * operator needs to see it in a diagnostic, while the neighbouring secret must never reach one.
+         */
+        @Test
+        void oidcToStringRendersTheSenderConstraintKeyFileAndStillRedactsTheSecret() {
+            String rendered = OidcConfig.builder()
+                    .clientSecret(SECRET)
+                    .senderConstraint(new OidcConfig.SenderConstraintSettings(KEY_FILE))
+                    .build().toString();
+
+            assertAll("a path is rendered, a secret is not",
+                    () -> assertTrue(rendered.contains("senderConstraint="),
+                            "toString must surface the sender_constraint block: " + rendered),
+                    () -> assertTrue(rendered.contains(KEY_FILE), "the key-file path is a location and is rendered"),
+                    () -> assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted"),
+                    () -> assertFalse(rendered.contains(SECRET), "the client-secret value must never appear"));
         }
     }
 }

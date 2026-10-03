@@ -1,0 +1,33 @@
+envelope_version=1
+sender_type=plan
+sender_id=plan-16-application-portal
+epic=kidicap-gateway-requirements
+kind=candidate-lesson
+created=2026-09-22T17:13:14Z
+
+# Candidate lesson: architecture --plan-id placed after the subcommand verb (argparse rejection)
+
+- Signal source: script-failure cluster 1 of 2 (work.log 09:28:24, [ERROR] script_failure)
+- Component: plan-marshall:manage-architecture (architecture.py top-level flags) / plan-marshall:phase-5-execute (caller)
+- Suggested category: anti-pattern
+
+## What happened
+
+During phase-5-execute re-entry a call to `plan-marshall:manage-architecture:architecture` failed with exit_code=2,
+failure_kind=argparse_rejection:
+`architecture.py: error: unrecognized arguments: --plan-id plan-16-application-portal`
+`note: --plan-id is a top-level flag and belongs BEFORE ...` (the verb).
+
+Correction to the orchestrator's summary: the logged flag was `--plan-id`, not `--project-dir`; both are top-level
+router flags on architecture.py (`[--project-dir PROJECT_DIR] [--plan-id PLAN_ID] {verb} ...`), so the fix is the same.
+
+## Why it matters
+
+This is the known "router-scoped --plan-id/--project-dir placed AFTER the verb" recurrence signature. It recurs because
+most manage-* scripts declare --plan-id on the subcommand, so callers append it by rote.
+
+## Suggested corrective rule
+
+For architecture.py, --plan-id / --project-dir go BEFORE the verb:
+`architecture --plan-id {plan_id} {verb} ...`. Consider having the router accept the flag after the verb as well (or
+auto-relocate it), since the error message already knows the correct position.

@@ -149,7 +149,7 @@ present decides the branch, and each branch is an existing, already reviewed pos
 * link:0007-anchor-scoped-policy.adoc[ADR-0007]: the wholesale `auth` cascade the key rides
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the fixed CSRF model, now keyed on the SESSION branch
 * link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]: the `Authorization` re-admission path this decision does not use
-* link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]: the bearer branch enforces `neededScopes`, the session branch only requests them
+* link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]: the bearer branch enforces `neededScopes`
 * link:../security-threat-model.adoc#bff-16[Threat model BFF-16] (authentication-branch downgrade) and link:../security-threat-model.adoc#bff-11[BFF-11] (CSRF on the cookie-authenticated API)
 * link:../configuration.adoc#_auth_session_fallback[Configuration: `auth.session_fallback`]: the key contract and branch table
 * link:../user/bff-session.adoc#session-fallback[Server-Session BFF: Serving API clients and browsers on one route]: the operator view

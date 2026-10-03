@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.login;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
@@ -26,6 +27,7 @@ import java.util.function.Function;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
+import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackHandler;
@@ -47,9 +49,15 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * way the engine admits: it asks the injected configuration factory for a
  * {@link ClientConfiguration} carrying exactly the requested scope list and drives a flow built over
  * that configuration. Every other collaborator — the shared {@link TokenEndpointClient}, the
- * validation bridges, the gateway's response-mode-corrected {@link AuthorizationRequestBuilder} and
- * the {@link ClientAuthentication} — is the one the base configuration uses, so the only thing that
- * varies between two scoped flows is the scope list.
+ * validation bridges, the gateway's response-mode-corrected {@link AuthorizationRequestBuilder}, the
+ * {@link ClientAuthentication} and the {@link SenderConstraint} — is the one the base configuration
+ * uses, so the only thing that varies between two scoped flows is the scope list.
+ * <p>
+ * <strong>One sender constraint for every scope set (ADR-0058).</strong> The constraint is handed in
+ * once and passed to every flow this seam builds: each cached login flow and each per-call widening
+ * flow is built with it, and each refresh grant presents a DPoP proof signed with it. Two scope sets
+ * therefore present proofs from the same key, and an access token obtained for one scope set — by a
+ * login, a widening or a refresh — is bound to the same key as one obtained for another.
  * <p>
  * <strong>The factory owns the pinned back-channel posture.</strong> The configuration factory is the
  * producer's {@code backChannelConfiguration(oidc, scopes)}, which applies the ADR-0045 hostname and
@@ -65,9 +73,16 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  * are distinct route scope sets.
  * <p>
  * <strong>Refresh leg — never cached.</strong> {@link #refresh} builds a {@link RefreshFlow} per call,
- * because the active scope set a session refreshes with comes from the identity provider's grant and
+ * because the scope set a session refreshes with comes from the identity provider's grant and
  * is therefore not bounded by the configuration. Building the flow is cheap (it holds references
  * only); the network cost is the refresh grant itself.
+ * <p>
+ * <strong>Widening leg — never cached.</strong> {@link #widen} builds an {@link AuthorizationCodeFlow}
+ * per call for the same reason: the set a widening requests is the session's granted-scope set plus
+ * the route's needed scopes, and the granted set is IdP-derived, so caching it would break the
+ * "bounded by boot configuration" property of the login-flow cache. A silent widening additionally
+ * carries {@code prompt=none}, added by a parameter-aware rewrite of the rendered URL in the same
+ * style as {@link QueryResponseModeAuthorizationRequestBuilder#withQueryResponseMode}.
  * <p>
  * The seam performs no I/O of its own and logs nothing — in particular no token. The authorization
  * leg is local (the engine only renders a URL); the refresh leg's network call is the engine's.
@@ -81,12 +96,25 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
  */
 public final class ScopedEngineFlows {
 
+    /** The authorization-request parameter a silent widening sets. */
+    private static final String PARAM_PROMPT = "prompt";
+
+    /** The OIDC prompt value that forbids the IdP from showing any interaction. */
+    private static final String PROMPT_NONE_PAIR = PARAM_PROMPT + "=none";
+    private static final char QUERY_START = '?';
+    private static final String PAIR_SEPARATOR = "&";
+    private static final char NAME_VALUE_SEPARATOR = '=';
+
+    /** The argument name a {@code null} provider metadata is reported under. */
+    private static final String METADATA_ARGUMENT = "metadata";
+
     private final Function<List<String>, ClientConfiguration> configurationFactory;
     private final TokenEndpointClient tokenEndpointClient;
     private final TokenValidationBridge tokenBridge;
     private final IdTokenValidationBridge idBridge;
     private final AuthorizationRequestBuilder authorizationRequestBuilder;
     private final ClientAuthentication clientAuthentication;
+    private final SenderConstraint senderConstraint;
     private final ConcurrentMap<List<String>, AuthorizationCodeFlow> authorizationFlows = new ConcurrentHashMap<>();
 
     /**
@@ -99,11 +127,12 @@ public final class ScopedEngineFlows {
      * @param idBridge                    the ID-token validation bridge
      * @param authorizationRequestBuilder the gateway's {@code response_mode=query} request builder
      * @param clientAuthentication        the confidential-client authentication the refresh grant presents
+     * @param senderConstraint            the one DPoP sender constraint handed to every flow this seam builds
      */
     public ScopedEngineFlows(Function<List<String>, ClientConfiguration> configurationFactory,
             TokenEndpointClient tokenEndpointClient, TokenValidationBridge tokenBridge,
             IdTokenValidationBridge idBridge, AuthorizationRequestBuilder authorizationRequestBuilder,
-            ClientAuthentication clientAuthentication) {
+            ClientAuthentication clientAuthentication, SenderConstraint senderConstraint) {
         this.configurationFactory = Objects.requireNonNull(configurationFactory, "configurationFactory");
         this.tokenEndpointClient = Objects.requireNonNull(tokenEndpointClient, "tokenEndpointClient");
         this.tokenBridge = Objects.requireNonNull(tokenBridge, "tokenBridge");
@@ -111,6 +140,7 @@ public final class ScopedEngineFlows {
         this.authorizationRequestBuilder = Objects.requireNonNull(authorizationRequestBuilder,
                 "authorizationRequestBuilder");
         this.clientAuthentication = Objects.requireNonNull(clientAuthentication, "clientAuthentication");
+        this.senderConstraint = Objects.requireNonNull(senderConstraint, "senderConstraint");
     }
 
     /**
@@ -124,8 +154,37 @@ public final class ScopedEngineFlows {
      */
     public AuthorizationCodeFlow.AuthorizationRedirect authorize(ProviderMetadata metadata,
             Collection<String> scopes) {
-        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(metadata, METADATA_ARGUMENT);
         return authorizationFlow(scopes).authorize(metadata);
+    }
+
+    /**
+     * Builds the authorization URL and transaction context for a widening requesting exactly
+     * {@code scopes}, over an {@link AuthorizationCodeFlow} built for this call alone.
+     * <p>
+     * The flow is never cached: the widening set contains the session's IdP-derived granted scopes,
+     * so it is not bounded by the boot configuration the login-flow cache relies on. When
+     * {@code silent} is {@code true} the rendered URL additionally carries exactly one
+     * {@code prompt=none}; every other parameter is copied through byte for byte. The URL is never
+     * logged.
+     *
+     * @param metadata the resolved provider metadata
+     * @param scopes   the scope set the widening requests; order and duplicates are irrelevant
+     * @param silent   {@code true} for the {@code prompt=none} attempt, {@code false} for the
+     *                 interactive attempt, which carries no {@code prompt} parameter of its own
+     * @return the engine's authorization redirect, whose URL carries {@code scope} equal to the
+     *         canonical form of {@code scopes}
+     */
+    public AuthorizationCodeFlow.AuthorizationRedirect widen(ProviderMetadata metadata, Collection<String> scopes,
+            boolean silent) {
+        Objects.requireNonNull(metadata, METADATA_ARGUMENT);
+        AuthorizationCodeFlow.AuthorizationRedirect redirect = newAuthorizationFlow(canonical(scopes))
+                .authorize(metadata);
+        if (!silent) {
+            return redirect;
+        }
+        return new AuthorizationCodeFlow.AuthorizationRedirect(withPromptNone(redirect.authorizationUrl()),
+                redirect.context());
     }
 
     /**
@@ -133,14 +192,15 @@ public final class ScopedEngineFlows {
      *
      * @param metadata     the resolved provider metadata
      * @param refreshToken the refresh token to redeem
-     * @param scopes       the scope set the grant requests — the session's active scope set
+     * @param scopes       the scope set the grant requests — the session's active scope set, plus the
+     *                     missing scopes on a scope-driven refresh
      * @return the engine's rotation result
      */
     public RotationResult refresh(ProviderMetadata metadata, String refreshToken, Collection<String> scopes) {
-        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(metadata, METADATA_ARGUMENT);
         Objects.requireNonNull(refreshToken, "refreshToken");
         RefreshFlow refreshFlow = new RefreshFlow(configurationFactory.apply(canonical(scopes)),
-                tokenEndpointClient, tokenBridge, clientAuthentication);
+                tokenEndpointClient, tokenBridge, clientAuthentication, senderConstraint);
         return refreshFlow.refresh(metadata, refreshToken);
     }
 
@@ -152,9 +212,73 @@ public final class ScopedEngineFlows {
      * @return the flow serving that set
      */
     AuthorizationCodeFlow authorizationFlow(Collection<String> scopes) {
-        return authorizationFlows.computeIfAbsent(canonical(scopes), canonicalScopes -> new AuthorizationCodeFlow(
-                configurationFactory.apply(canonicalScopes), tokenEndpointClient, tokenBridge, idBridge,
-                new IssValidator(), authorizationRequestBuilder, new CallbackHandler(), null));
+        return authorizationFlows.computeIfAbsent(canonical(scopes), this::newAuthorizationFlow);
+    }
+
+    /**
+     * @return the number of cached login flows. Package-private so a test can observe that the
+     *         widening leg never grows the cache.
+     */
+    int cachedAuthorizationFlowCount() {
+        return authorizationFlows.size();
+    }
+
+    /**
+     * Builds one authorization-code flow over the shared collaborators. The cached login flows and
+     * the per-call widening flows are both built here, so neither can be built without the sender
+     * constraint or over another token-endpoint client.
+     */
+    private AuthorizationCodeFlow newAuthorizationFlow(List<String> canonicalScopes) {
+        return new AuthorizationCodeFlow(configurationFactory.apply(canonicalScopes), tokenEndpointClient,
+                tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder, new CallbackHandler(),
+                senderConstraint);
+    }
+
+    /**
+     * Sets the {@code prompt} parameter of an authorization URL to {@code none}, leaving every other
+     * parameter untouched.
+     * <p>
+     * The rewrite is parameter-aware: it splits the query into its {@code name=value} pairs and
+     * compares the literal parameter name, never a substring. Untouched pairs are copied through
+     * exactly as the engine emitted them, so no decode/re-encode round-trip can corrupt an encoded
+     * {@code redirect_uri} or {@code scope}. An existing {@code prompt} pair is replaced in place and
+     * any further {@code prompt} pair dropped, so the result carries exactly one {@code prompt=none};
+     * a URL without one gains it at the end. The URL is never logged: it carries {@code state},
+     * {@code nonce} and the PKCE {@code code_challenge}.
+     *
+     * @param authorizationUrl the engine-built authorization URL
+     * @return the same URL carrying exactly one {@code prompt=none}
+     */
+    static String withPromptNone(String authorizationUrl) {
+        Objects.requireNonNull(authorizationUrl, "authorizationUrl");
+        int queryStart = authorizationUrl.indexOf(QUERY_START);
+        if (queryStart < 0) {
+            return authorizationUrl + QUERY_START + PROMPT_NONE_PAIR;
+        }
+        String prefix = authorizationUrl.substring(0, queryStart + 1);
+        String query = authorizationUrl.substring(queryStart + 1);
+        if (query.isEmpty()) {
+            return prefix + PROMPT_NONE_PAIR;
+        }
+        List<String> pairs = new ArrayList<>();
+        boolean written = false;
+        for (String pair : query.split(PAIR_SEPARATOR, -1)) {
+            if (!PARAM_PROMPT.equals(nameOf(pair))) {
+                pairs.add(pair);
+            } else if (!written) {
+                pairs.add(PROMPT_NONE_PAIR);
+                written = true;
+            }
+        }
+        if (!written) {
+            pairs.add(PROMPT_NONE_PAIR);
+        }
+        return prefix + String.join(PAIR_SEPARATOR, pairs);
+    }
+
+    private static String nameOf(String pair) {
+        int separator = pair.indexOf(NAME_VALUE_SEPARATOR);
+        return separator < 0 ? pair : pair.substring(0, separator);
     }
 
     /**

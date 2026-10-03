@@ -15,14 +15,20 @@
  */
 package de.cuioss.sheriff.gateway.bff.runtime;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.StringJoiner;
+import java.util.TreeSet;
 
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
@@ -54,8 +60,9 @@ import org.jspecify.annotations.Nullable;
  *         <li>{@link RefreshResult.Mediate mediate} — emits any {@code Set-Cookie} the seam returns, so
  *             a binding that re-binds on refresh reaches the browser on the same response, and
  *             continues with the session;</li>
- *         <li>{@link RefreshResult.SessionEnded session ended} — the seam destroyed the session, so the
- *             stage clears the browser's copy and then applies the refresh-failure response;</li>
+ *         <li>{@link RefreshResult.SessionEnded session ended} — the seam destroyed the session, or
+ *             found it already gone and did not write it back, so the stage clears the browser's copy
+ *             and then applies the refresh-failure response;</li>
  *         <li>{@link RefreshResult.RequestFailed request failed} — the session is still live but this
  *             request has no valid token to mediate, so the stage applies the refresh-failure response
  *             <em>without</em> clearing the cookie: the next request can still use the session.</li>
@@ -64,30 +71,69 @@ import org.jspecify.annotations.Nullable;
  *       ({@code oidc.session.refresh.on_failure}): {@link OnFailure#REAUTHENTICATE} re-drives the same
  *       negotiation as a missing session, {@link OnFailure#REJECT} answers {@code 401}
  *       {@code application/problem+json} for every request, navigation included;</li>
+ *   <li>compares the session's active scope set {@code A} ({@link SessionRecord#activeScopes()})
+ *       against the route's {@link RouteRuntime#getNeededScopes() neededScopes} and obtains what is
+ *       missing before anything is relayed (see <em>Scope enforcement</em> below);</li>
  *   <li>records the mediated access token on the request for automatic upstream injection as
  *       {@code Authorization: Bearer} ({@link PipelineRequest#mediatedBearer(String)} — never an
  *       operator-configured header) — but only when the route's effective {@code auth.token_relay}
  *       is {@code true} (the default). With {@code token_relay: false} the session is still
- *       resolved, refreshed and required, so the unauthenticated {@code 302}/{@code 401}
- *       negotiation is unchanged, yet no bearer is recorded and the upstream receives no
- *       {@code Authorization} header. The token material is never disclosed to the browser up to
- *       this point; the forward stage renders the bearer and the session cookie never crosses.</li>
+ *       resolved, refreshed, scope-checked and required, so the unauthenticated
+ *       {@code 302}/{@code 401} negotiation and the scope enforcement are unchanged, yet no bearer is
+ *       recorded and the upstream receives no {@code Authorization} header. The token material is
+ *       never disclosed to the browser up to this point; the forward stage renders the bearer and the
+ *       session cookie never crosses. The token recorded here is sender-constrained, and the
+ *       constraint is not forwarded — see the next paragraph.</li>
  * </ol>
+ * <strong>The mediated access token is DPoP-bound, and the binding ends at the gateway
+ * (ADR-0058).</strong> Every access token the gateway obtains is bound to its DPoP proof key, so that
+ * token carries a {@code cnf} claim whose {@code jkt} member names that key. The gateway forwards it
+ * as {@code Authorization: Bearer} and sends no DPoP proof with it: the proof key never leaves the
+ * gateway, and a proof is valid for one request to one address. The sender constraint therefore holds
+ * between the gateway and the identity provider only. An upstream must not check {@code cnf}: it
+ * receives no proof to check it against, and one that enforces the claim rejects every request. With
+ * {@code auth.token_relay: false} the question does not arise, because no token is forwarded at all.
+ * <p>
  * An <strong>unauthenticated</strong> request is content-negotiated: a <em>navigation</em> request
  * (its {@code Accept} offers {@code text/html}) is redirected {@code 302} into the auth-code flow via
  * the {@link LoginInitiation} seam (short-circuiting the pipeline), requesting the selected route's
  * {@link RouteRuntime#getNeededScopes() neededScopes}; anything else (an XHR / API call)
  * gets {@code 401} {@code application/problem+json} via {@link EventType#TOKEN_MISSING}.
  * <p>
- * The stage runs <strong>no scope check</strong>: no session-route path answers
- * {@link EventType#SCOPE_MISSING}. The scopes a session route needs
- * ({@link RouteRuntime#getNeededScopes()}) are <em>requested</em> when the session is established,
- * not enforced against the session's token on every request; the {@code 403 insufficient_scope}
- * check belongs to the bearer route alone.
+ * <strong>Scope enforcement.</strong> A session route never reaches its upstream with a session
+ * that lacks a scope the route needs. On every request — whatever {@code auth.token_relay} says,
+ * and before any bearer is recorded — the stage computes {@code missing = neededScopes − A}:
+ * <ul>
+ *   <li><strong>nothing missing</strong> — the request continues with no additional identity-provider
+ *       call;</li>
+ *   <li><strong>everything missing lies inside the granted scope set {@code S}</strong>
+ *       ({@link SessionRecord#grantedScopes()}) — exactly one call through the {@link ScopeRefresh}
+ *       seam, requesting {@code A ∪ missing}. A session that then carries every needed scope is
+ *       relayed and the re-bind's cookies are emitted; an ended session or a request left without a
+ *       token is answered exactly as on the near-expiry leg; a kept session that still lacks a scope
+ *       is treated like a scope outside {@code S}. Navigation and API calls alike take this
+ *       path;</li>
+ *   <li><strong>a missing scope lies outside {@code S}</strong>, or the refresh did not obtain the
+ *       set — a <em>navigation</em> is redirected {@code 302} through the {@link WideningInitiation}
+ *       seam, which widens the live session, requesting {@code S ∪ neededScopes} (a silent attempt first)
+ *       and returns to the requested URL; anything else gets {@code 403}
+ *       {@code application/problem+json} via {@link EventType#SCOPE_MISSING}, carrying the problem
+ *       extension members {@value #MISSING_SCOPES_MEMBER} (the missing scope names, sorted) and — only
+ *       when {@code oidc.step_up.path} is configured — {@value #STEP_UP_URL_MEMBER}, the same-origin
+ *       URL a browser follows to widen the session for the refused request. The request is never
+ *       relayed.</li>
+ * </ul>
+ * Every name in {@value #MISSING_SCOPES_MEMBER} is drawn from the route's boot-configured
+ * {@code neededScopes}, never from a token.
+ * <p>
+ * One case skips the refresh although everything missing lies inside {@code S}: when the near-expiry
+ * leg has just re-bound the session with a new cookie, the request's own {@code Cookie} header still
+ * names the binding that leg rotated away, so a second exchange started from it would present a
+ * refresh token the identity provider has already retired. Such a request is treated like a scope
+ * outside {@code S}; the next request carries the new cookie and is refreshed normally.
  * <p>
  * The stage is framework-agnostic and driven entirely through its collaborators and seams, so it is
- * unit-testable without a container or a live IdP. The engine-side and edge-side wiring (the refresh
- * coordinator, the login initiation binding, and the reserved-endpoint plumbing) is supplied by the
+ * unit-testable without a container or a live IdP. The engine-side and edge-side wiring is supplied by the
  * session runtime; the seams keep this stage decoupled from that wiring.
  *
  * @author API Sheriff Team
@@ -97,35 +143,68 @@ public final class SessionAuthenticationStage {
 
     private static final CuiLogger LOGGER = new CuiLogger(SessionAuthenticationStage.class);
 
+    /**
+     * The RFC 9457 problem extension member naming the scopes a refused session request lacks: a
+     * JSON array of scope names, sorted, every one drawn from the route's boot-configured
+     * {@code neededScopes}.
+     */
+    public static final String MISSING_SCOPES_MEMBER = "missing_scopes";
+
+    /**
+     * The RFC 9457 problem extension member naming the same-origin URL that widens the live session
+     * for the refused request: the configured {@code oidc.step_up.path} with the refused request's
+     * path and query as its percent-encoded {@code returnUrl} parameter. Absent when no step-up path is
+     * configured.
+     */
+    public static final String STEP_UP_URL_MEMBER = "step_up_url";
+
     private static final String COOKIE_HEADER = "Cookie";
     private static final String ACCEPT_HEADER = "Accept";
     private static final String LOCATION_HEADER = "Location";
     private static final String TEXT_HTML = "text/html";
+    private static final String RETURN_URL_QUERY = "?returnUrl=";
     private static final int FOUND = 302;
 
     private final SessionBinding sessionBinding;
     private final TokenRefresh tokenRefresh;
+    private final ScopeRefresh scopeRefresh;
     private final LoginInitiation loginInitiation;
+    private final WideningInitiation wideningInitiation;
     private final OnFailure onFailure;
+    private final @Nullable String stepUpPath;
     private final Clock clock;
 
     /**
      * Assembles the stage with the session binding, the engine / edge seams and the refresh-failure
      * policy.
      *
-     * @param sessionBinding  the mode-neutral session binding resolving the request's live session
-     * @param tokenRefresh    the single-flight near-expiry refresh seam (the D9 hook)
-     * @param loginInitiation the auth-code-flow initiation seam for a navigation redirect
-     * @param onFailure       the resolved {@code oidc.session.refresh.on_failure} policy applied when a
-     *                        refresh leaves the request without a token to mediate
-     * @param clock           the reference clock (TTL anchor for session resolution and refresh)
+     * @param sessionBinding     the mode-neutral session binding resolving the request's live session
+     * @param tokenRefresh       the single-flight near-expiry refresh seam (the D9 hook)
+     * @param scopeRefresh       the scope-driven refresh seam obtaining needed scopes that lie inside
+     *                           the session's granted scope set
+     * @param loginInitiation    the auth-code-flow initiation seam for a navigation redirect
+     * @param wideningInitiation the session-widening seam a navigation is redirected through when a
+     *                           needed scope is not obtained by a refresh
+     * @param onFailure          the resolved {@code oidc.session.refresh.on_failure} policy applied when
+     *                           a refresh leaves the request without a token to mediate
+     * @param stepUpPath         the configured {@code oidc.step_up.path} named as
+     *                           {@value #STEP_UP_URL_MEMBER} on a {@code 403}, {@code null} when the path
+     *                           is not configured — the member is then omitted
+     * @param clock              the reference clock (TTL anchor for session resolution and refresh)
      */
+    // Each parameter is one independently bound seam or policy of the stage, assembled once by
+    // BffRuntimeProducer; a parameter object would only regroup them without removing one.
+    @SuppressWarnings("java:S107")
     public SessionAuthenticationStage(SessionBinding sessionBinding, TokenRefresh tokenRefresh,
-            LoginInitiation loginInitiation, OnFailure onFailure, Clock clock) {
+            ScopeRefresh scopeRefresh, LoginInitiation loginInitiation, WideningInitiation wideningInitiation,
+            OnFailure onFailure, @Nullable String stepUpPath, Clock clock) {
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.tokenRefresh = Objects.requireNonNull(tokenRefresh, "tokenRefresh");
+        this.scopeRefresh = Objects.requireNonNull(scopeRefresh, "scopeRefresh");
         this.loginInitiation = Objects.requireNonNull(loginInitiation, "loginInitiation");
+        this.wideningInitiation = Objects.requireNonNull(wideningInitiation, "wideningInitiation");
         this.onFailure = Objects.requireNonNull(onFailure, "onFailure");
+        this.stepUpPath = stepUpPath;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -135,7 +214,8 @@ public final class SessionAuthenticationStage {
      * @param request the in-flight request; its route must be selected (stage 2)
      * @throws GatewayException {@code 401} when an unauthenticated non-navigation request is
      *                          challenged or a refresh failure is rejected under
-     *                          {@link OnFailure#REJECT}
+     *                          {@link OnFailure#REJECT}; {@code 403} when a non-navigation request's
+     *                          session lacks a needed scope it did not obtain by a refresh
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
@@ -154,29 +234,132 @@ public final class SessionAuthenticationStage {
         switch (refreshed) {
             case RefreshResult.Mediate(SessionBinding.BoundSession bound) -> {
                 emitSetCookies(request, bound.setCookieHeaders());
-                // token_relay: false keeps the session fully in force — resolved, refreshed and
-                // required — but withholds the access token from the upstream: no Authorization.
-                if (route.getEffectiveAuth().effectiveTokenRelay()) {
-                    request.mediatedBearer(bound.session().accessToken());
-                }
+                enforceScopes(request, route, bound, cookieHeader, now);
             }
-            case RefreshResult.SessionEnded() -> {
-                // The seam destroyed the session (the identity provider rejected the refresh token —
-                // including a replayed one under strict rotation — or the gateway refused a redeemed
-                // response). Mediating the pre-refresh token would keep serving an ended session, so the
-                // clearing cookie drops the browser's stale copy first. On the reauthenticate navigation
-                // branch the login challenge adds its own binding cookie for a DIFFERENT cookie name, so
-                // both must reach the browser on this one response — hence the multi-valued Set-Cookie
-                // accumulator rather than a single-valued header slot.
-                emitSetCookies(request, List.of(sessionBinding.clearingSetCookieHeader()));
-                challengeRefreshFailure(request, route, now);
-            }
+            case RefreshResult.SessionEnded() -> endSession(request, route, now);
             case RefreshResult.RequestFailed() ->
                 // The identity provider never processed the refresh and the access token has expired: the
                 // session is still live, so the cookie is deliberately NOT cleared — the next request can
                 // retry the refresh once the back-off has elapsed.
                 challengeRefreshFailure(request, route, now);
         }
+    }
+
+    /**
+     * The scope enforcement every session request passes before anything is relayed: compares the
+     * session's active scope set against the route's needed scopes, and obtains what is missing by a
+     * refresh inside the granted set or by a widening outside it.
+     *
+     * @param mediated     the session the near-expiry leg mediates from, plus the cookies its re-bind
+     *                     produced (already emitted by the caller)
+     * @param cookieHeader the raw request {@code Cookie} header value the session was resolved from
+     */
+    private void enforceScopes(PipelineRequest request, RouteRuntime route, SessionBinding.BoundSession mediated,
+            @Nullable String cookieHeader, Instant now) {
+        SessionRecord session = mediated.session();
+        Set<String> missing = missingScopes(route, session);
+        if (missing.isEmpty()) {
+            relay(request, route, session);
+            return;
+        }
+        // A re-bind that produced a cookie rotated the binding the request's own Cookie header names,
+        // so that header can no longer start a second exchange (see the class documentation).
+        boolean cookieHeaderCurrent = mediated.setCookieHeaders().isEmpty();
+        if (!cookieHeaderCurrent || !session.grantedScopes().containsAll(missing)) {
+            widenOrRefuse(request, route, session, missing, now);
+            return;
+        }
+        // Everything missing lies inside S: one refresh requesting A ∪ missing.
+        Set<String> requested = new TreeSet<>(session.activeScopes());
+        requested.addAll(missing);
+        RefreshResult scoped = scopeRefresh.refreshForScopes(session, cookieHeader, requested, now);
+        switch (scoped) {
+            case RefreshResult.Mediate(SessionBinding.BoundSession bound) -> {
+                emitSetCookies(request, bound.setCookieHeaders());
+                SessionRecord kept = bound.session();
+                Set<String> stillMissing = missingScopes(route, kept);
+                if (stillMissing.isEmpty()) {
+                    relay(request, route, kept);
+                } else {
+                    // The session is kept but the refresh did not obtain the set — a narrower grant, a
+                    // refresh that is backing off, or no refresh path at all. It is never relayed short.
+                    widenOrRefuse(request, route, kept, stillMissing, now);
+                }
+            }
+            case RefreshResult.SessionEnded() -> endSession(request, route, now);
+            case RefreshResult.RequestFailed() -> challengeRefreshFailure(request, route, now);
+        }
+    }
+
+    /**
+     * Lets a session that carries every needed scope through. {@code token_relay: false} keeps the
+     * session fully in force — resolved, refreshed, scope-checked and required — but withholds the
+     * access token from the upstream: no {@code Authorization}.
+     */
+    private static void relay(PipelineRequest request, RouteRuntime route, SessionRecord session) {
+        if (route.getEffectiveAuth().effectiveTokenRelay()) {
+            request.mediatedBearer(session.accessToken());
+        }
+    }
+
+    /**
+     * Answers a request whose session lacks a needed scope no refresh obtained. A navigation is
+     * redirected into a widening of the live session; anything else is refused {@code 403}. Either way
+     * no bearer is recorded and the request never reaches the upstream.
+     */
+    private void widenOrRefuse(PipelineRequest request, RouteRuntime route, SessionRecord session,
+            Set<String> missing, Instant now) {
+        if (acceptsHtml(request)) {
+            LoginChallenge challenge = wideningInitiation.initiate(session, returnUrl(request),
+                    route.getNeededScopes(), now);
+            request.responseHeaders().put(LOCATION_HEADER, challenge.location());
+            emitSetCookies(request, challenge.setCookieHeaders());
+            request.shortCircuit(FOUND);
+            LOGGER.debug("Session lacks a needed scope on session route %s — redirecting into a session widening",
+                    route.getId());
+            return;
+        }
+        Map<String, Object> problemExtensions = new LinkedHashMap<>();
+        // Sorted, and drawn from the route's boot-configured neededScopes — never from the token.
+        problemExtensions.put(MISSING_SCOPES_MEMBER, List.copyOf(new TreeSet<>(missing)));
+        if (stepUpPath != null) {
+            problemExtensions.put(STEP_UP_URL_MEMBER,
+                    stepUpPath + RETURN_URL_QUERY + URLEncoder.encode(returnUrl(request), StandardCharsets.UTF_8));
+        }
+        throw new GatewayException(EventType.SCOPE_MISSING,
+                "Session missing a needed scope for session route " + route.getId(), problemExtensions);
+    }
+
+    /**
+     * The needed scopes the session's active scope set does not carry — a subset of the route's
+     * boot-configured {@code neededScopes}, so it never holds a name taken from a token. A satisfied
+     * session, the case every ordinary request takes, is answered without allocating.
+     */
+    private static Set<String> missingScopes(RouteRuntime route, SessionRecord session) {
+        Set<String> needed = route.getNeededScopes();
+        if (session.activeScopes().containsAll(needed)) {
+            return Set.of();
+        }
+        Set<String> missing = new TreeSet<>(needed);
+        missing.removeAll(session.activeScopes());
+        return missing;
+    }
+
+    /**
+     * Answers a request whose session a refresh seam reported ended. Either the seam destroyed it — the
+     * identity provider rejected the refresh token (including a replayed one under strict rotation),
+     * the gateway refused a redeemed response, or the binding could not hold the rotated session — or
+     * the seam found it already gone: it expired, or, in server mode, a logout terminated it while the
+     * refresh was in flight and the seam did not write it back. Mediating the pre-refresh token would
+     * keep serving an ended session, so the
+     * clearing cookie drops the browser's stale copy first. On the reauthenticate navigation branch the
+     * login challenge adds its own binding cookie for a DIFFERENT cookie name, so both must reach the
+     * browser on this one response — hence the multi-valued Set-Cookie accumulator rather than a
+     * single-valued header slot.
+     */
+    private void endSession(PipelineRequest request, RouteRuntime route, Instant now) {
+        emitSetCookies(request, List.of(sessionBinding.clearingSetCookieHeader()));
+        challengeRefreshFailure(request, route, now);
     }
 
     /**
@@ -223,7 +406,7 @@ public final class SessionAuthenticationStage {
     }
 
     /**
-     * The post-login return target: the canonical path plus, when the request carried a query, a
+     * The return target: the canonical path plus, when the request carried a query, a
      * {@code ?} and the raw query rebuilt from {@link PipelineRequest#queryParameters()}. The pairs
      * are the raw, still-percent-encoded wire bytes in wire order, so the rebuilt query is
      * byte-identical to the inbound one — repeated and interleaved names keep their order, a bare
@@ -255,8 +438,7 @@ public final class SessionAuthenticationStage {
     /**
      * The single-flight near-expiry refresh seam (the D9 hook). The session runtime binds it to the
      * refresh coordinator, which owns the near-expiry decision, single-flight coalescing per session,
-     * and refresh-token rotation. The unwired binding returns the session unchanged with no cookies,
-     * so a gateway without the refresh coordinator injects the current mediated token verbatim.
+     * and refresh-token rotation. The unwired binding returns the session unchanged with no cookies.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -275,15 +457,54 @@ public final class SessionAuthenticationStage {
          * @return {@link RefreshResult.Mediate mediate} carrying the session to mediate from — the
          *         same one, or a refreshed copy carrying the rotated token material — plus any
          *         {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
-         *         ended} when the seam destroyed the session; or {@link RefreshResult.RequestFailed
-         *         request failed} when the session is kept but this request has no valid token
+         *         ended} when the seam destroyed the session or found it already gone; or
+         *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
+         *         request has no valid token
          */
         RefreshResult refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader, Instant now);
     }
 
     /**
-     * What the {@link TokenRefresh} seam decided for one request. Sealed, so the stage's switch over it
-     * is checked for exhaustiveness.
+     * The scope-driven refresh seam: obtains needed scopes that are missing from the session's active
+     * scope set but lie inside its granted scope set, by a refresh grant requesting exactly the set
+     * it is given. The session runtime binds it to the refresh coordinator's scope-driven leg, which
+     * shares the near-expiry leg's single-flight exclusion; with transparent refresh switched off it
+     * binds a pass-through that returns the session unchanged.
+     * <p>
+     * The seam reports only what became of the session. Whether the returned session carries the
+     * requested set is decided by the stage, which compares it against the route's needed scopes again
+     * — so a binding can never cause an under-scoped session to be relayed.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    @FunctionalInterface
+    public interface ScopeRefresh {
+
+        /**
+         * Refreshes the session's mediated token requesting {@code requestedScopes}.
+         *
+         * @param session         the live session, lacking a member of {@code requestedScopes}
+         * @param cookieHeader    the raw request {@code Cookie} header value the session was resolved
+         *                        from, so the coordinator can re-resolve it under single-flight
+         *                        exclusion; may be absent
+         * @param requestedScopes the scope set the grant requests — the session's active scope set
+         *                        united with the route's missing scopes
+         * @param now             the reference instant
+         * @return {@link RefreshResult.Mediate mediate} carrying the session that was kept — refreshed
+         *         and carrying the set, or unchanged or narrower when the set was not obtained — plus
+         *         any {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
+         *         ended} when the seam destroyed the session or found it already gone; or
+         *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
+         *         request has no valid token
+         */
+        RefreshResult refreshForScopes(SessionRecord session, @Nullable String cookieHeader,
+                Set<String> requestedScopes, Instant now);
+    }
+
+    /**
+     * What a refresh seam — {@link TokenRefresh} or {@link ScopeRefresh} — decided for one request.
+     * Sealed, so the stage's switches over it are checked for exhaustiveness.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -291,7 +512,7 @@ public final class SessionAuthenticationStage {
     public sealed interface RefreshResult {
 
         /**
-         * @param boundSession the session to mediate from plus the re-bind's {@code Set-Cookie} values
+         * @param boundSession the kept session plus the re-bind's {@code Set-Cookie} values
          * @return the mediate result
          */
         static RefreshResult mediate(SessionBinding.BoundSession boundSession) {
@@ -299,7 +520,8 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * @return the result for a session the seam destroyed
+         * @return the result for a session that has ended — the seam destroyed it, or found it already
+         *         gone
          */
         static RefreshResult sessionEnded() {
             return new SessionEnded();
@@ -313,9 +535,9 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * The session is usable: mediate its token and emit the re-bind's cookies.
+         * The session is kept: emit the re-bind's cookies.
          *
-         * @param boundSession the session to mediate from plus the re-bind's {@code Set-Cookie} values
+         * @param boundSession the kept session plus the re-bind's {@code Set-Cookie} values
          * @author API Sheriff Team
          * @since 1.0
          */
@@ -394,8 +616,34 @@ public final class SessionAuthenticationStage {
     }
 
     /**
-     * The framework-agnostic result of a login initiation: the {@code 302} redirect target and the
-     * browser-binding {@code Set-Cookie} header(s) to emit. Token material never appears here.
+     * The session-widening seam for a navigation whose live session lacks a needed scope no refresh
+     * obtained. The session runtime binds it to the runtime's widening coordinator, starting with a
+     * silent attempt: the identity provider is asked for the session's granted scopes united with
+     * {@code neededScopes}, and the callback merges the grant into the live session and returns the
+     * browser to {@code returnUrl}. A test binds it to a hand-built challenge.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    @FunctionalInterface
+    public interface WideningInitiation {
+
+        /**
+         * Initiates a widening of the live session.
+         *
+         * @param live         the live session to widen
+         * @param returnUrl    the target the browser returns to after the widening (the path it was
+         *                     navigating to, plus its raw query verbatim when it carried one)
+         * @param neededScopes the selected route's {@link RouteRuntime#getNeededScopes() neededScopes}
+         * @param now          the reference instant (the pending record's TTL anchor)
+         * @return the redirect target and the browser-binding {@code Set-Cookie}
+         */
+        LoginChallenge initiate(SessionRecord live, String returnUrl, Set<String> neededScopes, Instant now);
+    }
+
+    /**
+     * The framework-agnostic result of a login or widening initiation: the {@code 302} redirect target
+     * and the browser-binding {@code Set-Cookie} header(s) to emit. Token material never appears here.
      *
      * @param location         the IdP authorization URL to redirect the browser to
      * @param setCookieHeaders the browser-binding {@code Set-Cookie} header values (the single binding cookie)

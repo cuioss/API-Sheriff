@@ -24,10 +24,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.logging.LogRecord;
 
 
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.test.junit.QuarkusTest;
@@ -45,6 +48,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
  * Tests for {@link DefaultTrustSourceAudit}, the client-side counterpart of the two server-side TLS
@@ -65,9 +69,17 @@ import org.junit.jupiter.api.Test;
  * every property this class touches, including the ambient value the surefire JVM may already carry.
  * Each case sets or clears the property EXPLICITLY rather than relying on it being absent, so the
  * matrix means the same thing whatever the JVM was started with.
+ * <p>
+ * <strong>What the password assertion reads.</strong> The shipped configuration pins the gateway's
+ * logger category to {@code INFO}, so without further measures no {@code DEBUG} record of the audit
+ * is captured and an assertion that "no record carries the password" examines none.
+ * {@link SheriffDebugCapture} lifts that category to {@code DEBUG} for each test, and the password
+ * assertion first proves that a {@code DEBUG} record of the audit's logger is captured, then reads
+ * every captured record of every level.
  */
 @QuarkusTest
 @EnableTestLogger
+@ExtendWith(SheriffDebugCapture.class)
 @DisplayName("Effective default trust-source audit")
 class DefaultTrustSourceAuditTest {
 
@@ -252,16 +264,21 @@ class DefaultTrustSourceAuditTest {
         }
 
         @Test
-        @DisplayName("Never emits the trust-store password, at any level")
+        @DisplayName("Never emits the trust-store password, in any captured record down to DEBUG")
         void emitsNoPassword() {
             System.setProperty(DefaultTrustSourceAudit.TRUST_STORE_PROPERTY, STORE_PATH);
             System.setProperty(TRUST_STORE_PASSWORD_PROPERTY, STORE_PASSWORD);
 
             audit(registryWithDefaultBucket(new PfxOptions())).auditDefaultTrustSource();
 
+            SheriffDebugCapture.assertDebugIsCaptured(DefaultTrustSourceAudit.class);
+            List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
+            assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
             assertAll("the password IS set here, so its absence is a measurement rather than a vacuous pass",
-                    () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, STORE_PASSWORD),
-                    () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, STORE_PASSWORD));
+                    records.stream().map(captured -> () -> assertFalse(
+                            SheriffDebugCapture.rendered(captured).contains(STORE_PASSWORD),
+                            "a " + captured.getLevel() + " record of " + captured.getLoggerName()
+                                    + " carries the trust-store password")));
         }
     }
 

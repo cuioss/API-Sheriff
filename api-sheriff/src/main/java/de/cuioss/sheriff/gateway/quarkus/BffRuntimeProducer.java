@@ -30,14 +30,18 @@ import java.util.function.Supplier;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
+import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
+import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
+import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
+import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -50,9 +54,11 @@ import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ClaimAllowlistFilter;
+import de.cuioss.sheriff.gateway.bff.reserved.ClientJwksEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.IdTokenClaimProjection;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -73,10 +79,12 @@ import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
+import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.client.flow.CallbackHandler;
 import de.cuioss.sheriff.token.client.flow.IssValidator;
+import de.cuioss.sheriff.token.client.flow.ParClient;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
@@ -105,47 +113,111 @@ import org.jspecify.annotations.Nullable;
  * <strong>Both modes drive the same wiring.</strong> The only thing the mode selects is which
  * {@link SessionBinding} is assembled — the store-backed {@link ServerSessionBinding} or the
  * stateless {@link CookieSessionBinding} over the AES-256-GCM sealed-cookie codec. Every other
- * collaborator (login flow, CSRF defence, step-up, refresh, and all reserved endpoints) is
+ * collaborator (login flow, CSRF defence, RFC 9470 step-up, refresh, and all reserved endpoints) is
  * identical, and cookie mode reaches the confidential-client engine exactly as server mode does.
  * On the active path the producer assembles the session binding, the cookie codecs, the CSRF
  * defence, the token-refresh / step-up coordinators, the
  * reserved-endpoint handlers, and the {@code require: session} stage-4 runtime, and binds the
- * {@code token-sheriff-client} engine seams — {@link ScopedEngineFlows#authorize} for login,
- * {@code AuthorizationCodeFlow#exchange} for the callback, {@link ScopedEngineFlows#refresh} for
- * transparent refresh, and {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is
- * reached at runtime.
+ * {@code token-sheriff-client} engine seams, so the engine is reached at runtime.
  * <p>
- * <strong>Per-request scope (ADR-0048).</strong> The login leg requests the scope set the
- * caller names — a session route's {@code neededScopes}, or the set {@link ReturnTargetScopes}
- * resolves for a {@code /auth/login?returnUrl=} target — and the refresh leg requests the session's
- * active scope set {@code A}, both through {@link ScopedEngineFlows}, which drives a flow over a
+ * <strong>Client authentication has two modes, selected once (ADR-0058).</strong> The mode is read
+ * through {@link OidcConfig#usesClientSecret()}, and the one {@link ClientAuthentication} instance it
+ * yields is shared by every pushed authorization request, the code exchange of a login and of a
+ * widening, both refresh legs and RFC 7009 revocation.
+ * <ul>
+ *   <li><em>Key mode</em> — no {@code oidc.client_secret}, the default. The client-authentication key
+ *       is resolved by {@link ClientSigningKey} from {@code oidc.client_authentication.key_file}; an
+ *       absent block or an absent key selects a key generated at startup. The gateway authenticates
+ *       with {@code private_key_jwt}, whose assertion names the resolved issuer as its audience. A
+ *       key file the resolver refuses fails the boot with {@code CONFIG_INVALID}.</li>
+ *   <li><em>Client-secret mode</em> — {@code oidc.client_secret} is configured. The gateway
+ *       authenticates with {@code client_secret_basic}, resolves no client-authentication key, and
+ *       reports {@code ApiSheriff-133} once per assembled runtime, so at every boot.</li>
+ * </ul>
+ * <p>
+ * <strong>The client JWKS endpoint follows the same decision.</strong> The {@link ClientJwksEndpoint}
+ * is assembled in both session modes and handed to the runtime in both client-authentication modes.
+ * In key mode it publishes the public half of the client-authentication key — for a provided and for
+ * a generated key alike — so the identity provider can verify the client assertion. In client-secret
+ * mode there is no such key: the endpoint is the withheld form, which answers {@code 404} while the
+ * path stays reserved. The authentication and the endpoint are yielded together by the one mode
+ * decision, so the key the gateway signs with and the key it publishes cannot differ.
+ * <p>
+ * <strong>One DPoP sender constraint binds every access token (ADR-0058).</strong> The sender-constraint key
+ * is resolved by {@link ClientSigningKey} from {@code oidc.sender_constraint.key_file}, with the same
+ * refusal translation as the client-authentication key; an absent block or an absent key selects a
+ * key generated at startup. The one {@link SenderConstraint} that key hands out is shared by every
+ * flow — the base flow's code exchange, which serves a login callback and a widening callback alike,
+ * every per-scope flow and every refresh grant, near-expiry and scope-driven — in both
+ * client-authentication modes. A generated key lives for one process: it is replaced on every
+ * restart and cannot be shared, so every instance behind one identity-provider client must be given
+ * the same key files. A separate DPoP proof key is never published at the client JWKS endpoint.
+ * <p>
+ * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
+ * token-endpoint client is a {@link BoundTokenEndpointClient} over the base back-channel
+ * configuration and the key id of the sender-constraint key. It is the single instance handed to the
+ * base flow and to {@link ScopedEngineFlows}, so the code exchange of a login and of a widening and
+ * every refresh grant, near-expiry and scope-driven, read their token response through it; the
+ * producer does not read the client-authentication mode for it. The refusal surfaces where the
+ * response was requested: the callback answers {@code 400}, creates no session and merges nothing
+ * into a live one, and a refresh ends the session and follows
+ * {@code oidc.session.refresh.on_failure}. The check judges token responses only — a session whose
+ * token is bound to an earlier key is never re-checked, so replacing the key does not by itself end a
+ * session.
+ * <p>
+ * <strong>Per-request scope (ADR-0048).</strong> A leg requesting a per-request scope set goes through
+ * {@link ScopedEngineFlows}, which drives a flow over a
  * {@link ClientConfiguration} built for exactly that set by
- * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, step-up and revocation
- * stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is handed that
- * static set as the scope set its re-drive requests.
+ * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, the RFC 9470 step-up and
+ * revocation stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is
+ * handed that static set as the scope set its re-drive requests.
  * <p>
- * <strong>Response mode.</strong> Both authorization-URL seams are wired with the gateway-owned
+ * <strong>Scope enforcement on session routes.</strong> The session stage compares the session's
+ * active scope set against the route's {@code neededScopes} on every request, and the producer binds
+ * the two seams it obtains a missing scope through: the scope-driven refresh seam to the same
+ * {@link TokenRefreshCoordinator} the near-expiry seam drives (or, with refresh switched off, to a
+ * pass-through that hands the session back unchanged), and the
+ * widening seam to the runtime's one {@link SessionWidening}, always starting with a silent attempt.
+ * {@code oidc.step_up.path} is handed to the stage as the path its {@code 403} answer names; when the
+ * key is absent the answer names no step-up URL.
+ * <p>
+ * <strong>Response mode.</strong> The authorization-URL seams are wired with the gateway-owned
  * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
  * {@code response_mode=query} and the callback is a top-level GET the browser sends the
  * {@code SameSite=Lax} binding cookie on. See that class for the reasoning and for the accepted
  * code-in-the-URL tradeoff.
  * <p>
+ * <strong>Every authorization request is pushed (ADR-0058).</strong> The URL the engine builds on
+ * any of the three seams — the login leg, the session widening (silent and interactive attempt
+ * alike) and the RFC 9470 step-up re-drive — is not sent to the browser. It is
+ * the parameter source of a pushed authorization request (RFC 9126): the one
+ * {@link PushedAuthorizationRequests} this producer builds pushes those parameters to the identity
+ * provider and yields the redirect, which carries {@code client_id} and {@code request_uri} and
+ * nothing else. A silent widening's {@code prompt=none} is therefore a parameter of the pushed
+ * request, not of the redirect. The engine's {@code FlowContext} is kept unchanged on every seam. The
+ * producer is the only class that constructs the engine's {@link ParClient}, over the base back-channel
+ * configuration, and it never calls it. An identity provider that offers no pushed-authorization
+ * endpoint, and a push that fails, refuse the login or the widening with {@code 502} before the
+ * pending authorization is stored and before the binding cookie is set. In both
+ * client-authentication modes.
+ * <p>
  * <strong>Transparent refresh is switchable.</strong> {@code oidc.session.refresh.enabled} governs
  * the whole refresh path and is applied here, at the two points that path is constructed: the
  * {@code CodeExchange} seam retains the exchange's refresh token only when refresh is on, and the
  * {@link TokenRefreshCoordinator} is assembled only when refresh is on. With the switch off the
- * stage's refresh seam degrades to the unwired binding — session unchanged, no cookies — so the
- * gateway mediates the token it was issued until the absolute session TTL expires, and no refresh
+ * stage's refresh seams degrade to the unwired binding — session unchanged, no cookies — and no refresh
  * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
- * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: a
- * current, refreshed or deferred session is mediated; a failed refresh — the session was destroyed —
+ * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: an
+ * outcome carrying a session is mediated; a failed refresh — the session was destroyed, or in server
+ * mode was found already terminated when the rotation was to be persisted —
  * clears the session cookie before the refresh-failure response; an unavailable refresh — the identity
  * provider was unreachable and the access token has expired, but the session is kept — answers the
  * refresh-failure response without clearing the cookie. That response is
  * {@code oidc.session.refresh.on_failure}, resolved here and handed to the stage:
  * {@code reauthenticate} (also when omitted) re-drives the login negotiation, {@code reject} answers
- * {@code 401} for every request. A refresh token still live at the identity provider after a session
- * ends on a refused redemption or a persist failure is revoked, best-effort, through the engine's
+ * {@code 401} for every request. Where the gateway can name a refresh token still live at the identity
+ * provider after a session ends on a refused redemption, on a persist failure or, in server mode, on a
+ * session terminated while the refresh was in flight, it is revoked, best-effort, through the engine's
  * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
  * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
  * failing request never waits for the revocation endpoint.
@@ -157,8 +229,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
- * authorization-code exchange, refresh and refresh-token revocation — is the sixth TLS-terminating
- * outbound leg, and it is bound
+ * pushed authorization request, the authorization-code exchange, refresh and refresh-token
+ * revocation — is the sixth TLS-terminating outbound leg, and it is bound
  * to the global {@code egress_tls} block through its own peer keys: {@code oidc_verify_hostname} is
  * passed to the builder's {@code verifyHostname} on every build, the {@code true} path included, so
  * the leg's effect never depends on token-sheriff's own default (ADR-0022); {@code oidc_tls_profile},
@@ -189,7 +261,7 @@ public class BffRuntimeProducer {
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
-    /** The post-login fallback return target when {@code oidc.login.default_return_url} is omitted. */
+    /** The fallback return target when {@code oidc.login.default_return_url} is omitted. */
     private static final String ROOT_RETURN_URL = "/";
     /** The gateway key a named BFF back-channel trust profile is declared under, for error context. */
     private static final String OIDC_TLS_PROFILE_KEY = "egress_tls.oidc_tls_profile";
@@ -224,8 +296,8 @@ public class BffRuntimeProducer {
     /**
      * @param gatewayConfig         the bound global gateway document carrying the {@code oidc} block and
      *                              the global {@code egress_tls} block
-     * @param routeTable            the boot-built route table the login-initiation endpoint resolves a
-     *                              return target's requested scope set against
+     * @param routeTable            the boot-built route table a return target's scope set is resolved
+     *                              against
      * @param tokenValidator        a lazy handle to the gateway's shared offline validator, resolved
      *                              only on the active BFF path in either session mode (a bearer-only
      *                              gateway never triggers it)
@@ -293,7 +365,6 @@ public class BffRuntimeProducer {
         String gatewayOrigin = originOf(redirectUri);
         String issuer = Objects.requireNonNullElse(oidc.issuer(), gatewayOrigin);
         String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
-        String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
 
         Duration sessionTtl = Duration.ofSeconds(
                 Objects.requireNonNullElse(session.ttlSeconds(), OidcConfig.Session.DEFAULT_TTL_SECONDS));
@@ -305,7 +376,7 @@ public class BffRuntimeProducer {
         int maxSessions = declaredMaxSessions == null ? DEFAULT_MAX_SESSIONS : declaredMaxSessions;
         OidcConfig.Refresh refresh = session.refresh();
         // refresh.enabled is the switch for the WHOLE transparent-refresh path, not a hint: it governs
-        // both whether the refresh token is retained at login and whether the near-expiry coordinator
+        // both whether the refresh token is retained and whether the coordinator
         // is assembled at all. Both applications are below; keeping them on one resolved boolean is
         // what stops the two halves drifting into a state where a credential is stored but no
         // machinery can ever redeem it.
@@ -321,35 +392,46 @@ public class BffRuntimeProducer {
                 : Set.copyOf(declaredTrustedOrigins);
 
         // The base configuration carries the static oidc.scopes and serves every leg that does not
-        // request a per-request scope set: discovery, the callback code exchange, step-up and
-        // revocation. The login and refresh legs request per scope set through ScopedEngineFlows below, whose
-        // factory is this same method — so every scoped variant carries the identical pinned posture.
+        // request a per-request scope set: discovery, the transport of the pushed authorization
+        // request, the callback code exchange, the RFC 9470 step-up and revocation. The legs that
+        // request one go through ScopedEngineFlows below, whose factory is this same method — so every
+        // scoped variant carries the identical pinned posture.
         reportBackChannelPosture();
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
-        ClientAuthentication clientAuthentication = new ClientSecretBasicAuth(clientId, clientSecret);
+        ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);
+        ClientAuthentication clientAuthentication = clientCredential.authentication();
+        // ADR-0058: one sender-constraint key, and the one SenderConstraint it hands out, for the whole
+        // runtime. The key id is the thumbprint every accepted access token must name in cnf.jkt.
+        ClientSigningKey senderConstraintKey = resolveSenderConstraintKey(oidc);
+        SenderConstraint senderConstraint = senderConstraintKey.senderConstraint();
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
         TokenValidator validator = tokenValidator.get();
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
         IdTokenValidationBridge idBridge = new IdTokenValidationBridge(validator);
-        TokenEndpointClient tokenEndpointClient = new TokenEndpointClient(clientConfiguration);
+        // The one token-endpoint client of the runtime. It refuses a token response that is not bound
+        // to the proof key, and because the base flow, every per-scope flow and every refresh grant hold
+        // this single instance, none of them can obtain a token that bypasses the check.
+        TokenEndpointClient tokenEndpointClient = new BoundTokenEndpointClient(clientConfiguration,
+                senderConstraintKey.keyId());
         // The gateway drives response_mode=query, NOT the engine's built-in form_post: the callback has
         // to be a top-level GET navigation so the SameSite=Lax browser-binding cookie is actually sent
         // on it (a Lax cookie is dropped on the cross-site POST a form_post callback performs, which
         // dead-ended every real-browser login on the "no binding cookie" 403 branch). One instance is
-        // shared with the step-up leg below, so BOTH engine seams that build an authorization URL carry
-        // the corrected mode. Every other collaborator here is exactly what the 4-arg
-        // AuthorizationCodeFlow constructor supplies on its own — a default IssValidator and
-        // CallbackHandler, and no sender constraint (DPoP is not in use) — so nothing else changes.
+        // shared, so every engine seam that builds an authorization URL — login, widening and the
+        // RFC 9470 step-up — carries the corrected mode. The IssValidator and the CallbackHandler are
+        // the defaults the 4-arg AuthorizationCodeFlow constructor supplies on its own; the trailing
+        // argument is the shared DPoP sender constraint, so the code exchange — of a login callback and
+        // of a widening callback alike — presents a proof and its access token is bound to the proof key.
         AuthorizationRequestBuilder authorizationRequestBuilder = new QueryResponseModeAuthorizationRequestBuilder();
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
                 tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
-                new CallbackHandler(), null);
-        // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so a login that
-        // requests a route's neededScopes, and a refresh that requests the session's active scope set,
-        // each ride a configuration built for exactly that set.
+                new CallbackHandler(), senderConstraint);
+        // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so each
+        // per-request scope set rides a configuration built for exactly that set.
         ScopedEngineFlows scopedFlows = new ScopedEngineFlows(scopes -> backChannelConfiguration(oidc, scopes),
-                tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication);
+                tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication,
+                senderConstraint);
 
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
@@ -361,71 +443,121 @@ public class BffRuntimeProducer {
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
-        // Resolved once: the login flow, the login-initiation endpoint (through the flow) and the step-up
-        // re-drive all fall back to the same configured post-login target.
+        // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
+        // widening, the step-up endpoint and the RFC 9470 step-up re-drive all fall back to the same
+        // configured target.
         String defaultReturnUrl = defaultReturnUrl(oidc);
 
+        // ADR-0058: every authorization request is pushed. The one ParClient rides the base back-channel
+        // configuration, so the push carries the ADR-0045 hostname and trust posture and the engine's
+        // timeouts; this producer builds it and never calls it — PushedAuthorizationRequests does.
+        PushedAuthorizationRequests pushedRequests =
+                new PushedAuthorizationRequests(new ParClient(clientConfiguration), clientAuthentication);
+
         // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime, requesting
-        // exactly the scope set the caller names (a route's neededScopes, or oidc.scopes).
-        LoginFlow loginFlow = new LoginFlow(scopes -> scopedFlows.authorize(metadata.get(), scopes),
+        // exactly the scope set the caller names (a route's neededScopes, or oidc.scopes). The engine
+        // renders the request, the request is pushed, and the redirect keeps the engine's FlowContext
+        // while its URL carries client_id and request_uri only. A failed push propagates from here,
+        // before LoginFlow stores the pending record or sets the binding cookie.
+        LoginFlow loginFlow = new LoginFlow(
+                scopes -> pushed(pushedRequests, metadata.get(), clientId,
+                        scopedFlows.authorize(metadata.get(), scopes)),
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
+
+        // Session widening — the live-session sibling of the login flow, on the same pending store,
+        // binding cookie and callback landing. Its authorization leg is built per call on
+        // ScopedEngineFlows because the requested set S ∪ needed is IdP-derived. Exactly one instance
+        // exists per runtime: the callback's interactive re-drive goes through it.
+        // ADR-0058: a widening request is pushed exactly as a login request is — the silent attempt and
+        // the interactive re-drive both pass this one seam, so neither can reach the browser as a
+        // front-channel request. The silent attempt's prompt=none travels inside the pushed request.
+        // A failed push propagates from here, before SessionWidening stores the pending record or sets
+        // the binding cookie.
+        SessionWidening sessionWidening = new SessionWidening(
+                (scopes, silent) -> pushed(pushedRequests, metadata.get(), clientId,
+                        scopedFlows.widen(metadata.get(), scopes, silent)),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
         // then hands the result to the refresh policy, which is where the exchange's refresh token is
-        // retained or dropped. See applyRefreshPolicy for why the drop happens at login rather than
+        // retained or dropped. See applyRefreshPolicy for why the drop happens at the exchange rather than
         // at storage time.
         CallbackEndpoint.CodeExchange codeExchange = (context, params) -> applyRefreshPolicy(
                 authorizationCodeFlow.exchange(metadata.get(), context, params, clientAuthentication),
                 refreshEnabled);
         CallbackEndpoint callbackEndpoint = new CallbackEndpoint(codeExchange, pendingStore, bindingCookieCodec,
-                sessionBinding, sessionTtl);
+                sessionBinding, sessionTtl, sessionWidening);
 
         // D7/D9 transparent refresh — near-expiry decision + engine RefreshFlow, session persistence.
         // Assembled ONLY when refresh.enabled: with the switch off no coordinator exists and the
         // stage's refresh seam degrades to sessionUnchanged() — the unwired binding
-        // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies) — so the
-        // gateway mediates the current token verbatim until the session's absolute TTL expires.
+        // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies).
         // The revocation client is built from the SAME back-channel configuration, so a refresh token
         // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
-        // The refresh grant requests the session's active scope set A through ScopedEngineFlows, never
-        // the static oidc.scopes the base configuration carries.
+        // The refresh grant requests the set the coordinator names through ScopedEngineFlows — the
+        // session's active scope set A near expiry, A plus the missing scopes on the scope-driven leg —
+        // never the static oidc.scopes the base configuration carries.
+        // ONE coordinator serves both stage seams — the near-expiry leg and the scope-driven leg — so the
+        // two share its single-flight exclusion.
         RevocationClient revocationClient = new RevocationClient(clientConfiguration);
-        SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
-                ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
+        TokenRefreshCoordinator refreshCoordinator = refreshEnabled
+                ? new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
-                (refreshToken, activeScopes) -> scopedFlows.refresh(metadata.get(), refreshToken, activeScopes),
+                (refreshToken, scopes) -> scopedFlows.refresh(metadata.get(), refreshToken, scopes),
                 sessionBinding,
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
                         clientAuthentication),
                 virtualThreadExecutor,
-                endedRefreshTokens(session)))
-                : sessionUnchanged();
+                endedRefreshTokens(session))
+                : null;
+        SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshCoordinator == null
+                ? sessionUnchanged()
+                : nearExpiryRefresh(refreshCoordinator);
+        // With refresh switched off no grant can restore a scope, so the scope seam hands the session
+        // back unchanged.
+        SessionAuthenticationStage.ScopeRefresh scopeRefresh = refreshCoordinator == null
+                ? scopesUnobtainable()
+                : scopeRefresh(refreshCoordinator);
 
-        // D4 session stage-4 runtime — binds refresh and the login-redirect seam. A session route runs
-        // no scope check: the scopes it needs are requested at login, never enforced per request.
+        // D4 session stage-4 runtime — binds both refresh seams, the login-redirect seam and the
+        // widening seam. A session route enforces its needed scopes on every request: missing scopes
+        // inside the granted set are refreshed, anything else is widened through the runtime's ONE
+        // SessionWidening (silent attempt first) or refused 403 naming oidc.step_up.path.
+        OidcConfig.StepUp stepUp = oidc.stepUp();
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                 tokenRefresh,
+                scopeRefresh,
                 (returnUrl, scopes, now) -> {
                     LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
+                (live, returnUrl, neededScopes, now) -> {
+                    LoginFlow.LoginRedirect redirect = sessionWidening.initiate(live, returnUrl, neededScopes,
+                            PendingAuthorizationRecord.Widening.Attempt.SILENT, now);
+                    return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
+                            redirect.setCookieHeaders());
+                },
                 onFailure,
+                stepUp == null ? null : stepUp.path(),
                 clock);
 
-        // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam; the upstream-challenge
-        // edge integration is exercised by the Keycloak integration tests.
+        // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam. No edge code drives the
+        // step-up coordinator: the re-drive is assembled here and proven at unit level, but a running
+        // gateway never reaches it.
         // Built with the SAME response-mode-corrected builder as the login leg: StepUpHandler#initiate
         // constructs its own authorization URL through an AuthorizationRequestBuilder, so leaving it on
         // the default builder would keep the step-up re-drive emitting response_mode=form_post and
         // reintroduce the dropped-binding-cookie failure on that leg alone.
         // The step-up request is built from the base configuration, so the re-drive records the static
-        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0048).
+        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0048). Like the login request it
+        // is pushed: the re-drive location carries client_id and request_uri only.
         StepUpHandler stepUpHandler = new StepUpHandler(authorizationRequestBuilder);
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
                 (sessionRecord, challenge, now) -> Optional.empty(),
-                challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),
+                challenge -> pushed(pushedRequests, metadata.get(), clientId,
+                        stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge)),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes());
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
@@ -444,6 +576,14 @@ public class BffRuntimeProducer {
         LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionBinding,
                 gatewayOrigin, returnTargetScopes);
 
+        // Step-up endpoint (oidc.step_up.path). It reuses the runtime's ONE SessionWidening (the instance
+        // the callback re-drives through), never a second, and the same return-target resolver as the
+        // login fold.
+        // It is dispatched only when the registry reserved oidc.step_up.path, so wiring it
+        // unconditionally costs nothing when the key is absent.
+        StepUpEndpoint stepUpEndpoint = new StepUpEndpoint(sessionWidening, sessionBinding, returnTargetScopes,
+                gatewayOrigin, defaultReturnUrl);
+
         // D2c back-channel logout — JWKS signature verification through the engine, then the claim residual.
         // The endpoint stays wired in both modes: it is gated on the binding's IdP-destruction
         // capability, so a stateless binding answers a deliberate 404 on the reserved path rather than
@@ -461,8 +601,9 @@ public class BffRuntimeProducer {
                 new BackchannelLogoutEndpoint(backchannelReceiver, sessionBinding);
 
         // D5 RP-initiated logout — lazy so the discovery-sourced end_session_endpoint is resolved on
-        // first logout, not at boot. Revocation at the IdP is best-effort; the authoritative logout is
-        // the local session destruction the LogoutEndpoint performs.
+        // first logout, not at boot. buildLogoutEndpoint binds the token-revocation seam to a no-op, so
+        // no revocation request is sent on logout; the authoritative logout is the local session
+        // destruction the LogoutEndpoint performs.
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
                 metadata.get(), sessionBinding));
 
@@ -474,7 +615,8 @@ public class BffRuntimeProducer {
                 session.isCookieMode() ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER,
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
-                backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
+                backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint, stepUpEndpoint,
+                clientCredential.jwksEndpoint());
     }
 
     /**
@@ -526,19 +668,163 @@ public class BffRuntimeProducer {
         String issuer = declaredIssuer == null ? gatewayOrigin : declaredIssuer;
         String declaredClientId = oidc.clientId();
         String clientId = declaredClientId == null ? "" : declaredClientId;
-        String declaredClientSecret = oidc.clientSecret();
-        String clientSecret = declaredClientSecret == null ? "" : declaredClientSecret;
         ClientConfiguration.ClientConfigurationBuilder builder = ClientConfiguration.builder()
-                .issuer(issuer).clientId(clientId).clientSecret(clientSecret)
-                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .issuer(issuer).clientId(clientId)
                 .scopes(scopes).redirectUri(redirectUri)
                 // Called unconditionally, on the true path as well, so the posture never rests on the
                 // library default (ADR-0022).
                 .verifyHostname(verifyHostname);
+        // The same predicate selects the authentication instance in selectClientCredential(...), so the
+        // declared method and the credential actually presented cannot disagree. Key mode sets no
+        // secret at all: the engine admits an absent secret for the key-based methods and refuses a
+        // blank one.
+        String clientSecret = oidc.clientSecret();
+        if (oidc.usesClientSecret() && clientSecret != null) {
+            builder.clientSecret(clientSecret).authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC);
+        } else {
+            builder.authMethod(ClientAuthMethod.PRIVATE_KEY_JWT);
+        }
         if (tlsProfile != null) {
             builder.sslContext(trustProfileResolver.resolveEgressProfile(OIDC_TLS_PROFILE_KEY, tlsProfile));
         }
         return builder.build();
+    }
+
+    /**
+     * Selects the confidential-client credential once, for the single build this {@link Singleton}
+     * runtime performs: the authentication every authenticated back-channel leg presents, and the form
+     * of the client JWKS endpoint that goes with it. The authentication instance is shared by the pushed
+     * authorization request, the code exchange, the refresh grant and RFC 7009 revocation.
+     * <p>
+     * <strong>Client-secret mode</strong> — {@link OidcConfig#usesClientSecret()} is {@code true}. The
+     * gateway keeps authenticating with {@code client_secret_basic} and reports {@code ApiSheriff-133},
+     * whose template takes no parameter and therefore cannot carry the secret. No client-authentication
+     * key is resolved in this mode, so none is generated and none is read — and none can be published:
+     * the JWKS endpoint is the {@linkplain ClientJwksEndpoint#withheld() withheld} form.
+     * <p>
+     * <strong>Key mode</strong> — no secret is configured. The key is resolved from
+     * {@code oidc.client_authentication.key_file}; an absent block or an absent key selects the
+     * generated mode. The key hands out the {@code private_key_jwt} authentication itself, so this
+     * producer never handles the private key, and its public JWK is what the JWKS endpoint
+     * publishes. Both come from the one resolved key, so the published key is the signing key.
+     * <p>
+     * The mode is named by one {@code DEBUG} line, in key mode together with the key mode and the
+     * algorithm — never key material and never the secret.
+     *
+     * @param oidc     the global {@code oidc} block, already cleared by the BFF-mode activation
+     *                 predicate
+     * @param clientId the resolved client id
+     * @param issuer   the resolved issuer, used in key mode as the audience of the client assertion
+     * @return the client authentication and the client JWKS endpoint of the selected mode
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the configured
+     *                          client-authentication key file is refused
+     */
+    private static ClientCredential selectClientCredential(OidcConfig oidc, String clientId, String issuer) {
+        String clientSecret = oidc.clientSecret();
+        if (oidc.usesClientSecret() && clientSecret != null) {
+            LOGGER.warn(ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION);
+            LOGGER.debug("BFF client authentication: client_secret_basic");
+            return new ClientCredential(new ClientSecretBasicAuth(clientId, clientSecret),
+                    ClientJwksEndpoint.withheld());
+        }
+        OidcConfig.ClientAuthenticationSettings settings = oidc.clientAuthentication();
+        ClientSigningKey signingKey = resolveSigningKey(settings == null ? null : settings.keyFile(),
+                ClientSigningKey.Purpose.CLIENT_AUTHENTICATION);
+        LOGGER.debug("BFF client authentication: private_key_jwt (key mode=%s, algorithm=%s)",
+                signingKey.mode().diagnosticName(), signingKey.algorithm());
+        return new ClientCredential(signingKey.clientAuthentication(clientId, issuer),
+                new ClientJwksEndpoint(signingKey.publicJwk()));
+    }
+
+    /**
+     * What the one client-authentication decision yields. The two are held together because they must
+     * agree: the endpoint publishes the key the authentication signs with, or withholds when the
+     * authentication is a secret.
+     *
+     * @param authentication the client authentication every authenticated back-channel leg presents
+     * @param jwksEndpoint   the client JWKS endpoint in the form that goes with that authentication
+     */
+    private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint) {
+    }
+
+    /**
+     * Replaces the URL of an engine-built login or widening redirect with its pushed form. The engine's
+     * {@code FlowContext} — {@code state}, {@code nonce} and the PKCE verifier — is kept as it is:
+     * it is what the callback is later checked against, and the pushed request carries exactly the
+     * parameters derived from it.
+     *
+     * @param pushedRequests the runtime's pushed-authorization-request adapter
+     * @param metadata       the resolved provider metadata
+     * @param clientId       the resolved client id
+     * @param redirect       the engine's authorization redirect
+     * @return the same transaction context with the pushed-request redirect URL
+     * @throws GatewayException with {@link EventType#UPSTREAM_ERROR} when the request cannot be pushed
+     */
+    private static AuthorizationCodeFlow.AuthorizationRedirect pushed(PushedAuthorizationRequests pushedRequests,
+            ProviderMetadata metadata, String clientId, AuthorizationCodeFlow.AuthorizationRedirect redirect) {
+        return new AuthorizationCodeFlow.AuthorizationRedirect(
+                pushedRequests.push(metadata, clientId, redirect.authorizationUrl()), redirect.context());
+    }
+
+    /**
+     * Replaces the URL of an engine-built step-up request with its pushed form, keeping its
+     * {@code FlowContext} — the step-up counterpart of the login overload.
+     *
+     * @param pushedRequests the runtime's pushed-authorization-request adapter
+     * @param metadata       the resolved provider metadata
+     * @param clientId       the resolved client id
+     * @param request        the engine's step-up authorization request
+     * @return the same transaction context with the pushed-request redirect URL
+     * @throws GatewayException with {@link EventType#UPSTREAM_ERROR} when the request cannot be pushed
+     */
+    private static StepUpHandler.StepUpRequest pushed(PushedAuthorizationRequests pushedRequests,
+            ProviderMetadata metadata, String clientId, StepUpHandler.StepUpRequest request) {
+        return new StepUpHandler.StepUpRequest(
+                pushedRequests.push(metadata, clientId, request.authorizationUrl()), request.context());
+    }
+
+    /**
+     * Resolves the sender-constraint key — the key the gateway signs its DPoP proofs with — from
+     * {@code oidc.sender_constraint.key_file}. An absent block or an absent key selects the generated
+     * mode. The key is resolved in both client-authentication modes: a configured client secret
+     * changes how the gateway authenticates, not whether its access tokens are sender-constrained.
+     * <p>
+     * The key mode and the algorithm are named by one {@code DEBUG} line — never key material and
+     * never the key id.
+     *
+     * @param oidc the global {@code oidc} block, already cleared by the BFF-mode activation predicate
+     * @return the resolved sender-constraint key
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the configured
+     *                          sender-constraint key file is refused
+     */
+    private static ClientSigningKey resolveSenderConstraintKey(OidcConfig oidc) {
+        OidcConfig.SenderConstraintSettings settings = oidc.senderConstraint();
+        ClientSigningKey signingKey = resolveSigningKey(settings == null ? null : settings.keyFile(),
+                ClientSigningKey.Purpose.SENDER_CONSTRAINT);
+        LOGGER.debug("BFF sender constraint: DPoP (key mode=%s, algorithm=%s)",
+                signingKey.mode().diagnosticName(), signingKey.algorithm());
+        return signingKey;
+    }
+
+    /**
+     * Resolves one signing key of the confidential client and translates a refusal into the boot
+     * failure every other invalid configuration raises. The text {@link ClientSigningKey} refuses a
+     * key file with names the configuration field and the defect only — never the configured path
+     * nor a line of the file — so it is carried over as it is.
+     *
+     * @param keyFile the configured {@code key_file} of the purpose, {@code null} to generate a key
+     * @param purpose what the key signs
+     * @return the resolved key
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the key file is refused
+     */
+    private static ClientSigningKey resolveSigningKey(@Nullable String keyFile, ClientSigningKey.Purpose purpose) {
+        try {
+            return ClientSigningKey.resolve(keyFile, purpose);
+        } catch (IllegalStateException refused) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    Objects.requireNonNullElse(refused.getMessage(), purpose.configField() + " is refused"),
+                    refused);
+        }
     }
 
     /**
@@ -599,9 +885,9 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Resolves {@code oidc.login.default_return_url} — the post-login target the login flow, the
-     * login-initiation endpoint and the step-up re-drive fall back to when no usable same-origin return
-     * URL is supplied. An omitted key (or an omitted {@code login} block) resolves to {@code /}. Boot
+     * Resolves {@code oidc.login.default_return_url} — the target fallen back to when no usable
+     * same-origin return URL is supplied. An omitted key (or an omitted {@code login} block) resolves
+     * to {@code /}. Boot
      * validation has already refused a declared value that is not same-origin with
      * {@code redirect_uri}, so the value is used as declared.
      *
@@ -616,35 +902,67 @@ public class BffRuntimeProducer {
 
     /**
      * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
-     * seam. {@code CURRENT}, {@code REFRESHED} and {@code DEFERRED} carry a session and are mediated
-     * with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} — the session was destroyed
-     * — ends the session so the stage clears the cookie; {@code UNAVAILABLE} — the session was kept
-     * but its access token has expired — fails only this request, so the cookie survives for the next
-     * attempt.
+     * seam. {@code CURRENT}, {@code REFRESHED}, {@code DEFERRED} and {@code SCOPE_REFUSED} carry a
+     * session and are mediated with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} —
+     * the session was destroyed, or in server mode was found already terminated when the rotation was to
+     * be persisted — ends the session so the stage clears the cookie; {@code UNAVAILABLE} —
+     * the session was kept but its access token has expired — fails only this request, so the cookie
+     * survives for the next attempt.
+     * <p>
+     * {@code SCOPE_REFUSED} reaches this leg only when the near-expiry request coalesced with a concurrent
+     * scope-driven refresh of the same session; it always carries the kept session and any cookie the
+     * shared re-bind produced, so mediating it is the only consistent mapping. It is safe because the
+     * stage's scope comparison runs after mediation, so a mediated session is never relayed short of a
+     * needed scope.
      * <p>
      * Extracted so the enabled and disabled bindings of the seam read as the two alternatives they
      * are, rather than one of them being a multi-statement lambda inline in the assembly.
      *
-     * @param coordinator the assembled near-expiry refresh coordinator
-     * @return the stage seam driving {@code coordinator}
+     * @param coordinator the assembled refresh coordinator
+     * @return the stage seam driving {@code coordinator}'s near-expiry leg
      */
     static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
-        return (sessionRecord, cookieHeader, now) -> {
-            TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
-            return switch (outcome.kind()) {
-                case CURRENT, REFRESHED, DEFERRED -> SessionAuthenticationStage.RefreshResult.mediate(
-                        new SessionBinding.BoundSession(Objects.requireNonNull(outcome.session(), "session"),
-                                outcome.setCookieHeaders()));
-                case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
-                case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
-            };
+        return (sessionRecord, cookieHeader, now) ->
+                refreshResult(coordinator.refresh(sessionRecord, cookieHeader, now));
+    }
+
+    /**
+     * Adapts the refresh coordinator's scope-driven leg to the stage's
+     * {@link SessionAuthenticationStage.ScopeRefresh} seam, with the same outcome mapping as
+     * {@link #nearExpiryRefresh}. On this leg a mediated session does not always carry the requested
+     * set: {@code SCOPE_REFUSED} (a narrower grant, no refresh token, or a shared refresh that did not
+     * request it) and {@code DEFERRED} (a refresh that is backing off — which is also how an identity
+     * provider's outright {@code invalid_scope} refusal arrives, TokenSheriff#763) both hand the kept
+     * session back. The stage compares the returned session against the route's needed scopes again,
+     * so neither is ever relayed under-scoped.
+     *
+     * @param coordinator the assembled refresh coordinator
+     * @return the stage seam driving {@code coordinator}'s scope-driven leg
+     */
+    static SessionAuthenticationStage.ScopeRefresh scopeRefresh(TokenRefreshCoordinator coordinator) {
+        return (sessionRecord, cookieHeader, requestedScopes, now) ->
+                refreshResult(coordinator.refreshForScopes(sessionRecord, cookieHeader, requestedScopes, now));
+    }
+
+    /**
+     * Maps a coordinator outcome onto the stage's three dispositions. The switch has no {@code default}
+     * arm on purpose: a later outcome kind fails compilation here instead of being mediated silently.
+     */
+    private static SessionAuthenticationStage.RefreshResult refreshResult(
+            TokenRefreshCoordinator.RefreshOutcome outcome) {
+        return switch (outcome.kind()) {
+            case CURRENT, REFRESHED, DEFERRED, SCOPE_REFUSED -> SessionAuthenticationStage.RefreshResult.mediate(
+                    new SessionBinding.BoundSession(Objects.requireNonNull(outcome.session(), "session"),
+                            outcome.setCookieHeaders()));
+            case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
+            case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
         };
     }
 
     /**
      * Selects the coordinator's ended-refresh-token marker by session mode. Cookie mode binds the bounded
      * in-memory marker, because {@code destroy} holds nothing server-side there and a retained sealed
-     * cookie would otherwise drive a fresh refresh grant on every near-expiry request; server mode binds
+     * cookie would otherwise drive a fresh refresh grant; server mode binds
      * the inert one, because {@code destroy} already removes the session from the store.
      *
      * @param session the resolved {@code oidc.session} block
@@ -679,14 +997,26 @@ public class BffRuntimeProducer {
     /**
      * The disabled binding of the same seam — the alternative {@link #nearExpiryRefresh} adapts to.
      * With {@code oidc.session.refresh.enabled=false} no coordinator exists, so the seam yields the
-     * resolved session verbatim and produces no {@code Set-Cookie}: the gateway keeps mediating the
-     * token it was issued at login until the absolute session TTL expires, and never reaches the
+     * resolved session verbatim, produces no {@code Set-Cookie} and never reaches the
      * engine's refresh grant.
      *
      * @return the unwired stage seam
      */
     static SessionAuthenticationStage.TokenRefresh sessionUnchanged() {
         return (sessionRecord, cookieHeader, now) ->
+                SessionAuthenticationStage.RefreshResult.mediate(new SessionBinding.BoundSession(sessionRecord, List.of()));
+    }
+
+    /**
+     * The disabled binding of the scope-driven seam — the alternative {@link #scopeRefresh} adapts to.
+     * With {@code oidc.session.refresh.enabled=false} no coordinator exists and no refresh token is
+     * retained, so no grant can restore a scope: the seam yields the session verbatim and never reaches
+     * the engine.
+     *
+     * @return the unwired stage seam
+     */
+    static SessionAuthenticationStage.ScopeRefresh scopesUnobtainable() {
+        return (sessionRecord, cookieHeader, requestedScopes, now) ->
                 SessionAuthenticationStage.RefreshResult.mediate(new SessionBinding.BoundSession(sessionRecord, List.of()));
     }
 
@@ -761,7 +1091,8 @@ public class BffRuntimeProducer {
         EndSessionFlow endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(postLogoutRedirectUri)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow,
                 sessionRecord -> {
-                    // Best-effort by design: the authoritative logout is the local session destruction.
+                    // A no-op binding: no revocation request is sent to the identity provider on
+                    // logout. The authoritative logout is the local session destruction.
                 },
                 endSessionEndpoint, postLogoutRedirectUri, finalRedirect, LOGOUT_STATE_TTL);
         return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);
@@ -769,7 +1100,7 @@ public class BffRuntimeProducer {
 
     /**
      * Derives the gateway's own origin (scheme + host + optional non-default port) from the configured
-     * {@code redirect_uri}, used to same-origin-validate post-login return URLs and as the default
+     * {@code redirect_uri}, used to same-origin-validate return URLs and as the default
      * CSRF trusted origin.
      */
     static String originOf(String redirectUri) {

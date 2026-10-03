@@ -1,0 +1,10 @@
+{
+  "id": "PLAN-17",
+  "slug": "jwks-egress-allowlist",
+  "workstream": "WS-01",
+  "status": "shipped",
+  "plan_marshall_plan_id": "jwks-egress-allowlist",
+  "pr": "#345",
+  "landing": "landings/PLAN-17.md",
+  "seq": 5
+}

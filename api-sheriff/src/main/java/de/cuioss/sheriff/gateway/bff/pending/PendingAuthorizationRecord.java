@@ -30,7 +30,7 @@ import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The gateway-side transaction record for a browser's in-flight auth-code login (D2b).
+ * The gateway-side transaction record for a browser's in-flight auth-code flow (D2b).
  * <p>
  * The engine's {@link FlowContext} <em>is</em> the OIDC transaction DTO — it owns the
  * {@code state} (32-byte SecureRandom), {@code nonce}, PKCE verifier ({@code S256}), and
@@ -38,7 +38,7 @@ import org.jspecify.annotations.Nullable;
  * What the engine deliberately does not provide — and what this record adds — is the
  * gateway's job: <em>persistence</em>, a <em>short fixed TTL</em>, <em>single-use
  * enforcement</em> (the engine's single-use is a caller contract, not enforced by the type),
- * and a <em>same-origin-validated post-login return URL</em>. The record is therefore a thin
+ * and a <em>same-origin-validated return URL</em>. The record is therefore a thin
  * wrapper that never re-invents any engine control.
  * <p>
  * Single-use is enforced by {@link PendingAuthorizationStore} (which removes the record on
@@ -47,17 +47,24 @@ import org.jspecify.annotations.Nullable;
  * cookie ({@link BindingCookieCodec}); a callback is valid only when both the returned
  * {@code state} matches and the binding cookie resolves to this same record.
  * <p>
- * The record also carries the scope set the authorization request asked for. The callback uses it as
- * the session's active scope set when the issued access token carries no {@code scope} claim, so a
- * session always knows which scope set to refresh with.
+ * The record also carries the scope set the authorization request asked for. The callback falls back
+ * to it when the issued access token carries no {@code scope} claim, so a session always knows which
+ * scope set to refresh with.
+ * <p>
+ * <strong>Login versus widening.</strong> A record created by {@link #create} is a plain login: its
+ * {@link #widening()} is {@code null} and its callback mints a new session. A record created by
+ * {@link #createWidening} belongs to a live session widening its scopes: it carries the live
+ * session's {@code sub} and the {@linkplain Widening.Attempt attempt} it was issued for, and its
+ * callback merges into that live session instead of minting one.
  *
  * @param id              the unguessable record id (store key and binding-cookie value)
  * @param flowContext     the engine transaction DTO owning {@code state}/{@code nonce}/PKCE
- * @param returnUrl       the same-origin-validated post-login redirect target
+ * @param returnUrl       the same-origin-validated redirect target
  * @param requestedScopes the scope set the authorization request carried in its {@code scope}
  *                        parameter
  * @param createdAt       the instant the record was created (TTL anchor)
  * @param ttl             the short fixed lifetime before the record expires
+ * @param widening        the widening marker, or {@code null} for a plain login
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -69,7 +76,8 @@ FlowContext flowContext,
 String returnUrl,
 Set<String> requestedScopes,
 Instant createdAt,
-Duration ttl) {
+Duration ttl,
+@Nullable Widening widening) {
 
     /**
      * The short fixed lifetime a pending-authorization record lives before it expires. Fixed
@@ -82,17 +90,18 @@ Duration ttl) {
     private static final int ID_BYTES = 32;
 
     /**
-     * Canonical constructor rejecting any absent component — every field is mandatory — and
-     * defensively copying {@code requestedScopes} into an immutable set.
+     * Canonical constructor rejecting any absent mandatory component — every field except
+     * {@code widening} is mandatory — and defensively copying {@code requestedScopes} into an
+     * immutable set.
      *
-     * @throws NullPointerException when a component is {@code null}, or {@code requestedScopes}
-     *                              contains a {@code null} element
+     * @throws NullPointerException when a mandatory component is {@code null}, or
+     *                              {@code requestedScopes} contains a {@code null} element
      */
     public PendingAuthorizationRecord {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(flowContext, "flowContext");
         Objects.requireNonNull(returnUrl, "returnUrl");
-        requestedScopes = Set.copyOf(Objects.requireNonNull(requestedScopes, "requestedScopes"));
+        requestedScopes = immutableScopes(requestedScopes);
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(ttl, "ttl");
     }
@@ -104,13 +113,37 @@ Duration ttl) {
      * @param returnUrl       the already same-origin-validated post-login redirect target
      * @param requestedScopes the scope set the authorization request carried; duplicates collapse
      * @param createdAt       the creation instant (TTL anchor)
-     * @return a new pending-authorization record
+     * @return a new plain-login pending-authorization record ({@link #widening()} is {@code null})
      */
     public static PendingAuthorizationRecord create(FlowContext flowContext, String returnUrl,
             Collection<String> requestedScopes, Instant createdAt) {
-        Objects.requireNonNull(requestedScopes, "requestedScopes");
-        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, Set.copyOf(requestedScopes),
-                createdAt, FIXED_TTL);
+        Set<String> scopes = immutableScopes(requestedScopes);
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, scopes, createdAt, FIXED_TTL, null);
+    }
+
+    /**
+     * Creates a widening record for a live session, with a freshly generated unguessable id and the
+     * {@link #FIXED_TTL}.
+     *
+     * @param flowContext     the engine transaction DTO
+     * @param returnUrl       the already same-origin-validated redirect target after the widening
+     * @param requestedScopes the scope set the widening authorization request carried; duplicates
+     *                        collapse
+     * @param sub             the live session's subject, the identity the callback must land on
+     * @param attempt         the attempt this authorization request was issued for
+     * @param createdAt       the creation instant (TTL anchor)
+     * @return a new widening pending-authorization record
+     */
+    public static PendingAuthorizationRecord createWidening(FlowContext flowContext, String returnUrl,
+            Collection<String> requestedScopes, String sub, Widening.Attempt attempt, Instant createdAt) {
+        Set<String> scopes = immutableScopes(requestedScopes);
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, scopes, createdAt, FIXED_TTL,
+                new Widening(sub, attempt));
+    }
+
+    /** Rejects a {@code null} scope collection by argument name and copies it into an immutable set. */
+    private static Set<String> immutableScopes(Collection<String> requestedScopes) {
+        return Set.copyOf(Objects.requireNonNull(requestedScopes, "requestedScopes"));
     }
 
     /**
@@ -142,15 +175,15 @@ Duration ttl) {
     }
 
     /**
-     * Whether {@code returnUrl} is safe to redirect a browser to after login: a gateway-relative
+     * Whether {@code returnUrl} is safe to redirect a browser to: a gateway-relative
      * path ({@code /...}), or an absolute URL whose origin (scheme + host + port) matches
      * {@code gatewayOrigin}. A schema-relative ({@code //host}) value, a backslash-authority
      * ({@code /\host}, which browsers normalize to {@code //host}) value, a value carrying any
      * control character ({@code /\t/host}, which browsers strip to {@code //host}), a cross-origin
-     * absolute URL, a blank value, or an unparseable value is rejected — the post-login redirect is
+     * absolute URL, a blank value, or an unparseable value is rejected — the redirect is
      * never an open redirect.
      *
-     * @param returnUrl     the candidate post-login redirect target (may be absent/blank)
+     * @param returnUrl     the candidate redirect target (may be absent/blank)
      * @param gatewayOrigin the gateway's own origin (e.g. the {@code redirect_uri} origin)
      * @return {@code true} only when the candidate is same-origin with the gateway
      */
@@ -204,5 +237,44 @@ Duration ttl) {
             return 80;
         }
         return -1;
+    }
+
+    /**
+     * The marker that turns a pending record into a live-session widening: the identity the callback
+     * must merge into and the attempt the authorization request was issued for.
+     *
+     * @param sub     the live session's subject; the callback refuses a grant for any other subject
+     * @param attempt the attempt this authorization request was issued for
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public record Widening(String sub, Attempt attempt) {
+
+        /**
+         * Canonical constructor rejecting an absent component.
+         *
+         * @throws NullPointerException when a component is {@code null}
+         */
+        public Widening {
+            Objects.requireNonNull(sub, "sub");
+            Objects.requireNonNull(attempt, "attempt");
+        }
+
+        /**
+         * The attempt a widening authorization request was issued for. A widening starts
+         * {@link #SILENT}; an IdP answer that needs interaction re-drives exactly one
+         * {@link #INTERACTIVE} attempt, and any refusal of that attempt is terminal.
+         *
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        public enum Attempt {
+
+            /** The {@code prompt=none} attempt: the IdP may answer only from its own SSO session. */
+            SILENT,
+
+            /** The single interactive attempt that follows a silent attempt needing interaction. */
+            INTERACTIVE
+        }
     }
 }

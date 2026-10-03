@@ -61,7 +61,7 @@
 
     <properties>
         <version.token-sheriff>0.9.6</version.token-sheriff>
-        <version.json-schema-validator>3.0.7</version.json-schema-validator>
+        <version.json-schema-validator>3.0.8</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
         <!-- The ONE language-level input (ADR-0001). cui-parent-pom defaults it to 21 and reads it in
