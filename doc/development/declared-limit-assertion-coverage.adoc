@@ -951,8 +951,12 @@ an `oidc` block declares `egress_tls.oidc_tls_profile: benchmark-idp`, and
 `ItProfileConfigBindingWiringTest` is the wiring guard the paragraph above requires. It derives the
 descriptor set by directory glob with a floor, asserts that each such descriptor names the profile and
 declares no `oidc_verify_hostname` beside it, asserts that every `QUARKUS_PROFILE=it` gateway instance
-loads the properties file that binds the profile, and asserts that no gateway instance passes a
-`-Djavax.net.ssl.*` argument on its command line. The behaviour half is the integration stack's BFF
+loads the properties file that binds the profile, and asserts that no gateway passes a
+`-Djavax.net.ssl.*` argument on its command line. That last assertion covers two populations: the
+gateway services of the compose file, read from their `command`, and the one-off launch sites, the
+files under the module's `src/test/java` and `scripts/` that name the gateway image, which takes in
+the files that start it with `docker run` and a few that only inspect it. The second population is derived by a source-text scan with a floor and two named
+members, so an argument assembled by string concatenation would evade it. The behaviour half is the integration stack's BFF
 login suites: the Keycloak they dial serves a self-signed certificate, so a login completes only when
 the back-channel trusts it through the named profile.
 

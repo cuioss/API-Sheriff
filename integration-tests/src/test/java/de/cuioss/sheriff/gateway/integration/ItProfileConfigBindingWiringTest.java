@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,6 +32,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 import org.yaml.snakeyaml.Yaml;
 
 import org.junit.jupiter.api.DisplayName;
@@ -67,8 +69,11 @@ import org.junit.jupiter.api.Test;
  * {@code oidc} block and does not name the profile boots, reports ready, and then fails every login
  * on PKIX path building, because its back-channel is left on a trust store that does not hold the
  * Keycloak certificate. {@link #everyBffDescriptorNamesTheOidcTrustProfile()} pins the key on every
- * such descriptor, and {@link #noGatewayInstancePassesAJsseSystemProperty()} pins that no instance
- * reaches that trust through a process-global command-line setting instead.
+ * such descriptor. Two guards pin that no gateway reaches that trust through a process-global
+ * command-line setting instead: {@link #noGatewayInstancePassesAJsseSystemProperty()} for the compose
+ * gateway services, and {@link #noOneOffLaunchSitePassesAJsseSystemProperty()} for the one-off launch
+ * sites — the test sources and scripts of this module that start the gateway image with a bare
+ * {@code docker run} rather than as a compose service.
  * <p>
  * The instance set is <strong>derived from the parsed compose model</strong>, never enumerated. A
  * hand-maintained list could not fire for the very case the guard exists for: a gateway instance
@@ -77,13 +82,17 @@ import org.junit.jupiter.api.Test;
  * instance without an edit here. Because a derived set can also silently become empty, the derivation
  * asserts its own non-emptiness before looping — otherwise every assertion below would pass vacuously.
  * The descriptor set of the second leg is derived the same way, by directory glob, and asserts a
- * floor for the same reason.
+ * floor for the same reason. So is the one-off launch-site set: every file under {@code src/test/java}
+ * and {@code scripts/} whose text names the gateway image, which asserts a floor and names its two
+ * known launch sites, so a scan that stopped matching them cannot pass vacuously. That set is a
+ * <em>source-text</em> scan, and its limit is stated where it is defined — see
+ * {@link #oneOffLaunchSites()}.
  * <p>
  * The binding is asserted as LIST MEMBERSHIP rather than whole-value equality, because
  * {@code QUARKUS_CONFIG_LOCATIONS} is comma-separated and two instances legitimately load a second
  * location beside this one — see {@link #configLocations(String)}.
  * <p>
- * It parses the committed descriptors only — it starts no container and reaches no network.
+ * It reads the committed descriptors and sources only — it starts no container and reaches no network.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -136,6 +145,31 @@ class ItProfileConfigBindingWiringTest {
      * profile exists to avoid.
      */
     private static final String JSSE_SYSTEM_PROPERTY_PREFIX = "-Djavax.net.ssl.";
+
+    /**
+     * The gateway image a one-off launch site names. Taken from the harness rather than restated as a
+     * literal: this file carries {@link #JSSE_SYSTEM_PROPERTY_PREFIX}, so naming the image here would
+     * put this file into the very population it sweeps and fail the sweep on its own constant.
+     */
+    private static final String GATEWAY_IMAGE = OneOffGatewayContainers.IMAGE;
+
+    /** The module trees a one-off launch site lives in: the test sources and the shell scripts. */
+    private static final List<Path> LAUNCH_SITE_ROOTS =
+            List.of(MODULE.resolve("src/test/java"), MODULE.resolve("scripts"));
+
+    /**
+     * The two one-off launch sites that used to pass a JSSE trust-store argument after the image,
+     * pinned by file name so the derived set provably still reaches them.
+     */
+    private static final List<String> KNOWN_LAUNCH_SITES =
+            List.of("OneOffGatewayContainers.java", "NoCertificatePlainHttpOptInIT.java");
+
+    /**
+     * The number of module files that name the gateway image. A floor rather than an exact count, so a
+     * launch site added later is swept without an edit here, while a scan that stopped matching cannot
+     * leave the sweep iterating nothing.
+     */
+    private static final int MINIMUM_ONE_OFF_LAUNCH_SITES = 8;
 
     @Test
     @DisplayName("every it-profile gateway instance binds the mounted trust file")
@@ -193,6 +227,20 @@ class ItProfileConfigBindingWiringTest {
                             + "). That sets a JSSE default for the whole process; the trust of each leg "
                             + "is named in gateway.yaml as a profile instead (jwks.tls_profile, "
                             + EGRESS_TLS_BLOCK + "." + OIDC_TLS_PROFILE_KEY + ")");
+        }
+    }
+
+    @Test
+    @DisplayName("no one-off gateway launch site passes a JSSE system property")
+    void noOneOffLaunchSitePassesAJsseSystemProperty() throws Exception {
+        List<Path> launchSites = oneOffLaunchSites();
+
+        for (Path launchSite : launchSites) {
+            assertFalse(readText(launchSite).contains(JSSE_SYSTEM_PROPERTY_PREFIX),
+                    () -> MODULE.relativize(launchSite) + " starts the " + GATEWAY_IMAGE + " image and carries a "
+                            + JSSE_SYSTEM_PROPERTY_PREFIX + "* argument. That sets a JSSE default for the whole "
+                            + "process; the trust of each leg is named in gateway.yaml as a profile instead "
+                            + "(jwks.tls_profile, " + EGRESS_TLS_BLOCK + "." + OIDC_TLS_PROFILE_KEY + ")");
         }
     }
 
@@ -366,6 +414,55 @@ class ItProfileConfigBindingWiringTest {
             case List<?> listForm -> listForm.stream().map(String::valueOf).toList();
             default -> List.of(String.valueOf(command));
         };
+    }
+
+    /**
+     * Every file of this module that can start the gateway outside the compose topology: each regular
+     * file under {@code src/test/java} or {@code scripts/} whose text names {@link #GATEWAY_IMAGE}.
+     * Derived by scan, so a launch site added later is swept without an edit here. The set also holds
+     * files that only inspect the image and launch nothing; they carry no argument and pass trivially.
+     * <p>
+     * The derivation asserts a floor and the presence of {@link #KNOWN_LAUNCH_SITES}, for the reason
+     * {@link #itProfileServices()} asserts non-emptiness: a scan that stopped matching would otherwise
+     * turn the sweep into a vacuous pass.
+     * <p>
+     * <strong>Limit:</strong> this is a source-text scan. It sees an argument written as one literal in
+     * a file that names the image literal, which is how every launch site in this module is written
+     * today. An argument assembled at run time by string concatenation would evade it, and so would a
+     * file that launches the image through another file's constant without naming the literal itself.
+     *
+     * @return the launch-site files, sorted
+     */
+    private static List<Path> oneOffLaunchSites() throws IOException {
+        List<Path> launchSites = new ArrayList<>();
+        for (Path root : LAUNCH_SITE_ROOTS) {
+            try (Stream<Path> files = Files.walk(root)) {
+                for (Path file : files.filter(Files::isRegularFile).toList()) {
+                    if (readText(file).contains(GATEWAY_IMAGE)) {
+                        launchSites.add(file);
+                    }
+                }
+            }
+        }
+        launchSites.sort(Comparator.naturalOrder());
+        List<String> fileNames = launchSites.stream().map(file -> file.getFileName().toString()).toList();
+        assertTrue(launchSites.size() >= MINIMUM_ONE_OFF_LAUNCH_SITES,
+                () -> "expected at least " + MINIMUM_ONE_OFF_LAUNCH_SITES + " files under " + LAUNCH_SITE_ROOTS
+                        + " to name the " + GATEWAY_IMAGE + " image, found " + launchSites.size() + ": "
+                        + fileNames + " — a scan that stopped matching would turn the launch-site guard "
+                        + "into a vacuous pass");
+        assertTrue(fileNames.containsAll(KNOWN_LAUNCH_SITES),
+                () -> "the derived launch-site set " + fileNames + " must contain " + KNOWN_LAUNCH_SITES
+                        + " — the two one-off launch sites the JSSE trust-store argument was removed from");
+        return List.copyOf(launchSites);
+    }
+
+    /**
+     * Reads a file as text without failing on bytes that are not UTF-8; a malformed sequence is
+     * replaced, which cannot turn an ASCII match into a miss.
+     */
+    private static String readText(Path file) throws IOException {
+        return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
     }
 
     /**
