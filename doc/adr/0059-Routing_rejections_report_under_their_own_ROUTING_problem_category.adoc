@@ -1,0 +1,296 @@
+= ADR-0059: Routing rejections report under their own ROUTING problem category
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The three rejections that say "this request addresses nothing the gateway serves that way" — no route matched (404), a Host naming a hostname reserved for passthrough (404) and a method outside the route's allowlist (405) — report under a ROUTING category of their own (slug routing, type urn:api-sheriff:problem:routing, title Routing) instead of INPUT_VALIDATION, a breaking change to the public problem type with no alias; the two 404s stay identical on the wire and are separated for the operator by a bounded event label, which changes the label set of sheriff_errors_total to {route,category,event} for every series; the verb-gate 405 and the smuggled-host 404 become eligible for the negotiated HTML error page.
+// tags: error-contract, problem-details, routing, metrics, event-taxonomy, html-error-pages, grpc, breaking-change
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+Every rejection the gateway originates names a category. The category is read in three places: it is
+the `type` and `title` of the RFC 9457 problem document, it is the `category` label of the error
+metric, and it is the text of `grpc-message` on a `protocol: grpc` route. Whoever receives a
+rejection, a client developer or an operator reading a dashboard, starts the diagnosis from that one
+word.
+
+A category therefore has to answer the first diagnostic question: *where do I look?* Three
+rejections do not fit the category that names a malformed request:
+
+* *No route matched.* The request is well-formed. The address is one the gateway does not serve: the
+  path is unknown, the endpoint is disabled, or the route is bound to a different host.
+* *The `Host` names a hostname reserved for passthrough.* The request is well-formed. That hostname
+  is served by the accept-time L4 split and is never reachable through the terminated listener.
+* *The method is outside the route's allowlist.* The request is well-formed and the route exists.
+  The route does not serve that verb.
+
+None of the three is a defect in the request's syntax, size or content. Each is a statement about
+the route table. Reported as `Input Validation`, they send the reader to the wrong place: a request
+that misses a route because of its host binding reads as a request the security filter refused, and
+the reader inspects path encoding, headers and parameters before looking at the route's `match`
+block. The cost is highest for exactly the misconfiguration that is hardest to see, a route that
+exists and is bound to another host.
+
+Three further questions follow from moving them.
+
+. *Do the two `404`s share a category?* The smuggled-host rejection is security-relevant and an
+  unrouted address is routine. A category of its own for the first would tell a caller which
+  hostnames are reserved.
+. *How does the operator tell the two `404`s apart, if the wire does not?* An answer that is
+  identical for the caller still has to be separable for whoever runs the gateway.
+. *Which of the three may answer a browser navigation with an HTML page?* The negotiated HTML error
+  page is offered per event, and two responses that must be indistinguishable must also negotiate
+  alike.
+
+== Decision
+
+*A rejection that is a statement about the route table reports under a `ROUTING` category. The two
+`404`s in it are one answer on the wire and two values on a bounded metric label.*
+
+=== The category
+
+`EventCategory.ROUTING` carries the slug `routing`, the title `Routing` and the problem type
+`urn:api-sheriff:problem:routing`. It has three members:
+
+[cols="2,1,3", options="header"]
+|===
+| Event | Status | Cause
+
+| `NO_ROUTE_MATCHED` | `404` | no route matches the address (deny-by-default routing)
+| `PASSTHROUGH_HOST_SMUGGLED` | `404` | the `Host` of a terminated request names a `passthrough_sni` hostname
+| `METHOD_NOT_ALLOWED` | `405` | the method is outside the route's effective `allowed_methods`
+|===
+
+The type URN is public surface, and this is a *breaking change* to it: a `404` or `405` that carried
+`urn:api-sheriff:problem:input-validation` now carries `urn:api-sheriff:problem:routing`. There is no
+alias. A problem document carries exactly one `type`, so an alias could only be a second document
+shape for the same rejection, and a client matching on the type would have to handle both for as
+long as the alias lived.
+
+=== The three readers of the slug
+
+The slug is defined once, on the category, and read in three places. They cannot disagree because
+none of them holds a copy.
+
+* *The problem document.* `type` is `urn:api-sheriff:problem:routing` and `title` is `Routing`.
+* *The error metric.* `sheriff_errors_total` carries `category="routing"`.
+* *`grpc-message`.* A gateway-originated rejection on a `protocol: grpc` route is trailers-only
+  (link:0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016]) and its `grpc-message` is the
+  category slug, so a `405` on a gRPC route reads `routing`. The `grpc-status` mapping is keyed on
+  the event and is unchanged: `NOT_FOUND` for the two `404`s, `UNIMPLEMENTED` for the `405`.
+
+=== The smuggled host shares the category and the response
+
+`PASSTHROUGH_HOST_SMUGGLED` is a member of `ROUTING`, and its response is the response of an unrouted
+address: the same status, the same problem type and title, the same headers and the same negotiation.
+The reason is disclosure. A response that differed for a reserved hostname would let an anonymous
+caller enumerate the `passthrough_sni` set by sending `Host` values and comparing answers. The
+passthrough backends are deliberately unreachable through the terminated listener, and their names
+are part of what that guard protects.
+
+The security relevance of the event is kept where the caller cannot read it: the rejection still
+writes its `WARN` record, with a fixed disposition and never the raw `Host` value, and it is counted
+under its own event name.
+
+=== The `event` label
+
+The two `404`s are indistinguishable on the wire and separable on the metric. `sheriff_errors_total`
+carries an `event` label whose value is the `EventType` name:
+
+----
+sheriff_errors_total{route,category,event}
+----
+
+An unrouted address is counted under `event="NO_ROUTE_MATCHED"` and a smuggled passthrough host under
+`event="PASSTHROUGH_HOST_SMUGGLED"`, both with `category="routing"`.
+
+The label is on *every* series of the metric, not only the routing ones. This is a *breaking change*
+to a published contract: the label set was `{route,category}` and is `{route,category,event}`. A
+dashboard or alert that matches the exact label set, or that aggregates without naming the labels it
+keeps, has to be updated. A query that sums by `category` keeps its result.
+
+The label is bounded. Its value is the name of an `EventType` constant and nothing else, so its
+cardinality is fixed at the enum. It never carries request-derived input: no path, no `Host`, no
+method string. That is what keeps the meter safe to leave always on, the same rule the `route` label
+follows with its fixed `<no-route>` value.
+
+*What the metric does not count.* `sheriff_errors_total` is recorded at two sites: a rejection raised
+in the pipeline, and the over-ceiling body of a reserved path. Three rejections are rendered directly
+and are not counted in it at all, so the `event` label does not cover them:
+
+* the `405` for a request method the gateway cannot parse;
+* the `404` for a reserved path on a gateway without an active session runtime;
+* the `404` of the client JWKS path in its withheld form.
+
+All three appear in the `4xx` bucket of `sheriff_requests_total` only. The two `404`s among them are
+rendered as an unrouted address is, so they carry the routing problem document without being counted
+as routing errors.
+
+=== HTML eligibility
+
+Two members change their classification in `ErrorPageClassifier` from `KEEP_SHAPE` to
+`HTML_ELIGIBLE`, so all three members of the category now negotiate the HTML error page of
+link:0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053].
+
+* *`PASSTHROUGH_HOST_SMUGGLED`.* An unrouted address answers a browser navigation with the HTML page.
+  A smuggled host that answered the same navigation with `application/problem+json` would make the
+  two `404`s distinguishable by body shape, which is the disclosure the shared response exists to
+  prevent. Eligibility follows from wire identity; it is not a separate choice.
+* *`METHOD_NOT_ALLOWED`.* A `405` is reachable by navigation, for instance a link to an address that
+  serves `POST` only. A browser shown a JSON document for it has no page to read.
+
+The page title for a `405` is the fixed `Method Not Allowed`. Like every error-page title it is
+derived from the status and never from a problem detail.
+
+One `405` does not negotiate. A request whose method the gateway cannot parse is answered before a
+pipeline request exists, so there is no `Accept` header to read and no stage headers to carry. It is
+always `application/problem+json`. The `405` of the verb gate, raised on a selected route, negotiates.
+
+=== What stays
+
+* `RESERVED_BODY_TOO_LARGE` and `CONTENT_TOO_LARGE` remain `INPUT_VALIDATION`. A body beyond a
+  declared size is a property of the request, and
+  link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023]
+  stands as written.
+* The framing rejection remains a `400` `SECURITY_FILTER_VIOLATION` in `INPUT_VALIDATION`, with the
+  other security-filter, path-allowlist and parameter-limit rejections.
+* `/auth/userinfo` stays `Accept`-blind. It answers JSON whatever the request accepts.
+* The statuses do not change, and neither does the `Allow` header of the `405`.
+
+=== Relationship to existing records
+
+No existing record is contradicted. ADR-0016 maps events to gRPC statuses and says the trailers carry
+the category name, which now reads `routing` for these three. ADR-0053 defines the negotiation and
+the exhaustive classification and does not enumerate which events are eligible. ADR-0006, ADR-0019,
+ADR-0023, ADR-0024 and ADR-0026 name input validation for the `400` and `413` rejections that stay
+there.
+
+== Consequences
+
+=== Positive
+
+* The category answers the first diagnostic question. `Routing` sends the reader to the route table,
+  the host binding and the verb allowlist; `Input Validation` is left meaning what it says.
+* The set of reserved passthrough hostnames is not readable from the outside. Status, type, title,
+  headers and body shape are those of an unrouted address in both the JSON and the HTML answer.
+* The operator loses nothing by that. The smuggle attempt is counted under its own `event` value and
+  logged, so an alert on `event="PASSTHROUGH_HOST_SMUGGLED"` is one label matcher.
+* The `event` label separates every pair of events that share a category, not only the two `404`s:
+  the two `413`s, the two `401`s and the three upstream failures are separable by the same label.
+* A browser that navigates into a `405` or into a reserved hostname gets a page, under the same
+  explicit-`text/html` rule every other eligible exit follows.
+
+=== Negative
+
+* *Two breaking changes to public surface.* A client that matches the problem `type` of a `404` or
+  `405` sees a different URN, and a dashboard or alert that matches the exact label set of
+  `sheriff_errors_total` sees a third label. Neither has a compatibility form.
+* *More series.* The metric has one series per route, category and event that occurred, rather than
+  per route and category. The bound is the enum, so the growth is a small constant factor.
+* *The category name does not separate the routine from the hostile.* An operator looking only at
+  `category="routing"` sees unrouted traffic and smuggle attempts as one number and has to read the
+  `event` label to tell them apart.
+* *The metric is not the full count of `404`s and `405`s.* The three directly-rendered rejections
+  are outside it, so `sheriff_errors_total` and the `4xx` bucket of `sheriff_requests_total` differ
+  by design.
+
+=== Risks
+
+* *Wire identity is a property of every response attribute, not only the body.* A later change that
+  gives one of the two `404`s a header, a title or a negotiation rule of its own reopens the
+  disclosure. The classification of both events has to move together.
+* *An unbounded label by accident.* The `event` label is safe because its value is an enum name. A
+  recording site that passed a request-derived string would turn it into a cardinality and
+  log-injection problem. The recorder accepts an `EventType`, not a string, which is what makes that
+  a compile-time question.
+* *A reader assuming the label covers every rejection.* The three directly-rendered rejections carry
+  no `event` value. A dashboard that treats the metric as the complete rejection count undercounts
+  them.
+
+== Alternatives Considered
+
+*Leave the three in `INPUT_VALIDATION`.* This changes no public surface. It keeps the category that
+misdirects the diagnosis for the case that needs it most, a route that exists and is bound elsewhere.
+Rejected: the category's job is to say where to look, and for these three it says the wrong place.
+
+*Retitle `INPUT_VALIDATION` to something broad enough to cover them.* A title such as "Request
+Rejected" would stop the category from being wrong. It would do so by making the category say nothing:
+every `400`, `404`, `405` and `413` would share one word, and the reader would be back to the status
+code. It would also change the title of the rejections that are correctly named today, while leaving
+the slug and the URN describing something the title no longer does. Rejected: it removes the
+misdirection by removing the direction.
+
+*Give the smuggled host a category of its own.* A security category would make the event prominent on
+a dashboard without a second label. It would also put the distinction into the problem `type`, the
+`title` and `grpc-message`, which the caller reads. That is the disclosure the shared response
+prevents. Rejected: what must be hidden from the caller cannot be carried in a field the caller
+receives.
+
+*Keep the smuggled host in `INPUT_VALIDATION` and move only the other two.* The smuggled host would
+then differ from an unrouted address by problem type, and an anonymous caller could tell them apart
+from the body alone. Rejected for the same reason.
+
+*Keep the old URN as an alias.* A transition period in which both URNs are valid would spare clients
+an immediate change. A problem document has one `type`, so the alias would need a second response
+shape or a non-standard extension member, and every client would have to understand both. Rejected:
+the gateway has not started API stability, and a clean change costs clients one edit.
+
+*Separate the two `404`s by a second metric instead of a label.* A dedicated counter for smuggle
+attempts would leave the label set of `sheriff_errors_total` unchanged. It would solve one pair and
+leave every other pair of same-category events inseparable, and each future pair would need its own
+counter. Rejected in favour of one bounded label that separates all of them.
+
+*Put the request's host or path on the metric.* That would make a misrouted request directly
+findable. It is request-derived input on a label: unbounded cardinality, and attacker-chosen strings
+in the metrics store. Rejected: the access log is where a request's own values belong.
+
+*Leave the verb-gate `405` as JSON only.* A `405` is mostly produced by API clients, which keep the
+problem body anyway because they do not send an explicit `text/html` range. Keeping it JSON-only
+would only affect the browser that navigates into one, and that browser is the one reader a JSON
+body does not serve. Rejected: the negotiation rule already protects API clients, so the exclusion
+bought nothing.
+
+The rejected options fall into two groups. One group keeps the wire or the metric unchanged and pays
+for it with a category that misleads or a distinction that cannot be made. The other makes the
+distinction where the caller can read it. The decision separates the two audiences: the caller gets
+one answer for both `404`s, and the operator gets a label the caller never sees.
+
+== References
+
+* link:0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016]: the trailers-only gRPC rejection
+  whose `grpc-message` carries the category slug
+* link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]:
+  the accept-time SNI split whose reserved hostnames the smuggle guard protects
+* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023]:
+  the body-cap `413`, which stays in `INPUT_VALIDATION`
+* link:0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053]:
+  the negotiated HTML error page and its exhaustive classification
+* link:../architecture.adoc#_error_contract[Architecture -- Error Contract]: the consolidated status
+  mapping
+* link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML error pages]
+* link:../architecture.adoc#_metrics[Architecture -- Metrics]: the label set of `sheriff_errors_total`
+* link:../user/portal.adoc[Application Portal and HTML Error Pages]: the operator guide
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventCategory.java` and
+  `EventType.java`: the category, its slug and its members
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/ErrorPageClassifier.java`: the
+  classification and the fixed titles
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java`: the `event`
+  label and the sites that record it
