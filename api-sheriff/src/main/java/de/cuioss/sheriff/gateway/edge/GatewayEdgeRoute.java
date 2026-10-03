@@ -758,12 +758,30 @@ public class GatewayEdgeRoute {
      * the gateway refuses on size. The pipeline never runs for such a request, so this meters and
      * renders directly rather than raising a {@link GatewayException}; the WARN records the ceiling and
      * a fixed disposition only — never the offending body.
+     * <p>
+     * The request body is left unconsumed, so how much of the inbound transport the rejection ends
+     * follows the negotiated HTTP version of the request, on both paths (the pre-read
+     * {@code Content-Length} refusal and the mid-stream ceiling abort):
+     * <ul>
+     *   <li><strong>HTTP/1.x — the connection.</strong> The {@code 413} advertises
+     *       {@code Connection: close} and the connection is closed once it has been written (see
+     *       {@link #retireConnectionAfterResponse}), because unread body bytes would otherwise frame
+     *       the next request on the same keep-alive connection.</li>
+     *   <li><strong>HTTP/2 — the stream.</strong> Only the offending stream is ended once the
+     *       {@code 413} has been written (see {@link #endStreamAfterResponse}); the stream reset
+     *       discards whatever body the client still sends, and the connection and every other stream
+     *       on it stay open. No {@code Connection} header is written.</li>
+     * </ul>
      */
     private void rejectOversizedReservedBody(RoutingContext ctx, long ceiling, String disposition) {
         LOGGER.warn(ApiSheriffLogMessages.WARN.RESERVED_BODY_TOO_LARGE, ceiling, disposition);
         gatewayEventCounter.increment(EventType.RESERVED_BODY_TOO_LARGE);
         recordError(ctx, EventType.RESERVED_BODY_TOO_LARGE);
-        retireConnectionAfterResponse(ctx);
+        if (isHttp1(ctx.request().version())) {
+            retireConnectionAfterResponse(ctx);
+        } else {
+            endStreamAfterResponse(ctx);
+        }
         // Ending the response releases the admission permit through the end handler registered in
         // handle(), exactly like every other terminal path.
         renderProblem(ctx, null, EventType.RESERVED_BODY_TOO_LARGE);
@@ -775,8 +793,9 @@ public class GatewayEdgeRoute {
      * connection is closed once the response has been written. Must be called on the event loop,
      * before the response is ended.
      * <p>
-     * It has two callers, and both retire the connection because the bytes behind the rejected
-     * request cannot be trusted to frame the next one:
+     * It has two callers, both for an HTTP/1.x request only — an HTTP/2 rejection ends just its
+     * stream instead (see {@link #endStreamAfterResponse}) — and both retire the connection because
+     * the bytes behind the rejected request cannot be trusted to frame the next one:
      * <ul>
      *   <li>a {@code 413} reserved-body rejection, on BOTH of its paths (the pre-read
      *       {@code Content-Length} refusal and the mid-stream ceiling abort). The request body is
@@ -929,12 +948,14 @@ public class GatewayEdgeRoute {
      * from the single end-of-response hook, so every terminal path (streamed success, short-circuit,
      * and rendered failure) is metered exactly once. The bounded {@code route} label is the id
      * stashed at route selection, or {@link SheriffMetrics#NO_ROUTE} for an unmatched or
-     * short-circuited request.
+     * short-circuited request. The method is handed over parsed — an {@link HttpMethod}, or
+     * {@code null} for a method the gateway does not parse — so the raw method token never reaches the
+     * bounded {@code method} label.
      */
     private void recordRequestMetrics(RoutingContext ctx, long startNanos) {
         Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
         String route = routeLabel(ctx);
-        String method = ctx.request().method().name();
+        @Nullable HttpMethod method = parseMethod(ctx.request().method().name()).orElse(null);
         sheriffMetrics.recordRequest(route, method, SheriffMetrics.statusFamily(ctx.response().getStatusCode()));
         sheriffMetrics.recordRequestDuration(route, elapsed);
     }

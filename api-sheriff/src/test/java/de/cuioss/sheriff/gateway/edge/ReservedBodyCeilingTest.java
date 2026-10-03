@@ -15,8 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
@@ -27,6 +32,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -46,9 +53,15 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
+import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
@@ -81,6 +94,11 @@ import org.junit.jupiter.api.Test;
  * path that <em>passes</em> the ceiling is carved out of proxy dispatch and rendered {@code 404}.
  * {@code 404} is therefore the observable "the body was accepted and the pipeline ran" outcome, and
  * {@code 413} the "the read itself refused it" outcome — the two are unambiguous.
+ * <p>
+ * The body is left unread behind a {@code 413}, so what the rejection ends is pinned per HTTP version:
+ * over HTTP/1.x the edge retires the connection (raw sockets, {@code Connection: close}); over HTTP/2
+ * it ends only the offending stream, which a prior-knowledge HTTP/2 client observes as a
+ * {@code NO_ERROR} reset while a sibling stream and a later stream complete on the same connection.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — reserved-path request-body byte ceiling")
@@ -95,6 +113,8 @@ class ReservedBodyCeilingTest {
     private static final String CRLF = "\r\n";
     /** Bounded wait proving the pre-check refused BEFORE buffering: far below the 20s body deadline. */
     private static final long NO_BUFFERING_TIMEOUT_SECONDS = 5L;
+    /** How far the streamed HTTP/2 body overshoots the ceiling — more than one DATA frame's worth. */
+    private static final long HTTP2_SURPLUS_BYTES = 32 * 1024L;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -298,6 +318,106 @@ class ReservedBodyCeilingTest {
         assertTrue(response.startsWith("HTTP/1.1 413"), response);
         assertTrue(response.toLowerCase(Locale.ROOT).contains("connection: close"),
                 "the 413 must advertise that the connection is being retired: " + response);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a declared-length 413 ends only its own stream; a sibling stream and the connection carry on")
+    void declaredLengthRejectionOnHttp2EndsOnlyTheOffendingStream() throws Exception {
+        // The oversized stream declares far more than the ceiling and sends only a few bytes of it, so
+        // its stream is still open when the pre-read refusal is written.
+        assertHttp2RejectionEndsOnlyItsStream(rejected -> {
+            rejected.putHeader("Content-Length", String.valueOf(ceiling * 64));
+            rejected.write(formBody(64));
+        });
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a mid-stream 413 ends only its own stream; a sibling stream and the connection carry on")
+    void streamedRejectionOnHttp2EndsOnlyTheOffendingStream() throws Exception {
+        // No declared length: the body crosses the ceiling only as its DATA frames arrive, so it is the
+        // streaming cumulative counter that refuses it. The write outlasts the stream reset and is
+        // allowed to fail there — what is asserted is the response and the reset.
+        assertHttp2RejectionEndsOnlyItsStream(rejected -> rejected.setChunked(true)
+                .write(formBody(ceiling + HTTP2_SURPLUS_BYTES)));
+    }
+
+    /**
+     * Drives one prior-knowledge HTTP/2 connection carrying three streams to the back-channel logout
+     * path: a sibling whose within-ceiling body is still open, the stream {@code sendOversized} pushes
+     * over the ceiling, and a further stream sent after the rejection. The rejected stream must be
+     * answered {@code 413} without a {@code Connection} header and then reset with {@code NO_ERROR},
+     * while the sibling and the further stream are answered on the very same, still-open connection.
+     * A rejection that closed the connection would fail the sibling and force the further stream onto
+     * a new connection.
+     */
+    private void assertHttp2RejectionEndsOnlyItsStream(Consumer<HttpClientRequest> sendOversized) throws Exception {
+        String siblingBody = formBody(64);
+        int siblingSplit = siblingBody.length() / 2;
+        HttpClient http2Client = vertx.createHttpClient(new HttpClientOptions()
+                .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
+        try {
+            // Arrange — the sibling stream opens the connection and is left with its body unfinished.
+            HttpClientRequest sibling = Awaits.connect(http2Client.request(backchannelPost()),
+                    "the sibling stream to open");
+            HttpConnection connection = sibling.connection();
+            AtomicBoolean connectionClosed = new AtomicBoolean();
+            connection.closeHandler(closed -> connectionClosed.set(true));
+            Awaits.connect(sibling.setChunked(true).write(siblingBody.substring(0, siblingSplit)),
+                    "the sibling stream to send the first part of its body");
+
+            // Act — the oversized stream, on the same connection.
+            HttpClientRequest rejected = Awaits.connect(http2Client.request(backchannelPost()),
+                    "the oversized stream to open");
+            HttpConnection rejectedConnection = rejected.connection();
+            CompletableFuture<Throwable> rejectedStreamEnded = new CompletableFuture<>();
+            rejected.exceptionHandler(rejectedStreamEnded::complete);
+            sendOversized.accept(rejected);
+            HttpClientResponse rejection = Awaits.connect(rejected.response(), "the 413 to be answered");
+            String rejectionBody = Awaits.connect(rejection.body(), "the 413 body to arrive").toString();
+            Throwable streamEnd = Awaits.connect(rejectedStreamEnded, "the edge to reset the oversized stream");
+
+            HttpClientResponse siblingAnswer = Awaits.connect(sibling.end(siblingBody.substring(siblingSplit))
+                    .compose(ended -> sibling.response()), "the sibling to be answered");
+            Awaits.connect(siblingAnswer.body(), "the sibling response body to arrive");
+            HttpClientRequest after = Awaits.connect(http2Client.request(backchannelPost()),
+                    "a further stream to open");
+            HttpConnection afterConnection = after.connection();
+            HttpClientResponse afterAnswer = Awaits.connect(after.send(Buffer.buffer(formBody(64))),
+                    "the further stream to be answered");
+            Awaits.connect(afterAnswer.body(), "the further response body to arrive");
+
+            // Assert
+            assertAll("HTTP/2 stream-scoped reserved-body rejection",
+                    () -> assertEquals(HttpVersion.HTTP_2, rejection.version()),
+                    () -> assertEquals(413, rejection.statusCode(), rejectionBody),
+                    () -> assertTrue(rejectionBody.contains("\"status\":413"), rejectionBody),
+                    () -> assertNull(rejection.getHeader("Connection"),
+                            "an HTTP/2 rejection must not carry the connection-specific header"),
+                    () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
+                            "the oversized stream must be reset with NO_ERROR"),
+                    () -> assertEquals(404, siblingAnswer.statusCode(),
+                            "the sibling stream must complete normally (reserved carve-out under the inert runtime)"),
+                    () -> assertEquals(404, afterAnswer.statusCode(),
+                            "a further stream must be answered normally on the same connection"),
+                    () -> assertSame(connection, rejectedConnection,
+                            "the oversized stream must have shared the sibling's connection"),
+                    () -> assertSame(connection, afterConnection,
+                            "the further stream must reuse the connection the 413 was written on"),
+                    () -> assertFalse(connectionClosed.get(),
+                            "the HTTP/2 connection must stay open after a reserved-body rejection"));
+        } finally {
+            Awaits.teardown(http2Client.close(), "the HTTP/2 client to close");
+        }
+    }
+
+    /**
+     * A POST to the back-channel logout path, dialled at the loopback literal with the
+     * {@code localhost} authority — see {@link #post} for why the authority must stay the name.
+     */
+    private RequestOptions backchannelPost() {
+        return new RequestOptions()
+                .setServer(SocketAddress.inetSocketAddress(frontPort, LoopbackHost.ADDRESS))
+                .setHost("localhost").setPort(frontPort).setMethod(HttpMethod.POST).setURI(BACKCHANNEL_LOGOUT_PATH);
     }
 
     /**

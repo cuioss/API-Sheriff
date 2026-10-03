@@ -22,12 +22,14 @@ import java.util.Objects;
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The framework-bound metrics adapter (ADR-0005 seam) that surfaces the gateway's request,
@@ -53,6 +55,8 @@ import jakarta.inject.Inject;
  * </ul>
  * Route cardinality is bounded (route id is a config-fixed label; unmatched requests share the
  * fixed {@value #NO_ROUTE} value) and every other label draws from a fixed set — the
+ * {@code method} label of {@value #REQUESTS_TOTAL} is an {@link HttpMethod} enum name or the single
+ * {@value #METHOD_OTHER} placeholder for a method the gateway does not parse, the
  * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, and the {@code event}
  * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries
  * request-derived input — so every meter is safe to keep always on. Each record call
@@ -89,6 +93,12 @@ public class SheriffMetrics {
     /** The bounded label value shared by requests that matched no route. */
     public static final String NO_ROUTE = "<no-route>";
 
+    /**
+     * The bounded {@code method} label value of {@link #REQUESTS_TOTAL} shared by every request whose
+     * method is not an {@link HttpMethod} — the method token itself never becomes a label value.
+     */
+    public static final String METHOD_OTHER = "OTHER";
+
     private static final String TAG_ROUTE = "route";
     private static final String TAG_METHOD = "method";
     private static final String TAG_STATUS_FAMILY = "status_family";
@@ -109,15 +119,32 @@ public class SheriffMetrics {
 
     /**
      * Counts one completed request against {@link #REQUESTS_TOTAL}.
+     * <p>
+     * The {@code method} label is bounded here, not by the caller: it is the {@link HttpMethod#name()
+     * enum name} of a parsed method, or {@value #METHOD_OTHER} when the request carried a method the
+     * gateway does not parse ({@code null}). The parameter type admits no method token, so no
+     * request-derived string can reach the label and its value set is exactly the {@link HttpMethod}
+     * constants plus {@value #METHOD_OTHER}.
      *
      * @param route        the config-fixed route id, or {@link #NO_ROUTE} when unmatched
-     * @param method       the request method (e.g. {@code GET})
+     * @param method       the parsed request method, or {@code null} when the request carried a
+     *                     method the gateway does not parse
      * @param statusFamily the response status family ({@code 2xx} / {@code 3xx} / {@code 4xx} /
      *                     {@code 5xx})
      */
-    public void recordRequest(String route, String method, String statusFamily) {
+    public void recordRequest(String route, @Nullable HttpMethod method, String statusFamily) {
         registry.counter(REQUESTS_TOTAL,
-                TAG_ROUTE, route, TAG_METHOD, method, TAG_STATUS_FAMILY, statusFamily).increment();
+                TAG_ROUTE, route, TAG_METHOD, methodLabel(method), TAG_STATUS_FAMILY, statusFamily).increment();
+    }
+
+    /**
+     * Maps a parsed request method onto its bounded {@code method} label value.
+     *
+     * @param method the parsed request method, or {@code null} for a method the gateway does not parse
+     * @return the {@link HttpMethod} enum name, or {@value #METHOD_OTHER} for {@code null}
+     */
+    private static String methodLabel(@Nullable HttpMethod method) {
+        return method != null ? method.name() : METHOD_OTHER;
     }
 
     /**

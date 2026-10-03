@@ -23,16 +23,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.annotation.Annotation;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -60,6 +64,7 @@ import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
@@ -113,6 +118,8 @@ class GatewayEdgePipelineTest {
     private static final String GRPC_UNAUTHENTICATED = "16";
     private static final String ASSET_FILE = "index.html";
     private static final String FRONTEND_ANCHOR = "frontend";
+    /** How many distinct unparsed method tokens the bounded-method-label case sends. */
+    private static final int UNPARSED_METHOD_SAMPLES = 6;
 
     /** Counts the requests that actually reached the stub upstream. */
     private final AtomicInteger upstreamHits = new AtomicInteger();
@@ -305,6 +312,49 @@ class GatewayEdgePipelineTest {
         assertEquals(405, response.status());
         assertNull(response.headers().get("X-Upstream-Echo"),
                 "an unmodelled verb must never reach the upstream");
+    }
+
+    @Test
+    @DisplayName("meters a method the gateway does not parse under the OTHER placeholder, never under its token")
+    void metersUnparsedMethodUnderThePlaceholder() throws Exception {
+        // Arrange — TRACE (a real verb outside the method model) plus generated tokens no HttpMethod
+        // constant carries; each is a distinct label value the request would mint if the token leaked.
+        Set<String> modelled = Arrays.stream(HttpMethod.values()).map(HttpMethod::name).collect(Collectors.toSet());
+        Set<String> tokens = new LinkedHashSet<>();
+        tokens.add("TRACE");
+        while (tokens.size() < UNPARSED_METHOD_SAMPLES) {
+            String token = Generators.letterStrings(6, 12).next();
+            if (!modelled.contains(token)) {
+                tokens.add(token);
+            }
+        }
+
+        // Act
+        for (String token : tokens) {
+            assertEquals(405, send(io.vertx.core.http.HttpMethod.valueOf(token), "/echo/orders", Map.of(), null)
+                    .status(), "a method outside the model is refused 405: " + token);
+        }
+        // The edge meters from RoutingContext.addEndHandler, asynchronously to the client receiving the
+        // response, so wait until every refusal has been counted.
+        Awaits.until(() -> {
+            var counter = meterRegistry.find(SheriffMetrics.REQUESTS_TOTAL)
+                    .tags("method", SheriffMetrics.METHOD_OTHER).counter();
+            return counter != null && counter.count() >= tokens.size();
+        }, "the edge end handler to meter every 405 under the placeholder", Awaits.CONNECT_CEILING_SECONDS);
+
+        // Assert
+        var counters = meterRegistry.find(SheriffMetrics.REQUESTS_TOTAL).counters();
+        Set<String> methodLabels = counters.stream().map(counter -> counter.getId().getTag("method"))
+                .collect(Collectors.toSet());
+        assertAll("bounded method label",
+                () -> assertEquals(tokens.size(), meterRegistry.counter(SheriffMetrics.REQUESTS_TOTAL,
+                                "route", SheriffMetrics.NO_ROUTE, "method", SheriffMetrics.METHOD_OTHER,
+                                "status_family", "4xx").count(),
+                        "every unparsed method moves the one placeholder series"),
+                () -> assertEquals(Set.of(SheriffMetrics.METHOD_OTHER), methodLabels,
+                        "no method token may become a label value: " + methodLabels),
+                () -> assertTrue(tokens.stream().noneMatch(methodLabels::contains),
+                        "no series may carry a raw method token: " + methodLabels));
     }
 
     @Test

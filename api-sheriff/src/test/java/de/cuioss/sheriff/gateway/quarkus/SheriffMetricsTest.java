@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -42,6 +43,7 @@ import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -158,13 +160,68 @@ class SheriffMetricsTest {
         @Test
         @DisplayName("recordRequest counts under sheriff_requests_total{route,method,status_family}")
         void recordRequestCountsPathsView() {
-            metrics.recordRequest("api", "GET", "2xx");
-            metrics.recordRequest("api", "GET", "2xx");
+            metrics.recordRequest("api", HttpMethod.GET, "2xx");
+            metrics.recordRequest("api", HttpMethod.GET, "2xx");
 
             var counter = registry.find("sheriff_requests_total")
                     .tags("route", "api", "method", "GET", "status_family", "2xx").counter();
             assertNotNull(counter, "sheriff_requests_total must be registered with the labelled tags");
             assertEquals(2.0, counter.count());
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(HttpMethod.class)
+        @DisplayName("recordRequest labels every parsed method with its enum name")
+        void recordRequestLabelsParsedMethodWithEnumName(HttpMethod method) {
+            metrics.recordRequest("api", method, "2xx");
+
+            var counters = registry.find("sheriff_requests_total").counters();
+            assertEquals(1, counters.size());
+            assertEquals(method.name(), counters.iterator().next().getId().getTag("method"));
+        }
+
+        @Test
+        @DisplayName("recordRequest labels a method the gateway does not parse with the one OTHER placeholder")
+        void recordRequestLabelsUnparsedMethodWithPlaceholder() {
+            metrics.recordRequest(SheriffMetrics.NO_ROUTE, null, "4xx");
+            metrics.recordRequest(SheriffMetrics.NO_ROUTE, null, "4xx");
+
+            var counter = registry.find("sheriff_requests_total")
+                    .tags("route", SheriffMetrics.NO_ROUTE, "method", "OTHER", "status_family", "4xx").counter();
+            assertAll("the placeholder series",
+                    () -> assertEquals("OTHER", SheriffMetrics.METHOD_OTHER),
+                    () -> assertTrue(Arrays.stream(HttpMethod.values())
+                                    .noneMatch(method -> method.name().equals(SheriffMetrics.METHOD_OTHER)),
+                            "the placeholder must not collide with a parsed method's label"),
+                    () -> assertNotNull(counter, "an unparsed method is counted under the placeholder"),
+                    () -> assertEquals(2.0, counter.count(), "every unparsed method moves the one series"),
+                    () -> assertEquals(1, registry.find("sheriff_requests_total").counters().size()));
+        }
+
+        @Test
+        @DisplayName("recordRequest bounds the method label to the HttpMethod names plus the placeholder")
+        void recordRequestBoundsMethodLabelCardinality() {
+            // Arrange — every value the parameter admits, each recorded more than once.
+            List<@Nullable HttpMethod> admitted = new ArrayList<>(Arrays.asList(HttpMethod.values()));
+            admitted.add(null);
+
+            // Act
+            for (int round = 0; round < 3; round++) {
+                admitted.forEach(method -> metrics.recordRequest("api", method, "2xx"));
+            }
+
+            // Assert
+            var counters = registry.find("sheriff_requests_total").counters();
+            Set<String> methodLabels = counters.stream().map(counter -> counter.getId().getTag("method"))
+                    .collect(Collectors.toSet());
+            Set<String> expected = Stream.concat(Arrays.stream(HttpMethod.values()).map(HttpMethod::name),
+                    Stream.of(SheriffMetrics.METHOD_OTHER)).collect(Collectors.toSet());
+            assertAll("bounded method label",
+                    () -> assertEquals(expected, methodLabels),
+                    () -> assertEquals(HttpMethod.values().length + 1, counters.size()),
+                    () -> counters.forEach(counter -> assertEquals(Set.of("route", "method", "status_family"),
+                            counter.getId().getTags().stream().map(Tag::getKey).collect(Collectors.toSet()),
+                            "sheriff_requests_total must carry exactly the route, method and status_family tags")));
         }
 
         @Test
