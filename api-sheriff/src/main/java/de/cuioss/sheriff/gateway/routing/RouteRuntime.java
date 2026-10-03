@@ -191,9 +191,9 @@ public final class RouteRuntime {
 
     /**
      * The materialized, lower-cased exact-match {@code Origin} allowlist enforced on a WebSocket
-     * upgrade (GW-09 / CSWSH). Empty for a non-WebSocket route, and empty (no enforcement) for a
-     * non-bearer WebSocket route that declares no allowlist — a bearer WebSocket route always
-     * resolves a non-empty allowlist (fail-closed at boot).
+     * upgrade (GW-09 / CSWSH). Empty for a non-WebSocket route, and empty (no enforcement) only for
+     * a {@code require: none} WebSocket route that declares no allowlist — a bearer or session
+     * WebSocket route always resolves a non-empty allowlist (fail-closed at boot).
      */
     @Builder.Default
     private final Set<String> effectiveAllowedOrigins = Set.of();

@@ -22,12 +22,14 @@ import java.util.Objects;
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The framework-bound metrics adapter (ADR-0005 seam) that surfaces the gateway's request,
@@ -38,8 +40,8 @@ import jakarta.inject.Inject;
  * <ul>
  *   <li>{@value #REQUESTS_TOTAL}{@code {route,method,status_family}} — the "paths" view;</li>
  *   <li>{@value #REQUEST_DURATION_SECONDS}{@code {route}} — per-route latency distribution;</li>
- *   <li>{@value #ERRORS_TOTAL}{@code {route,category}} — the "errors" view, keyed by
- *       {@link EventCategory};</li>
+ *   <li>{@value #ERRORS_TOTAL}{@code {route,category,event}} — the "errors" view, keyed by
+ *       {@link EventCategory} and the {@link EventType} name;</li>
  *   <li>{@value #SECURITY_EVENTS_TOTAL}{@code {failure_type}} — the {@code cui-http}
  *       security-filter counts;</li>
  *   <li>{@value #UPSTREAM_DURATION_SECONDS}{@code {route}} — downstream-call time, separated
@@ -53,8 +55,11 @@ import jakarta.inject.Inject;
  * </ul>
  * Route cardinality is bounded (route id is a config-fixed label; unmatched requests share the
  * fixed {@value #NO_ROUTE} value) and every other label draws from a fixed set — the
- * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values — so every meter is
- * safe to keep always on. Each record call
+ * {@code method} label of {@value #REQUESTS_TOTAL} is an {@link HttpMethod} enum name or the single
+ * {@value #METHOD_OTHER} placeholder for a method the gateway does not parse, the
+ * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, and the {@code event}
+ * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries
+ * request-derived input — so every meter is safe to keep always on. Each record call
  * resolves its meter through the {@link MeterRegistry}, which caches meters by name and tag set,
  * so the recorder holds no per-meter state and is thread-safe by delegation.
  *
@@ -68,7 +73,10 @@ public class SheriffMetrics {
     public static final String REQUESTS_TOTAL = "sheriff_requests_total";
     /** Per-route request latency distribution (timer). */
     public static final String REQUEST_DURATION_SECONDS = "sheriff_request_duration_seconds";
-    /** Counter of rejected / failed requests keyed by {@link EventCategory}. */
+    /**
+     * Counter of rejected / failed requests keyed by route, {@link EventCategory} slug and the
+     * {@link EventType} name ({@code event} label).
+     */
     public static final String ERRORS_TOTAL = "sheriff_errors_total";
     /** The {@code cui-http} security-filter counts, per failure type. */
     public static final String SECURITY_EVENTS_TOTAL = "sheriff_security_events_total";
@@ -84,6 +92,12 @@ public class SheriffMetrics {
 
     /** The bounded label value shared by requests that matched no route. */
     public static final String NO_ROUTE = "<no-route>";
+
+    /**
+     * The bounded {@code method} label value of {@link #REQUESTS_TOTAL} shared by every request whose
+     * method is not an {@link HttpMethod} — the method token itself never becomes a label value.
+     */
+    public static final String METHOD_OTHER = "OTHER";
 
     private static final String TAG_ROUTE = "route";
     private static final String TAG_METHOD = "method";
@@ -105,15 +119,23 @@ public class SheriffMetrics {
 
     /**
      * Counts one completed request against {@link #REQUESTS_TOTAL}.
+     * <p>
+     * The {@code method} label is bounded here, not by the caller: it is the {@link HttpMethod#name()
+     * enum name} of a parsed method, or {@value #METHOD_OTHER} when the request carried a method the
+     * gateway does not parse ({@code null}). The parameter type admits no method token, so no
+     * request-derived string can reach the label and its value set is exactly the {@link HttpMethod}
+     * constants plus {@value #METHOD_OTHER}.
      *
      * @param route        the config-fixed route id, or {@link #NO_ROUTE} when unmatched
-     * @param method       the request method (e.g. {@code GET})
+     * @param method       the parsed request method, or {@code null} when the request carried a
+     *                     method the gateway does not parse
      * @param statusFamily the response status family ({@code 2xx} / {@code 3xx} / {@code 4xx} /
      *                     {@code 5xx})
      */
-    public void recordRequest(String route, String method, String statusFamily) {
+    public void recordRequest(String route, @Nullable HttpMethod method, String statusFamily) {
+        String methodLabel = method != null ? method.name() : METHOD_OTHER;
         registry.counter(REQUESTS_TOTAL,
-                TAG_ROUTE, route, TAG_METHOD, method, TAG_STATUS_FAMILY, statusFamily).increment();
+                TAG_ROUTE, route, TAG_METHOD, methodLabel, TAG_STATUS_FAMILY, statusFamily).increment();
     }
 
     /**
@@ -127,13 +149,31 @@ public class SheriffMetrics {
     }
 
     /**
-     * Counts one rejected / failed request against {@link #ERRORS_TOTAL}, keyed by category slug.
+     * Counts one rejected / failed request against {@link #ERRORS_TOTAL}, tagged with the route, the
+     * event's {@link EventCategory#slug() category slug} and the {@link EventType} name as the
+     * {@code event} label.
+     * <p>
+     * The edge records at two sites only: the pipeline's rendered {@code GatewayException} failure and
+     * the over-ceiling reserved-path body rejection. Three directly-rendered rejections are
+     * <em>not</em> counted here: a request method the gateway cannot parse ({@code 405}), a reserved
+     * path carved out on a gateway without an active session runtime ({@code 404}), and the withheld
+     * client-JWKS path ({@code 404}). They surface only through the {@code 4xx} bucket of
+     * {@link #REQUESTS_TOTAL}.
      *
-     * @param route    the config-fixed route id, or {@link #NO_ROUTE} when unmatched
-     * @param category the failure category
+     * @param route     the config-fixed route id, or {@link #NO_ROUTE} when unmatched
+     * @param eventType the failure event; must carry a category
+     * @throws IllegalArgumentException if {@code eventType} carries no category — a success /
+     *                                  informational event is not an error
      */
-    public void recordError(String route, EventCategory category) {
-        registry.counter(ERRORS_TOTAL, TAG_ROUTE, route, TAG_CATEGORY, category.slug()).increment();
+    public void recordError(String route, EventType eventType) {
+        Objects.requireNonNull(route, TAG_ROUTE);
+        Objects.requireNonNull(eventType, "eventType");
+        EventCategory category = eventType.category();
+        if (category == null) {
+            throw new IllegalArgumentException("sheriff_errors_total accepts only event types that carry a category");
+        }
+        registry.counter(ERRORS_TOTAL,
+                TAG_ROUTE, route, TAG_CATEGORY, category.slug(), TAG_EVENT, eventType.name()).increment();
     }
 
     /**

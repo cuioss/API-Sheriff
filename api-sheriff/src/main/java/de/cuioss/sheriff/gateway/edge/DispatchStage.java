@@ -52,7 +52,11 @@ import org.jspecify.annotations.Nullable;
  * {@link ByteCappedBodyStream} that forwards each chunk to the upstream request as it arrives and
  * enforces the {@code max_body_bytes} ceiling with a running counter. A mid-stream breach ABORTS
  * the in-flight upstream call (Vert.x {@link HttpClientRequest#reset()}) and surfaces
- * {@link EventType#CONTENT_TOO_LARGE} (413). The upstream body is <strong>never
+ * {@link EventType#CONTENT_TOO_LARGE} (413). An inbound stream that fails after dispatch has begun
+ * aborts the upstream call the same way and surfaces {@link EventType#INBOUND_BODY_ABORTED} (400), so
+ * a request body that did not arrive whole is never completed towards the upstream and its HTTP/1.x
+ * upstream connection is never pooled again. The
+ * upstream body is <strong>never
  * materialized</strong> into an {@code HttpResult<byte[]>} (ADR-0006/0008): the returned
  * {@link HttpClientResponse} is a live {@link ReadStream} whose body {@link ResponseStage} streams
  * back with backpressure.
@@ -61,6 +65,15 @@ import org.jspecify.annotations.Nullable;
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
  * contract by {@link UpstreamFailureMapper}; a body-cap breach propagates its own
  * {@link GatewayException} unchanged.
+ * <p>
+ * <strong>The breaker counts upstream failures only.</strong> A dispatch the client itself ended —
+ * the body-cap breach, or an inbound body stream that failed after dispatch began — reaches the
+ * guard as the {@link GatewayException} the {@link ByteCappedBodyStream} recorded for it
+ * ({@link EventType#CONTENT_TOO_LARGE}, or {@link EventType#INBOUND_BODY_ABORTED} for the failed
+ * inbound body), never as the transport error the aborted upstream request produced. The guard skips
+ * a {@link GatewayException}, so such a dispatch neither counts as an upstream failure nor is
+ * retried, whatever the client sends and however often. A failure with no client-side abort behind
+ * it — a refused connection, an upstream reset, a timeout — is counted and mapped as before.
  * <p>
  * <strong>Stream-aware retry gating.</strong> When the route enables SmallRye retry, the guarded
  * lambda may be re-invoked after a failure. A streamed request cannot be safely replayed once any
@@ -242,6 +255,7 @@ public final class DispatchStage {
                 .setPort(upstream.port())
                 .setSsl("https".equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri);
+        AtomicReference<ByteCappedBodyStream> cappedBody = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
                     forwardHeaders.forEach(request::putHeader);
@@ -249,8 +263,10 @@ public final class DispatchStage {
                     // request.send(...); mark it so a retry re-entry never re-attaches the consumed
                     // stream (which would stall) — see guardedDispatch's bodyStreamConsumed gate.
                     bodyStreamSubscribed.set(true);
-                    return request.send(new ByteCappedBodyStream(requestBody, maxBodyBytes, request::reset,
-                            bytesSent::addAndGet));
+                    ByteCappedBodyStream body = new ByteCappedBodyStream(requestBody, maxBodyBytes, request::reset,
+                            bytesSent::addAndGet);
+                    cappedBody.set(body);
+                    return request.send(body);
                 })
                 .map(received -> {
                     // Pause the upstream body the instant its head arrives, on the client's own
@@ -262,7 +278,20 @@ public final class DispatchStage {
                     received.pause();
                     return received;
                 });
-        return response.toCompletionStage().toCompletableFuture().get();
+        try {
+            return response.toCompletionStage().toCompletableFuture().get();
+        } catch (ExecutionException dispatchFailure) {
+            // The body stream aborts the upstream request itself when the client ends the dispatch, and
+            // the transport then reports that abort as a reset. Surface the recorded client-side cause
+            // in its place, so the guard sees a GatewayException — which it skips — and the breaker is
+            // left to count upstream failures only.
+            ByteCappedBodyStream body = cappedBody.get();
+            GatewayException clientAbort = body == null ? null : body.clientAbort();
+            if (clientAbort != null) {
+                throw clientAbort;
+            }
+            throw dispatchFailure;
+        }
     }
 
     private static @Nullable GatewayException extractGatewayException(Throwable failure) {
@@ -301,12 +330,118 @@ public final class DispatchStage {
     }
 
     /**
+     * The inbound request body together with the memory of its failure.
+     * <p>
+     * A stream reports a failure only to the exception handler registered at that moment. The body is
+     * handed to the upstream request on a virtual thread, some time after the request arrived, so a
+     * failure in between would reach no one and the dispatch would then wait on a body that can never
+     * end. This decorator is therefore armed on the inbound stream's own event loop, before the
+     * virtual-thread hop: it records the first failure and replays it to whichever handler is
+     * registered later, so a consumer that subscribes late still learns that the body failed — and
+     * {@link ByteCappedBodyStream} then aborts the upstream request instead of leaving it open.
+     * <p>
+     * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
+     * registered from another thread; both go through the same monitor.
+     */
+    static final class InboundBody implements ReadStream<Buffer> {
+
+        private final ReadStream<Buffer> delegate;
+        private @Nullable Throwable failure;
+        private @Nullable Handler<Throwable> failureHandler;
+
+        private InboundBody(ReadStream<Buffer> delegate) {
+            this.delegate = delegate;
+        }
+
+        /**
+         * Wraps {@code delegate} and claims its exception handler, so every failure from now on is
+         * recorded.
+         *
+         * @param delegate the inbound request body stream
+         * @return the armed decorator, to be handed to {@link DispatchStage#dispatch} in its place
+         */
+        static InboundBody arm(ReadStream<Buffer> delegate) {
+            InboundBody body = new InboundBody(Objects.requireNonNull(delegate, "delegate"));
+            delegate.exceptionHandler(body::onFailure);
+            return body;
+        }
+
+        private synchronized void onFailure(Throwable cause) {
+            if (failure == null) {
+                failure = cause;
+            }
+            if (failureHandler != null) {
+                failureHandler.handle(cause);
+            }
+        }
+
+        @Override
+        public synchronized ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
+            this.failureHandler = handler;
+            if (handler != null && failure != null) {
+                handler.handle(failure);
+            }
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
+            delegate.handler(handler);
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            delegate.pause();
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            delegate.resume();
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            delegate.fetch(amount);
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
+            delegate.endHandler(endHandler);
+            return this;
+        }
+    }
+
+    /**
      * A {@link ReadStream} decorator that forwards each request-body chunk to the upstream as it
      * arrives — never accumulating the body — while counting bytes against a ceiling. On breach it
      * aborts the in-flight upstream request and fails the stream with a
      * {@link EventType#CONTENT_TOO_LARGE} {@link GatewayException}.
+     * <p>
+     * <strong>An inbound failure aborts the upstream request too.</strong> When the inbound stream
+     * itself fails after dispatch has begun — its chunk framing is malformed, or the client connection
+     * drops mid-body — the same abort action runs before the failure is propagated. A request body
+     * that did not arrive whole is therefore never completed towards the upstream: the upstream
+     * request is reset at once, which on HTTP/1.x closes that upstream connection instead of returning
+     * it to the pool, and on HTTP/2 resets the one stream. The abort action runs at most once per
+     * stream, whichever of the two triggers fires first.
+     * <p>
+     * <strong>Either abort is recorded as client-caused.</strong> The trigger that fires first leaves a
+     * {@link GatewayException} behind — {@link EventType#CONTENT_TOO_LARGE} for the cap breach,
+     * {@link EventType#INBOUND_BODY_ABORTED} for the failed inbound stream — readable through
+     * {@link #clientAbort()} from any thread, and set before the abort action runs. The dispatch that
+     * owns this stream reports that exception in place of the transport error its own abort caused.
+     * A failed inbound stream is a client-caused termination, not a security filter violation: it is
+     * reported under its own event so an ordinary dropped upload raises no security warning.
      */
     static final class ByteCappedBodyStream implements ReadStream<Buffer> {
+
+        /** Fixed disposition of a failed inbound body; carries nothing the client supplied. */
+        private static final String INBOUND_BODY_FAILED =
+                "Request body failed before it arrived whole; the upstream request was aborted";
 
         private final ReadStream<Buffer> delegate;
         private final long maxBytes;
@@ -315,7 +450,12 @@ public final class DispatchStage {
         private long bytesSeen;
         private @Nullable Handler<Buffer> dataHandler;
         private @Nullable Handler<Throwable> failureHandler;
-        private boolean aborted;
+        /**
+         * The single abort claim: the trigger whose {@code compareAndSet} from {@code null} succeeds owns
+         * the abort. The inbound failure may be replayed on the thread that registers the failure handler
+         * while chunks arrive on the event loop, so the claim must be atomic across both callbacks.
+         */
+        private final AtomicReference<@Nullable GatewayException> clientAbort = new AtomicReference<>();
 
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, Runnable abortAction) {
             this(delegate, maxBytes, abortAction, length -> {
@@ -328,21 +468,44 @@ public final class DispatchStage {
             this.maxBytes = maxBytes;
             this.abortAction = Objects.requireNonNull(abortAction, "abortAction");
             this.bytesForwarded = Objects.requireNonNull(bytesForwarded, "bytesForwarded");
-            delegate.exceptionHandler(this::propagateFailure);
+            delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
         }
 
+        /**
+         * The inbound stream failed: abort the upstream request first, then report the failure, so the
+         * consumer never sees a failed body whose upstream request is still open.
+         */
+        private void onInboundFailure(Throwable failure) {
+            if (clientAbort.compareAndSet(null,
+                    new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure))) {
+                abortAction.run();
+            }
+            propagateFailure(failure);
+        }
+
+        /**
+         * @return the client-caused reason this stream aborted the upstream request, or {@code null}
+         *         while it has not aborted it
+         */
+        @Nullable
+        GatewayException clientAbort() {
+            return clientAbort.get();
+        }
+
         private void onChunk(Buffer chunk) {
-            if (aborted) {
+            if (clientAbort.get() != null) {
                 return;
             }
             bytesSeen += chunk.length();
             if (bytesSeen > maxBytes) {
-                aborted = true;
                 delegate.pause();
-                abortAction.run();
-                propagateFailure(new GatewayException(EventType.CONTENT_TOO_LARGE,
-                        "Request body exceeded max_body_bytes=" + maxBytes));
+                GatewayException breach = new GatewayException(EventType.CONTENT_TOO_LARGE,
+                        "Request body exceeded max_body_bytes=" + maxBytes);
+                if (clientAbort.compareAndSet(null, breach)) {
+                    abortAction.run();
+                    propagateFailure(breach);
+                }
                 return;
             }
             // The chunk cleared the cap and is about to cross to the upstream — record it so the

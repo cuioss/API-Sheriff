@@ -169,6 +169,17 @@ class GrpcStatusMapperTest {
         }
 
         @Test
+        @DisplayName("renders a method-not-allowed rejection as grpc-status 12 with grpc-message routing")
+        void rendersMethodNotAllowedUnderRoutingCategory() throws Exception {
+            HttpClientResponse response = render(EventType.METHOD_NOT_ALLOWED, Map.of());
+
+            assertEquals("12", response.getHeader("grpc-status"),
+                    "a 405 method rejection renders gRPC UNIMPLEMENTED (12)");
+            assertEquals("routing", response.getHeader("grpc-message"),
+                    "a method rejection reports under the routing category slug");
+        }
+
+        @Test
         @DisplayName("applies stage-0 security headers, and the gateway content-type wins a name collision")
         void appliesStageHeadersGatewayWins() throws Exception {
             // Arrange — a stage-0 security header plus a colliding content-type the gateway must override

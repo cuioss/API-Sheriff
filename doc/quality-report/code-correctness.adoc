@@ -90,13 +90,23 @@ containing `--- doc1 --- doc2` has doc2's routes/settings silently discarded whi
 bomb-guard's own iteration proves the loader knows more documents exist. Silent config loss, no
 `ConfigError`.
 
-=== CFG-4 — Session-WebSocket routes may carry an empty Origin allowlist
+=== CFG-4 — Session-WebSocket routes may carry an empty Origin allowlist (RESOLVED)
 
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: false-security
-|Location |`config/validation/ConfigValidator.java:1364-1367`
+|Location |`config/validation/ConfigValidator.java` — `validateWebSocketRoute`
 |===
+
+*Resolved.* `validateWebSocketRoute` now requires a non-empty `allowed_origins` when the route's
+effective auth is `BEARER` or `SESSION`, so a `require: session` WebSocket route without an
+allowlist fails the boot with the same `CONFIG_INVALID` violation a bearer route gets, naming the
+route and its posture. A `require: none` route may still omit the list.
+`ConfigValidatorTest.WebSocketOriginAllowlist` pins it: `shouldRefuseAbsentAllowlist` and
+`shouldRefuseEmptyAllowlist` run over both authenticated postures, `shouldAcceptPopulatedAllowlist`
+admits both, and `shouldAcceptUnauthenticatedRouteWithoutAllowlist` is the matched control.
+link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] is amended accordingly. The
+finding as originally written follows.
 
 `validateWebSocketRoute` mandates a non-empty `allowed_origins` only when effective auth is
 `BEARER`. A `require: session` WebSocket route — the case where the browser auto-attaches the
@@ -781,11 +791,12 @@ link:security-posture.adoc[SEC-5]); a boot WARN when the block is present would 
 [cols="1,4"]
 |===
 |Severity |LOW — Confidence MEDIUM — Category: smuggling / correctness
-|Location |`edge/GatewayEdgeRoute.java` (`handleGatewayRejection` vs `closeAfterOversizedReservedBody:586-595`)
+|Location |`edge/GatewayEdgeRoute.java` (`handleGatewayRejection` vs `rejectOversizedReservedBody:776-788`)
 |===
 
-The reserved-body 413 path deliberately retires the connection (the file's own comment explains
-why); the proxy-path mid-stream 413 (`ByteCappedBodyStream` breach) and stage-3 declared-CL 413
+The reserved-body 413 path deliberately retires the connection on HTTP/1.x and ends only the
+offending stream on HTTP/2 (the file's own comment explains why); the proxy-path mid-stream 413
+(`ByteCappedBodyStream` breach) and stage-3 declared-CL 413
 render `problem+json` without `Connection: close` — the paused, partially-read body pins the
 connection until the 60 s idle timeout. No desync (Netty keeps framing the discarded
 remainder), only per-connection resource pinning — the same half-effectiveness the

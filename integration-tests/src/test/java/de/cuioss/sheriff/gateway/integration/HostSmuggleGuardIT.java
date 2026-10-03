@@ -55,8 +55,8 @@ class HostSmuggleGuardIT extends BaseIntegrationTest {
                 .contentType("application/problem+json")
                 .extract();
 
-        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:input-validation"),
-                "a Host-smuggle rejection must render the input-validation problem type");
+        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:routing"),
+                "a Host-smuggle rejection must render the routing problem type");
         assertNull(response.path("method"),
                 "a smuggled request must be rejected before route selection — it must not reach the upstream");
     }

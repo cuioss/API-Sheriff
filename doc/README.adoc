@@ -245,7 +245,7 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
 
 | link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]
 | WebSocket `Origin` fail-closed exact-match allowlist: the per-route
-  `websocket.allowed_origins` field on bearer WebSocket routes (exact origins, host
+  `websocket.allowed_origins` field on bearer and session WebSocket routes (exact origins, host
   case-insensitive, no wildcards) rejects an unlisted or missing-allowlist upgrade before any
   upstream dial -- closing CSWSH (GW-09) without overloading CORS. *(Status: accepted.)*
 

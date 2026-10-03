@@ -66,6 +66,7 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
+import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -2002,15 +2003,15 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should not require allowed_origins for a non-bearer WebSocket route")
-        void shouldNotRequireAllowedOriginsForNonBearerWebSocketRoute() {
+        @DisplayName("Should not require allowed_origins for a public (require: none) WebSocket route")
+        void shouldNotRequireAllowedOriginsForPublicWebSocketRoute() {
             GatewayConfig gateway = validGateway().build();
             EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
             assertTrue(errors.isEmpty(),
-                    () -> "a non-bearer WebSocket route may omit allowed_origins; got: " + errors);
+                    () -> "a public (require: none) WebSocket route may omit allowed_origins; got: " + errors);
         }
 
         @Test
@@ -4301,6 +4302,108 @@ class ConfigValidatorTest {
 
             assertTrue(errors.stream().noneMatch(error -> PortalRules.PORTAL_PATH_POINTER.equals(error.pointer())),
                     () -> "a path that is not the reserved one does not collide, got: " + errors);
+        }
+    }
+
+    /**
+     * A WebSocket route whose effective auth is {@code bearer} or {@code session} declares a non-empty
+     * {@code allowed_origins}; a {@code require: none} route may omit it. Both authenticated postures
+     * run through the same cases, so the requirement cannot hold for one and lapse for the other.
+     */
+    @Nested
+    @DisplayName("websocket allowed_origins — required on a bearer and on a session route")
+    class WebSocketOriginAllowlist {
+
+        private static final String ROUTES_POINTER = "/endpoint/routes";
+        private static final String ALLOWLIST_KEY = "allowed_origins";
+        private static final String ORIGIN = "https://app.example.com";
+
+        /** The violations of one WebSocket route that name the allowlist key. */
+        private List<ConfigError> allowlistErrors(Require require, String routeId, @Nullable WebSocketConfig websocket) {
+            RouteConfig route = RouteConfig.builder()
+                    .id(routeId)
+                    .protocol(Protocol.WEBSOCKET)
+                    .match(match("/" + routeId, HttpMethod.GET))
+                    .websocket(websocket)
+                    .build();
+            EndpointConfig endpoint = EndpointConfig.builder()
+                    .id("live").enabled(true).baseUrl("LIVE")
+                    .auth(new AuthConfig(require, null, null))
+                    .routes(List.of(route))
+                    .build();
+            return validator.validate(validGateway().build(), List.of(endpoint), topologyWith("LIVE")).stream()
+                    .filter(error -> ROUTES_POINTER.equals(error.pointer()) && error.message().contains(ALLOWLIST_KEY))
+                    .toList();
+        }
+
+        private static WebSocketConfig allowing(String... origins) {
+            return WebSocketConfig.builder().allowedOrigins(List.of(origins)).build();
+        }
+
+        private void assertRefusedForMissingAllowlist(Require require, @Nullable WebSocketConfig websocket) {
+            String routeId = Generators.letterStrings(4, 12).next().toLowerCase(Locale.ROOT);
+            String posture = require.name().toLowerCase(Locale.ROOT);
+
+            List<ConfigError> errors = allowlistErrors(require, routeId, websocket);
+
+            assertEquals(1, errors.size(), () -> "exactly one allowlist refusal, got: " + errors);
+            ConfigError refusal = errors.getFirst();
+            assertAll("the refusal names the file, the route, the key and the route's own posture",
+                    () -> assertEquals("endpoints/live.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains("websocket route '" + routeId + "'"),
+                            refusal::message),
+                    () -> assertTrue(refusal.message().contains("effective auth '" + posture + "'"),
+                            refusal::message),
+                    () -> assertTrue(refusal.message().contains("non-empty " + ALLOWLIST_KEY), refusal::message));
+        }
+
+        @ParameterizedTest(name = "require: {0}")
+        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("Should refuse an authenticated WebSocket route that declares no websocket block")
+        void shouldRefuseAbsentAllowlist(Require require) {
+            assertRefusedForMissingAllowlist(require, null);
+        }
+
+        @ParameterizedTest(name = "require: {0}")
+        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("Should refuse an authenticated WebSocket route whose allowed_origins is empty")
+        void shouldRefuseEmptyAllowlist(Require require) {
+            assertRefusedForMissingAllowlist(require, allowing());
+        }
+
+        @ParameterizedTest(name = "require: {0}")
+        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("Should accept an authenticated WebSocket route that declares an exact origin")
+        void shouldAcceptPopulatedAllowlist(Require require) {
+            List<ConfigError> errors = allowlistErrors(require, "socket", allowing(ORIGIN));
+
+            assertEquals(List.of(), errors);
+        }
+
+        /**
+         * The matched control: the same route with no allowlist is admitted once its posture is
+         * {@code require: none}, so the refusals above are about the authenticated postures and not
+         * about every WebSocket route.
+         */
+        @Test
+        @DisplayName("Should accept a require: none WebSocket route without an allowlist (matched control)")
+        void shouldAcceptUnauthenticatedRouteWithoutAllowlist() {
+            assertAll("a require: none route may omit the allowlist",
+                    () -> assertEquals(List.of(), allowlistErrors(Require.NONE, "socket", null),
+                            "no websocket block"),
+                    () -> assertEquals(List.of(), allowlistErrors(Require.NONE, "socket", allowing()),
+                            "an empty allowed_origins"));
+        }
+
+        @ParameterizedTest(name = "require: {0}")
+        @EnumSource(Require.class)
+        @DisplayName("Should hold a declared origin to the exact-match rule whatever the route's posture")
+        void shouldRefuseWildcardOriginOnEveryPosture(Require require) {
+            List<ConfigError> errors = allowlistErrors(require, "socket", allowing("https://*.example.com"));
+
+            assertEquals(1, errors.size(), () -> "exactly one per-entry refusal, got: " + errors);
+            assertTrue(errors.getFirst().message().contains("wildcards are not permitted"),
+                    () -> errors.getFirst().message());
         }
     }
 }
