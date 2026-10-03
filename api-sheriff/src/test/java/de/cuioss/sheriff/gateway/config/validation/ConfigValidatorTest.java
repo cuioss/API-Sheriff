@@ -2003,15 +2003,15 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should not require allowed_origins for a non-bearer WebSocket route")
-        void shouldNotRequireAllowedOriginsForNonBearerWebSocketRoute() {
+        @DisplayName("Should not require allowed_origins for a public (require: none) WebSocket route")
+        void shouldNotRequireAllowedOriginsForPublicWebSocketRoute() {
             GatewayConfig gateway = validGateway().build();
             EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
             assertTrue(errors.isEmpty(),
-                    () -> "a non-bearer WebSocket route may omit allowed_origins; got: " + errors);
+                    () -> "a public (require: none) WebSocket route may omit allowed_origins; got: " + errors);
         }
 
         @Test
