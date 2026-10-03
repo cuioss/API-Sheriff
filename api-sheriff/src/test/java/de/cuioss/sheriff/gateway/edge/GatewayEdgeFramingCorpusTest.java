@@ -517,7 +517,8 @@ class GatewayEdgeFramingCorpusTest {
         socket.closeHandler(end -> closed.complete(received.toString()));
         // A reset after the edge has answered and retired the connection is an expected outcome; the
         // close handler above still settles the future with what arrived.
-        socket.exceptionHandler(cause -> { });
+        socket.exceptionHandler(cause -> {
+        });
         return closed;
     }
 
