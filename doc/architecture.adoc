@@ -377,8 +377,8 @@ stream fails only after the request was dispatched -- a client that disconnects 
 chunked body whose framing breaks mid-stream -- the upstream request is reset, and on HTTP/1.x the
 upstream connection that carried it is not reused. The gateway reports it under its own event,
 `INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`). It is neither a security-filter violation nor an
-upstream failure: no security warning is logged, the route's circuit breaker does not count it, and
-it is never retried. `INFO` `ApiSheriff-22` records it, latched per route, and
+upstream failure: no security warning is logged, the route's circuit breaker does not count it as a
+failure, and it is never retried. `INFO` `ApiSheriff-22` records it, latched per route, and
 `sheriff_errors_total` counts every occurrence under `event="INBOUND_BODY_ABORTED"`. A body that
 keeps arriving past the route's `max_body_bytes` cap is the separate `CONTENT_TOO_LARGE` (`413`).
 
@@ -925,7 +925,7 @@ The upstream client is split by plane
   configured consecutive failures, half-opens after `reset_ms`; state transitions surface as
   WARN LogRecords and metrics. It counts upstream failures only: a dispatch the client itself
   ended -- a body-cap breach, or an aborted inbound body (<<_aborted_inbound_body>>) -- is neither
-  counted nor retried.
+  counted as a failure nor retried.
 * *Control plane -- `cui-http`.* The gateway's own small, bounded JSON calls (OIDC discovery,
   JWKS, the pushed authorization request, token exchange, revocation -- made chiefly inside the
   token-sheriff libraries) use
