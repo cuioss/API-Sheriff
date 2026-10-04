@@ -44,15 +44,16 @@ Two boundaries are drawn, both as heavy dashed lines with a small open circle at
   ["keycloak"]` as the explicit-list control. Both are verified against a named TLS trust profile
   rather than the JVM default store, because Keycloak serves a self-signed certificate here.
 
-Two *named egress trust profiles* are declared in this stack, on the two different egress surfaces
-ADR-0040 keeps disjoint. Both follow ADR-0011's boundary rule -- the gateway document names the
-logical profile, the deployment supplies the anchors through `quarkus.tls.<name>.trust-store.*` -- and
-in both cases the material sits in the already-mounted `certificates/` directory, so neither adds a
-volume:
+Two *named egress trust profiles* are declared in this stack, across the egress legs ADR-0040
+enumerates: one for the two legs that dial Keycloak, one for terminated upstream dials. Both follow
+ADR-0011's boundary rule -- the gateway document names the logical profile, the deployment supplies
+the anchors through `quarkus.tls.<name>.trust-store.*` -- and in both cases the material sits in the
+already-mounted `certificates/` directory, so neither adds a volume:
 
-* `benchmark-idp` binds the *JWKS back-channel* to `localhost-truststore.p12`
-  (`benchmark-idp-trust.properties`). Every gateway instance in the stack loads it, because every
-  one names `jwks.tls_profile: benchmark-idp`.
+* `benchmark-idp` binds both legs that dial Keycloak -- the *JWKS back-channel* and the *BFF OIDC
+  back-channel* -- to `localhost-truststore.p12` (`benchmark-idp-trust.properties`). Every gateway
+  instance in the stack loads it, because every one names it through both keys:
+  `jwks.tls_profile: benchmark-idp` and `egress_tls.oidc_tls_profile: benchmark-idp`.
 * `it-upstream` binds *terminated upstream dials* to `upstream-truststore.p12`
   (`it-upstream-trust.properties`). Only the two `api-sheriff-egress-verify-*` instances load it --
   they are the only ones naming `egress_tls.upstream_tls_profile`; no other instance names one, so

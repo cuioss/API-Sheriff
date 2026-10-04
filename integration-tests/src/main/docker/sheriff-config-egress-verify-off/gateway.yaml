@@ -19,8 +19,9 @@
 # verify-off leg no longer isolates the hostname check, and the control silently stops proving what it
 # claims.
 #
-# This is NOT a copy of the primary gateway.yaml. Key for key it is the ws-admission document with its
-# edge_hardening block replaced by egress_tls. Against the primary it omits security_defaults,
+# This is NOT a copy of the primary gateway.yaml. Key for key it is the ws-admission document without
+# its edge_hardening block and with the two upstream keys added to egress_tls, which sits in the
+# position of that block rather than at the end. Against the primary it omits security_defaults,
 # tls.min_version, tls.cipher_suites, tls.passthrough_sni, asset_defaults, the global and the api-anchor
 # security_headers blocks, oidc.step_up.path and portal, and oidc.logout.final_redirect is "/". The
 # anchor prefixes, auth floors and token_validation issuers are the primary's, so endpoints/ resolves.
@@ -41,9 +42,14 @@ tls:
 # hostname matching was relaxed over an otherwise-trusted chain, not because trust was abandoned
 # wholesale. Drop the profile and this instance would fail on chain trust instead — a green
 # verify-on leg and a red verify-off leg, with the knob under test never exercised at all.
+#
+# oidc_tls_profile is unrelated to the control and identical on both legs. It binds the BFF OIDC
+# back-channel to the profile the JWKS issuers below already name through jwks.tls_profile, as every
+# other descriptor of the stack does; the upstream keys above govern the proxy egress clients only.
 egress_tls:
   upstream_verify_hostname: false
   upstream_tls_profile: it-upstream
+  oidc_tls_profile: benchmark-idp
 anchors:
   api:
     path_prefix: /proxy

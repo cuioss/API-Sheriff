@@ -387,6 +387,55 @@ class GatewayEdgeRouteTest {
     }
 
     /**
+     * A relay that fails while it is being started — here the real {@link ResponseStage} handed an
+     * upstream response that already ended, whose {@code pipeTo} throws "Response already ended" — is
+     * answered through the same failure path as a relay that fails mid-stream: the client receives a
+     * well-framed {@code 502} instead of waiting for a response that never comes.
+     */
+    @Nested
+    @DisplayName("a relay that cannot start still answers the client")
+    class RelayStartFailure {
+
+        @Test
+        @DisplayName("answers an empty 502 when the upstream response ended before the relay subscribed")
+        void answersBadGatewayWhenTheRelayCannotStart() throws Exception {
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.response().end("tiny"))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            HttpClient upstreamClient = vertx.createHttpClient();
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> upstreamClient
+                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .compose(HttpClientRequest::send)
+                    .compose(response -> response.end().map(response))
+                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), () -> new ResponseStage()
+                            .relay(ended, ctx.response(), false, null, Map.of(), Map.of()))));
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the relaying front server to start listening");
+            HttpClient client = vertx.createHttpClient();
+            try {
+                String answer = Awaits.connect(client
+                                .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .compose(HttpClientRequest::send)
+                                .compose(response -> response.body()
+                                        .map(body -> response.statusCode() + " [" + body + "]")),
+                        "the answer to a relay that could not start");
+
+                assertEquals("502 []", answer,
+                        "the relay-start failure ends the response as a 502 framed for the empty body it carries,"
+                                + " not with the upstream Content-Length the relay had already copied");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the relaying front server to close");
+                Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+                Awaits.teardown(upstream.close(), "the stub upstream to close");
+            }
+        }
+    }
+
+    /**
      * The RFC 9457 body the edge writes for a rejection, asserted directly on the rendering seam. The
      * expected bodies are exact literals because the wire form is the contract: member order, the
      * absence of whitespace and the escaping are all what a client parses. The same rendering over a

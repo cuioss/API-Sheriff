@@ -195,3 +195,10 @@ oidc:
     # construction, which the boot rule requires. It names the same routable public page as
     # logout.final_redirect above, for the same reasons: '/' is not servable on this stack.
     default_return_url: /assets/demo/landing.html
+# --- Trust for the BFF OIDC back-channel -------------------------------------------------------
+# Binds the BFF back-channel — the calls the oidc block above makes to Keycloak — to the trust
+# profile the JWKS issuers already name through jwks.tls_profile. Last block of the document on
+# purpose: declared-limit-assertion-coverage.adoc cites keys of this file by line number, and a
+# block inserted above them would shift every citation.
+egress_tls:
+  oidc_tls_profile: benchmark-idp
