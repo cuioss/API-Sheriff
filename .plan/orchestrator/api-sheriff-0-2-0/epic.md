@@ -46,6 +46,15 @@ would otherwise force a retrofit.
 - **PLAN-V02-20** (staged 2026-10-03): the cookie sealing key provided as a file, like the two
   signing keys. It writes the `oidc` block and `BffRuntimeProducer`, so it is never concurrent with
   `PLAN-V02-12` or `PLAN-V02-09`.
+- **PLAN-V02-13** — SHIPPED 2026-10-03 as PR #383 (`5ddf8081`, ADR-0059), see
+  `landings/PLAN-V02-13.md`. `PLAN-V02-06` no longer waits on it; `PLAN-V02-07` now waits on
+  `PLAN-V02-06` alone.
+- **PLAN-V02-10** — SHIPPED 2026-10-04 as PR #382 (`35f2bb37`), see `landings/PLAN-V02-10.md`.
+- **Collision the gate did not predict (2026-10-04):** `PLAN-V02-13` and `PLAN-V02-10` ran together
+  as the only disjoint pair, and both changed `edge/DispatchStage.java`, `edge/GatewayEdgeRoute.java`,
+  their two tests and `doc/configuration.adoc`. Neither spec declared `DispatchStage.java`; V02-10's
+  overlap came from an unplanned relay-race fix found at the merge queue. It integrated cleanly. Treat
+  any plan touching the edge relay as overlapping `edge/**`, whatever its declared surface says.
 
 ## Workstreams
 
@@ -275,6 +284,15 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
+- **ISSUE #189 REMAINDER, NONE STAGED** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
+  a demo-client panel (`demo-client/src/main/resources/spa/index.html`, `app.js`) that fires each
+  rejection variant and reports status, `Content-Type` and redirect; `doc/variants/01-base-gateway.adoc`;
+  `demo-client/doc/integration-sample.adoc`; and the PROHIBITED ASSERTION scope wording in
+  `demo-client/doc/playwright-suite.adoc`. The issue comment also names `doc/plan/04-request-pipeline.adoc`,
+  which no longer exists — discharged. Stage a small plan when wanted.
+- **ADR-0059 IS `Proposed`** (added 2026-10-04). The ROUTING problem category is shipped; the record
+  needs an acceptance decision. Operator call, or `PLAN-V02-04`'s status sweep.
+
 - **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08`, NONE STAGED** (added 2026-10-03; the plan's claims,
   each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
   which now drives one outbound pushed request per call (threat model `BFF-20`); refusing a
@@ -426,6 +444,37 @@ doc-only or build-light plan for the second and third slots.
   cross-check` counts the plan-less sentinel `.plan/local/plans/NO_PLAN` (`"sentinel": true`) as a
   live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
   `next` while it exists; the operator ruled that verdict wrong and overrode it.
+
+## Inbox Drain — 2026-10-04 (senders `plan-v02-13-terminal-rejection-contract`, `plan-v02-10-per-client-tls-trust`)
+
+Nineteen messages, all valid, all consumed and archived; the queue is empty afterwards (no sender has
+filed a stream-end marker). Duplicates were clustered before promotion: two pairs and a group of four
+became one lesson each, and three recurrences of lessons filed on 2026-10-03 were appended to those
+lessons instead of creating new ones.
+
+| Message | Kind | Disposition | Where it went |
+|---|---|---|---|
+| `plan-v02-13-…-001` | landing | reconciled | `landings/PLAN-V02-13.md`; queue row shipped |
+| `plan-v02-10-…-018` | landing | reconciled | `landings/PLAN-V02-10.md`; queue row shipped |
+| `-001` | candidate-lesson | promoted | `2026-10-04-09-001` — Prove a "pre-existing" failure by reproducing it on the base, not by arguing from the diff |
+| `-002` | candidate-lesson | promoted | `2026-10-04-09-002` — Two Maven builds in one worktree at the same time cause false build failures |
+| `-003` | candidate-lesson | folded | recurrence appended to `2026-10-03-06-005` (scope_creep_check) |
+| `-004` | candidate-lesson | folded | recurrence appended to `2026-10-03-06-006` (flag at the wrong level) |
+| `-005` | candidate-lesson | folded | recurrence appended to `2026-10-03-06-006` (`--number`) |
+| `-006` | candidate-lesson | promoted | `2026-10-04-09-003` — Deep-lane outline left the assessment store empty, so assessment coverage could not be checked |
+| `-007` | candidate-lesson | promoted | `2026-10-04-09-004` — A search for the removed code literal misses prose that repeats the claim the change makes false |
+| `-008` | candidate-lesson | promoted | `2026-10-04-09-005` — A survey list described as "the search result" must be checked against that search |
+| `-009` | candidate-lesson | promoted | `2026-10-04-09-006` — Finalize-time obligations written only in Approach prose reach no task |
+| `-010` | candidate-lesson | promoted | `2026-10-04-09-007` — keyword_drift flags tool names that a task takes word for word from the outline |
+| `-011` | candidate-lesson | promoted (aggregated with -012) | `2026-10-04-09-009` — Derive a guard's stated limit from its matcher, not from intuition, in every copy of the claim |
+| `-012` | candidate-lesson | promoted (aggregated with -011) | `2026-10-04-09-009` — Derive a guard's stated limit from its matcher, not from intuition, in every copy of the claim |
+| `-013` | candidate-lesson | promoted | `2026-10-04-09-008` — Limit "no instance in this repository" claims to the population that was actually checked |
+| `-014` | candidate-lesson | promoted (aggregated with -015, -016, -017) | `2026-10-04-09-010` — A guard's documented coverage must match the population it actually iterates, for every route an argument can take |
+| `-015` | candidate-lesson | promoted (aggregated with -014, -016, -017) | `2026-10-04-09-010` — A guard's documented coverage must match the population it actually iterates, for every route an argument can take |
+| `-016` | candidate-lesson | promoted (aggregated with -014, -015, -017) | `2026-10-04-09-010` — A guard's documented coverage must match the population it actually iterates, for every route an argument can take |
+| `-017` | candidate-lesson | promoted (aggregated with -014, -015, -016) | `2026-10-04-09-010` — A guard's documented coverage must match the population it actually iterates, for every route an argument can take |
+
+The `-0NN` rows are `plan-v02-10-per-client-tls-trust-0NN.md`.
 
 ## Inbox Drain — 2026-10-03 (sender `plan-v02-08-fapi-2-0-conformance`, at its landing)
 

@@ -123,7 +123,7 @@ reading a boot log.** That is the cost being removed.
 - **Read PLAN-V02-01's verdict before D3.** See the note in D3; this is a read, not a blocker.
   PLAN-V02-01 runs alone, so if it is in flight this plan waits regardless of the read.
 - Overlaps with: any plan declaring `.github/workflows/**`, `doc/user/**` or
-  `config/validation/**` (`PLAN-V02-13` declares `ConfigValidator.java`; `PLAN-V02-15` declares
+  `config/validation/**` (`PLAN-V02-15` declares
   `.github/workflows/**` and `doc/user/compose-sample.adoc`). The disjointness gate decides at emit
   time.
 - **Tooling caution for every asserted absence in this plan.** `git grep <pattern> origin/main --

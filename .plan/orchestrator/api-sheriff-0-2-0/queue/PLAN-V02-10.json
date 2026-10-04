@@ -2,9 +2,9 @@
   "id": "PLAN-V02-10",
   "slug": "per-client-tls-trust",
   "workstream": "WS-05",
-  "status": "running",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-v02-10-per-client-tls-trust",
+  "pr": "382",
+  "landing": "landings/PLAN-V02-10.md",
   "seq": 10
 }

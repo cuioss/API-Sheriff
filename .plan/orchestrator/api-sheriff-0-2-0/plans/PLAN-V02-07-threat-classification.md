@@ -11,7 +11,7 @@ workstream: WS-03
 Separate a genuine attack campaign from benign-but-malformed traffic, and surface a loud, SIEM-ready
 signal. The shipped per-event taxonomy classifies by HTTP category but has no cross-request judgement —
 one clumsy client and a systematic scanner look identical. This plan adds a **weighted anomaly score**
-over the existing `EventCategory`, accumulated per client in a sliding window (reusing `PLAN-V02-06`'s
+over the `EventCategory` set, accumulated per client in a sliding window (reusing `PLAN-V02-06`'s
 per-client substrate), with a **two-tier signal**: per-request violations stay low-severity
 (WARN + metric, as today), while a window crossing the campaign threshold emits a single **ALERT** in an
 **ECS/OCSF-shaped** structured record — loud but naturally deduplicated per client-window.
@@ -22,8 +22,8 @@ State is in-process and single-node; a SIEM owns cross-node correlation.
 
 1. **Weighted anomaly score** — assign severity weights to the existing `EventType`/`EventCategory`
    set (mirroring OWASP CRS anomaly scoring: per-category points), accumulated **per client per window**
-   over `PLAN-V02-06`'s substrate (not per-request). Weight the taxonomy as `PLAN-V02-13` leaves it,
-   not as it stands today — see Dependencies.
+   over `PLAN-V02-06`'s substrate (not per-request). The set includes the `ROUTING` category
+   `PLAN-V02-13` added — see Dependencies.
 2. **Two-tier signal / campaign threshold.** Per-request violation → WARN + Micrometer counter
    (existing behaviour, unchanged). Window score ≥ configurable threshold → a single **ALERT** event.
    **Stated as its own line item** — the dedup-per-client-window is what prevents alert fatigue and is
@@ -80,14 +80,12 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 
 ## Dependencies and Sequencing
 
-- Depends on, in this order — both are hard predecessors and this plan cannot be scoped before
-  they land:
-  1. **`PLAN-V02-13` (terminal-rejection-contract).** It moves `NO_ROUTE_MATCHED`,
-     `PASSTHROUGH_HOST_SMUGGLED` and `METHOD_NOT_ALLOWED` out of `EventCategory.INPUT_VALIDATION`,
-     likely into a new `ROUTING` category. D1 assigns weights to exactly that taxonomy; weighting it
-     earlier means doing it twice. Routing misses are operationally ordinary while filter violations
-     are a security signal, and one bucket cannot alert on both.
-  2. **`PLAN-V02-06` (enumeration-hardening).** Its per-client substrate and its written,
+- Depends on **`PLAN-V02-06` (enumeration-hardening)**, a hard predecessor: this plan cannot be
+  scoped before it lands. The taxonomy D1 weights is final: `PLAN-V02-13` landed (#383, ADR-0059) and
+  moved `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED` and `METHOD_NOT_ALLOWED` into the new `ROUTING`
+  category. Routing misses are operationally ordinary while filter violations are a security signal,
+  so weight the two categories apart.
+  - **`PLAN-V02-06`.** Its per-client substrate and its written,
      general-purpose substrate contract — which names this plan as first consumer — are what D1's
      accumulation runs on. Read the shipped contract first at outline.
 - This is the most downstream plan of WS-03; emit it last among them.

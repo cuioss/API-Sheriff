@@ -16,19 +16,19 @@ unauthenticated** sources while keeping honest 401/403 for authenticated callers
 boundary, and introduces a **per-client 404-rate detection substrate** (a CrowdSec-`http-probing`-style
 leaky bucket) with a written contract that `PLAN-V02-07` consumes.
 
-## Boundary with PLAN-V02-13
+## The rejection contract this plan builds on
 
-Both plans edit the same rejection dispatch in `GatewayEdgeRoute`. The split is fixed:
+`PLAN-V02-13` has landed (#383, ADR-0059). The concerns at the rejection dispatch in
+`GatewayEdgeRoute` are split as follows:
 
 | Concern | Owner |
 |---|---|
-| WHICH `EventCategory` a rejection carries (the taxonomy, incl. a new `ROUTING` category) | `PLAN-V02-13` |
-| HOW a rejection is RENDERED to a browser vs. a JSON client (`Accept` negotiation) | already on `main`: `portal/ErrorPageClassifier`; `PLAN-V02-13` owns the remaining reclassification |
+| WHICH `EventCategory` a rejection carries | on `main`: routing rejections (`NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, `METHOD_NOT_ALLOWED`) report under `ROUTING` (`urn:api-sheriff:problem:routing`) |
+| HOW a rejection is RENDERED to a browser vs. a JSON client (`Accept` negotiation) | on `main`: `portal/ErrorPageClassifier` |
 | WHETHER an untrusted caller sees the honest code or a uniform 404 (the trust-boundary branch) | this plan, D1 |
 | Response-TIMING uniformity on the reject path | this plan, D2 |
 
-This plan changes the code a rejection resolves TO; `PLAN-V02-13` changes what it is CALLED. This plan
-does not touch the category assignment and does not alter the content negotiation — its uniform-404
+This plan changes the code a rejection resolves TO, not what it is CALLED. It does not touch the category assignment and does not alter the content negotiation — its uniform-404
 must work through that negotiation, not around it.
 
 ## Deliverables
@@ -40,8 +40,8 @@ must work through that negotiation, not around it.
    trust-boundary condition is the crux — an outline must not collapse it to "return 404").
 
    - `renderProblem` is already content-negotiating: `portal/ErrorPageClassifier` marks
-     `NO_ROUTE_MATCHED`, `PATH_NOT_ALLOWED`, `METHOD_NOT_ALLOWED` and `TOKEN_MISSING` as
-     HTML-eligible. Design the uniform-404 against that negotiating renderer, and do not reintroduce
+     `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, `PATH_NOT_ALLOWED`, `METHOD_NOT_ALLOWED` and
+     `TOKEN_MISSING` as HTML-eligible. Design the uniform-404 against that negotiating renderer, and do not reintroduce
      a status or shape oracle through the HTML branch.
    - `renderProblem` has several call sites in `GatewayEdgeRoute.java` (five when last counted). The
      trust-boundary branch must account for every one; re-count at outline.
@@ -97,6 +97,11 @@ must work through that negotiation, not around it.
    re-scope rather than force it. Verify the exact enforcement call site at outline against the
    h2/gRPC termination code.
 
+   **Also the `gw-02` residue.** `PLAN-V02-13` left threat-model row `gw-02` (request framing) at
+   `PARTIAL`: the HTTP/2 clauses beyond the stream-scoped gate rejection are not pinned. They are
+   HTTP/2 framing bounds of the same kind as this deliverable's, so close them here and flip `gw-02`
+   with `gw-08`, or report which clause remains open.
+
    Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
    `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives
    framing.
@@ -147,10 +152,9 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 
 ## Dependencies and Sequencing
 
-- Depends on: `PLAN-V02-13`, for D1's taxonomy only. It re-categorises `NO_ROUTE_MATCHED` and
-  `METHOD_NOT_ALLOWED` out of `INPUT_VALIDATION`; building the uniform-404 branch against a taxonomy
-  that is about to change means doing it twice. Content negotiation is no longer a reason to wait —
-  it is already on `main`.
+- Depends on: none. The taxonomy this plan's uniform-404 branch is built against has landed with
+  `PLAN-V02-13` (#383). Re-read `GatewayEdgeRoute` and `DispatchStage` at outline: both were changed
+  by `PLAN-V02-13` and `PLAN-V02-10` after this spec was last grounded.
 - Depended on by: `PLAN-V02-07`, which consumes D3 and D7 and must not run before this plan lands.
 - Overlaps with: `PLAN-V02-05` on `ResponseStage` and the edge. The two are close enough that the
   disjointness check should read `PLAN-V02-05`'s current outline if it is in flight, not only its
