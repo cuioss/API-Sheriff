@@ -2411,10 +2411,13 @@ public class GatewayEdgeRoute {
     /**
      * Builds the per-shape SmallRye Fault-Tolerance guard: a circuit breaker plus an upstream
      * timeout, with retry added only for a route that enables it. Gateway rejections
-     * ({@link GatewayException}) are skipped so they never trip the breaker or trigger a retry. That
-     * covers every dispatch the client itself ended — a body-cap breach and an inbound request body
-     * that failed after dispatch began, both of which {@link DispatchStage} surfaces as a
-     * {@link GatewayException} — so the breaker counts upstream failures only.
+     * ({@link GatewayException}) are skipped by the breaker, so they never count as an upstream
+     * failure, and abort the retry, so they never trigger one. A dispatch the client itself ended —
+     * a body-cap breach, an inbound request body that failed after dispatch began, a body on a
+     * bodyless method, a body disagreeing with its declared length — reaches the guard as such a
+     * skipped {@link GatewayException} (see {@link DispatchStage}). SmallRye Fault Tolerance has no
+     * neutral outcome, so the breaker records a skipped exception as a success; keeping these
+     * dispatches out of its window would need the guarded call to be restructured.
      */
     private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
         // Include retryEnabled in the breaker name: RouteRuntimeAssembler's guardCache is keyed by the

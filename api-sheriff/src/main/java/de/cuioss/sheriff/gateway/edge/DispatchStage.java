@@ -91,16 +91,25 @@ import org.jspecify.annotations.Nullable;
  * contract by {@link UpstreamFailureMapper}; a body-cap breach propagates its own
  * {@link GatewayException} unchanged.
  * <p>
- * <strong>The breaker counts upstream failures only.</strong> A dispatch the client itself ended —
- * the body-cap breach, an inbound body stream that failed after dispatch began, a body byte on a
- * bodyless method, or a body that disagreed with its declared length — reaches the guard as the
+ * <strong>What the breaker sees of a client-ended dispatch.</strong> A dispatch the client itself
+ * ended — the body-cap breach, an inbound body stream that failed after dispatch began, a body byte
+ * on a bodyless method, or a body that disagreed with its declared length — reaches the guard as the
  * {@link GatewayException} the body stream recorded for it ({@link EventType#CONTENT_TOO_LARGE},
  * {@link EventType#INBOUND_BODY_ABORTED} for the failed or short inbound body, or
  * {@link EventType#SECURITY_FILTER_VIOLATION}), never as the transport error the aborted upstream
- * request produced. The guard skips
- * a {@link GatewayException}, so such a dispatch neither counts as an upstream failure nor is
- * retried, whatever the client sends and however often. A failure with no client-side abort behind
- * it — a refused connection, an upstream reset, a timeout — is counted and mapped as before.
+ * request produced. The guard skips a {@link GatewayException}, so such a dispatch is neither
+ * counted as an upstream failure nor retried. It is not invisible to the breaker, though: SmallRye
+ * Fault Tolerance has no neutral outcome, so a skipped exception is recorded as a success, in the
+ * closed and in the half-open state alike. Keeping client-ended dispatches out of the breaker's
+ * window altogether would need the guarded call to be restructured, which the gateway does not do.
+ * <p>
+ * The client abort is honoured only when it preceded the transport failure: it is read once, at
+ * the moment the attempt's send fails, so a client that goes away only after the upstream already
+ * failed leaves that failure attributed to the upstream. A failure with no client-side abort behind
+ * it — a refused connection, an upstream reset, a timeout — is counted and mapped as an upstream
+ * failure. One timing edge is attributed by what happened first: the edge's idle timeout can reap an
+ * inbound connection before the route's read timeout fires, and the dispatch then ends as the
+ * client-ended dispatch it is.
  * <p>
  * <strong>Stream-aware retry gating.</strong> When the route enables SmallRye retry, the guarded
  * lambda may be re-invoked after a failure. A streamed request cannot be safely replayed once any
@@ -293,6 +302,9 @@ public final class DispatchStage {
                 .setSsl("https".equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri);
         AtomicReference<@Nullable ByteCappedBodyStream> cappedBody = new AtomicReference<>();
+        // The client-caused abort as it stood the moment this attempt's send failed — never re-read
+        // afterwards (see the catch below).
+        AtomicReference<@Nullable GatewayException> clientAbortAtFailure = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
                     forwardHeaders.forEach(request::putHeader);
@@ -308,11 +320,14 @@ public final class DispatchStage {
                     // dispatching (virtual) thread, which may only get there after the whole exchange
                     // completed; Vert.x then defers the listener onto the event loop, after the end. The
                     // pipe re-enables the stream when it subscribes.
-                    return body.send(request, cappedBody)
-                            .map(received -> {
-                                received.pause();
-                                return received;
-                            });
+                    Future<HttpClientResponse> sent = body.send(request, cappedBody);
+                    // Registered before the pause below, so it runs first when the send fails, on the
+                    // context reporting that failure — before the failure can reach the dispatching thread.
+                    sent.onFailure(failure -> clientAbortAtFailure.set(body.clientAbort(cappedBody.get())));
+                    return sent.map(received -> {
+                        received.pause();
+                        return received;
+                    });
                 });
         HttpClientResponse received;
         try {
@@ -320,9 +335,13 @@ public final class DispatchStage {
         } catch (ExecutionException dispatchFailure) {
             // The body stream aborts the upstream request itself when the client ends the dispatch, and
             // the transport then reports that abort as a reset. Surface the recorded client-side cause
-            // in its place, so the guard sees a GatewayException — which it skips — and the breaker is
-            // left to count upstream failures only.
-            GatewayException clientAbort = body.clientAbort(cappedBody.get());
+            // in its place, so the guard sees a GatewayException — which it skips. Only the snapshot
+            // taken when the send failed counts: every body stream records its client abort before it
+            // runs the abort action, so an abort that caused the failure is always in the snapshot,
+            // while a client that went away only after the upstream had already failed is not — that
+            // failure stays the upstream's. A send that never started (the connection itself failed)
+            // leaves no snapshot and is the upstream's failure as well.
+            GatewayException clientAbort = clientAbortAtFailure.get();
             if (clientAbort != null) {
                 throw clientAbort;
             }

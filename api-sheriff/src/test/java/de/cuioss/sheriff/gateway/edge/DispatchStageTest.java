@@ -759,6 +759,7 @@ class DispatchStageTest {
         private Vertx vertx;
         private ExecutorService virtualThreadExecutor;
         private HttpServer upstream;
+        private Guard guard;
         private RouteRuntime route;
         private DispatchStage stage;
         /** Every request the stub upstream received a head for. */
@@ -783,7 +784,7 @@ class DispatchStageTest {
 
             // The breaker rules of the production guard (GatewayEdgeRoute#guardFor), with a window
             // small enough to fill within one test.
-            Guard guard = Guard.create()
+            guard = Guard.create()
                     .withCircuitBreaker()
                     .requestVolumeThreshold(REQUEST_VOLUME_THRESHOLD)
                     .failureRatio(0.5)
@@ -914,6 +915,35 @@ class DispatchStageTest {
                             "a dispatch behind the window must be refused by the open breaker"),
                     () -> assertEquals(REQUEST_VOLUME_THRESHOLD, upstreamStarted.get(),
                             "the open breaker must not call the upstream"));
+        }
+
+        @Test
+        @DisplayName("an inbound failure that follows an upstream failure leaves the failure attributed to the upstream")
+        void inboundFailureAfterAnUpstreamFailureKeepsTheUpstreamAttribution() throws Exception {
+            TestReadStream inbound = new TestReadStream();
+            // The upstream drops the request; only once the dispatch has seen that failure does the
+            // inbound stream fail — before the dispatching thread goes on to read the outcome.
+            RouteRuntime intercepted = RouteRuntime.builder()
+                    .id("upload")
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .httpClient(interceptingClient(vertx.createHttpClient(), composed -> {
+                        sendFirstChunk(inbound, 1);
+                        CompletableFuture<@Nullable Object> settled = new CompletableFuture<>();
+                        composed.onComplete(_ -> settled.complete(null));
+                        Awaits.connect(settled, "the upstream to fail the request");
+                        inbound.fail(new IllegalStateException("inbound body failed"));
+                    }))
+                    .resilienceGuard(guard)
+                    .build();
+
+            GatewayException rejection = rejectionOf(virtualThreadExecutor.submit(() -> stage.dispatch(intercepted,
+                    HttpMethod.POST, FAILING_PATH, Map.of(), inbound,
+                    DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH))));
+
+            assertAll("an upstream failure followed by an inbound failure",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, rejection.getEventType(),
+                            "the upstream failed first, so the dispatch reports the upstream failure"),
+                    () -> assertEquals(1, upstreamStarted.get()));
         }
 
         /** Runs one dispatch on a virtual thread, as the edge does, so the test thread can drive its body. */
