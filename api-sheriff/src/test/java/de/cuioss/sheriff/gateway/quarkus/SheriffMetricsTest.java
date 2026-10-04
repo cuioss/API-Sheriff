@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 
@@ -61,8 +62,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
@@ -444,6 +447,33 @@ class SheriffMetricsTest {
             assertEquals("4xx", SheriffMetrics.statusFamily(404));
             assertEquals("5xx", SheriffMetrics.statusFamily(500));
             assertEquals("5xx", SheriffMetrics.statusFamily(503));
+        }
+
+        @ParameterizedTest(name = "status {0}")
+        @ValueSource(ints = {Integer.MIN_VALUE, -1, 0, 1, 99, 600, 999, 1000, Integer.MAX_VALUE})
+        @DisplayName("status_family is clamped to its fixed set: a status outside 100..599 maps to the one placeholder")
+        void statusFamilyIsClampedToItsFixedSet(int statusCode) {
+            assertAll("status " + statusCode,
+                    () -> assertEquals("other", SheriffMetrics.STATUS_FAMILY_OTHER),
+                    () -> assertEquals(SheriffMetrics.STATUS_FAMILY_OTHER, SheriffMetrics.statusFamily(statusCode)));
+        }
+
+        @ParameterizedTest(name = "status {0} -> {1}")
+        @CsvSource({"100, 1xx", "199, 1xx", "200, 2xx", "299, 2xx", "300, 3xx", "399, 3xx", "400, 4xx",
+                "499, 4xx", "500, 5xx", "599, 5xx"})
+        @DisplayName("status_family keeps both edges of every family inside 100..599")
+        void statusFamilyKeepsTheInRangeEdges(int statusCode, String expectedFamily) {
+            assertEquals(expectedFamily, SheriffMetrics.statusFamily(statusCode));
+        }
+
+        @Test
+        @DisplayName("status_family draws from exactly the five families plus the placeholder")
+        void statusFamilyValueSetIsFixed() {
+            Set<String> families = IntStream.rangeClosed(-1_000, 10_000)
+                    .mapToObj(SheriffMetrics::statusFamily)
+                    .collect(Collectors.toSet());
+
+            assertEquals(Set.of("1xx", "2xx", "3xx", "4xx", "5xx", SheriffMetrics.STATUS_FAMILY_OTHER), families);
         }
     }
 

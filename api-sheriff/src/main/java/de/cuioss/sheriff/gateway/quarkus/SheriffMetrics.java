@@ -56,7 +56,9 @@ import org.jspecify.annotations.Nullable;
  * Route cardinality is bounded (route id is a config-fixed label; unmatched requests share the
  * fixed {@value #NO_ROUTE} value) and every other label draws from a fixed set — the
  * {@code method} label of {@value #REQUESTS_TOTAL} is an {@link HttpMethod} enum name or the single
- * {@value #METHOD_OTHER} placeholder for a method the gateway does not parse, the
+ * {@value #METHOD_OTHER} placeholder for a method the gateway does not parse, its
+ * {@code status_family} label is one of the five families {@code 1xx} .. {@code 5xx} or the single
+ * {@value #STATUS_FAMILY_OTHER} placeholder for a status outside {@code 100..599}, the
  * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, and the {@code event}
  * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries
  * request-derived input — so every meter is safe to keep always on. Each record call
@@ -99,6 +101,16 @@ public class SheriffMetrics {
      */
     public static final String METHOD_OTHER = "OTHER";
 
+    /**
+     * The bounded {@code status_family} label value of {@link #REQUESTS_TOTAL} shared by every status
+     * code outside {@code 100..599} — such a status never becomes a label value of its own. Lower-case
+     * to match the {@code 1xx} .. {@code 5xx} vocabulary of the label.
+     */
+    public static final String STATUS_FAMILY_OTHER = "other";
+
+    private static final int MIN_STATUS_CODE = 100;
+    private static final int MAX_STATUS_CODE = 599;
+
     private static final String TAG_ROUTE = "route";
     private static final String TAG_METHOD = "method";
     private static final String TAG_STATUS_FAMILY = "status_family";
@@ -129,8 +141,8 @@ public class SheriffMetrics {
      * @param route        the config-fixed route id, or {@link #NO_ROUTE} when unmatched
      * @param method       the parsed request method, or {@code null} when the request carried a
      *                     method the gateway does not parse
-     * @param statusFamily the response status family ({@code 2xx} / {@code 3xx} / {@code 4xx} /
-     *                     {@code 5xx})
+     * @param statusFamily the response status family as classified by {@link #statusFamily(int)}
+     *                     ({@code 1xx} .. {@code 5xx}, or {@value #STATUS_FAMILY_OTHER})
      */
     public void recordRequest(String route, @Nullable HttpMethod method, String statusFamily) {
         String methodLabel = method != null ? method.name() : METHOD_OTHER;
@@ -249,15 +261,23 @@ public class SheriffMetrics {
     }
 
     /**
-     * Classifies an HTTP status code into its bounded {@code status_family} label
-     * ({@code 1xx} / {@code 2xx} / {@code 3xx} / {@code 4xx} / {@code 5xx}) for the
+     * Classifies an HTTP status code into its bounded {@code status_family} label for the
      * {@link #REQUESTS_TOTAL} counter, keeping the {@code status_family} label cardinality fixed
      * regardless of the concrete status.
+     * <p>
+     * A status in {@code 100..599} maps to its leading-digit family ({@code 1xx} / {@code 2xx} /
+     * {@code 3xx} / {@code 4xx} / {@code 5xx}); every other value maps to the single
+     * {@value #STATUS_FAMILY_OTHER} placeholder, so the label's value set is exactly those five
+     * families plus the placeholder whatever integer the caller passes.
      *
      * @param statusCode the response HTTP status code (e.g. {@code 200}, {@code 404})
-     * @return the leading-digit status family (e.g. {@code "2xx"}, {@code "4xx"})
+     * @return the leading-digit status family (e.g. {@code "2xx"}, {@code "4xx"}), or
+     *         {@value #STATUS_FAMILY_OTHER} for a status outside {@code 100..599}
      */
     public static String statusFamily(int statusCode) {
+        if (statusCode < MIN_STATUS_CODE || statusCode > MAX_STATUS_CODE) {
+            return STATUS_FAMILY_OTHER;
+        }
         return (statusCode / 100) + "xx";
     }
 }
