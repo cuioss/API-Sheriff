@@ -953,11 +953,14 @@ descriptor set by directory glob with a floor, asserts that each such descriptor
 declares no `oidc_verify_hostname` beside it, asserts that every `QUARKUS_PROFILE=it` gateway instance
 loads the properties file that binds the profile, and asserts that no gateway passes a
 `-Djavax.net.ssl.*` argument on its command line. That last assertion covers two populations: the
-gateway services of the compose file, read from their `command`, and the one-off launch sites, the
-files under the module's `src/test/java` and `scripts/` that name the gateway image, which takes in
-the files that start it with `docker run` and a few that only inspect it. The second population is
-derived with a floor and two named members, so it cannot silently shrink; but the assertion over it is
-a source-text scan, so an argument assembled by string concatenation would evade it. The behaviour
+gateway services of the compose file, read from both their `entrypoint` and their `command` in either
+compose form, and the one-off launch sites, the files under the module's `src/test/java` and
+`scripts/` that name the gateway image -- by its literal or through the harness constant
+`OneOffGatewayContainers.IMAGE`, qualified or statically imported -- which takes in the files that
+start it with `docker run` and a few that only inspect it. The second population is derived with a
+floor and two named members, so it cannot silently shrink; but the assertion over it is a source-text
+scan, so an argument assembled at run time by string concatenation would evade it, and so would a file
+that reaches the image only through an alias of that constant declared under another name. The behaviour
 half is the integration stack's BFF login suites: the Keycloak they dial serves a self-signed
 certificate, so a login completes only when
 the back-channel trusts it through the named profile.

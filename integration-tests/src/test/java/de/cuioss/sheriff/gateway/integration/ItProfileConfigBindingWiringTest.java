@@ -71,7 +71,8 @@ import org.junit.jupiter.api.Test;
  * Keycloak certificate. {@link #everyBffDescriptorNamesTheOidcTrustProfile()} pins the key on every
  * such descriptor. Two guards pin that no gateway reaches that trust through a process-global
  * command-line setting instead: {@link #noGatewayInstancePassesAJsseSystemProperty()} for the compose
- * gateway services, and {@link #noOneOffLaunchSitePassesAJsseSystemProperty()} for the one-off launch
+ * gateway services, whose process arguments it reads from both their {@code entrypoint} and their
+ * {@code command}, and {@link #noOneOffLaunchSitePassesAJsseSystemProperty()} for the one-off launch
  * sites — the test sources and scripts of this module that start the gateway image with a bare
  * {@code docker run} rather than as a compose service.
  * <p>
@@ -83,7 +84,8 @@ import org.junit.jupiter.api.Test;
  * asserts its own non-emptiness before looping — otherwise every assertion below would pass vacuously.
  * The descriptor set of the second leg is derived the same way, by directory glob, and asserts a
  * floor for the same reason. So is the one-off launch-site set: every file under {@code src/test/java}
- * and {@code scripts/} whose text names the gateway image, which asserts a floor and names its two
+ * and {@code scripts/} whose text names the gateway image, by its literal or through the harness
+ * constant that holds it, which asserts a floor and names its two
  * known launch sites, so a scan that stopped matching them cannot pass vacuously. That set is a
  * <em>source-text</em> scan, and its limit is stated where it is defined — see
  * {@link #oneOffLaunchSites()}.
@@ -147,15 +149,45 @@ class ItProfileConfigBindingWiringTest {
     private static final String JSSE_SYSTEM_PROPERTY_PREFIX = "-Djavax.net.ssl.";
 
     /**
+     * The compose keys that carry the process arguments of a service, in the order compose assembles
+     * them: the {@code entrypoint} first, then the {@code command} appended to it. A guard that read
+     * only one of them would pass for an argument moved into the other.
+     */
+    private static final List<String> PROCESS_ARGUMENT_KEYS = List.of("entrypoint", "command");
+
+    /**
      * The gateway image a one-off launch site names. Taken from the harness rather than restated as a
-     * literal: this file carries {@link #JSSE_SYSTEM_PROPERTY_PREFIX}, so naming the image here would
-     * put this file into the very population it sweeps and fail the sweep on its own constant.
+     * literal, so the image name keeps a single home.
      */
     private static final String GATEWAY_IMAGE = OneOffGatewayContainers.IMAGE;
 
+    /** The harness class that holds the image constant. */
+    private static final String HARNESS_CLASS = OneOffGatewayContainers.class.getSimpleName();
+
+    /**
+     * The spellings by which a file reaches the image through the harness constant instead of the
+     * literal: the qualified {@code OneOffGatewayContainers.IMAGE}, which is also the tail of a single
+     * static import of it, and the wildcard static import of the harness, after which {@code IMAGE}
+     * appears unqualified.
+     */
+    private static final List<String> GATEWAY_IMAGE_CONSTANT_REFERENCES =
+            List.of(HARNESS_CLASS + ".IMAGE", HARNESS_CLASS + ".*");
+
+    /** The test-source tree of this module. */
+    private static final Path TEST_SOURCES = MODULE.resolve("src/test/java");
+
     /** The module trees a one-off launch site lives in: the test sources and the shell scripts. */
-    private static final List<Path> LAUNCH_SITE_ROOTS =
-            List.of(MODULE.resolve("src/test/java"), MODULE.resolve("scripts"));
+    private static final List<Path> LAUNCH_SITE_ROOTS = List.of(TEST_SOURCES, MODULE.resolve("scripts"));
+
+    /**
+     * The source file of this guard, excluded from the launch-site population by path. It names the
+     * harness constant and carries {@link #JSSE_SYSTEM_PROPERTY_PREFIX}, both as data the sweep looks
+     * for rather than as a launch, so admitting it would fail the sweep on its own constants.
+     */
+    private static final Path GUARD_SOURCE = TEST_SOURCES
+            .resolve(ItProfileConfigBindingWiringTest.class.getName().replace('.', '/') + ".java")
+            .toAbsolutePath()
+            .normalize();
 
     /**
      * The two one-off launch sites that used to pass a JSSE trust-store argument after the image,
@@ -165,7 +197,8 @@ class ItProfileConfigBindingWiringTest {
             List.of("OneOffGatewayContainers.java", "NoCertificatePlainHttpOptInIT.java");
 
     /**
-     * The number of module files that name the gateway image. A floor rather than an exact count, so a
+     * The number of module files that name the gateway image, by its literal or through the harness
+     * constant. A floor rather than an exact count, so a
      * launch site added later is swept without an edit here, while a scan that stopped matching cannot
      * leave the sweep iterating nothing.
      */
@@ -221,12 +254,14 @@ class ItProfileConfigBindingWiringTest {
                         + "a vacuous pass");
 
         for (String service : gatewayServices) {
-            List<String> command = command(service);
-            assertTrue(command.stream().noneMatch(entry -> entry.contains(JSSE_SYSTEM_PROPERTY_PREFIX)),
-                    () -> service + " passes a " + JSSE_SYSTEM_PROPERTY_PREFIX + "* argument (" + command
-                            + "). That sets a JSSE default for the whole process; the trust of each leg "
-                            + "is named in gateway.yaml as a profile instead (jwks.tls_profile, "
-                            + EGRESS_TLS_BLOCK + "." + OIDC_TLS_PROFILE_KEY + ")");
+            for (String key : PROCESS_ARGUMENT_KEYS) {
+                List<String> arguments = processArguments(service, key);
+                assertTrue(arguments.stream().noneMatch(entry -> entry.contains(JSSE_SYSTEM_PROPERTY_PREFIX)),
+                        () -> service + " passes a " + JSSE_SYSTEM_PROPERTY_PREFIX + "* argument in its compose "
+                                + key + " (" + arguments + "). That sets a JSSE default for the whole process; "
+                                + "the trust of each leg is named in gateway.yaml as a profile instead "
+                                + "(jwks.tls_profile, " + EGRESS_TLS_BLOCK + "." + OIDC_TLS_PROFILE_KEY + ")");
+            }
         }
     }
 
@@ -237,7 +272,7 @@ class ItProfileConfigBindingWiringTest {
 
         for (Path launchSite : launchSites) {
             assertFalse(readText(launchSite).contains(JSSE_SYSTEM_PROPERTY_PREFIX),
-                    () -> MODULE.relativize(launchSite) + " starts the " + GATEWAY_IMAGE + " image and carries a "
+                    () -> MODULE.relativize(launchSite) + " names the " + GATEWAY_IMAGE + " image and carries a "
                             + JSSE_SYSTEM_PROPERTY_PREFIX + "* argument. That sets a JSSE default for the whole "
                             + "process; the trust of each leg is named in gateway.yaml as a profile instead "
                             + "(jwks.tls_profile, " + EGRESS_TLS_BLOCK + "." + OIDC_TLS_PROFILE_KEY + ")");
@@ -400,36 +435,42 @@ class ItProfileConfigBindingWiringTest {
     }
 
     /**
-     * The entries of a service's {@code command}, accepting both compose forms: the list this stack
-     * would use and the single string compose also accepts. Reading the list form only would let a
-     * form switch turn the absence assertion vacuously green.
+     * The entries of one of a service's process-argument keys — {@code entrypoint} or {@code command},
+     * see {@link #PROCESS_ARGUMENT_KEYS} — accepting both compose forms each key takes: the list form
+     * and the single string. Reading one key only, or the list form only, would let a key or a form
+     * switch turn the absence assertion vacuously green.
      *
      * @param service the compose service name
-     * @return the declared command entries, or an empty list when the service declares no command
+     * @param key     the compose key to read, {@code entrypoint} or {@code command}
+     * @return the declared entries, or an empty list when the service does not declare the key
      */
-    private static List<String> command(String service) throws IOException {
-        Object command = serviceNode(service).get("command");
-        return switch (command) {
+    private static List<String> processArguments(String service, String key) throws IOException {
+        Object arguments = serviceNode(service).get(key);
+        return switch (arguments) {
             case null -> List.of();
             case List<?> listForm -> listForm.stream().map(String::valueOf).toList();
-            default -> List.of(String.valueOf(command));
+            default -> List.of(String.valueOf(arguments));
         };
     }
 
     /**
      * Every file of this module that can start the gateway outside the compose topology: each regular
-     * file under {@code src/test/java} or {@code scripts/} whose text names {@link #GATEWAY_IMAGE}.
-     * Derived by scan, so a launch site added later is swept without an edit here. The set also holds
-     * files that only inspect the image and launch nothing; they carry no argument and pass trivially.
+     * file under {@code src/test/java} or {@code scripts/} whose text names {@link #GATEWAY_IMAGE} —
+     * by the image literal, or through the harness constant that holds it (see
+     * {@link #GATEWAY_IMAGE_CONSTANT_REFERENCES}). Derived by scan, so a launch site added later is
+     * swept without an edit here. The set also holds files that only inspect the image and launch
+     * nothing; they carry no argument and pass trivially. This guard's own source is excluded by path
+     * (see {@link #GUARD_SOURCE}).
      * <p>
      * The derivation asserts a floor and the presence of {@link #KNOWN_LAUNCH_SITES}, for the reason
      * {@link #itProfileServices()} asserts non-emptiness: a scan that stopped matching would otherwise
      * turn the sweep into a vacuous pass.
      * <p>
      * <strong>Limit:</strong> this is a source-text scan. It sees an argument written as one literal in
-     * a file that names the image literal, which is how every launch site in this module is written
-     * today. An argument assembled at run time by string concatenation would evade it, and so would a
-     * file that launches the image through another file's constant without naming the literal itself.
+     * a file that names the image, whether through the image literal, the qualified
+     * {@code OneOffGatewayContainers.IMAGE}, or a static import of that constant. It does not see an
+     * argument assembled at run time by string concatenation, nor a file that reaches the image only
+     * through an alias or re-export of the constant declared under another name.
      *
      * @return the launch-site files, sorted
      */
@@ -438,7 +479,7 @@ class ItProfileConfigBindingWiringTest {
         for (Path root : LAUNCH_SITE_ROOTS) {
             try (Stream<Path> files = Files.walk(root)) {
                 for (Path file : files.filter(Files::isRegularFile).toList()) {
-                    if (readText(file).contains(GATEWAY_IMAGE)) {
+                    if (!GUARD_SOURCE.equals(file.toAbsolutePath().normalize()) && namesTheGatewayImage(file)) {
                         launchSites.add(file);
                     }
                 }
@@ -455,6 +496,17 @@ class ItProfileConfigBindingWiringTest {
                 () -> "the derived launch-site set " + fileNames + " must contain " + KNOWN_LAUNCH_SITES
                         + " — the two one-off launch sites the JSSE trust-store argument was removed from");
         return List.copyOf(launchSites);
+    }
+
+    /**
+     * Whether a file names the gateway image, by the literal or through the harness constant.
+     *
+     * @param file the candidate file
+     * @return {@code true} when its text carries the image literal or a reference to the constant
+     */
+    private static boolean namesTheGatewayImage(Path file) throws IOException {
+        String text = readText(file);
+        return text.contains(GATEWAY_IMAGE) || GATEWAY_IMAGE_CONSTANT_REFERENCES.stream().anyMatch(text::contains);
     }
 
     /**
