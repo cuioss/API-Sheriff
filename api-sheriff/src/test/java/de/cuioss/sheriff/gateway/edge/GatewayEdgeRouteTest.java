@@ -120,6 +120,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Boot-time and lifecycle contract of the public data-plane edge. The per-request serving behaviour
@@ -1449,7 +1451,7 @@ class GatewayEdgeRouteTest {
      * selected route's allowlist, and a terminated request whose {@code Host} names a reserved
      * passthrough hostname. Each answers under the {@code routing} problem type and moves the edge's
      * own {@code sheriff_errors_total} series, whose {@code event} label is the only thing that tells
-     * the two {@code 404}s apart — on the wire they are identical.
+     * the two {@code 404}s on an unrouted address apart — on the wire they are identical there.
      * <p>
      * The problem type, title and label values are exact literals because they are the contract a
      * client and a dashboard read.
@@ -1550,6 +1552,59 @@ class GatewayEdgeRouteTest {
             }
         }
 
+        @ParameterizedTest(name = "Accept: {0}")
+        @CsvSource({"application/problem+json, application/problem+json",
+                "'text/html,application/xhtml+xml', text/html"})
+        @DisplayName("on an unrouted address a reserved passthrough Host answers a 404 identical to the unrouted one")
+        void reservedHostOnAnUnroutedAddressAnswersIdentically(String accept, String expectedContentType)
+                throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI, errorPagePortal());
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection unrouted = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of("Accept", accept));
+                Rejection reserved = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        PASSTHROUGH_SNI, UNROUTED_PATH, Map.of("Accept", accept));
+
+                assertAll("the two 404s on an unrouted address for Accept: " + accept,
+                        () -> assertEquals(404, unrouted.status()),
+                        () -> assertTrue(unrouted.headers().stream()
+                                        .anyMatch(header -> header.startsWith("content-type: " + expectedContentType)),
+                                () -> "the unrouted answer must be negotiated to " + expectedContentType + ": "
+                                        + unrouted.headers()),
+                        () -> assertEquals(unrouted.status(), reserved.status()),
+                        () -> assertEquals(unrouted.headers(), reserved.headers()),
+                        () -> assertEquals(unrouted.body(), reserved.body()));
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("on an address a route serves a reserved passthrough Host answers 404")
+        void reservedHostOnAServedAddressAnswersNotFound() throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        PASSTHROUGH_SNI, "/" + ROUTE_ID + "/resource", Map.of());
+
+                assertRoutingProblem(404, rejection);
+                awaitSingleRoutingSeries(SheriffMetrics.NO_ROUTE, "PASSTHROUGH_HOST_SMUGGLED");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        /** A portal answering the gateway's HTML error pages, configured as the error-page tests do. */
+        private PortalEndpoint errorPagePortal() {
+            return PortalEndpoint.of(PortalConfig.builder().path("/portal").title("Portal").errorPages(true).build(),
+                    PortalCatalog.empty(), PortalRenderer.builtIn(), (cookie, now) -> SessionIdentity.anonymous(),
+                    null, false, "/");
+        }
+
         @Test
         @DisplayName("no sheriff_errors_total tag value carries request-derived input from a smuggled-host request")
         void errorTagsCarryNoRequestDerivedInput() throws Exception {
@@ -1604,6 +1659,11 @@ class GatewayEdgeRouteTest {
 
         /** Boots an edge over one GET-only route, reserving {@code passthroughSni}, recording into {@link #registry}. */
         private HttpServer startFront(String passthroughSni) throws Exception {
+            return startFront(passthroughSni, PortalEndpoint.inert());
+        }
+
+        /** As {@link #startFront(String)}, with {@code portal} answering the gateway's error pages. */
+        private HttpServer startFront(String passthroughSni, PortalEndpoint portal) throws Exception {
             GatewayConfig config = GatewayConfig.builder().version(1)
                     .tls(TlsConfig.builder().passthroughSni(Map.of(passthroughSni, "backend")).build())
                     .build();
@@ -1611,7 +1671,7 @@ class GatewayEdgeRouteTest {
             new GatewayEdgeRoute(new RouteTable(List.of(route(ROUTE_ID, Protocol.HTTP, Require.NONE))), config,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
                     new SheriffMetrics(registry), BffRuntime.inert(), unconsultedTrustProfileResolver(),
-                    PortalEndpoint.inert()).registerRoutes(router);
+                    portal).registerRoutes(router);
             return Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
