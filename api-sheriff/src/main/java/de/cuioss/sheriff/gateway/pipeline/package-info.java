@@ -28,7 +28,10 @@
  *       preparation and CORS preflight, before auth;</li>
  *   <li>{@link de.cuioss.sheriff.gateway.pipeline.BasicChecksStage} — stage 1: the baseline cui-http
  *       filter yielding the single canonical path, plus collection-limit fast-reject;</li>
- *   <li>{@link de.cuioss.sheriff.gateway.pipeline.FramingGate} — D3b GW-02 anti-smuggling framing gate;</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.pipeline.FramingGate} — D3b GW-02 anti-smuggling framing gate.
+ *       It decides on the request headers; a body on a bodyless method that no header declares (an
+ *       HTTP/2 stream without {@code content-length}) is refused by the edge's upstream dispatch on its
+ *       first byte, which never forwards a body for such a request on any protocol;</li>
  *   <li>{@link de.cuioss.sheriff.gateway.pipeline.CanonicalPathGuard} — D3b GW-01 single-canonical-path
  *       guard (encoded separator / matrix parameter rejection);</li>
  *   <li>{@link de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage} — stage 2: deny-by-default

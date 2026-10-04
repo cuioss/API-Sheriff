@@ -36,6 +36,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -50,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -71,6 +74,7 @@ import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
@@ -78,22 +82,32 @@ import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The request-smuggling corpus, driven over a live Vert.x edge against a loopback stub upstream.
  * <p>
- * Every HTTP/1.1 entry is written as raw bytes over a plain TCP socket, so malformed framing reaches
- * the edge exactly as an attacker would send it — an HTTP client would normalise or refuse each of
- * these shapes before a byte left the process. The one HTTP/2 entry drives a prior-knowledge HTTP/2
- * client instead, because its subject is what a rejection does to the streams sharing a connection,
- * not a byte shape. Each entry asserts two things: the status of every response
- * the edge wrote on that connection, and the exact list of requests the stub upstream saw.
+ * Every HTTP/1.1 smuggling entry is written as raw bytes over a plain TCP socket, so malformed framing
+ * reaches the edge exactly as an attacker would send it — an HTTP client would normalise or refuse
+ * each of these shapes before a byte left the process. The HTTP/2 entries and the body-framing
+ * entries drive a Vert.x client instead (prior-knowledge HTTP/2, or HTTP/1.1), because their subject
+ * is what a rejection does to the streams sharing a connection, and what of a request body reaches
+ * the upstream and how it is framed there — not a byte shape. Each entry asserts the status of every
+ * response the edge wrote, and the exact list of requests the stub upstream saw.
+ * <p>
+ * <strong>What the stub upstream records.</strong> Besides the request list, it records per request
+ * the {@code Content-Length} and {@code Transfer-Encoding} it arrived with and how many body bytes
+ * reached it, so the framing the gateway forwards a body with is observable. A request to a path
+ * under {@value #HELD} is received but never answered; a request to a path under
+ * {@value #STREAMING} is answered at once with a response body that never ends.
  * <p>
  * <strong>How an entry is brought to a deterministic end.</strong> The corpus bytes are followed, on
  * the same connection, by a sentinel request to an unrouted path that asks for
@@ -127,20 +141,34 @@ class GatewayEdgeFramingCorpusTest {
     private static final String BARE_LF_POST = "POST /bare-lf";
     /** The well-framed HTTP/2 stream sharing a connection with a rejected one, as the upstream sees it. */
     private static final String SIBLING_POST = "POST /sibling";
+    /** The further request sent on a connection after one of its streams was refused, as the upstream sees it. */
+    private static final String AFTER_GET = "GET /after";
+    /** The upstream path prefix whose requests the stub upstream receives but never answers. */
+    private static final String HELD = "/held";
+    /** The upstream path prefix the stub upstream answers at once, with a response body it never ends. */
+    private static final String STREAMING = "/streaming";
     /** The response header, lower-cased, by which the edge announces it is retiring the connection. */
     private static final String CONNECTION_CLOSE = "connection: close";
     /** The gateway's own framing rejection: its problem document names the status it was sent with. */
     private static final String PROBLEM_JSON_400 = "\"status\":400";
+    private static final String CONTENT_LENGTH = "Content-Length";
+    private static final String TRANSFER_ENCODING = "Transfer-Encoding";
+    private static final String SECURITY_FILTER_VIOLATION = "SECURITY_FILTER_VIOLATION";
     private static final Pattern STATUS_LINE = Pattern.compile("HTTP/1\\.1 (\\d{3}) ");
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
     private HttpServer upstreamServer;
-    private HttpServer frontServer;
     private NetClient netClient;
     private int frontPort;
-    /** The registry the edge under test meters into. */
+    /** The registry the default edge meters into. */
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+    /** The registry an edge built with the {@code GET}-body opt-in meters into. */
+    private final SimpleMeterRegistry optInMeterRegistry = new SimpleMeterRegistry();
+    /** Every edge front server a test started, closed in {@link #tearDown()}. */
+    private final List<HttpServer> frontServers = new CopyOnWriteArrayList<>();
+    /** Every HTTP client a test created through {@link #client(HttpVersion)}, closed in {@link #tearDown()}. */
+    private final List<HttpClient> httpClients = new CopyOnWriteArrayList<>();
 
     /** Every request the stub upstream received a head for, as {@code METHOD path}. */
     private final List<String> upstreamStarted = new CopyOnWriteArrayList<>();
@@ -152,6 +180,10 @@ class GatewayEdgeFramingCorpusTest {
     private final Map<String, HttpConnection> upstreamConnections = new ConcurrentHashMap<>();
     /** Every upstream-side connection the stub upstream has seen close. */
     private final Set<HttpConnection> upstreamClosedConnections = ConcurrentHashMap.newKeySet();
+    /** The framing headers each request arrived at the stub upstream with, keyed by its label. */
+    private final Map<String, Framing> upstreamFraming = new ConcurrentHashMap<>();
+    /** How many body bytes of each request reached the stub upstream, keyed by its label. */
+    private final Map<String, AtomicLong> upstreamBodyBytes = new ConcurrentHashMap<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -159,52 +191,102 @@ class GatewayEdgeFramingCorpusTest {
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         upstreamServer = Awaits.connect(vertx.createHttpServer().connectionHandler(
                 connection -> connection.closeHandler(closed -> upstreamClosedConnections.add(connection))
-        ).requestHandler(request -> {
-            String label = request.method() + " " + request.path();
-            upstreamConnections.put(label, request.connection());
-            upstreamStarted.add(label);
-            request.body().onComplete(read -> {
-                if (read.succeeded()) {
-                    upstreamCompleted.add(label + " [" + read.result() + "]");
-                    request.response().end("ok");
-                } else {
-                    upstreamAborted.add(label);
-                }
-            });
-        }).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+        ).requestHandler(this::handleUpstreamRequest).listen(0, LoopbackHost.ADDRESS),
+                "the stub upstream server to start listening");
 
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         // No security_defaults block at all: allow_get_with_content_length_body is unset.
-        GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).build();
-        RouteTable routes = new RouteTable(List.of(ResolvedRoute.builder()
-                .id("echo")
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/echo").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
-                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
-                .build()));
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),
-                vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
-                new SheriffMetrics(meterRegistry), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        frontServer = Awaits.connect(
-                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
-        frontPort = frontServer.actualPort();
+        frontPort = startEdge(GatewayConfig.builder().version(1).build(), meterRegistry);
         netClient = vertx.createNetClient();
     }
 
     @AfterEach
     void tearDown() throws Exception {
+        for (HttpClient client : httpClients) {
+            Awaits.teardown(client.close(), "an HTTP client to close");
+        }
         Awaits.teardown(netClient.close(), "the raw TCP client to close");
-        Awaits.teardown(frontServer.close(), "the edge front server to close");
+        for (HttpServer frontServer : frontServers) {
+            Awaits.teardown(frontServer.close(), "an edge front server to close");
+        }
         Awaits.teardown(upstreamServer.close(), "the stub upstream server to close");
         virtualThreadExecutor.close();
         Awaits.teardown(vertx.close(), "Vert.x to close");
+    }
+
+    /**
+     * Builds an edge over the one {@code echo} route for {@code gatewayConfig}, metering into
+     * {@code registry}, and starts a front server for it.
+     *
+     * @return the port the edge listens on
+     */
+    private int startEdge(GatewayConfig gatewayConfig, SimpleMeterRegistry registry) throws Exception {
+        TokenValidator tokenValidator = TokenValidator.builder()
+                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+        RouteTable routes = new RouteTable(List.of(ResolvedRoute.builder()
+                .id("echo")
+                .protocol(Protocol.HTTP)
+                .match(MatchConfig.builder().pathPrefix("/echo").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.POST, HttpMethod.PUT))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
+                .build()));
+        GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),
+                vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
+                new SheriffMetrics(registry), BffRuntime.inert(),
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+        Router router = Router.router(vertx);
+        edge.registerRoutes(router);
+        HttpServer frontServer = Awaits.connect(
+                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                "the edge front server to start listening");
+        frontServers.add(frontServer);
+        return frontServer.actualPort();
+    }
+
+    /** Starts an edge whose gateway document declares {@code allow_get_with_content_length_body: true}. */
+    private int startOptInEdge() throws Exception {
+        return startEdge(GatewayConfig.builder().version(1)
+                .securityDefaults(new SecurityDefaultsConfig(null, null, Boolean.TRUE, null)).build(),
+                optInMeterRegistry);
+    }
+
+    /**
+     * The stub upstream: records the request, its framing headers and every body byte that reaches
+     * it, then answers {@code ok} once the body has ended — except under {@value #HELD}, which is
+     * never answered, and under {@value #STREAMING}, which is answered at once with a body that never
+     * ends.
+     */
+    private void handleUpstreamRequest(HttpServerRequest request) {
+        String label = request.method() + " " + request.path();
+        boolean held = request.path().startsWith(HELD);
+        boolean streaming = request.path().startsWith(STREAMING);
+        upstreamConnections.put(label, request.connection());
+        upstreamFraming.put(label, new Framing(request.getHeader(CONTENT_LENGTH), request.getHeader(TRANSFER_ENCODING)));
+        AtomicLong bodyBytes = upstreamBodyBytes.computeIfAbsent(label, unused -> new AtomicLong());
+        upstreamStarted.add(label);
+        if (streaming) {
+            request.response().setChunked(true).write(Generators.letterStrings(4, 12).next());
+        }
+        Buffer body = Buffer.buffer();
+        // A request settles exactly once: read to its end, or failed before it got there.
+        AtomicBoolean settled = new AtomicBoolean();
+        request.handler(chunk -> {
+            bodyBytes.addAndGet(chunk.length());
+            body.appendBuffer(chunk);
+        });
+        request.exceptionHandler(failure -> {
+            if (settled.compareAndSet(false, true)) {
+                upstreamAborted.add(label);
+            }
+        });
+        request.endHandler(end -> {
+            if (settled.compareAndSet(false, true)) {
+                upstreamCompleted.add(label + " [" + body + "]");
+                if (!held && !streaming) {
+                    request.response().end("ok");
+                }
+            }
+        });
     }
 
     @Test
@@ -407,9 +489,14 @@ class GatewayEdgeFramingCorpusTest {
                 "the edge to account for the abandoned upload", Awaits.CONNECT_CEILING_SECONDS);
     }
 
-    /** The {@code sheriff_errors_total} count of the {@code echo} route for one event, {@code 0} when absent. */
+    /** The {@code sheriff_errors_total} count of the default edge's {@code echo} route for one event. */
     private double errorCount(String event) {
-        var counter = meterRegistry.find(SheriffMetrics.ERRORS_TOTAL).tags("route", "echo", "event", event).counter();
+        return errorCount(meterRegistry, event);
+    }
+
+    /** The {@code sheriff_errors_total} count of the {@code echo} route for one event, {@code 0} when absent. */
+    private static double errorCount(SimpleMeterRegistry registry, String event) {
+        var counter = registry.find(SheriffMetrics.ERRORS_TOTAL).tags("route", "echo", "event", event).counter();
         return counter == null ? 0.0 : counter.count();
     }
 
@@ -510,6 +597,279 @@ class GatewayEdgeFramingCorpusTest {
         Exchange exchange = exchange(raw);
 
         assertRejectedByGate(exchange);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"GET", "HEAD"})
+    @DisplayName("HTTP/2 — a bodyless method never carries a body upstream: its stream alone is refused 400")
+    void bodylessMethodNeverCarriesABodyUpstreamOnHttp2(String method) throws Exception {
+        assertBodylessMethodRefused(frontPort, meterRegistry, method);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — the GET-body opt-in admits only a declared-length body; any other GET body is refused 400")
+    void optInAdmitsOnlyADeclaredLengthGetBodyOnHttp2() throws Exception {
+        assertBodylessMethodRefused(startOptInEdge(), optInMeterRegistry, "GET");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"GET", "HEAD"})
+    @DisplayName("HTTP/2 — a bodyless method whose stream ends with an empty frame is served, with no body upstream")
+    void bodylessMethodEndingWithAnEmptyFrameIsServed(String method) throws Exception {
+        HttpClientRequest request = open(client(HttpVersion.HTTP_2), frontPort, method, "/echo/empty-end");
+        request.setChunked(true);
+        Awaits.connect(request.sendHead(), "the request head to be sent");
+
+        Answer answer = Awaits.connect(request.end().compose(sent -> answerOf(request)), "the request to be answered");
+        awaitUpstreamSettled();
+
+        String label = method + " /empty-end";
+        assertAll("a bodyless method ending with an empty frame",
+                () -> assertEquals(200, answer.response().statusCode(), answer.body()),
+                () -> assertEquals(List.of(label), upstreamStarted),
+                () -> assertEquals(List.of(label + " []"), upstreamCompleted),
+                () -> assertEquals(0L, upstreamBodyBytes(label), "no body byte may reach the upstream"),
+                () -> assertEquals(List.of(), upstreamAborted));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = HttpVersion.class, names = {"HTTP_1_1", "HTTP_2"})
+    @DisplayName("opt-in set — a GET declaring its length reaches the upstream framed by exactly that length")
+    void optInGetIsForwardedFramedByItsDeclaredLength(HttpVersion version) throws Exception {
+        int optInPort = startOptInEdge();
+        String body = Generators.letterStrings(4, 12).next();
+
+        Answer answer = sendDeclaredLength(client(version), optInPort, "GET", "/echo/get-declared", body);
+
+        assertForwardedFramedByLength(answer, "GET /get-declared", body);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"POST, HTTP_1_1", "POST, HTTP_2", "PUT, HTTP_1_1", "PUT, HTTP_2"})
+    @DisplayName("a request declaring its length reaches the upstream framed by exactly that length")
+    void declaredLengthRequestIsForwardedFramedByItsLength(String method, HttpVersion version) throws Exception {
+        String body = Generators.letterStrings(4, 12).next();
+
+        Answer answer = sendDeclaredLength(client(version), frontPort, method, "/echo/declared", body);
+
+        assertForwardedFramedByLength(answer, method + " /declared", body);
+    }
+
+    @Test
+    @DisplayName("a POST declaring a zero length reaches the upstream framed as Content-Length: 0, with no body")
+    void zeroDeclaredLengthIsForwardedFramedAsZero() throws Exception {
+        Answer answer = sendDeclaredLength(client(HttpVersion.HTTP_1_1), frontPort, "POST", "/echo/zero", "");
+
+        assertForwardedFramedByLength(answer, "POST /zero", "");
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = HttpVersion.class, names = {"HTTP_1_1", "HTTP_2"})
+    @DisplayName("a POST declaring no length keeps the transport-chosen framing upstream, body intact")
+    void undeclaredLengthKeepsTheTransportFraming(HttpVersion version) throws Exception {
+        String body = Generators.letterStrings(4, 12).next();
+        HttpClientRequest request = open(client(version), frontPort, "POST", "/echo/undeclared");
+        request.setChunked(true);
+        Awaits.connect(request.write(body), "the request body to be sent");
+
+        Answer answer = Awaits.connect(request.end().compose(sent -> answerOf(request)), "the request to be answered");
+        awaitUpstreamSettled();
+
+        assertAll("a POST declaring no length",
+                () -> assertEquals(200, answer.response().statusCode(), answer.body()),
+                () -> assertEquals(List.of("POST /undeclared [" + body + "]"), upstreamCompleted),
+                () -> assertEquals(new Framing(null, "chunked"), upstreamFraming.get("POST /undeclared"),
+                        "a body without a declared length keeps the framing the transport chooses"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"GET", "POST"})
+    @DisplayName("HTTP/2 — a body longer than its declared length never reaches the upstream beyond that length")
+    void bodyLongerThanItsDeclaredLengthIsRefused(String method) throws Exception {
+        int optInPort = startOptInEdge();
+        int declared = 3;
+        String body = Generators.letterStrings(8, 16).next();
+        HttpClientRequest request = open(client(HttpVersion.HTTP_2), optInPort, method, "/echo/overlong");
+        CompletableFuture<Object> outcome = new CompletableFuture<>();
+        request.exceptionHandler(outcome::complete);
+        request.response().onSuccess(response -> outcome.complete(response.statusCode()))
+                .onFailure(outcome::complete);
+        request.putHeader(CONTENT_LENGTH, String.valueOf(declared));
+
+        request.end(body);
+        Object refusal = Awaits.connect(outcome, "the request to be refused");
+        awaitUpstreamSettled();
+
+        String label = method + " /overlong";
+        assertAll("a body longer than its declared length",
+                () -> assertTrue(refusal instanceof StreamResetException
+                                || refusal instanceof Integer status && status >= 400,
+                        () -> "the request must be refused, not served: " + refusal),
+                () -> assertTrue(upstreamBodyBytes(label) <= declared,
+                        () -> "a byte beyond the declared length reached the upstream: " + upstreamBodyBytes(label)),
+                () -> assertFalse(upstreamCompleted.contains(label + " [" + body + "]"),
+                        "the upstream must never read the overlong body to its end"));
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — opt-in set, a HEAD declaring a body is still refused 400 and only its stream ends")
+    void headWithDeclaredLengthIsRefusedEvenWithTheOptIn() throws Exception {
+        int optInPort = startOptInEdge();
+        String part = Generators.letterStrings(4, 12).next();
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        HttpClientRequest refused = open(http2Client, optInPort, "HEAD", "/echo/head-declared");
+        CompletableFuture<Throwable> streamEnded = new CompletableFuture<>();
+        refused.exceptionHandler(streamEnded::complete);
+        // Declaring twice the body it sends keeps the stream open when the rejection is written.
+        refused.putHeader(CONTENT_LENGTH, String.valueOf(2 * part.length()));
+        Awaits.connect(refused.write(part), "the refused stream to send part of its body");
+
+        Answer answer = Awaits.connect(answerOf(refused), "the rejection to arrive");
+        Throwable streamEnd = Awaits.connect(streamEnded, "the edge to end the refused stream");
+        Answer after = sendAfter(http2Client, optInPort);
+        awaitUpstreamSettled();
+
+        assertAll("a HEAD declaring a body",
+                () -> assertEquals(400, answer.response().statusCode()),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
+                        "the refused stream must be reset with NO_ERROR"),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream must succeed"),
+                () -> assertSame(refused.connection(), after.connection(),
+                        "the further stream must reuse the connection the rejection was written on"),
+                () -> assertEquals(List.of(AFTER_GET), upstreamStarted,
+                        "nothing of the refused stream may reach the upstream"));
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a body byte on a bodyless method after the response started resets the stream")
+    void bodyByteAfterTheResponseStartedResetsTheStream() throws Exception {
+        HttpClientRequest request = open(client(HttpVersion.HTTP_2), frontPort, "GET", "/echo/streaming");
+        request.exceptionHandler(ignored -> {
+            // The reset reaches the request side as well; the response side is what is asserted.
+        });
+        CompletableFuture<@Nullable Throwable> responseEnded = new CompletableFuture<>();
+        io.vertx.core.Future<HttpClientResponse> head = request.response().onSuccess(response -> {
+            response.handler(chunk -> {
+            });
+            response.exceptionHandler(responseEnded::complete);
+            response.endHandler(end -> responseEnded.complete(null));
+        });
+        request.setChunked(true);
+        Awaits.connect(request.sendHead(), "the request head to be sent");
+        HttpClientResponse response = Awaits.connect(head, "the response head to arrive");
+
+        Awaits.connect(request.write(Generators.letterStrings(1, 4).next()), "the body byte to be sent");
+        Throwable responseEnd = Awaits.connect(responseEnded, "the edge to end the response stream");
+        Awaits.until(() -> errorCount(SECURITY_FILTER_VIOLATION) >= 1.0,
+                "the edge to meter the refused body", Awaits.CONNECT_CEILING_SECONDS);
+        awaitUpstreamSettled();
+
+        assertAll("a body byte after the response started",
+                () -> assertEquals(200, response.statusCode()),
+                () -> assertInstanceOf(StreamResetException.class, responseEnd,
+                        "the response stream must be reset, never cleanly ended"),
+                () -> assertEquals(List.of("GET /streaming"), upstreamStarted),
+                () -> assertEquals(List.of("GET /streaming []"), upstreamCompleted,
+                        "the upstream request must have carried no body"),
+                () -> assertEquals(0L, upstreamBodyBytes("GET /streaming")),
+                () -> assertEquals(1.0, errorCount(SECURITY_FILTER_VIOLATION),
+                        "the refused body is metered once"),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, "ApiSheriff-100"));
+    }
+
+    /**
+     * Sends a bodyless-method request over HTTP/2 whose stream carries body bytes no header declares,
+     * to a path the stub upstream never answers, and asserts the verdict: a {@code 400} on that stream
+     * alone, the stream then ended with {@code NO_ERROR}, the connection still serving a further
+     * stream, no body byte at the upstream, and the refusal metered once.
+     */
+    private void assertBodylessMethodRefused(int port, SimpleMeterRegistry registry, String method) throws Exception {
+        String path = HELD + "-" + method.toLowerCase(Locale.ROOT);
+        String label = method + " " + path;
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        HttpClientRequest refused = open(http2Client, port, method, "/echo" + path);
+        CompletableFuture<Throwable> streamEnded = new CompletableFuture<>();
+        refused.exceptionHandler(streamEnded::complete);
+        refused.setChunked(true);
+        Awaits.connect(refused.write(Generators.letterStrings(4, 12).next()), "the stream to send body bytes");
+
+        Answer answer = Awaits.connect(answerOf(refused), "the rejection to arrive");
+        Throwable streamEnd = Awaits.connect(streamEnded, "the edge to end the refused stream");
+        Answer after = sendAfter(http2Client, port);
+        awaitUpstreamSettled();
+
+        assertAll("a body on a bodyless method",
+                () -> assertEquals(HttpVersion.HTTP_2, answer.response().version()),
+                () -> assertEquals(400, answer.response().statusCode(), answer.body()),
+                () -> assertTrue("HEAD".equals(method) || answer.body().contains(PROBLEM_JSON_400), answer.body()),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
+                        "the refused stream must be reset with NO_ERROR"),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream must succeed"),
+                () -> assertSame(refused.connection(), after.connection(),
+                        "the further stream must reuse the connection the rejection was written on"),
+                // The refusal may land before or after the bodyless upstream request was sent.
+                () -> assertTrue(List.of(List.of(AFTER_GET), List.of(label, AFTER_GET)).contains(upstreamStarted),
+                        () -> "the upstream saw more than the bodyless request: " + upstreamStarted),
+                () -> assertEquals(0L, upstreamBodyBytes(label), "no body byte may reach the upstream"),
+                () -> assertEquals(List.of(), upstreamAborted),
+                () -> assertEquals(1.0, errorCount(registry, SECURITY_FILTER_VIOLATION),
+                        "the refusal is metered once"));
+    }
+
+    /** Sends {@code body} with a declared {@code Content-Length} and returns the answer. */
+    private Answer sendDeclaredLength(HttpClient client, int port, String method, String path, String body)
+            throws Exception {
+        HttpClientRequest request = open(client, port, method, path);
+        request.putHeader(CONTENT_LENGTH, String.valueOf(body.length()));
+        Answer answer = Awaits.connect(request.end(body).compose(sent -> answerOf(request)),
+                "the request to be answered");
+        awaitUpstreamSettled();
+        return answer;
+    }
+
+    /**
+     * The verdict of a request forwarded framed by its declared length: answered {@code 200}, the body
+     * read whole by the upstream, which received it with {@code Content-Length} equal to the declared
+     * value and no {@code Transfer-Encoding}.
+     */
+    private void assertForwardedFramedByLength(Answer answer, String label, String body) {
+        assertAll("a request forwarded framed by its declared length",
+                () -> assertEquals(200, answer.response().statusCode(), answer.body()),
+                () -> assertEquals(List.of(label + " [" + body + "]"), upstreamCompleted),
+                () -> assertEquals(new Framing(String.valueOf(body.length()), null), upstreamFraming.get(label),
+                        "the upstream must receive the declared length, and never a chunked body"));
+    }
+
+    /** Sends a well-framed GET on {@code client}'s connection to {@code port} and returns its answer. */
+    private Answer sendAfter(HttpClient client, int port) throws Exception {
+        HttpClientRequest after = open(client, port, "GET", "/echo/after");
+        return Awaits.connect(after.end().compose(sent -> answerOf(after)), "a further stream to be answered");
+    }
+
+    /** The answer to {@code request}: its response, with the body read whole. */
+    private static io.vertx.core.Future<Answer> answerOf(HttpClientRequest request) {
+        return request.response().compose(response -> response.body()
+                .map(body -> new Answer(response, body.toString(), request.connection())));
+    }
+
+    /** Opens a request on {@code client} to the edge at {@code port}. */
+    private static HttpClientRequest open(HttpClient client, int port, String method, String path) throws Exception {
+        return Awaits.connect(client.request(io.vertx.core.http.HttpMethod.valueOf(method), port,
+                LoopbackHost.ADDRESS, path), "the " + method + " " + path + " request to open");
+    }
+
+    /** A client speaking {@code version} (HTTP/2 with prior knowledge), closed in {@link #tearDown()}. */
+    private HttpClient client(HttpVersion version) {
+        HttpClient client = vertx.createHttpClient(new HttpClientOptions()
+                .setProtocolVersion(version).setHttp2ClearTextUpgrade(false));
+        httpClients.add(client);
+        return client;
+    }
+
+    /** How many body bytes of the request labelled {@code label} reached the upstream; {@code 0} when it never arrived. */
+    private long upstreamBodyBytes(String label) {
+        AtomicLong bytes = upstreamBodyBytes.get(label);
+        return bytes == null ? 0L : bytes.get();
     }
 
     /**
@@ -667,6 +1027,14 @@ class GatewayEdgeFramingCorpusTest {
 
     /** Everything one corpus connection received: the status of each response, and the raw bytes. */
     private record Exchange(List<Integer> statuses, String raw) {
+    }
+
+    /** The response to one client request, its body read whole, and the connection it was sent on. */
+    private record Answer(HttpClientResponse response, String body, HttpConnection connection) {
+    }
+
+    /** The framing headers a request arrived at the stub upstream with, each {@code null} when absent. */
+    private record Framing(@Nullable String contentLength, @Nullable String transferEncoding) {
     }
 
     /** Minimal {@link Instance} double resolving to one supplied validator; unused accessors throw. */

@@ -16,11 +16,13 @@
 package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -71,6 +73,8 @@ import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.test.generator.Generators;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Context;
@@ -90,9 +94,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+@EnableGeneratorController
 @DisplayName("DispatchStage — stage 6 streamed upstream dispatch")
 class DispatchStageTest {
+
+    /** The {@code max_body_bytes} ceiling of the unit-level body streams, above every body they carry. */
+    private static final long BODY_CAP = 1024L;
 
     @Nested
     @DisplayName("upstream request URI assembly")
@@ -221,6 +231,399 @@ class DispatchStageTest {
             // Assert
             assertTrue(forwarded.isEmpty(), "no chunk crosses once the very first breaches the cap");
         }
+
+        @Test
+        @DisplayName("forwards a body of exactly its declared length whole and passes its end on")
+        void forwardsABodyOfExactlyItsDeclaredLength() {
+            String first = Generators.letterStrings(2, 6).next();
+            String second = Generators.letterStrings(2, 6).next();
+            BodyProbe probe = new BodyProbe(first.length() + second.length());
+
+            probe.source.emit(Buffer.buffer(first));
+            probe.source.emit(Buffer.buffer(second));
+            probe.source.end();
+
+            assertAll("a body of exactly its declared length",
+                    () -> assertEquals(first + second, probe.forwardedText(), "the whole body crosses to the upstream"),
+                    () -> assertTrue(probe.ended.get(), "the end of a whole body is passed on"),
+                    () -> assertNull(probe.failure.get(), "a whole body raises no failure"),
+                    () -> assertEquals(0, probe.aborts.get(), "a whole body never aborts the upstream request"));
+        }
+
+        @Test
+        @DisplayName("never forwards a chunk crossing the declared length: refuses it and aborts once")
+        void refusesAChunkCrossingTheDeclaredLength() {
+            String within = Generators.letterStrings(2, 6).next();
+            BodyProbe probe = new BodyProbe(within.length() + 1L);
+
+            probe.source.emit(Buffer.buffer(within));
+            probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+            probe.source.end();
+
+            assertAll("a chunk crossing the declared length",
+                    () -> assertEquals(within, probe.forwardedText(), "no byte beyond the declared length crosses"),
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION,
+                            assertInstanceOf(GatewayException.class, probe.failure.get()).getEventType()),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is aborted exactly once"),
+                    () -> assertFalse(probe.ended.get(), "the end after a refusal is not passed on"));
+        }
+
+        @Test
+        @DisplayName("an end short of the declared length aborts once as INBOUND_BODY_ABORTED instead of ending")
+        void abortsAnEndShortOfTheDeclaredLength() {
+            String partial = Generators.letterStrings(2, 6).next();
+            BodyProbe probe = new BodyProbe(partial.length() + 1L);
+
+            probe.source.emit(Buffer.buffer(partial));
+            probe.source.end();
+            probe.source.end();
+
+            assertAll("an end short of the declared length",
+                    () -> assertEquals(partial, probe.forwardedText()),
+                    () -> assertEquals(EventType.INBOUND_BODY_ABORTED,
+                            assertInstanceOf(GatewayException.class, probe.failure.get()).getEventType(),
+                            "a body that did not arrive whole is client-caused, not a security filter violation"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is aborted exactly once"),
+                    () -> assertFalse(probe.ended.get(), "a short body is never ended towards the upstream"));
+        }
+
+        @Test
+        @DisplayName("with no declared length only the cap applies: the body streams through and ends")
+        void appliesNoLengthBoundWithoutADeclaredLength() {
+            String first = Generators.letterStrings(2, 6).next();
+            String second = Generators.letterStrings(2, 6).next();
+            BodyProbe probe = new BodyProbe(DispatchStage.NO_DECLARED_LENGTH);
+
+            probe.source.emit(Buffer.buffer(first));
+            probe.source.emit(Buffer.buffer(second));
+            probe.source.end();
+
+            assertAll("a body declaring no length",
+                    () -> assertEquals(first + second, probe.forwardedText()),
+                    () -> assertTrue(probe.ended.get()),
+                    () -> assertNull(probe.failure.get()),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("a cleared end handler is no longer called")
+        void clearedEndHandlerIsNotCalled() {
+            BodyProbe probe = new BodyProbe(DispatchStage.NO_DECLARED_LENGTH);
+
+            probe.capped.endHandler(null);
+            probe.source.end();
+
+            assertFalse(probe.ended.get(), "the stream must stop passing its end on once the handler is cleared");
+        }
+    }
+
+    /**
+     * A {@link DispatchStage.ByteCappedBodyStream} over a {@link TestReadStream}, held to one declared
+     * length under {@link #BODY_CAP}, recording what it forwards, its failure, its end and every abort.
+     */
+    private static final class BodyProbe {
+
+        private final TestReadStream source = new TestReadStream();
+        private final List<Buffer> forwarded = new ArrayList<>();
+        private final AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
+        private final AtomicInteger aborts = new AtomicInteger();
+        private final AtomicBoolean ended = new AtomicBoolean();
+        private final DispatchStage.ByteCappedBodyStream capped;
+
+        BodyProbe(long declaredLength) {
+            capped = new DispatchStage.ByteCappedBodyStream(source, BODY_CAP, declaredLength, aborts::incrementAndGet,
+                    _ -> {
+                        // The forwarded count feeds the retry gate, which these cases do not exercise.
+                    });
+            capped.handler(forwarded::add);
+            capped.exceptionHandler(failure::set);
+            capped.endHandler(_ -> ended.set(true));
+        }
+
+        String forwardedText() {
+            Buffer joined = Buffer.buffer();
+            forwarded.forEach(joined::appendBuffer);
+            return joined.toString();
+        }
+    }
+
+    @Nested
+    @DisplayName("bodyless-method watch over the inbound stream")
+    class BodylessWatch {
+
+        private static final String ABORT = "abort";
+        private static final String LATE = "late";
+
+        private final TestReadStream source = new TestReadStream();
+        /** The abort action and the late-violation callback, in the order they ran. */
+        private final List<String> sequence = new CopyOnWriteArrayList<>();
+        private final List<GatewayException> lateViolations = new CopyOnWriteArrayList<>();
+        private DispatchStage.BodylessMethodWatch watch;
+
+        @BeforeEach
+        void arm() {
+            watch = DispatchStage.BodylessMethodWatch.arm(source, () -> sequence.add(ABORT), violation -> {
+                sequence.add(LATE);
+                lateViolations.add(violation);
+            });
+        }
+
+        @Test
+        @DisplayName("consumes the inbound stream in place of the upstream request")
+        void consumesTheInboundStream() {
+            assertTrue(source.subscribed(), "the watch must read the stream the upstream request never receives");
+        }
+
+        @Test
+        @DisplayName("the first body byte refuses the request as SECURITY_FILTER_VIOLATION and aborts once")
+        void firstBodyByteRefusesTheRequest() {
+            String chunk = Generators.letterStrings(1, 8).next();
+
+            source.emit(Buffer.buffer(chunk));
+
+            GatewayException refusal = watch.clientAbort();
+            assertAll("the first body byte on a bodyless method",
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION,
+                            assertInstanceOf(GatewayException.class, refusal).getEventType()),
+                    () -> assertFalse(assertInstanceOf(GatewayException.class, refusal).getMessage().contains(chunk),
+                            "the disposition is fixed and carries nothing the client sent"),
+                    () -> assertEquals(List.of(ABORT), sequence, "the upstream request is aborted exactly once"));
+        }
+
+        @Test
+        @DisplayName("an empty chunk and the end of the stream are not a body")
+        void emptyChunkAndEndAreNotABody() {
+            source.emit(Buffer.buffer());
+            source.end();
+
+            assertAll("an empty chunk and the end of the stream",
+                    () -> assertNull(watch.clientAbort(), "nothing may be refused"),
+                    () -> assertEquals(List.of(), sequence, "nothing may be aborted"),
+                    () -> assertNull(watch.handOver(), "the response is handed over with no refusal"));
+        }
+
+        @Test
+        @DisplayName("a further body byte after the refusal is ignored")
+        void furtherBodyByteIsIgnored() {
+            source.emit(Buffer.buffer(Generators.letterStrings(1, 8).next()));
+            GatewayException first = watch.clientAbort();
+
+            source.emit(Buffer.buffer(Generators.letterStrings(1, 8).next()));
+
+            assertAll("a further body byte",
+                    () -> assertSame(first, watch.clientAbort(), "the refusal is recorded once"),
+                    () -> assertEquals(List.of(ABORT), sequence, "the upstream request is aborted once"));
+        }
+
+        @Test
+        @DisplayName("a refusal before the hand-over is the dispatch's own failure, never a late one")
+        void refusalBeforeTheHandOverIsReturnedByIt() {
+            source.emit(Buffer.buffer(Generators.letterStrings(1, 8).next()));
+
+            GatewayException returned = watch.handOver();
+
+            assertAll("a refusal before the hand-over",
+                    () -> assertSame(watch.clientAbort(), returned, "the hand-over reports the refusal"),
+                    () -> assertEquals(List.of(), lateViolations, "the late-violation callback is not run"));
+        }
+
+        @Test
+        @DisplayName("a refusal after the hand-over reaches the late-violation callback before the abort")
+        void refusalAfterTheHandOverGoesToTheLateCallback() {
+            GatewayException beforeAnyByte = watch.handOver();
+
+            source.emit(Buffer.buffer(Generators.letterStrings(1, 8).next()));
+
+            assertAll("a refusal after the hand-over",
+                    () -> assertNull(beforeAnyByte, "nothing was refused when the response was handed over"),
+                    () -> assertEquals(List.of(watch.clientAbort()), lateViolations,
+                            "the refusal is delivered to the late-violation callback once"),
+                    () -> assertEquals(List.of(LATE, ABORT), sequence,
+                            "the edge must learn of the refusal before the upstream request is reset"));
+        }
+    }
+
+    @Nested
+    @DisplayName("body framing of a dispatched request")
+    class Framing {
+
+        @ParameterizedTest(name = "{0} declaring {1} is bodyless: {2}")
+        @CsvSource({"GET, -1, true", "GET, 0, true", "GET, 7, false", "HEAD, -1, true", "HEAD, 0, true",
+                "HEAD, 7, false", "POST, -1, false", "PUT, 0, false"})
+        @DisplayName("a request is bodyless exactly when it is a GET or HEAD without a positive declared length")
+        void bodylessExactlyForGetAndHeadWithoutAPositiveLength(HttpMethod method, long declaredLength,
+                boolean bodyless) {
+            DispatchStage.BodyFraming framing = DispatchStage.BodyFraming.of(method, declaredLength, _ -> {
+                // No late refusal is delivered in this case.
+            });
+
+            assertAll("the framing of " + method,
+                    () -> assertEquals(bodyless, framing.bodyless()),
+                    () -> assertEquals(declaredLength, framing.declaredLength()));
+        }
+
+        @Test
+        @DisplayName("a streamed framing is never bodyless and receives no late refusal")
+        void streamedFramingIsNeverBodyless() {
+            DispatchStage.BodyFraming framing = DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH);
+            GatewayException violation = new GatewayException(EventType.SECURITY_FILTER_VIOLATION,
+                    Generators.letterStrings(4, 12).next());
+
+            assertAll("a streamed framing",
+                    () -> assertFalse(framing.bodyless()),
+                    () -> assertEquals(DispatchStage.NO_DECLARED_LENGTH, framing.declaredLength()),
+                    () -> assertDoesNotThrow(() -> framing.lateViolation().accept(violation),
+                            "its late-violation callback accepts and ignores a refusal"));
+        }
+    }
+
+    /**
+     * The bodyless dispatch path against a live upstream: the inbound stream is never handed to an
+     * upstream request, so a bodyless request stays retryable while no body byte has arrived, and a
+     * body byte refuses it wherever in the exchange it lands before the response is handed over.
+     */
+    @Nested
+    @DisplayName("bodyless dispatch over a live upstream")
+    class BodylessDispatch {
+
+        private static final String FAILING_PATH = "/failing";
+        private static final String HELD_PATH = "/held";
+        private static final String ANSWERING_PATH = "/answering";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpClient upstreamClient;
+        private DispatchStage stage;
+        /** Every request the stub upstream received a head for. */
+        private final AtomicInteger upstreamStarted = new AtomicInteger();
+        /** Every body byte that reached the stub upstream. */
+        private final AtomicLong upstreamBodyBytes = new AtomicLong();
+        private final List<GatewayException> lateViolations = new CopyOnWriteArrayList<>();
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            // The stub upstream drops the connection of a request to the failing path as soon as its
+            // head arrives, never answers one to the held path, and answers every other once it ended.
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                upstreamStarted.incrementAndGet();
+                request.handler(chunk -> upstreamBodyBytes.addAndGet(chunk.length()));
+                switch (request.path()) {
+                    case FAILING_PATH -> request.connection().close();
+                    case HELD_PATH -> {
+                        // Received, never answered.
+                    }
+                    default -> request.endHandler(_ -> request.response().end("ok"));
+                }
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
+            upstreamClient = vertx.createHttpClient();
+            stage = new DispatchStage(BODY_CAP, new UpstreamFailureMapper(new GatewayEventCounter()));
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the stub upstream to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("a bodyless GET is retried on an upstream failure while no inbound byte arrived")
+        void bodylessGetIsRetriedWhileNoInboundByteArrived() {
+            GatewayException rejection = rejectionOf(dispatchGet(route(upstreamClient), FAILING_PATH,
+                    new TestReadStream()));
+
+            assertAll("a bodyless GET against a failing upstream",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, rejection.getEventType()),
+                    () -> assertEquals(3, upstreamStarted.get(),
+                            "the inbound stream is never subscribed to an attempt, so 1 attempt + 2 retries run"));
+        }
+
+        @Test
+        @DisplayName("a body byte before the upstream request is sent refuses the dispatch; nothing is sent")
+        void bodyByteBeforeTheSendRefusesTheDispatch() {
+            TestReadStream inbound = new TestReadStream();
+            inbound.emitOnResume(Buffer.buffer(Generators.letterStrings(1, 8).next()));
+
+            GatewayException rejection = rejectionOf(dispatchGet(route(upstreamClient), ANSWERING_PATH, inbound));
+
+            assertAll("a body byte before the send",
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, rejection.getEventType()),
+                    () -> assertEquals(0, upstreamStarted.get(), "the refused request is never sent upstream"),
+                    () -> assertEquals(List.of(), lateViolations));
+        }
+
+        @Test
+        @DisplayName("a body byte while the response is awaited refuses the dispatch and is never retried")
+        void bodyByteWhileTheResponseIsAwaitedRefusesTheDispatch() throws Exception {
+            TestReadStream inbound = new TestReadStream();
+            Future<HttpClientResponse> dispatched = dispatchGet(route(upstreamClient), HELD_PATH, inbound);
+            Awaits.until(() -> upstreamStarted.get() == 1, "the upstream to receive the bodyless request",
+                    Awaits.CONNECT_CEILING_SECONDS);
+
+            inbound.emit(Buffer.buffer(Generators.letterStrings(1, 8).next()));
+            GatewayException rejection = rejectionOf(dispatched);
+
+            assertAll("a body byte while the response is awaited",
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, rejection.getEventType()),
+                    () -> assertEquals(1, upstreamStarted.get(), "a refused request is never retried"),
+                    () -> assertEquals(0L, upstreamBodyBytes.get(), "no body byte may reach the upstream"),
+                    () -> assertEquals(List.of(), lateViolations));
+        }
+
+        @Test
+        @DisplayName("a body byte after the response arrived but before its hand-over refuses the dispatch")
+        void bodyByteBeforeTheHandOverRefusesTheDispatch() {
+            TestReadStream inbound = new TestReadStream();
+            String chunk = Generators.letterStrings(1, 8).next();
+            HttpClient client = interceptingClient(upstreamClient,
+                    composed -> {
+                        CompletableFuture<@Nullable Object> received = new CompletableFuture<>();
+                        composed.onComplete(_ -> received.complete(null));
+                        Awaits.connect(received, "the upstream response to be received");
+                        inbound.emit(Buffer.buffer(chunk));
+                    });
+
+            GatewayException rejection = rejectionOf(dispatchGet(route(client), ANSWERING_PATH, inbound));
+
+            assertAll("a body byte before the hand-over",
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, rejection.getEventType(),
+                            "the response is not relayed: the dispatch fails with the refusal"),
+                    () -> assertEquals(List.of(), lateViolations,
+                            "a refusal before the hand-over is the dispatch's own failure, not a late one"),
+                    () -> assertEquals(0L, upstreamBodyBytes.get(), "no body byte may reach the upstream"));
+        }
+
+        /** A retry-enabled proxy route over {@code client} with a 1 + 2 retry guard, as the edge builds one. */
+        private RouteRuntime route(HttpClient client) {
+            return RouteRuntime.builder()
+                    .id("bodyless")
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .httpClient(client)
+                    .retryEnabled(true)
+                    .resilienceGuard(Guard.create()
+                            .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
+                            .abortOn(GatewayException.class).done()
+                            .build())
+                    .build();
+        }
+
+        /** Runs one bodyless GET dispatch on a virtual thread, as the edge does. */
+        private Future<HttpClientResponse> dispatchGet(RouteRuntime route, String path, ReadStream<Buffer> inbound) {
+            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.GET, path, Map.of(), inbound,
+                    DispatchStage.BodyFraming.of(HttpMethod.GET, DispatchStage.NO_DECLARED_LENGTH,
+                            lateViolations::add)));
+        }
+    }
+
+    /** Awaits a dispatch that must fail and returns the {@link GatewayException} it raised. */
+    private static GatewayException rejectionOf(Future<HttpClientResponse> dispatched) {
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> Awaits.connect(dispatched, "the dispatch to be rejected"));
+        return assertInstanceOf(GatewayException.class, failure.getCause());
     }
 
     @Nested
@@ -515,7 +918,8 @@ class DispatchStageTest {
 
         /** Runs one dispatch on a virtual thread, as the edge does, so the test thread can drive its body. */
         private Future<HttpClientResponse> dispatch(String path, ReadStream<Buffer> inbound) {
-            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.POST, path, Map.of(), inbound));
+            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.POST, path, Map.of(), inbound,
+                    DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH)));
         }
 
         /**
@@ -528,13 +932,6 @@ class DispatchStageTest {
             inbound.emit(Buffer.buffer("chunk"));
             Awaits.until(() -> upstreamStarted.get() == call, "the upstream to receive the request head",
                     Awaits.CONNECT_CEILING_SECONDS);
-        }
-
-        /** Awaits a dispatch that must fail and returns the {@link GatewayException} it raised. */
-        private GatewayException rejectionOf(Future<HttpClientResponse> dispatched) {
-            ExecutionException failure = assertThrows(ExecutionException.class,
-                    () -> Awaits.connect(dispatched, "the dispatch to be rejected"));
-            return assertInstanceOf(GatewayException.class, failure.getCause());
         }
     }
 
@@ -638,7 +1035,7 @@ class DispatchStageTest {
             RouteRuntime route = RouteRuntime.builder()
                     .id("deferred-relay")
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
-                    .httpClient(stallingClient(upstreamClient, stall))
+                    .httpClient(interceptingClient(upstreamClient, stall::hold))
                     .resilienceGuard(Guard.create()
                             .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
                             .abortOn(GatewayException.class).done()
@@ -691,7 +1088,10 @@ class DispatchStageTest {
                 HttpServerRequest request, Context clientContext) {
             HttpClientResponse response;
             try {
-                response = stage.dispatch(route, HttpMethod.GET, "/", Map.of(), request);
+                response = stage.dispatch(route, HttpMethod.GET, "/", Map.of(), request,
+                        DispatchStage.BodyFraming.of(HttpMethod.GET, DispatchStage.NO_DECLARED_LENGTH, _ -> {
+                            // A body-free GET: no late refusal can arrive in this test.
+                        }));
             } catch (GatewayException dispatchFailure) {
                 abandon(request, dispatchFailure);
                 return;
@@ -714,27 +1114,36 @@ class DispatchStageTest {
     }
 
     /**
-     * Wraps {@code delegate} so every upstream request future it hands out holds the calling thread
-     * inside {@code compose(...)} — after the send has been chained, before anything else is — for
-     * {@code stall}.
+     * Runs on the dispatching thread inside {@code compose(...)} of an upstream request future —
+     * after the send has been chained, before anything else is — with the composed exchange.
      */
-    private static HttpClient stallingClient(HttpClient delegate, ExchangeStall stall) {
+    @FunctionalInterface
+    private interface ComposeHook {
+
+        void afterCompose(io.vertx.core.Future<?> composed) throws Exception;
+    }
+
+    /**
+     * Wraps {@code delegate} so every upstream request future it hands out runs {@code hook} on the
+     * calling thread inside {@code compose(...)}, with the composed exchange.
+     */
+    private static HttpClient interceptingClient(HttpClient delegate, ComposeHook hook) {
         return (HttpClient) Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
                 new Class<?>[]{HttpClient.class}, (_, method, args) -> {
                     Object result = invokeOn(delegate, method, args);
                     if ("request".equals(method.getName()) && result instanceof io.vertx.core.Future<?> requestFuture) {
-                        return stallingAfterCompose(requestFuture, stall);
+                        return interceptingCompose(requestFuture, hook);
                     }
                     return result;
                 });
     }
 
-    private static io.vertx.core.Future<?> stallingAfterCompose(io.vertx.core.Future<?> delegate, ExchangeStall stall) {
+    private static io.vertx.core.Future<?> interceptingCompose(io.vertx.core.Future<?> delegate, ComposeHook hook) {
         return (io.vertx.core.Future<?>) Proxy.newProxyInstance(io.vertx.core.Future.class.getClassLoader(),
                 new Class<?>[]{io.vertx.core.Future.class}, (_, method, args) -> {
                     Object result = invokeOn(delegate, method, args);
                     if ("compose".equals(method.getName()) && result instanceof io.vertx.core.Future<?> composed) {
-                        stall.hold(composed);
+                        hook.afterCompose(composed);
                     }
                     return result;
                 });
@@ -789,6 +1198,12 @@ class DispatchStageTest {
         private volatile @Nullable Handler<Throwable> exceptionHandler;
         private volatile @Nullable Handler<Void> endHandler;
         private volatile boolean resumed;
+        private volatile @Nullable Buffer onResume;
+
+        /** Emits {@code buffer} the moment a consumer resumes the stream, before {@link #resume()} returns. */
+        void emitOnResume(Buffer buffer) {
+            onResume = buffer;
+        }
 
         void emit(Buffer buffer) {
             Handler<Buffer> current = handler;
@@ -838,6 +1253,11 @@ class DispatchStageTest {
         @Override
         public ReadStream<Buffer> resume() {
             resumed = true;
+            Buffer pending = onResume;
+            if (pending != null) {
+                onResume = null;
+                emit(pending);
+            }
             return this;
         }
 

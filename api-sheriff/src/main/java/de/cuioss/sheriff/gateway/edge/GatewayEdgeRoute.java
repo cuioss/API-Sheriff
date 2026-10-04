@@ -36,6 +36,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 
@@ -272,17 +273,22 @@ public class GatewayEdgeRoute {
      * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
      * release site knows there is no sub-permit to return. */
     private static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
-    /** Set once the framing gate has rejected an HTTP/1.x request: the writer that answers it then
-     * retires the connection the answer is written on (see {@link #rejectFramingAndRetire}). The
-     * virtual-thread hop carries only the {@link RoutingContext}, so the marker rides on it to the
-     * event-loop writer. */
+    /** Set once a framing rejection — the framing gate's, or a body the dispatch refused on its framing
+     * — has fallen on an HTTP/1.x request: the writer that answers it then retires the connection the
+     * answer is written on (see {@link #markFramingRejection}). The virtual-thread hop carries only the
+     * {@link RoutingContext}, so the marker rides on it to the event-loop writer. */
     private static final String RETIRE_CONNECTION_KEY = "sheriff.retireconnection";
-    /** Set once the framing gate has rejected an HTTP/2 request: the writer that answers it then ends
-     * that one stream and leaves the connection open (see {@link #rejectFramingAndRetire}). Rides on
+    /** Set once a framing rejection has fallen on an HTTP/2 request: the writer that answers it then
+     * ends that one stream and leaves the connection open (see {@link #markFramingRejection}). Rides on
      * the {@link RoutingContext} for the same reason as {@link #RETIRE_CONNECTION_KEY}. */
     private static final String END_STREAM_KEY = "sheriff.endstream";
+    /** Holds the flag a bodyless request's late body refusal sets (see {@link #lateBodyRefusal}): the
+     * response it reset is never ended afterwards by a relay failure. */
+    private static final String LATE_BODY_REFUSED_KEY = "sheriff.latebodyrefused";
     /** The HTTP/2 error code {@code NO_ERROR}: the stream is ended without signalling a fault. */
     private static final long HTTP2_NO_ERROR = 0L;
+    /** The HTTP/2 error code {@code CANCEL}: the stream is abandoned before its response completed. */
+    private static final long HTTP2_CANCEL = 0x8L;
     /** Holds the request body armed in {@link #handle} as a {@link DispatchStage.InboundBody}, so the
      * upstream dispatch — which runs after the virtual-thread hop — streams the body through the
      * decorator that remembers an inbound failure. Absent on the reserved-body path, which reads its
@@ -808,7 +814,8 @@ public class GatewayEdgeRoute {
      *       the next request framed on that connection, or pin the connection until the idle timeout —
      *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
      *       still tie up connections by repeatedly tripping the {@code 413};</li>
-     *   <li>a framing-gate rejection of an HTTP/1.x request (see {@link #rejectFramingAndRetire}).</li>
+     *   <li>a framing rejection of an HTTP/1.x request — the framing gate's, or a body the dispatch
+     *       refused on its framing (see {@link #markFramingRejection}).</li>
      * </ul>
      */
     private static void retireConnectionAfterResponse(RoutingContext ctx) {
@@ -869,13 +876,24 @@ public class GatewayEdgeRoute {
         try {
             framingGate.process(request);
         } catch (GatewayException framingRejection) {
-            if (isHttp1(ctx.request().version())) {
-                retiredConnections.add(ctx.request().connection());
-                ctx.put(RETIRE_CONNECTION_KEY, Boolean.TRUE);
-            } else {
-                ctx.put(END_STREAM_KEY, Boolean.TRUE);
-            }
+            markFramingRejection(ctx);
             throw framingRejection;
+        }
+    }
+
+    /**
+     * Marks how much of the inbound transport a framing rejection ends, by the negotiated HTTP
+     * version, exactly as {@link #rejectFramingAndRetire} describes: an HTTP/1.x connection is
+     * recorded as retired at once and the answer retires it; an HTTP/2 request has only its own
+     * stream ended after the answer. Shared by the framing gate and by the dispatch, which refuses a
+     * body the headers did not declare (see {@link #dispatchRefusingOnFraming}).
+     */
+    private void markFramingRejection(RoutingContext ctx) {
+        if (isHttp1(ctx.request().version())) {
+            retiredConnections.add(ctx.request().connection());
+            ctx.put(RETIRE_CONNECTION_KEY, Boolean.TRUE);
+        } else {
+            ctx.put(END_STREAM_KEY, Boolean.TRUE);
         }
     }
 
@@ -1253,6 +1271,16 @@ public class GatewayEdgeRoute {
      * for an aborted inbound body, records the error metric, and renders the rejection.
      */
     private void handleGatewayRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
+        reportRejection(ctx, rejected);
+        renderRejection(ctx, request, rejected);
+    }
+
+    /**
+     * Meters and logs a categorized {@link GatewayException} rejection without answering it — the
+     * accounting half of {@link #handleGatewayRejection}, shared with a refusal that can no longer be
+     * answered because the response has already started (see {@link #lateBodyRefusal}).
+     */
+    private void reportRejection(RoutingContext ctx, GatewayException rejected) {
         // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
         if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
             gatewayEventCounter.increment(rejected.getEventType());
@@ -1273,7 +1301,6 @@ public class GatewayEdgeRoute {
             }
         }
         recordError(ctx, rejected.getEventType());
-        renderRejection(ctx, request, rejected);
     }
 
     /**
@@ -1441,9 +1468,11 @@ public class GatewayEdgeRoute {
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
         DispatchStage dispatchStage = new DispatchStage(cap, upstreamFailureMapper);
+        DispatchStage.BodyFraming framing = DispatchStage.BodyFraming.of(request.method(),
+                request.declaredContentLength(), lateBodyRefusal(ctx));
         long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = dispatchStage.dispatch(route, request.method(), uri, forward.headers(),
-                inboundBody(ctx));
+        HttpClientResponse upstream = dispatchRefusingOnFraming(ctx, () -> dispatchStage.dispatch(route,
+                request.method(), uri, forward.headers(), inboundBody(ctx), framing));
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The relay mutates the Vert.x HttpServerResponse (status, headers) and subscribes the
@@ -1544,8 +1573,8 @@ public class GatewayEdgeRoute {
 
         GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = grpcDispatchStage.dispatch(route, request.method(), uri, forward.headers(),
-                inboundBody(ctx));
+        HttpClientResponse upstream = dispatchRefusingOnFraming(ctx, () -> grpcDispatchStage.dispatch(route,
+                request.method(), uri, forward.headers(), inboundBody(ctx), request.declaredContentLength()));
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
@@ -1605,6 +1634,55 @@ public class GatewayEdgeRoute {
     }
 
     /**
+     * Runs an upstream dispatch and, when it refuses the request's body on its framing — a body byte
+     * on a bodyless method, or a body disagreeing with its declared length, both a
+     * {@link EventType#SECURITY_FILTER_VIOLATION} — marks the request exactly as a framing-gate
+     * rejection is marked ({@link #markFramingRejection}) before the refusal propagates: on HTTP/2 the
+     * {@code 400} ends that one stream, on HTTP/1.x the connection is retired.
+     */
+    private HttpClientResponse dispatchRefusingOnFraming(RoutingContext ctx, Supplier<HttpClientResponse> dispatch) {
+        try {
+            return dispatch.get();
+        } catch (GatewayException rejected) {
+            if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
+                markFramingRejection(ctx);
+            }
+            throw rejected;
+        }
+    }
+
+    /**
+     * The late-violation callback of a proxied request (see {@link DispatchStage.BodyFraming}): a body
+     * byte on a bodyless method that arrived only after the upstream response head was relayed.
+     * <p>
+     * A {@code 400} can no longer be written then, and ending the response would present a truncated
+     * answer as complete, so the client response is <strong>reset</strong> instead — on HTTP/2 the one
+     * stream, with {@code CANCEL}. The refusal is metered and logged like every other
+     * {@link EventType#SECURITY_FILTER_VIOLATION} ({@link #reportRejection}). The callback runs on the
+     * inbound request's event loop, before the dispatch resets the upstream request, so the response is
+     * reset before the aborted relay could end it; the flag stashed under
+     * {@link #LATE_BODY_REFUSED_KEY} keeps {@link #failRelay} from ending it afterwards.
+     */
+    private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
+        AtomicBoolean refused = new AtomicBoolean();
+        ctx.put(LATE_BODY_REFUSED_KEY, refused);
+        return violation -> {
+            refused.set(true);
+            reportRejection(ctx, violation);
+            HttpServerResponse response = ctx.response();
+            if (!response.ended()) {
+                response.reset(HTTP2_CANCEL);
+            }
+        };
+    }
+
+    /** @return whether a late body refusal has reset this request's response */
+    private static boolean bodyRefusedLate(RoutingContext ctx) {
+        AtomicBoolean refused = ctx.get(LATE_BODY_REFUSED_KEY);
+        return refused != null && refused.get();
+    }
+
+    /**
      * The request body to stream upstream: the decorator armed in {@link #handle}, which remembers an
      * inbound failure, or the bare request where none was armed.
      */
@@ -1647,7 +1725,9 @@ public class GatewayEdgeRoute {
         LOGGER.debug(failure, "Response relay failed: %s", failure.getMessage());
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
-            if (response.ended()) {
+            // A response a late body refusal reset is never ended: an end would present the truncated
+            // answer as complete.
+            if (response.ended() || bodyRefusedLate(ctx)) {
                 return;
             }
             // If the relay failed mid-stream after the response head was already written, the status

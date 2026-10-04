@@ -46,7 +46,11 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  *       of this gate an operator can relax, and only for {@code GET}, via
  *       {@code security_defaults.allow_get_with_content_length_body}; a body-present {@code GET}
  *       carrying no declared {@code Content-Length} is not {@code Content-Length}-framed and stays
- *       rejected, exactly as {@code Transfer-Encoding} on a bodyless method does;</li>
+ *       rejected, exactly as {@code Transfer-Encoding} on a bodyless method does. The gate decides
+ *       on the headers alone: a body that no header declares — DATA frames on an HTTP/2 stream
+ *       without {@code content-length} — is invisible here, and is refused by the upstream dispatch
+ *       on its first byte instead, which never forwards a body for such a request on any
+ *       protocol;</li>
  *   <li><strong>framing/trust-header strip via {@code Connection}</strong>: a {@code Connection}
  *       token naming a framing header ({@code Content-Length} / {@code Transfer-Encoding} /
  *       {@code Host}) or a trust header ({@code Authorization} / {@code Forwarded} /
@@ -155,6 +159,13 @@ public final class FramingGate {
      * {@code Content-Length}-framed: a {@code GET} whose body is signalled without a positive
      * declared {@code Content-Length} still falls through to the rejection below, so the gate
      * re-asserts that bound itself rather than inheriting it from an upstream stage.
+     * <p>
+     * <strong>Headers only.</strong> {@link PipelineRequest#bodyPresent()} is derived from
+     * {@code Content-Length} and {@code Transfer-Encoding}, so this check sees a body only where a
+     * header announces one. On HTTP/2 a body can travel in DATA frames with neither header; such a
+     * request passes here and is refused by the upstream dispatch on its first body byte, which sends
+     * a bodyless method upstream with no body on every protocol. The HTTP/1.x rules above are
+     * unaffected — there a body cannot arrive without one of the two headers.
      */
     private void rejectBodyOnBodylessMethod(PipelineRequest request) {
         if (!BODYLESS_METHODS.contains(request.method())) {
