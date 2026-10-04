@@ -959,7 +959,8 @@ compose form, and the one-off launch sites, the files under the module's `src/te
 `OneOffGatewayContainers.IMAGE`, qualified or statically imported -- which takes in the files that
 start it with `docker run` and a few that only inspect it. The second population is derived with a
 floor and two named members, so it cannot silently shrink; but the assertion over it is a source-text
-scan, so an argument assembled at run time by string concatenation would evade it, and so would a file
+scan for the contiguous `-Djavax.net.ssl.` prefix, so an argument whose prefix is split across literals
+or computed would evade it, and so would a file
 that reaches the image only through an alias of that constant declared under another name. The behaviour
 half is the integration stack's BFF login suites: the Keycloak they dial serves a self-signed
 certificate, so a login completes only when

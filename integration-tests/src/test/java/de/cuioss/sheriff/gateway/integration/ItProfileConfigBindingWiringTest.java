@@ -466,11 +466,11 @@ class ItProfileConfigBindingWiringTest {
      * {@link #itProfileServices()} asserts non-emptiness: a scan that stopped matching would otherwise
      * turn the sweep into a vacuous pass.
      * <p>
-     * <strong>Limit:</strong> this is a source-text scan. It sees an argument written as one literal in
-     * a file that names the image, whether through the image literal, the qualified
-     * {@code OneOffGatewayContainers.IMAGE}, or a static import of that constant. It does not see an
-     * argument assembled at run time by string concatenation, nor a file that reaches the image only
-     * through an alias or re-export of the constant declared under another name.
+     * <strong>Limit:</strong> this is a source-text scan for the contiguous
+     * {@link #JSSE_SYSTEM_PROPERTY_PREFIX} in a file that names the image, whether through the image
+     * literal, the qualified {@code OneOffGatewayContainers.IMAGE}, or a static import of that constant.
+     * It does not see an argument whose prefix is split across literals or computed, nor a file that
+     * reaches the image only through an alias or re-export of the constant declared under another name.
      *
      * @return the launch-site files, sorted
      */
