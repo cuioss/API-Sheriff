@@ -30,7 +30,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -53,6 +55,9 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
+import de.cuioss.test.generator.Generators;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -64,8 +69,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Tests for {@link ConfigLoader}: binding a valid {@code gateway.yaml} (including
  * secret resolution and the flattened {@code upstream_defaults} block), endpoint
  * binding with the {@code enabled} default, and the aggregated, path-annotated error
- * reporting for schema violations, missing secrets, and a missing gateway file.
+ * reporting for schema violations, missing secrets, and a missing gateway file, and the
+ * name-only reporting of unset and defaulted placeholders.
  */
+@EnableGeneratorController
 class ConfigLoaderTest {
 
     /**
@@ -2799,6 +2806,136 @@ class ConfigLoaderTest {
                         + "pattern never ran on the oversized input, got: " + exception.errors());
         assertTrue(contentTypeErrors.stream().anyMatch(error -> error.message().contains("255")),
                 () -> "expected the maxLength refusal to name the 255-character cap, got: " + contentTypeErrors);
+    }
+
+    /**
+     * Placeholder reporting: every unset {@code ${VAR}} of a scalar is named in that scalar's one
+     * {@link ConfigError}, and every {@code ${VAR:-default}} that fell back is reported through
+     * {@link ConfigLoader#load(java.util.function.Consumer)} as a {@link DefaultedPlaceholder} carrying
+     * the file, the JSON pointer and the variable name — never a value.
+     */
+    @Nested
+    class PlaceholderReporting {
+
+        private static final String GATEWAY_WITH_DEFAULTED_RETURN_URL = """
+                version: 1
+                oidc:
+                  login:
+                    path: /auth/login
+                    default_return_url: "/app/${TAB:-%s}"
+                """;
+
+        private static final String ENDPOINT_WITH_DEFAULTED_ID = """
+                endpoint:
+                  id: "${ENDPOINT_ID:-%s}"
+                  auth:
+                    require: none
+                  routes:
+                    - id: home
+                      match:
+                        path: /home
+                      redirect:
+                        location: /home/
+                        status: 302
+                """;
+
+        private String sentinel() {
+            return "sentinel" + Generators.letterStrings(6, 12).next().toLowerCase(Locale.ROOT);
+        }
+
+        @Test
+        void namesEveryUnsetVariableOncePerScalarWithItsPointer() throws Exception {
+            String setValue = sentinel();
+            String defaultValue = sentinel();
+            writeConfig("gateway.yaml", """
+                    version: 1
+                    oidc:
+                      redirect_uri: "https://${SET_HOST}/${FIRST_MISSING}/${OPTIONAL:-%s}/${SECOND_MISSING}"
+                      login:
+                        path: /auth/login
+                        default_return_url: "/${THIRD_MISSING}"
+                    """.formatted(defaultValue));
+
+            ConfigLoader loader = loader(Map.of("SET_HOST", setValue));
+            ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+            assertEquals(List.of(
+                    new ConfigError("gateway.yaml", "/oidc/redirect_uri",
+                            "Unresolved environment variable: FIRST_MISSING, SECOND_MISSING"),
+                    new ConfigError("gateway.yaml", "/oidc/login/default_return_url",
+                            "Unresolved environment variable: THIRD_MISSING")),
+                    exception.errors());
+            assertTrue(exception.errors().stream()
+                            .noneMatch(error -> error.message().contains(setValue)
+                                    || error.message().contains(defaultValue)),
+                    () -> "no resolved or default value may appear in any error: " + exception.errors());
+        }
+
+        @Test
+        void reportsEachAppliedDefaultWithFilePointerAndVariableName() throws Exception {
+            String gatewayDefault = sentinel();
+            String endpointDefault = sentinel();
+            writeConfig("gateway.yaml", GATEWAY_WITH_DEFAULTED_RETURN_URL.formatted(gatewayDefault));
+            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_ID.formatted(endpointDefault));
+            List<DefaultedPlaceholder> defaulted = new ArrayList<>();
+
+            ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(defaulted::add);
+
+            assertEquals(List.of(
+                    new DefaultedPlaceholder("gateway.yaml", "/oidc/login/default_return_url", "TAB"),
+                    new DefaultedPlaceholder("endpoints/home.yaml", "/endpoint/id", "ENDPOINT_ID")),
+                    defaulted);
+            assertAll("the defaults were applied, yet no recorded field carries them",
+                    () -> assertEquals("/app/" + gatewayDefault, loaded.gateway().oidc().login().defaultReturnUrl()),
+                    () -> assertEquals(endpointDefault, loaded.endpoints().getFirst().id()),
+                    () -> assertTrue(defaulted.stream().noneMatch(entry -> entry.toString().contains(gatewayDefault)
+                            || entry.toString().contains(endpointDefault)),
+                            () -> "a default literal reached a recorded field: " + defaulted));
+        }
+
+        @Test
+        void setVariablesProduceNoDefaultedEntry() throws Exception {
+            writeConfig("gateway.yaml", GATEWAY_WITH_DEFAULTED_RETURN_URL.formatted(sentinel()));
+            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_ID.formatted(sentinel()));
+            List<DefaultedPlaceholder> defaulted = new ArrayList<>();
+
+            loader(Map.of("TAB", "overview", "ENDPOINT_ID", "home")).load(defaulted::add);
+
+            assertTrue(defaulted.isEmpty(), () -> "no default applied, but got " + defaulted);
+        }
+
+        @Test
+        void reportsAppliedDefaultEvenWhenTheLoadFails() throws Exception {
+            writeConfig("gateway.yaml", """
+                    version: 1
+                    oidc:
+                      redirect_uri: "https://${ABSENT_HOST}/callback"
+                      login:
+                        path: /auth/login
+                        default_return_url: "/app/${TAB:-%s}"
+                    """.formatted(sentinel()));
+            ConfigLoader loader = loader(Map.of());
+            List<DefaultedPlaceholder> defaulted = new ArrayList<>();
+
+            assertThrows(ConfigLoadException.class, () -> loader.load(defaulted::add));
+
+            assertEquals(List.of(new DefaultedPlaceholder("gateway.yaml", "/oidc/login/default_return_url", "TAB")),
+                    defaulted);
+        }
+
+        @Test
+        void loadWithoutSinkReturnsTheSameConfiguration() throws Exception {
+            writeConfig("gateway.yaml", GATEWAY_WITH_DEFAULTED_RETURN_URL.formatted(sentinel()));
+            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_ID.formatted(sentinel()));
+            ConfigLoader loader = loader(Map.of());
+
+            ConfigLoader.LoadedConfig withoutSink = loader.load();
+            ConfigLoader.LoadedConfig withSink = loader.load(entry -> {
+                // the sink must not influence the bound result
+            });
+
+            assertEquals(withSink, withoutSink);
+        }
     }
 
     private static final String CATALOG_ENDPOINT = """
