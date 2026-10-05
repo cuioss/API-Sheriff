@@ -279,12 +279,6 @@ public final class ConfigValidationCommand {
         return entries;
     }
 
-    /**
-     * Writes one report or error line.
-     *
-     * @param stream the target stream
-     * @param line   the line to write
-     */
     private static void emit(PrintStream stream, String line) {
         // cui-rewrite:disable CuiLoggerStandardsRecipe
         stream.println(line); // NOSONAR java:S106 pre-boot offline check: no logging manager yet; the report is program output

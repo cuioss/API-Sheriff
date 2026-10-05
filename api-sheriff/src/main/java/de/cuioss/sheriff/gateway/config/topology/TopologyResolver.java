@@ -183,7 +183,7 @@ public final class TopologyResolver {
             pass.resolveAdditional(alias);
         }
         if (!pass.errors.isEmpty()) {
-            throw new TopologyResolutionException(pass.errors);
+            throw new TopologyResolutionException(pass.errors, null);
         }
         return new ResolvedTopology(pass.resolved);
     }
@@ -321,10 +321,6 @@ public final class TopologyResolver {
         private static final long serialVersionUID = 1L;
 
         private final List<ConfigError> errors;
-
-        TopologyResolutionException(List<ConfigError> errors) {
-            this(errors, null);
-        }
 
         TopologyResolutionException(List<ConfigError> errors, @Nullable Throwable cause) {
             super(buildMessage(errors), cause);
