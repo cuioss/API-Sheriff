@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -111,6 +112,14 @@ import org.jspecify.annotations.Nullable;
  * inbound connection before the route's read timeout fires, and the dispatch then ends as the
  * client-ended dispatch it is.
  * <p>
+ * <strong>An attempt the dispatch stops waiting for is released.</strong> Every attempt's upstream
+ * exchange is tracked from before its request is obtained, whatever the body framing. Once the
+ * dispatch no longer waits for an attempt — the attempt ends in any way other than handing its
+ * response back, the next attempt begins, or the dispatch itself fails — that attempt's upstream
+ * request is reset: one still waiting for a pooled connection is reset as soon as it obtains one and
+ * is never sent late, one in flight is reset, and a response it already received and paused is
+ * released with it. Only a response actually handed to the caller is exempt.
+ * <p>
  * <strong>Stream-aware retry gating.</strong> When the route enables SmallRye retry, the guarded
  * lambda may be re-invoked after a failure. A streamed request cannot be safely replayed once any
  * body byte has crossed to the upstream, and a non-idempotent verb must never be re-sent — so every
@@ -134,6 +143,10 @@ public final class DispatchStage {
 
     /** The parameter name the null checks report for a missing request method. */
     private static final String METHOD_PARAMETER = "method";
+
+    /** Fixed disposition of an attempt released before its request was sent. */
+    private static final String ATTEMPT_ABANDONED =
+            "The dispatch no longer waits for this attempt; its request was not sent";
 
     /** The methods that carry no body upstream unless they declare a positive length. */
     private static final Set<HttpMethod> BODYLESS_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
@@ -202,8 +215,20 @@ public final class DispatchStage {
             throw new IllegalStateException("proxy dispatch requires a resilience guard");
         }
         DispatchBody body = new DispatchBody(requestBody, framing);
-        return guardedDispatch(guard, retryGate, method, body.bytesSent::get, body.subscribed::get,
-                () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, body));
+        boolean handedToCaller = false;
+        try {
+            HttpClientResponse response = guardedDispatch(guard, retryGate, method, body.bytesSent::get,
+                    body.subscribed::get, () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, body));
+            handedToCaller = true;
+            return response;
+        } finally {
+            // An attempt's response reaches the caller only when the guard passes it on. Whatever the last
+            // attempt still holds when the dispatch fails is released here; only a response actually
+            // handed to the caller is exempt.
+            if (!handedToCaller) {
+                body.abandonCurrentAttempt();
+            }
+        }
     }
 
     /**
@@ -304,12 +329,39 @@ public final class DispatchStage {
                 .setPort(upstream.port())
                 .setSsl("https".equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri);
+        // Begun before the request is asked for, so an attempt the dispatch stops waiting for is
+        // released whatever state its upstream exchange has reached by then.
+        UpstreamAttempt attempt = body.beginAttempt();
+        boolean handedBack = false;
+        try {
+            HttpClientResponse received = awaitResponse(httpClient, options, forwardHeaders, body, attempt);
+            handedBack = true;
+            return received;
+        } finally {
+            // Any exit other than handing the response back — an interrupt from the guard's timeout, a
+            // failed send, a refusal — releases this attempt's upstream exchange before the exit
+            // propagates unchanged: a request still waiting for its connection is never sent, one in
+            // flight is reset, and a response received and paused is released with it.
+            if (!handedBack) {
+                attempt.abandon();
+            }
+        }
+    }
+
+    private static HttpClientResponse awaitResponse(HttpClient httpClient, RequestOptions options,
+            Map<String, String> forwardHeaders, DispatchBody body, UpstreamAttempt attempt)
+            throws InterruptedException, ExecutionException {
         AtomicReference<@Nullable ByteCappedBodyStream> cappedBody = new AtomicReference<>();
         // The client-caused abort as it stood the moment this attempt's send failed — never re-read
         // afterwards (see the catch below).
         AtomicReference<@Nullable GatewayException> clientAbortAtFailure = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
+                    if (!attempt.publish(request)) {
+                        // The dispatch stopped waiting for this attempt before its request obtained a
+                        // connection: the request was reset unsent, and no late upstream execution follows.
+                        return Future.failedFuture(new CancellationException(ATTEMPT_ABANDONED));
+                    }
                     forwardHeaders.forEach(request::putHeader);
                     // ResponseStage#relay is deferred onto the server request's event loop
                     // (GatewayEdgeRoute), so the upstream response must be paused before any of its
@@ -465,8 +517,8 @@ public final class DispatchStage {
         private final AtomicLong bytesSent = new AtomicLong();
         /** Whether an attempt subscribed the one-shot inbound stream, read by the retry gate. */
         private final AtomicBoolean subscribed = new AtomicBoolean();
-        /** The upstream request of the attempt in flight, which a bodyless refusal resets. */
-        private final AtomicReference<@Nullable HttpClientRequest> currentRequest = new AtomicReference<>();
+        /** The latest attempt's upstream exchange, which a bodyless refusal resets. */
+        private final AtomicReference<@Nullable UpstreamAttempt> currentAttempt = new AtomicReference<>();
         /** Present exactly for a bodyless request; armed once, for every attempt. */
         private final @Nullable BodylessMethodWatch bodylessWatch;
 
@@ -479,13 +531,36 @@ public final class DispatchStage {
         }
 
         /**
+         * Begins the upstream exchange of the next attempt. The previous attempt, if any, is no longer
+         * waited for — its response, if it returned one, never reached the caller — so it is released.
+         *
+         * @return the attempt that is now current
+         */
+        UpstreamAttempt beginAttempt() {
+            UpstreamAttempt next = new UpstreamAttempt();
+            UpstreamAttempt previous = currentAttempt.getAndSet(next);
+            if (previous != null) {
+                previous.abandon();
+            }
+            return next;
+        }
+
+        /** Releases the upstream exchange of the latest attempt, when there is one. */
+        void abandonCurrentAttempt() {
+            UpstreamAttempt current = currentAttempt.get();
+            if (current != null) {
+                current.abandon();
+            }
+        }
+
+        /**
          * Sends {@code request} with this dispatch's body: none for a bodyless request, otherwise the
-         * byte-capped inbound stream, framed by the declared length when there is one.
+         * byte-capped inbound stream, framed by the declared length when there is one. The request is
+         * already published to the current attempt, so a bodyless refusal from here on resets it.
          */
         Future<HttpClientResponse> send(HttpClientRequest request,
                 AtomicReference<@Nullable ByteCappedBodyStream> cappedBody) {
             if (bodylessWatch != null) {
-                currentRequest.set(request);
                 GatewayException refused = bodylessWatch.clientAbort();
                 if (refused != null) {
                     // Refused before this attempt's request was sent: release it unsent.
@@ -533,9 +608,59 @@ public final class DispatchStage {
         }
 
         private void resetCurrentRequest() {
-            HttpClientRequest request = currentRequest.get();
-            if (request != null) {
-                request.reset();
+            UpstreamAttempt current = currentAttempt.get();
+            if (current != null) {
+                current.resetRequest();
+            }
+        }
+    }
+
+    /**
+     * The upstream exchange of one attempt: the request it obtained, and whether the dispatch has
+     * stopped waiting for it.
+     * <p>
+     * <strong>Released exactly when it is no longer waited for.</strong> {@link #abandon()} marks the
+     * attempt and resets its request; a request published only after that is reset at once and never
+     * sent. Resetting the request also releases a response the attempt already received and paused.
+     * <p>
+     * Thread-safe: the request is published on its event loop while the dispatching thread may abandon
+     * the attempt at the same moment. Each side writes its own field before it reads the other's — the
+     * publisher sets the request, then reads the flag; {@link #abandon()} sets the flag, then reads the
+     * request — so whatever the interleaving, at least one of them sees both and performs the reset. A
+     * second reset of the same request is harmless.
+     */
+    private static final class UpstreamAttempt {
+
+        private final AtomicBoolean abandoned = new AtomicBoolean();
+        private final AtomicReference<@Nullable HttpClientRequest> request = new AtomicReference<>();
+
+        /**
+         * Publishes the request this attempt obtained.
+         *
+         * @param obtained the attempt's upstream request, not yet sent
+         * @return {@code true} when the attempt is still waited for and the request may be sent;
+         *         {@code false} when it was already abandoned — the request has then been reset
+         */
+        boolean publish(HttpClientRequest obtained) {
+            request.set(obtained);
+            if (abandoned.get()) {
+                obtained.reset();
+                return false;
+            }
+            return true;
+        }
+
+        /** Stops waiting for this attempt and resets its request, if it obtained one. */
+        void abandon() {
+            abandoned.set(true);
+            resetRequest();
+        }
+
+        /** Resets this attempt's request, if it obtained one. */
+        void resetRequest() {
+            HttpClientRequest published = request.get();
+            if (published != null) {
+                published.reset();
             }
         }
     }
