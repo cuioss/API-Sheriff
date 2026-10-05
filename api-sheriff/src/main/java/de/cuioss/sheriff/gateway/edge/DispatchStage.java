@@ -272,11 +272,11 @@ public final class DispatchStage {
      * retried: a dispatch the client ended, and a failure already mapped to the error contract, end
      * the dispatch. Any other failure is retried only while the dispatch's own state permits it — the
      * {@link StreamAwareRetryGate} allows a retry for the request method at the current
-     * body-bytes-sent count, and the one-shot request-body stream was not subscribed by an attempt. The inbound body {@link ReadStream} is
-     * single-use: re-attaching an already-subscribed stream to a fresh upstream request would silently
-     * stall waiting for events that already fired, so such a retry is refused even when no body byte
-     * was counted, since the stream is subscribed the instant an attempt reaches
-     * {@code request.send(...)}, before any byte crosses.
+     * body-bytes-sent count, and the one-shot request-body stream was not subscribed by an attempt.
+     * The inbound body {@link ReadStream} is single-use: re-attaching an already-subscribed stream to
+     * a fresh upstream request would silently stall waiting for events that already fired, so such a
+     * retry is refused even when no body byte was counted, since the stream is subscribed the instant
+     * an attempt reaches {@code request.send(...)}, before any byte crosses.
      * <p>
      * The dispatch's state is read from the scoped value {@link #guardedDispatch} binds around the
      * guard call. Evaluated outside such a call, the predicate fails closed and refuses the retry.
@@ -294,7 +294,7 @@ public final class DispatchStage {
     /**
      * Runs {@code attempt} through the route's resilience {@code guard}, with this dispatch's retry
      * state — {@code method}, {@code retryGate}, the running {@code bytesSent} count and whether the
-     * {@code bodyStreamConsumed} — bound for the guard's retry predicate,
+     * body stream was consumed ({@code bodyStreamConsumed}) — bound for the guard's retry predicate,
      * {@link #allowsRetryAfter(Throwable)}, which decides whether a failed attempt is retried. Every
      * failure leaves as a mapped {@link GatewayException}. Package-private so the retry decision can
      * be exercised without a live upstream.
@@ -616,8 +616,8 @@ public final class DispatchStage {
                     request.reset();
                     return Future.failedFuture(refused);
                 }
-                // No body at all, and the inbound stream stays unsubscribed, so the retry gate keeps
-                // treating the attempt as bodyless.
+                // No body at all, and the inbound stream stays unsubscribed, so the retry predicate
+                // keeps treating the attempt as bodyless.
                 return request.send();
             }
             if (declaredLength >= 0) {

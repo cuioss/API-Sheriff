@@ -2427,12 +2427,12 @@ public class GatewayEdgeRoute {
      * failure. Whether a failed attempt is retried is decided by the retry predicate
      * {@link DispatchStage#allowsRetryAfter(Throwable)}, after the attempt failed and before any
      * re-entry: it never retries a gateway rejection, and a retry it refuses is not recorded by the
-     * breaker. A dispatch the client itself ended —
-     * a body-cap breach, an inbound request body that failed after dispatch began, a body on a
-     * bodyless method, a body disagreeing with its declared length — reaches the guard as such a
-     * skipped {@link GatewayException} (see {@link DispatchStage}). SmallRye Fault Tolerance has no
-     * neutral outcome, so the breaker records a skipped exception as a success; keeping these
-     * dispatches out of its window would need the guarded call to be restructured.
+     * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
+     * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
+     * length — reaches the guard as such a skipped {@link GatewayException} (see
+     * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records
+     * a skipped exception as a success; keeping these dispatches out of its window would need the
+     * guarded call to be restructured.
      */
     private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
         // Include retryEnabled in the breaker name: RouteRuntimeAssembler's guardCache is keyed by the
