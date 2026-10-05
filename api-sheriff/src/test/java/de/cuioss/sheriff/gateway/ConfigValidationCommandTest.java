@@ -440,7 +440,9 @@ class ConfigValidationCommandTest {
         @Test
         @DisplayName("An argument that is not a valid path exits 2")
         void invalidPath() {
-            int exitCode = run(Map.of(), ConfigValidationCommand.FLAG, "bad\u0000path");
+            String pathWithNul = "bad" + (char) 0 + "path";
+
+            int exitCode = run(Map.of(), ConfigValidationCommand.FLAG, pathWithNul);
 
             assertUsageError(exitCode, "is not a valid path");
         }
