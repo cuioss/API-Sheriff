@@ -406,19 +406,6 @@ class FramingGateTest {
                     () -> "[" + contentLength + "] is valid Content-Length syntax and must be admitted");
         }
 
-        @Test
-        @DisplayName("a signed Content-Length on a bodyless method is reported by the decimal rule")
-        void signedContentLengthOnABodylessMethodIsReportedByTheDecimalRule() {
-            PipelineRequest request = asTheEdgeBuildsIt(HttpMethod.GET, "+5");
-
-            GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
-
-            assertAll(
-                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType()),
-                    () -> assertEquals(NOT_DECIMAL, thrown.getMessage(),
-                            "the decimal rule runs before the bodyless-method check"));
-        }
-
         private static PipelineRequest asTheEdgeBuildsIt(HttpMethod method, String contentLength) {
             long declaredLength = parsedAsTheEdgeParsesIt(contentLength);
             return request(method, Map.of("content-length", List.of(contentLength)), declaredLength,

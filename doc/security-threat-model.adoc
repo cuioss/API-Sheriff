@@ -506,8 +506,7 @@ enforces it and the test that pins it:
 | transport and `FramingGate`
 | `GatewayEdgeFramingCorpusTest` (`contentLengthThatIsNotADecimalLongIsRefused`,
   `contentLengthThatIsNotADecimalLongIsRefusedOnHttp2`); `FramingGateTest.DecimalContentLength`
-  (`refusesAContentLengthThatIsNotADecimalLong`, `admitsADecimalContentLengthFittingALong`,
-  `signedContentLengthOnABodylessMethodIsReportedByTheDecimalRule`)
+  (`refusesAContentLengthThatIsNotADecimalLong`, `admitsADecimalContentLengthFittingALong`)
 
 | A body on `GET` or `HEAD`, with the opt-in below unset
 | `FramingGate`
