@@ -1705,7 +1705,8 @@ public class GatewayEdgeRoute {
      * it. When starting the relay throws, the upstream exchange is therefore reset before the client is
      * answered — on HTTP/1.x its connection is closed instead of being held, on HTTP/2 the one stream is
      * reset. For a response that already ended the reset is a no-op. A failure the relay reports on its
-     * future is handled exactly as before.
+     * future goes to {@code failRelay} as described above; the upstream exchange is not reset on that
+     * path.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values

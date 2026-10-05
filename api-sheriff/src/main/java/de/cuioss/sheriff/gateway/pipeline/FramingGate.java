@@ -122,9 +122,9 @@ public final class FramingGate {
      * It runs after the {@code Content-Length} checks and the bodyless-method check on purpose. A
      * request that also carries {@code Content-Length}, or that uses a bodyless method, is already
      * rejected by those checks with the detail text they have always produced, so this check adds
-     * rejections without changing an existing one. The value is compared as received: it is not trimmed and not split on commas,
-     * because any leniency here is exactly the room an obfuscated coding needs to be read as
-     * {@code chunked} by one parser and as something else by the next.
+     * rejections without changing an existing one. The value is compared as received: it is not
+     * trimmed and not split on commas, because any leniency here is exactly the room an obfuscated
+     * coding needs to be read as {@code chunked} by one parser and as something else by the next.
      */
     private static void rejectAmbiguousTransferEncoding(PipelineRequest request) {
         List<String> transferEncodings = request.headerValues(TRANSFER_ENCODING);
@@ -220,8 +220,7 @@ public final class FramingGate {
             return;
         }
         if (request.hasHeader(TRANSFER_ENCODING)) {
-            // Same detail text as the body legs below: with the opt-in off every rejection this gate
-            // produced before the split is preserved bit-for-bit, message included.
+            // Same detail text as the body legs below.
             throw violation("Body present on bodyless method " + request.method());
         }
         if (allowGetWithContentLengthBody && request.method() == HttpMethod.GET

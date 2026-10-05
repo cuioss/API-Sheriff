@@ -97,8 +97,9 @@ import org.jspecify.annotations.Nullable;
  * {@link GatewayException} the body stream recorded for it ({@link EventType#CONTENT_TOO_LARGE},
  * {@link EventType#INBOUND_BODY_ABORTED} for the failed or short inbound body, or
  * {@link EventType#SECURITY_FILTER_VIOLATION}), never as the transport error the aborted upstream
- * request produced. The guard skips a {@link GatewayException}, so such a dispatch is neither
- * counted as an upstream failure nor retried. It is not invisible to the breaker, though: SmallRye
+ * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
+ * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
+ * breaker, though: SmallRye
  * Fault Tolerance has no neutral outcome, so a skipped exception is recorded as a success, in the
  * closed and in the half-open state alike. Keeping client-ended dispatches out of the breaker's
  * window altogether would need the guarded call to be restructured, which the gateway does not do.
@@ -267,7 +268,8 @@ public final class DispatchStage {
      * retried. The route's guard evaluates it after an attempt failed and before any re-entry, so a
      * retry it refuses is never re-entered and is not recorded by the circuit breaker.
      * <p>
-     * A {@link GatewayException} anywhere in the failure's cause chain is never retried: a dispatch
+     * A {@link GatewayException} in the failure's cause chain (followed to a bounded depth) is never
+     * retried: a dispatch
      * the client ended, and a failure already mapped to the error contract, end the dispatch. Any other
      * failure is retried only while the dispatch's own state permits it — the {@link StreamAwareRetryGate}
      * allows a retry for the request method at the current body-bytes-sent count, and the one-shot
@@ -558,11 +560,14 @@ public final class DispatchStage {
 
         private final ReadStream<Buffer> inbound;
         private final long declaredLength;
-        /** Running count of body bytes forwarded, read by the retry gate. */
+        /** Running count of body bytes forwarded, read by the retry predicate. */
         private final AtomicLong bytesSent = new AtomicLong();
-        /** Whether an attempt subscribed the one-shot inbound stream, read by the retry gate. */
+        /** Whether an attempt subscribed the one-shot inbound stream, read by the retry predicate. */
         private final AtomicBoolean subscribed = new AtomicBoolean();
-        /** The latest attempt's upstream exchange, which a bodyless refusal resets. */
+        /**
+         * The latest attempt's upstream exchange: reset by a bodyless refusal, released when the next
+         * attempt begins, and released when the dispatch ends without handing its response back.
+         */
         private final AtomicReference<@Nullable UpstreamAttempt> currentAttempt = new AtomicReference<>();
         /** Present exactly for a bodyless request; armed once, for every attempt. */
         private final @Nullable BodylessMethodWatch bodylessWatch;
