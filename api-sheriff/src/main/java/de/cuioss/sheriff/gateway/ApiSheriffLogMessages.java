@@ -83,6 +83,22 @@ public final class ApiSheriffLogMessages {
                 .identifier(19)
                 .template("Application portal enabled at '%s' with %s active catalog entries, template: %s")
                 .build();
+
+        /**
+         * A proxied request's body stream failed after the upstream dispatch had begun — a client that
+         * disconnected mid-upload, or broken chunk framing — and the upstream request was aborted. An
+         * ordinary client-caused termination, not a security filter violation. Records the route id
+         * and a fixed disposition only — never the failure's own message or anything the client sent.
+         * <p>
+         * Latched per route: the event is reachable by any caller the route admits, at will, so the
+         * first occurrence on a route is recorded and every repeat on that route is a {@code DEBUG}
+         * diagnostic. The rate is carried by the error counter, not by this record.
+         */
+        public static final LogRecord INBOUND_BODY_ABORTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(22)
+                .template("Request body on route '%s' did not arrive whole (%s) — upstream request aborted; further occurrences on this route stay at DEBUG")
+                .build();
     }
 
     /**

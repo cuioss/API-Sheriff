@@ -125,19 +125,19 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 ## Claim Labels
 
 - OBSERVED: `BffRuntime.stepUpCoordinator()` has no production caller — the only references are `BffRuntimeProducerTest`; grep over `api-sheriff/src/main` at 93a4b3e finds the accessor's declaration and nothing else — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java` § `stepUpCoordinator`
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntime unchanged; zero stepUpCoordinator() call sites in main at e8db85bf
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntime:167 declares stepUpCoordinator(); zero main call sites - only BffRuntimeProducerTest
 - OBSERVED: `StepUpCoordinator` is RFC 9470 shaped, driven by a parsed upstream challenge — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java` § `coordinate`
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: StepUpCoordinator.coordinate still RFC9470-only via StepUpChallengeParser; no insufficient_scope branch
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: StepUpCoordinator.coordinate parses via StepUpChallengeParser (RFC 9470 acr only); no insufficient_scope branch
 - HYPOTHESIS: the silent-satisfaction seam is bound to `(sessionRecord, challenge, now) -> Optional.empty()` at the construction site — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § step-up construction (verify-at-outline)
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer:558 silent-satisfaction binding -> Optional.empty() verbatim
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer:557-558 binds SilentSatisfaction to Optional.empty() verbatim; comment at 546 says no edge code drives it
 - HYPOTHESIS: `doc/configuration.adoc`'s `step_up.*` rows describe the honouring of an upstream challenge as present behaviour — confirm/refute at `doc/configuration.adoc` § `step_up` (verify-at-outline)
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/configuration.adoc step_up.enabled / honor_upstream_challenge rows unchanged; still describe RFC9470 as present
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/configuration.adoc:2645-2649 still claims the gateway honours an upstream challenge; no caller exists
 - HYPOTHESIS: the upstream response path can reach a step-up decision before the response is relayed, and the request body can be buffered for a replay within the route's filter body cap — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java` and the dispatch path (verify-at-outline)
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: ResponseStage byte-identical to 3e3addc; no body-buffer-for-replay seam
+  - verdict: unverifiable | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute relays after dispatch so interception looks possible; body streams via ByteCappedBodyStream with no replay buffer
 - HYPOTHESIS: the Keycloak behaviours the flow rests on (a refresh never adds a scope outside the grant; a narrowed refresh keeps the grant in the refresh token) hold for the integration realm as measured downstream — confirm/refute with an IT against the integration Keycloak (verify-at-outline)
-  - verdict: unverifiable | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: live Keycloak 26.7.4 behaviour not settleable by reading this repository
+  - verdict: unverifiable | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: live Keycloak behaviour; BffSessionScopeParityIT asserts only in-grant restore and never an out-of-grant omission
 - Verify-first clause: settle the replay seam first (deliverable 2) — where in the response path a challenge can be intercepted, and whether a body can be buffered and re-sent without breaking streaming or the body cap. If a replay cannot be done safely for all methods, loop back and re-scope: the flow degrades to the browser step-up with no replay, which changes the acceptance rows.
-  - verdict: unverifiable | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: body-buffer-for-replay still open; ADR-0057 now rejects reusing StepUpCoordinator for a sibling leg
+  - verdict: unverifiable | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: replay seam still unbuilt (DispatchStage streams the body); ADR-0057 rejects reusing StepUpCoordinator
 
 ## Expected Surface
 
@@ -145,6 +145,27 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java`
+- OBSERVED (added 2026-10-05, re-grounding at `35f2bb37`):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/DispatchStage.java` — the replay seam
+  deliverable 2 needs: request-body streaming (`ByteCappedBodyStream`, `InboundBody`) and retry gating.
+  `5ddf8081` added ~209 lines here. ⛔ The body streams with **no replay buffer**, which is the concrete
+  reason deliverable 2's "replay the original request exactly once" is still unbuilt
+- OBSERVED (added 2026-10-05):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/TokenRefreshCoordinator.java` — the
+  refresh with `A ∪ {s}` and the loop guard (deliverables 2 and 5)
+- OBSERVED (added 2026-10-05):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java` — the `StepUp` record
+  (`enabled` / `honorUpstreamChallenge` / `path`) is where deliverable 1's sibling-key decision lands,
+  with `config/validation/ConfigValidator.java`
+- OBSERVED (added 2026-10-05):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationRecord.java` — a
+  browser step-up record kind would sit alongside PLAN-23's `Widening` kind
+- OBSERVED (added 2026-10-05):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java` — new LogRecords for
+  deliverable 8; the surface previously declared only `doc/LogMessages.adoc`, which is the document, not
+  the code that must carry the record
+- OBSERVED (added 2026-10-05): `doc/variants/02-bff-session.adoc` and `doc/quality-report/code-correctness.adoc`
+  — both describe the RFC 9470 coordinator and go stale with deliverable 8
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/SessionRecord.java`
@@ -177,14 +198,20 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 
 ## Hand-Off Command
 
+> Path corrected 2026-10-05: the ledger moved from the retired `.plan/local/orchestrator/` address to the
+> git-tracked `.plan/orchestrator/`. The old path is what `phase-1-init` would have persisted as this plan's
+> `source_id`, and the current tooling classifies it `unrecognised_id` — which is exactly what made PLAN-23
+> finish with `emit-landing: not orchestrated` and file no landing message. Emitting this spec from the old
+> path would repeat that.
+
 ```text
-/plan-marshall task="implement .plan/local/orchestrator/kidicap-gateway-requirements/plans/PLAN-20-upstream-signalled-step-up.md"
+/plan-marshall task="implement .plan/orchestrator/kidicap-gateway-requirements/plans/PLAN-20-upstream-signalled-step-up.md"
 ```
 
 ## Write-Boundary
 
 The plan implementing this spec touches only its own repository source and tests. It creates
-and edits NO file under `.plan/local/orchestrator/` other than its own
+and edits NO file under `.plan/orchestrator/` other than its own
 `inbox/{sender}-{seq}` message — the orchestrator owns every other ledger write — and reports
 its outcome through its PR and its inbox message. The inbox exception's qualifiers and the
 sole sanctioned write mechanism are stated in

@@ -60,14 +60,16 @@ class PassthroughHostGuardStageTest {
             // Act
             GatewayException thrown = assertThrows(GatewayException.class, () -> guardedStage.process(request));
 
-            // Assert — the guard's own event maps to a 404 input-validation rejection
+            // Assert — the guard's own event maps to a 404 routing rejection
             assertAll("smuggle rejection",
                     () -> assertEquals(EventType.PASSTHROUGH_HOST_SMUGGLED, thrown.getEventType(),
                             "Rejection must carry the smuggle event"),
                     () -> assertEquals(404, thrown.getEventType().httpStatus(),
                             "The smuggle guard rejects with 404"),
-                    () -> assertEquals(EventCategory.INPUT_VALIDATION, thrown.getEventType().category(),
-                            "The smuggle guard is an input-validation rejection"));
+                    () -> assertEquals(EventCategory.ROUTING, thrown.getEventType().category(),
+                            "The smuggle guard is a routing rejection"),
+                    () -> assertEquals("routing", thrown.getEventType().category().slug(),
+                            "The smuggle rejection reports under the routing slug"));
         }
 
         @ParameterizedTest(name = "rejects normalized smuggle variant \"{0}\"")

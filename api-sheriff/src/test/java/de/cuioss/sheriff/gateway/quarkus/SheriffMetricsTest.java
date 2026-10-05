@@ -25,12 +25,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 
 import de.cuioss.http.security.core.UrlSecurityFailureType;
@@ -39,6 +44,7 @@ import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -56,7 +62,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
@@ -154,13 +163,68 @@ class SheriffMetricsTest {
         @Test
         @DisplayName("recordRequest counts under sheriff_requests_total{route,method,status_family}")
         void recordRequestCountsPathsView() {
-            metrics.recordRequest("api", "GET", "2xx");
-            metrics.recordRequest("api", "GET", "2xx");
+            metrics.recordRequest("api", HttpMethod.GET, "2xx");
+            metrics.recordRequest("api", HttpMethod.GET, "2xx");
 
             var counter = registry.find("sheriff_requests_total")
                     .tags("route", "api", "method", "GET", "status_family", "2xx").counter();
             assertNotNull(counter, "sheriff_requests_total must be registered with the labelled tags");
             assertEquals(2.0, counter.count());
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(HttpMethod.class)
+        @DisplayName("recordRequest labels every parsed method with its enum name")
+        void recordRequestLabelsParsedMethodWithEnumName(HttpMethod method) {
+            metrics.recordRequest("api", method, "2xx");
+
+            var counters = registry.find("sheriff_requests_total").counters();
+            assertEquals(1, counters.size());
+            assertEquals(method.name(), counters.iterator().next().getId().getTag("method"));
+        }
+
+        @Test
+        @DisplayName("recordRequest labels a method the gateway does not parse with the one OTHER placeholder")
+        void recordRequestLabelsUnparsedMethodWithPlaceholder() {
+            metrics.recordRequest(SheriffMetrics.NO_ROUTE, null, "4xx");
+            metrics.recordRequest(SheriffMetrics.NO_ROUTE, null, "4xx");
+
+            var counter = registry.find("sheriff_requests_total")
+                    .tags("route", SheriffMetrics.NO_ROUTE, "method", "OTHER", "status_family", "4xx").counter();
+            assertAll("the placeholder series",
+                    () -> assertEquals("OTHER", SheriffMetrics.METHOD_OTHER),
+                    () -> assertTrue(Arrays.stream(HttpMethod.values())
+                                    .noneMatch(method -> SheriffMetrics.METHOD_OTHER.equals(method.name())),
+                            "the placeholder must not collide with a parsed method's label"),
+                    () -> assertNotNull(counter, "an unparsed method is counted under the placeholder"),
+                    () -> assertEquals(2.0, counter.count(), "every unparsed method moves the one series"),
+                    () -> assertEquals(1, registry.find("sheriff_requests_total").counters().size()));
+        }
+
+        @Test
+        @DisplayName("recordRequest bounds the method label to the HttpMethod names plus the placeholder")
+        void recordRequestBoundsMethodLabelCardinality() {
+            // Arrange — every value the parameter admits, each recorded more than once.
+            List<@Nullable HttpMethod> admitted = new ArrayList<>(Arrays.asList(HttpMethod.values()));
+            admitted.add(null);
+
+            // Act
+            for (int round = 0; round < 3; round++) {
+                admitted.forEach(method -> metrics.recordRequest("api", method, "2xx"));
+            }
+
+            // Assert
+            var counters = registry.find("sheriff_requests_total").counters();
+            Set<String> methodLabels = counters.stream().map(counter -> counter.getId().getTag("method"))
+                    .collect(Collectors.toSet());
+            Set<String> expected = Stream.concat(Arrays.stream(HttpMethod.values()).map(HttpMethod::name),
+                    Stream.of(SheriffMetrics.METHOD_OTHER)).collect(Collectors.toSet());
+            assertAll("bounded method label",
+                    () -> assertEquals(expected, methodLabels),
+                    () -> assertEquals(HttpMethod.values().length + 1, counters.size()),
+                    () -> counters.forEach(counter -> assertEquals(Set.of("route", "method", "status_family"),
+                            counter.getId().getTags().stream().map(Tag::getKey).collect(Collectors.toSet()),
+                            "sheriff_requests_total must carry exactly the route, method and status_family tags")));
         }
 
         @Test
@@ -174,14 +238,137 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("recordError counts under sheriff_errors_total{route,category} keyed by category slug")
+        @DisplayName("recordError counts under sheriff_errors_total{route,category,event}")
         void recordErrorCountsErrorsView() {
-            metrics.recordError("api", EventCategory.UPSTREAM);
+            metrics.recordError("api", EventType.UPSTREAM_ERROR);
+            metrics.recordError("api", EventType.UPSTREAM_ERROR);
 
             var counter = registry.find("sheriff_errors_total")
-                    .tags("route", "api", "category", "upstream").counter();
-            assertNotNull(counter, "sheriff_errors_total must be keyed by the category slug");
-            assertEquals(1.0, counter.count());
+                    .tags("route", "api", "category", "upstream", "event", "UPSTREAM_ERROR").counter();
+            assertNotNull(counter, "sheriff_errors_total must be keyed by route, category slug and event name");
+            assertEquals(2.0, counter.count());
+            assertEquals(1, registry.find("sheriff_errors_total").counters().size(),
+                    "repeated calls for one event move one series");
+        }
+
+        @Test
+        @DisplayName("recordError separates two routing events on one route by the event label alone")
+        void recordErrorSeparatesRoutingEventsByEventLabel() {
+            metrics.recordError("api", EventType.NO_ROUTE_MATCHED);
+            metrics.recordError("api", EventType.PASSTHROUGH_HOST_SMUGGLED);
+
+            var noRoute = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "routing", "event", "NO_ROUTE_MATCHED").counter();
+            var smuggled = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "routing", "event", "PASSTHROUGH_HOST_SMUGGLED").counter();
+            assertAll("two routing series",
+                    () -> assertNotNull(noRoute, "the unrouted rejection has its own routing series"),
+                    () -> assertNotNull(smuggled, "the smuggled-host rejection has its own routing series"));
+            assertAll("each call moved only its own series",
+                    () -> assertEquals(1.0, noRoute.count()),
+                    () -> assertEquals(1.0, smuggled.count()),
+                    () -> assertEquals(2, registry.find("sheriff_errors_total").counters().size()));
+        }
+
+        @Test
+        @DisplayName("recordError keeps the routing series distinct from an input-validation one")
+        void recordErrorKeepsRoutingDistinctFromInputValidation() {
+            metrics.recordError("api", EventType.NO_ROUTE_MATCHED);
+            metrics.recordError("api", EventType.SECURITY_FILTER_VIOLATION);
+
+            var routing = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "routing").counters();
+            var inputValidation = registry.find("sheriff_errors_total")
+                    .tags("route", "api", "category", "input-validation").counters();
+            assertAll("one series per category",
+                    () -> assertEquals(1, routing.size()),
+                    () -> assertEquals(1, inputValidation.size()),
+                    () -> assertEquals("NO_ROUTE_MATCHED", routing.iterator().next().getId().getTag("event")),
+                    () -> assertEquals("SECURITY_FILTER_VIOLATION",
+                            inputValidation.iterator().next().getId().getTag("event")));
+        }
+
+        @Test
+        @DisplayName("recordError tags exactly route, category and event")
+        void recordErrorTagsExactlyRouteCategoryAndEvent() {
+            metrics.recordError("api", EventType.NO_ROUTE_MATCHED);
+            metrics.recordError("api", EventType.UPSTREAM_TIMEOUT);
+
+            var counters = registry.find("sheriff_errors_total").counters();
+            assertEquals(2, counters.size());
+            for (var counter : counters) {
+                var tagKeys = counter.getId().getTags().stream().map(Tag::getKey).collect(Collectors.toSet());
+                assertEquals(Set.of("route", "category", "event"), tagKeys,
+                        "sheriff_errors_total must carry exactly the route, category and event tags");
+            }
+        }
+
+        @Test
+        @DisplayName("recordError counts an aborted inbound body as its own input-validation series")
+        void recordErrorCountsAbortedInboundBodyUnderItsOwnEvent() {
+            metrics.recordError("upload", EventType.INBOUND_BODY_ABORTED);
+
+            var aborted = registry.find("sheriff_errors_total")
+                    .tags("route", "upload", "category", "input-validation", "event", "INBOUND_BODY_ABORTED")
+                    .counter();
+            var counters = registry.find("sheriff_errors_total").counters();
+            assertAll("the aborted-inbound-body series",
+                    () -> assertNotNull(aborted, "the series is keyed by the literal enum name and category slug"),
+                    () -> assertEquals(1.0, aborted.count()),
+                    () -> assertEquals(1, counters.size(),
+                            "an aborted inbound body must not also move the security-filter series"),
+                    () -> assertEquals(Set.of("route", "category", "event"),
+                            counters.iterator().next().getId().getTags().stream().map(Tag::getKey)
+                                    .collect(Collectors.toSet())));
+        }
+
+        /** Every {@link EventType} that carries a category — the population {@code recordError} accepts. */
+        static Stream<EventType> categorisedEventTypes() {
+            List<EventType> categorised = Arrays.stream(EventType.values())
+                    .filter(eventType -> eventType.category() != null)
+                    .toList();
+            if (categorised.isEmpty()) {
+                throw new IllegalStateException("no EventType carries a category — the parameterisation is vacuous");
+            }
+            return categorised.stream();
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("categorisedEventTypes")
+        @DisplayName("recordError sets the event label to the enum name and the category label to its slug")
+        void recordErrorLabelsEventWithEnumName(EventType eventType) {
+            metrics.recordError("api", eventType);
+
+            var counters = registry.find("sheriff_errors_total").counters();
+            assertEquals(1, counters.size());
+            var id = counters.iterator().next().getId();
+            EventCategory category = Objects.requireNonNull(eventType.category());
+            assertAll("labels of " + eventType,
+                    () -> assertEquals(eventType.name(), id.getTag("event")),
+                    () -> assertEquals(category.slug(), id.getTag("category")),
+                    () -> assertEquals("api", id.getTag("route")));
+        }
+
+        @Test
+        @DisplayName("recordError rejects a null route or event type fail-closed")
+        void recordErrorRejectsNull() {
+            assertAll(
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordError(null, EventType.NO_ROUTE_MATCHED)),
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordError("api", null)));
+            assertTrue(registry.find("sheriff_errors_total").counters().isEmpty(),
+                    "a rejected null must not leave a series behind");
+        }
+
+        @Test
+        @DisplayName("recordError rejects an event type without a category and registers no series for it")
+        void recordErrorRejectsUncategorisedEventType() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> metrics.recordError("api", EventType.REQUEST_FORWARDED));
+
+            assertTrue(registry.find("sheriff_errors_total").counters().isEmpty(),
+                    "a rejected uncategorised event must not leave a series behind");
         }
 
         @Test
@@ -260,6 +447,33 @@ class SheriffMetricsTest {
             assertEquals("4xx", SheriffMetrics.statusFamily(404));
             assertEquals("5xx", SheriffMetrics.statusFamily(500));
             assertEquals("5xx", SheriffMetrics.statusFamily(503));
+        }
+
+        @ParameterizedTest(name = "status {0}")
+        @ValueSource(ints = {Integer.MIN_VALUE, -1, 0, 1, 99, 600, 999, 1000, Integer.MAX_VALUE})
+        @DisplayName("status_family is clamped to its fixed set: a status outside 100..599 maps to the one placeholder")
+        void statusFamilyIsClampedToItsFixedSet(int statusCode) {
+            assertAll("status " + statusCode,
+                    () -> assertEquals("other", SheriffMetrics.STATUS_FAMILY_OTHER),
+                    () -> assertEquals(SheriffMetrics.STATUS_FAMILY_OTHER, SheriffMetrics.statusFamily(statusCode)));
+        }
+
+        @ParameterizedTest(name = "status {0} -> {1}")
+        @CsvSource({"100, 1xx", "199, 1xx", "200, 2xx", "299, 2xx", "300, 3xx", "399, 3xx", "400, 4xx",
+                "499, 4xx", "500, 5xx", "599, 5xx"})
+        @DisplayName("status_family keeps both edges of every family inside 100..599")
+        void statusFamilyKeepsTheInRangeEdges(int statusCode, String expectedFamily) {
+            assertEquals(expectedFamily, SheriffMetrics.statusFamily(statusCode));
+        }
+
+        @Test
+        @DisplayName("status_family draws from exactly the five families plus the placeholder")
+        void statusFamilyValueSetIsFixed() {
+            Set<String> families = IntStream.rangeClosed(-1_000, 10_000)
+                    .mapToObj(SheriffMetrics::statusFamily)
+                    .collect(Collectors.toSet());
+
+            assertEquals(Set.of("1xx", "2xx", "3xx", "4xx", "5xx", SheriffMetrics.STATUS_FAMILY_OTHER), families);
         }
     }
 

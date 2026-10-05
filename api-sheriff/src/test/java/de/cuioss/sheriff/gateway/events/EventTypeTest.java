@@ -97,11 +97,12 @@ class EventTypeTest {
             arguments(EventType.SECURITY_FILTER_VIOLATION, 400, EventCategory.INPUT_VALIDATION),
             arguments(EventType.PATH_NOT_ALLOWED, 400, EventCategory.INPUT_VALIDATION),
             arguments(EventType.PARAMETER_LIMIT_EXCEEDED, 400, EventCategory.INPUT_VALIDATION),
-            arguments(EventType.NO_ROUTE_MATCHED, 404, EventCategory.INPUT_VALIDATION),
-            arguments(EventType.PASSTHROUGH_HOST_SMUGGLED, 404, EventCategory.INPUT_VALIDATION),
-            arguments(EventType.METHOD_NOT_ALLOWED, 405, EventCategory.INPUT_VALIDATION),
+            arguments(EventType.NO_ROUTE_MATCHED, 404, EventCategory.ROUTING),
+            arguments(EventType.PASSTHROUGH_HOST_SMUGGLED, 404, EventCategory.ROUTING),
+            arguments(EventType.METHOD_NOT_ALLOWED, 405, EventCategory.ROUTING),
             arguments(EventType.RESERVED_BODY_TOO_LARGE, 413, EventCategory.INPUT_VALIDATION),
             arguments(EventType.CONTENT_TOO_LARGE, 413, EventCategory.INPUT_VALIDATION),
+            arguments(EventType.INBOUND_BODY_ABORTED, 400, EventCategory.INPUT_VALIDATION),
             arguments(EventType.TOKEN_MISSING, 401, EventCategory.AUTHENTICATION),
             arguments(EventType.TOKEN_INVALID, 401, EventCategory.AUTHENTICATION),
             arguments(EventType.LOGOUT_TOKEN_INVALID, 400, EventCategory.AUTHENTICATION),
@@ -257,6 +258,8 @@ class EventTypeTest {
                         EventCategory.INPUT_VALIDATION.problemType()),
                 () -> assertEquals("urn:api-sheriff:problem:upstream",
                         EventCategory.UPSTREAM.problemType()),
-                () -> assertEquals("Input Validation", EventCategory.INPUT_VALIDATION.title()));
+                () -> assertEquals("Input Validation", EventCategory.INPUT_VALIDATION.title()),
+                () -> assertEquals("urn:api-sheriff:problem:routing", EventCategory.ROUTING.problemType()),
+                () -> assertEquals("Routing", EventCategory.ROUTING.title()));
     }
 }

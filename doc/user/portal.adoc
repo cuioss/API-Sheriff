@@ -359,14 +359,16 @@ the same either way.*
 | Status | HTML-eligible gateway errors
 
 | `403` | a bearer token lacking a needed scope; a failed CSRF origin check
-| `404` | no route matched; a `source: directory` asset that has no file for the request
+| `404` | no route matched, which is also the answer to a request whose `Host` names a hostname reserved for passthrough; a `source: directory` asset that has no file for the request
+| `405` | a method the route does not allow
 | `413` | a request body over the route's `max_body_bytes` cap
 | `502` / `503` / `504` | upstream connection failure or invalid upstream response; circuit breaker open; upstream timeout
 | error status | a failed OIDC callback (an error answer without a redirect); its own `Set-Cookie` lines still apply
 |===
 
 Every other exit always keeps its shape. That covers the `400` of the security filter, the `401` of
-a missing or invalid token, the `405` verb gate, the reserved-path body ceiling, gRPC trailers-only
+a missing or invalid token, the `405` for a request method the gateway cannot parse, the
+reserved-path body ceiling, gRPC trailers-only
 rejections, the admission `503`, and an unexpected internal failure.
 
 *A response relayed from an origin is never replaced.* An upstream's own `404` or `500`, a

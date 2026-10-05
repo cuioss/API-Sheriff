@@ -27,27 +27,38 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 
 /**
- * D3b GW-02 anti-request-smuggling / framing gate, run at stage 1 and re-runnable after any
- * header mutation.
+ * D3b GW-02 anti-request-smuggling / framing gate, run once at stage 1, before route selection.
  * <p>
- * The gate rejects the three framing-desync vectors with a 400
+ * The gate rejects these framing-desync vectors with a 400
  * {@link EventType#SECURITY_FILTER_VIOLATION} before a request can reach the upstream:
  * <ul>
  *   <li><strong>CL+TE</strong>: {@code Content-Length} and {@code Transfer-Encoding} both present,
  *       the classic front-end/back-end desync primer;</li>
+ *   <li><strong>CL.CL</strong>: more than one {@code Content-Length} field, or a single field
+ *       carrying a comma-separated value list;</li>
+ *   <li><strong>TE.TE</strong>: a {@code Transfer-Encoding} that is repeated, or whose single value
+ *       is anything other than exactly {@code chunked} (compared case-insensitively, with no
+ *       trimming and no list parsing). {@code chunked, identity}, {@code xchunked} and a second
+ *       {@code Transfer-Encoding} field are the shapes two parsers disagree on, so the gate admits
+ *       only the one spelling every parser reads the same way. No configuration relaxes it;</li>
  *   <li><strong>body on a bodyless method</strong>: a declared body (or {@code Transfer-Encoding})
  *       on {@code GET} or {@code HEAD}. The declared-{@code Content-Length} leg is the only part
  *       of this gate an operator can relax, and only for {@code GET}, via
  *       {@code security_defaults.allow_get_with_content_length_body}; a body-present {@code GET}
  *       carrying no declared {@code Content-Length} is not {@code Content-Length}-framed and stays
- *       rejected, exactly as {@code Transfer-Encoding} on a bodyless method does;</li>
+ *       rejected, exactly as {@code Transfer-Encoding} on a bodyless method does. The gate decides
+ *       on the headers alone: a body that no header declares — DATA frames on an HTTP/2 stream
+ *       without {@code content-length} — is invisible here, and is refused by the upstream dispatch
+ *       on its first byte instead, which never forwards a body for such a request on any
+ *       protocol;</li>
  *   <li><strong>framing/trust-header strip via {@code Connection}</strong>: a {@code Connection}
  *       token naming a framing header ({@code Content-Length} / {@code Transfer-Encoding} /
  *       {@code Host}) or a trust header ({@code Authorization} / {@code Forwarded} /
  *       {@code X-Forwarded-*}), which would drop that header hop-by-hop and reopen the desync.</li>
  * </ul>
- * Because the gate is stateless it is safe to re-invoke after stage 5 regenerates forwarding
- * headers, re-asserting framing integrity on the mutated header set.
+ * The gate inspects the inbound request headers, which are immutable for the lifetime of the
+ * request. The forwarding headers stage 5 regenerates are a separate set built for the upstream
+ * call, so the edge does not run the gate a second time.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -60,6 +71,11 @@ public final class FramingGate {
             "content-length", "transfer-encoding", "host",
             "authorization", "forwarded",
             "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port");
+
+    private static final String TRANSFER_ENCODING = "Transfer-Encoding";
+
+    /** The only transfer coding the gate admits; any other value, or a repeated field, is rejected. */
+    private static final String CHUNKED = "chunked";
 
     private final boolean allowGetWithContentLengthBody;
 
@@ -78,7 +94,7 @@ public final class FramingGate {
     }
 
     /**
-     * Re-asserts framing integrity on the current header set.
+     * Asserts framing integrity on the request's header set.
      *
      * @param request the in-flight request context
      * @throws GatewayException with {@link EventType#SECURITY_FILTER_VIOLATION} on any framing vector
@@ -87,7 +103,32 @@ public final class FramingGate {
         Objects.requireNonNull(request, "request");
         rejectConflictingFraming(request);
         rejectBodyOnBodylessMethod(request);
+        rejectAmbiguousTransferEncoding(request);
         rejectFramingHeaderStrip(request);
+    }
+
+    /**
+     * Rejects the TE.TE shape: a {@code Transfer-Encoding} that is repeated or is not exactly
+     * {@code chunked}.
+     * <p>
+     * It runs after the two checks above on purpose. A request that also carries
+     * {@code Content-Length}, or that uses a bodyless method, is already rejected there with the
+     * detail text those checks have always produced, so this check adds rejections without changing
+     * an existing one. The value is compared as received: it is not trimmed and not split on commas,
+     * because any leniency here is exactly the room an obfuscated coding needs to be read as
+     * {@code chunked} by one parser and as something else by the next.
+     */
+    private static void rejectAmbiguousTransferEncoding(PipelineRequest request) {
+        List<String> transferEncodings = request.headerValues(TRANSFER_ENCODING);
+        if (transferEncodings.isEmpty()) {
+            return;
+        }
+        if (transferEncodings.size() > 1) {
+            throw violation("Multiple Transfer-Encoding headers present");
+        }
+        if (!CHUNKED.equalsIgnoreCase(transferEncodings.getFirst())) {
+            throw violation("Transfer-Encoding is not exactly chunked");
+        }
     }
 
     private static void rejectConflictingFraming(PipelineRequest request) {
@@ -102,7 +143,7 @@ public final class FramingGate {
         if (!contentLengths.isEmpty() && contentLengths.getFirst().indexOf(',') >= 0) {
             throw violation("Content-Length header carries a comma-separated value list");
         }
-        if (request.hasHeader("Content-Length") && request.hasHeader("Transfer-Encoding")) {
+        if (request.hasHeader("Content-Length") && request.hasHeader(TRANSFER_ENCODING)) {
             throw violation("Content-Length and Transfer-Encoding both present");
         }
     }
@@ -118,12 +159,19 @@ public final class FramingGate {
      * {@code Content-Length}-framed: a {@code GET} whose body is signalled without a positive
      * declared {@code Content-Length} still falls through to the rejection below, so the gate
      * re-asserts that bound itself rather than inheriting it from an upstream stage.
+     * <p>
+     * <strong>Headers only.</strong> {@link PipelineRequest#bodyPresent()} is derived from
+     * {@code Content-Length} and {@code Transfer-Encoding}, so this check sees a body only where a
+     * header announces one. On HTTP/2 a body can travel in DATA frames with neither header; such a
+     * request passes here and is refused by the upstream dispatch on its first body byte, which sends
+     * a bodyless method upstream with no body on every protocol. The HTTP/1.x rules above are
+     * unaffected — there a body cannot arrive without one of the two headers.
      */
     private void rejectBodyOnBodylessMethod(PipelineRequest request) {
         if (!BODYLESS_METHODS.contains(request.method())) {
             return;
         }
-        if (request.hasHeader("Transfer-Encoding")) {
+        if (request.hasHeader(TRANSFER_ENCODING)) {
             // Same detail text as the body legs below: with the opt-in off every rejection this gate
             // produced before the split is preserved bit-for-bit, message included.
             throw violation("Body present on bodyless method " + request.method());

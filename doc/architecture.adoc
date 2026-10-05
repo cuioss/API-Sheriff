@@ -353,11 +353,64 @@ query parameters reach the upstream is a separate, later question, answered by t
 link:configuration.adoc#_security_filtering[Security Filtering].
 
 *The framing gate and its one operator-relaxable leg.* Separate from the profile-gated filter above,
-a stateless anti-request-smuggling *framing gate* runs at stage 1 and is re-runnable after any header
-mutation. It rejects three desync vectors with `400`: `Content-Length` + `Transfer-Encoding`
-coexistence (including a duplicated or comma-listed `Content-Length`), a body on a bodyless method,
+a stateless anti-request-smuggling *framing gate* runs once, at stage 1, before route selection. It
+rejects four desync vectors with `400`: `Content-Length` + `Transfer-Encoding`
+coexistence (including a duplicated or comma-listed `Content-Length`), a `Transfer-Encoding` that is
+repeated or is not exactly `chunked`, a body on a bodyless method,
 and a `Connection` header naming a framing or trust header (which would drop it hop-by-hop and
-reopen the desync).
+reopen the desync). The gate is not run again after the forwarding headers are regenerated: request
+headers are immutable, and the headers sent upstream are a separate map that never carries the
+client's framing headers.
+
+A framing rejection also ends what it arrived on, and what that is depends on the protocol. On
+HTTP/1.x it is the connection: the `400` carries `Connection: close`, the connection is closed once
+it is written, and a request already queued behind the rejected one is neither processed nor
+forwarded. On HTTP/2 it is the offending stream alone: the `400` carries no connection-specific
+header, the stream is reset once it is written, and the other streams of that connection and the
+connection itself carry on. The HTTP transport refuses some shapes before the gate runs, with a bare
+`400`; link:security-threat-model.adoc#gw-02[GW-02] lists each clause, who enforces it and the test
+that pins it.
+
+[[_dispatch_body_framing]]
+*A bodyless method carries no body upstream, and a declared length frames the forwarded body.* The
+gate decides on headers, so a body that no header declares -- on HTTP/2, DATA frames without
+`content-length` -- is refused by the proxy dispatch instead. A `GET` or `HEAD` without a positive
+declared `Content-Length` is sent upstream with no body, on every protocol, and its first inbound
+body byte, whatever its size, refuses it as `SECURITY_FILTER_VIOLATION`. While the dispatch is
+awaited the refusal is answered `400` and ends what it arrived on, as a gate rejection does: the
+HTTP/2 stream alone, or the HTTP/1.x connection. Once the response has been handed over for relay,
+the client stream is reset rather than cleanly ended, so a truncated response never reads as
+complete. A stream that ends with an empty final frame carries no body and is served. Every other
+request that declares a
+`Content-Length`, whatever its method, is forwarded framed by it: dispatch writes the value the gate
+and the `max_body_bytes` pre-check admitted as the upstream `Content-Length` and sends exactly that
+many bytes. A byte beyond it is never forwarded and refuses the request as
+`SECURITY_FILTER_VIOLATION`; a body that ends short of it resets the upstream request as
+`INBOUND_BODY_ABORTED`. A request that declares no length keeps the framing the transport chooses.
+Only the proxy dispatch streams an inbound body: an asset, a redirect, the portal and the reserved
+paths forward none.
+
+[[_aborted_inbound_body]]
+*A request body that fails after dispatch is a client-caused termination.* When the inbound body
+stream fails only after the request was dispatched -- a client that disconnects mid-upload, or a
+chunked body whose framing breaks mid-stream -- the upstream request is reset, and on HTTP/1.x the
+upstream connection that carried it is not reused. The gateway reports it under its own event,
+`INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`). It is neither a security-filter violation nor an
+upstream failure: no security warning is logged, the route's circuit breaker does not count it as a
+failure, and it is never retried. `INFO` `ApiSheriff-22` records it, latched per route, and
+`sheriff_errors_total` counts every occurrence under `event="INBOUND_BODY_ABORTED"`. A body that
+keeps arriving past the route's `max_body_bytes` cap is the separate `CONTENT_TOO_LARGE` (`413`).
+
+Not counted as a failure is not the same as not recorded. Like every dispatch the client ended -- a
+body over the cap, a body byte on a bodyless method, a body that disagrees with its declared length
+-- an aborted inbound body reaches the route's guard as a gateway rejection, which the guard skips.
+SmallRye Fault Tolerance has no neutral outcome, so the breaker records a skipped call as a success,
+in the closed and the half-open state alike. Keeping client-ended dispatches out of the breaker's
+window would need the guarded call to be restructured, and the gateway accepts the success record
+instead. The abort is attributed by what happened first: a client that goes away only after the
+upstream already failed leaves that failure attributed to the upstream, and the edge's idle timeout
+can reap an inbound connection before the route's read timeout fires, ending the dispatch as a
+client-ended one.
 
 Exactly one part of that gate is operator-relaxable, through the gateway-wide
 `security_defaults.allow_get_with_content_length_body`: the declared-`Content-Length` leg, and only
@@ -900,7 +953,14 @@ The upstream client is split by plane
   retried only for an idempotent method *and only when zero request-body bytes have been sent
   upstream* -- there is no replay buffer. The breaker is stateless per node: opens after the
   configured consecutive failures, half-opens after `reset_ms`; state transitions surface as
-  WARN LogRecords and metrics.
+  WARN LogRecords and metrics. Only upstream failures count as failures: a dispatch the client
+  itself ended -- a body-cap breach, an aborted inbound body (<<_aborted_inbound_body>>), a body
+  byte on a bodyless method, or a body that disagrees with its declared length
+  (<<_dispatch_body_framing>>) -- is neither counted as a failure nor retried. The breaker still
+  records it, as a success: SmallRye has no neutral outcome, and keeping such dispatches out of the
+  window would need the guarded call to be restructured, which the gateway does not do. The edge's
+  idle timeout can reap an inbound connection before the route's read timeout fires; that dispatch
+  ends as a client-ended one.
 * *Control plane -- `cui-http`.* The gateway's own small, bounded JSON calls (OIDC discovery,
   JWKS, the pushed authorization request, token exchange, revocation -- made chiefly inside the
   token-sheriff libraries) use
@@ -1045,7 +1105,7 @@ error-mapping without pulling in a broker or an Elasticsearch dependency.
 
 Design (the low, framework-agnostic `de.cuioss.sheriff.gateway.events` package):
 
-* An `EventCategory` enum groups *failure* events by impact -- e.g. `INPUT_VALIDATION`,
+* An `EventCategory` enum groups *failure* events by impact -- `INPUT_VALIDATION`, `ROUTING`,
   `AUTHENTICATION`, `AUTHORIZATION`, `UPSTREAM`, `CONFIGURATION`. The HTTP status is mapped
   per *event type* (two events in one category may map to different statuses); the category
   names the RFC 9457 problem type and keys the error metrics. `CONFIGURATION` events occur at
@@ -1057,9 +1117,15 @@ Design (the low, framework-agnostic `de.cuioss.sheriff.gateway.events` package):
   category* (per CUI logging convention) and are metric counters only -- e.g.
   `REQUEST_FORWARDED`, `TOKEN_REFRESHED`, `CONFIG_LOADED`.
 * Failure event types carry a category -- e.g. `PATH_NOT_ALLOWED` / `SECURITY_FILTER_VIOLATION`
-  / `PARAMETER_LIMIT_EXCEEDED` / `CONTENT_TOO_LARGE` (`INPUT_VALIDATION`), `TOKEN_MISSING` / `TOKEN_INVALID`
+  / `PARAMETER_LIMIT_EXCEEDED` / `CONTENT_TOO_LARGE` / `INBOUND_BODY_ABORTED` (`INPUT_VALIDATION`),
+  `NO_ROUTE_MATCHED` /
+  `PASSTHROUGH_HOST_SMUGGLED` / `METHOD_NOT_ALLOWED` (`ROUTING`), `TOKEN_MISSING` / `TOKEN_INVALID`
   (`AUTHENTICATION`), `SCOPE_MISSING` / `CSRF_REJECTED` (`AUTHORIZATION`),
   `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT` (`UPSTREAM`).
+* Each category carries one slug, and the slug is read in three places: the RFC 9457 problem type
+  (`urn:api-sheriff:problem:<slug>`) with the category's title, the `category` label of
+  `sheriff_errors_total`, and `grpc-message` on a `protocol: grpc` route. The slugs are
+  `input-validation`, `routing`, `authentication`, `authorization`, `upstream` and `configuration`.
 * Typed gateway exceptions carry their `EventType`, so the HTTP edge maps
   event -> status (with the category naming the problem type), and renders
   `application/problem+json` (RFC 9457) without leaking internal detail.
@@ -1082,17 +1148,25 @@ The consolidated status mapping:
 |===
 | Status | Cause | EventCategory
 
-| `400` | Security-filter violation (path/parameter/header pipeline, collection limits) | `INPUT_VALIDATION`
+| `400` | Security-filter violation (path/parameter/header pipeline, collection limits, framing gate, a body on a bodyless method or beyond its declared length -- see <<_dispatch_body_framing>>); a proxied request body that failed after dispatch began -- a client disconnecting mid-upload, or broken chunk framing (`INBOUND_BODY_ABORTED`, see <<_aborted_inbound_body>>) | `INPUT_VALIDATION`
 | `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
 | `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`); live session lacking one on a non-navigation request when no refresh can obtain it (no `WWW-Authenticate`; the problem body carries the extension members `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`, while a navigation is redirected into a widening of the session instead -- see <<_scope_enforcement>>); failed CSRF origin check | `AUTHORIZATION`
-| `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `INPUT_VALIDATION`
-| `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `INPUT_VALIDATION`
-| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed | `INPUT_VALIDATION`
+| `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `ROUTING`
+| `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `ROUTING`
+| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is ended, and the connection and its other streams carry on | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
 |===
+
+The `404` and `405` rows report under `ROUTING`: each says the request addresses nothing the gateway
+serves that way, not that the request is malformed. A problem document for them carries
+`type: urn:api-sheriff:problem:routing` and `title: Routing`
+(link:adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
+An unrouted address and a `Host` reserved for passthrough share the category. On an address no
+route serves they share the same response as well, so a caller cannot tell them apart there. They
+are counted under different `event` values of `sheriff_errors_total` (<<_metrics>>).
 
 Two exits of the BFF login belong to this contract and are easy to misread from the table alone:
 
@@ -1134,18 +1208,28 @@ constant fails compilation until it is classified.
 | Classification | Exits
 
 | `HTML_ELIGIBLE`
-| `SCOPE_MISSING` and `CSRF_REJECTED` (`403`); `NO_ROUTE_MATCHED` (`404`); `CONTENT_TOO_LARGE`
-  (`413`); `UPSTREAM_ERROR` (`502`), `UPSTREAM_CIRCUIT_OPEN` (`503`), `UPSTREAM_TIMEOUT` (`504`); a
-  failed OIDC callback (an error status without `Location`, whose own `Set-Cookie` lines ride on the
-  page); a `source: directory` asset miss (`404`).
+| `SCOPE_MISSING` and `CSRF_REJECTED` (`403`); `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED`
+  (`404`); `METHOD_NOT_ALLOWED` (`405`); `CONTENT_TOO_LARGE` (`413`); `UPSTREAM_ERROR` (`502`),
+  `UPSTREAM_CIRCUIT_OPEN` (`503`), `UPSTREAM_TIMEOUT` (`504`); a failed OIDC callback (an error
+  status without `Location`, whose own `Set-Cookie` lines ride on the page); a `source: directory`
+  asset miss (`404`).
 
 | `KEEP_SHAPE`
-| Every other event: the `400` security-filter and parameter rejections, `401` token rejections, the
-  `405` verb gate, `RESERVED_BODY_TOO_LARGE`, the passthrough-`Host` smuggle, WebSocket rejections and
-  the rest. Every response *relayed from an origin* (the proxy relay, the gRPC trailer relay, a
-  `source: upstream` asset, the WebSocket relay), a relay failure after the response head was sent, a
-  gRPC trailers-only rejection, the admission `503`, and an unexpected internal failure.
+| Every other event: the `400` security-filter, parameter and aborted-inbound-body rejections,
+  `401` token rejections,
+  `RESERVED_BODY_TOO_LARGE`, WebSocket rejections and the rest. Every response *relayed from an
+  origin* (the proxy relay, the gRPC trailer relay, a `source: upstream` asset, the WebSocket relay),
+  a relay failure after the response head was sent, a gRPC trailers-only rejection, the admission
+  `503`, and an unexpected internal failure.
 |===
+
+The smuggled passthrough `Host` is eligible because an unrouted address is: on an address no route
+serves, the two `404`s are one answer, and a difference in body shape would tell a caller which
+hostnames are reserved. The `405`
+is eligible because a browser can navigate into one. One `405` never negotiates, whatever the
+classification says: a request whose method the gateway cannot parse is answered before a pipeline
+request exists, so it is always `application/problem+json`. The `405` of the verb gate, raised on a
+selected route, negotiates.
 
 An error page carries the unchanged status and a fixed per-status title. It never carries a problem
 detail, an exception message or an upstream address. It renders anonymously (no session is resolved
@@ -1168,7 +1252,7 @@ rejection it would render as an HTTP status for an HTTP route onto the canonical
 |===
 | gRPC status | code | Gateway rejection (the HTTP status the same cause renders on an HTTP route)
 
-| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits)
+| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits); `INBOUND_BODY_ABORTED` maps here by its `400`
 | `UNAUTHENTICATED`    | 16 | `401` -- missing/invalid bearer token; invalid or expired session on a non-navigation request
 | `PERMISSION_DENIED`  | 7  | `403` -- valid bearer token or live session lacking a needed scope (the session answer's `missing_scopes` / `step_up_url` members have no place in a gRPC status and are not rendered); failed CSRF origin check
 | `NOT_FOUND`          | 5  | `404` -- no route matched (deny-by-default routing); reserved-for-passthrough `Host`; disabled endpoint
@@ -1180,7 +1264,8 @@ rejection it would render as an HTTP status for an HTTP route onto the canonical
 
 The `429` (rate-limit, reserved) row has no gRPC mapping -- the feature is out of scope. Trailers
 carry the category name only, never internal detail, exactly as the problem+json contract does for
-HTTP routes.
+HTTP routes: `grpc-message` is the category slug, so a `404` or a `405` on a gRPC route reads
+`routing`.
 
 [[_metrics]]
 == Metrics
@@ -1218,15 +1303,33 @@ The manifest requires *paths, errors, and average timing*. These map to:
   `route` (and, if wanted, a `sum by (route)` for a total-calls-per-resource view). The
   `REQUEST_FORWARDED` success event in the link:#_event_system[event system] is the same signal
   at the counter layer. Route cardinality is bounded (route id is a config-fixed label;
-  unmatched requests share the fixed `"<no-route>"` value), so this is safe to keep always on.
+  unmatched requests share the fixed `"<no-route>"` value). `method` is bounded the same way: it is
+  the name of a method the gateway parses -- one of the `HttpMethod` constants `GET`, `HEAD`, `POST`,
+  `PUT`, `PATCH`, `DELETE` and `OPTIONS` -- or the single fixed value `OTHER`. A method token the
+  gateway cannot parse (`TRACE`, `CONNECT` or any other token) is counted under `method="OTHER"`,
+  never under its own name, so the label holds at most eight values and no request-derived text
+  reaches it. `status_family` is bounded as well: a status in `100..599` is counted under its family
+  `1xx` .. `5xx`, and any other status under the single fixed value `other`, so that label holds at
+  most six values. Every label is therefore drawn from a fixed set, and the counter is safe to keep
+  always on.
 
 | `sheriff_request_duration_seconds{route}` (timer)
 | Latency distribution per route; the timer's mean gives "average timing", and quantiles/
   histogram buckets give tail latency.
 
-| `sheriff_errors_total{route,category}`
-| Counter of rejected/failed requests keyed by `EventCategory` (input-validation, auth,
-  authorization, upstream) -- the "errors" view, sourced from the event system.
+| `sheriff_errors_total{route,category,event}`
+| Counter of rejected/failed requests -- the "errors" view, sourced from the event system. `category`
+  is the `EventCategory` slug (`input-validation`, `routing`, `authentication`, `authorization`,
+  `upstream`). `event` is the `EventType` name; its cardinality is fixed at the enum and it never
+  carries request-derived input. An unrouted address and a smuggled passthrough host share
+  `category="routing"`, on an address no route serves the same response as well, and are counted
+  under the different `event` values
+  `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED`. Three rejections are rendered directly and are
+  not counted here: the `405` for a request method the gateway cannot parse, the `404` for a reserved
+  path on a gateway without an active session runtime, and the `404` of the withheld client JWKS
+  path. They appear in the `4xx` bucket of `sheriff_requests_total` only, the first of them under
+  `method="OTHER"`
+  (link:adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
 
 | `sheriff_security_events_total{failure_type}`
 | The `cui-http` `SecurityEventCounter` counts, exposed per `UrlSecurityFailureType`.
@@ -1317,10 +1420,12 @@ HTTP/3 / QUIC is deferred.
 | WebSocket
 | Proxied bidirectionally (Quarkus/Vert.x). The full inbound pipeline (security filter, auth,
   forward policy) runs on the HTTP *upgrade* request *before* `101 Switching Protocols` is
-  returned, so authentication is enforced at *handshake time*. On a bearer WebSocket route the
-  client `Origin` is validated against the route's
+  returned, so authentication is enforced at *handshake time*. The client `Origin` is validated
+  against the route's
   link:configuration.adoc#_allowed_origins[`allowed_origins`] allowlist (exact match, fail-closed)
-  *before* the upstream is dialled. After `101` the connection is an *opaque bidirectional relay*
+  *before* the upstream is dialled. A bearer or session WebSocket route cannot boot without a
+  non-empty allowlist; only a `require: none` route may omit it
+  (link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]). After `101` the connection is an *opaque bidirectional relay*
   -- frames are forwarded verbatim in both directions and never inspected -- bounded by the
   per-route link:configuration.adoc#_websocket[`websocket.idle_timeout_seconds`] idle reclaim (no
   frame in either direction for the window closes the relay; ping/pong counts as activity). A

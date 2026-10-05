@@ -30,7 +30,6 @@ import java.util.logging.LogRecord;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
-import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.test.junit.QuarkusTest;
@@ -272,7 +271,7 @@ class DefaultTrustSourceAuditTest {
             audit(registryWithDefaultBucket(new PfxOptions())).auditDefaultTrustSource();
 
             SheriffDebugCapture.assertDebugIsCaptured(DefaultTrustSourceAudit.class);
-            List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
+            List<LogRecord> records = SheriffDebugCapture.capturedRecords();
             assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
             assertAll("the password IS set here, so its absence is a measurement rather than a vacuous pass",
                     records.stream().map(captured -> () -> assertFalse(

@@ -51,7 +51,8 @@ both directions between the client and the upstream. Author it in an `endpoints/
 
 === Setting `allowed_origins` (cross-site WebSocket hijacking guard)
 
-On a WebSocket route whose *effective* auth is `require: bearer`, `websocket.allowed_origins` is a
+On a WebSocket route whose *effective* auth is `require: bearer` or `require: session`,
+`websocket.allowed_origins` is a
 *mandatory, non-empty* list of the browser origins permitted to open a socket. It is declared inside
 the route's `websocket` block; written as a route-level sibling of `websocket` it fails the boot as
 an unknown key. The gateway
@@ -62,9 +63,12 @@ Author each permitted origin *in full* -- `scheme://host[:port]`:
 
 * The *host* is matched case-insensitively; the *scheme and port* are matched exactly.
 * There are *no wildcards*, no suffix forms, and no regular expressions.
-* An *absent or empty* `allowed_origins` on a bearer WebSocket route *fails the boot*
-  (deny-by-default). Declaring `allowed_origins` on a non-WebSocket route, or on a WebSocket
-  route whose effective auth is not `require: bearer`, is also a boot-time configuration error.
+* An *absent or empty* `allowed_origins` on a bearer or session WebSocket route *fails the boot*
+  (deny-by-default), naming the route. A session route does not inherit
+  `oidc.session.csrf.trusted_origins`: list the origins here as well.
+* A `require: none` WebSocket route may omit the list; its upgrade is then not origin-checked. A
+  list it does declare is enforced.
+* A `websocket` block on a non-WebSocket route is a boot-time configuration error.
 
 For the full field contract see
 link:../configuration.adoc#_allowed_origins[Configuration -- `allowed_origins`].

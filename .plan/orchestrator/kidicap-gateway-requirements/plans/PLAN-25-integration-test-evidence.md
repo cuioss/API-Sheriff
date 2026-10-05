@@ -41,6 +41,24 @@ downstream claim:
 
 ## Deliverables
 
+> ⚠ **RE-GROUNDED 2026-10-05 at `35f2bb37`. Read this before the list — three rows moved.** The filing
+> measured this repository at tag 0.2.3; five commits have landed since, two of which touched exactly this
+> surface (`e8db85bf` PAR/DPoP, `35f2bb37` which removed 102 lines from `integration-tests/docker-compose.yml`).
+>
+> | Row | State at HEAD | Consequence |
+> |---|---|---|
+> | **D10** | ⛔ **OBSOLETE** | The `BffRefreshReuseIT` javadoc is already accurate — it says only `refresh-client` and `cookie-refresh-client` lack a `backchannel.logout.url`, and `integration-realm.json:60` confirms `integration-client` registers it. Nothing to correct; drop the deliverable |
+> | **D5 (M-50, M-52)** | ⛔ **BLOCKED AS FILED** | `35f2bb37` added `ItProfileConfigBindingWiringTest`, which requires every OIDC descriptor to name `oidc_tls_profile: benchmark-idp` and **forbids** declaring `oidc_verify_hostname`, and bans `-Djavax.net.ssl.*` arguments at every launch site. So the TLS-relaxation fixtures have no trust route against the self-signed Keycloak. Either amend that guard (a deliberate decision, not a test detail) or re-design the scenario. **M-59 in a bearer-only JWKS form stays feasible** |
+> | **M-58 pins** | renamed | `e8db85bf` renamed both to `navigationOnScopedRouteIsGrantedTheUnitedScopeSet` and `loginInitiationForScopedTargetIsGrantedTheEndpointScope`, because PAR hides the scope from the authorization URL — so those pins are now effect-only. Cite the new names |
+> | **D3 (M-44)** | still open, and **harder** | PLAN-23's `BffSessionScopeParityIT` does NOT cover it: its own javadoc (93-99) states the in-grant scope-driven refresh cannot be produced through the public surface (`A == S` after login and widening) and its probe hits Keycloak directly. A recording stub IdP is needed |
+> | **D4 (M-60)** | still open, needs **new** fixture | toxiproxy 2.12.0 is in the compose stack (admin 8474) but has no static proxies and only `PassthroughFaultIT` uses it; nothing fronts Keycloak and the issuer is pinned to `https://keycloak:8443`. So "toxiproxy needs no new infrastructure" was too optimistic — a new IdP fault fixture is required |
+> | **D7** | still open, needs **new** instance | no fixture sets `ttl_seconds` below 3600 |
+> | **D8** | feasible as filed | `api-sheriff-refresh` publishes `10452:8443` in server/memory mode and the primary 10443 is also server/memory |
+> | D1, D2, D6, D9 | unchanged | D6 additionally still has no 504 edge test, and since `5ddf8081` a framing rejection retires the HTTP/1.x connection or ends the h2 stream — pin that answer |
+>
+> Net: **8 deliverables live** (D1, D2, D3, D4, D6, D7, D8, D9), one obsolete (D10), one partly blocked (D5).
+
+
 Each row is one deliverable: an integration test (or load test) at the stated level, plus whatever fixture
 it needs.
 
@@ -90,7 +108,7 @@ it needs.
     `BffRefreshReuseIT` class javadoc says no client registers a `backchannel.logout.url`, while the realm
     file and `BffBackchannelLogoutIT` at the same tag say otherwise.
 
-Split guard: 10 deliverables — within the operator-authorized 12. Deliverables 3 and 9 may resolve to
+Split guard: 8 live deliverables (10 filed, D10 obsolete, D5 partly blocked) — within the operator-authorized 12. Deliverables 3 and 9 may resolve to
 "already covered elsewhere", which SHRINKS the plan; that is an expected outcome, not a shortfall.
 
 ## Claim Labels
@@ -98,24 +116,36 @@ Split guard: 10 deliverables — within the operator-authorized 12. Deliverables
 - OBSERVED: the filing is a per-property audit against this repository at tag 0.2.3, naming for each
   property the exact existing test (or its absence) — it is evidence-bearing rather than a wish list, and
   the orchestrator accepted it on that basis.
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: the named tests exist at HEAD; five of the six pinned ITs are unchanged - only the two M-58 methods were renamed by e8db85bf
 - HYPOTHESIS: every per-row state above ("unit only", "no fixture sets either key", "accepts
   `502 || 503 || 504`") still holds at HEAD. Measured by the downstream at **0.2.3**, and six plans have
   landed since — confirm/refute at each named test class before writing anything, e.g.
   `integration-tests/src/test/java/…/HtmlErrorPageIT.java` § `unreachableUpstream` for the status
   disjunction (verify-at-outline). ⛔ A row that turns out already covered is CLOSED with the covering
   test named, never re-tested.
+  - verdict: contradicted | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: not every cited state holds at HEAD: M-58 renamed; the BffRefreshReuseIT javadoc is already accurate (D10 obsolete); 35f2bb37 guards now block the M-50/M-52 fixtures
 - HYPOTHESIS: toxiproxy in the existing compose stack can produce both the 5xx of deliverable 4 and the
   upstream timeout of deliverable 6 — confirm/refute at `integration-tests/src/main/docker/` § the
   toxiproxy service and its current use (verify-at-outline).
+  - verdict: unverifiable | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: toxiproxy 2.12.0 is at compose:87 with admin 8474 but only PassthroughFaultIT uses it and nothing fronts Keycloak; the IdP leg is pinned to keycloak:8443 so feasibility is unproven
 - HYPOTHESIS: a second gateway instance on 10452 already exists in the compose stack for deliverable 8
   (the filing names the ports) — confirm/refute at `integration-tests/src/main/docker/` § the instance
   definitions (verify-at-outline).
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: api-sheriff-refresh publishes 10452:8443 (docker-compose.yml:1373) in server/memory mode and the primary 10443 is also server/memory
 
 ## Expected Surface
 
 - OBSERVED: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/` — the new and
   amended ITs. Declared as the directory deliberately: this plan's whole subject is that directory, and a
   per-file list would be guesswork before the outline resolves which rows are still open.
+- OBSERVED (added 2026-10-05): `integration-tests/docker-compose.yml` — the instance map, published ports
+  and any new short-TTL service live HERE, not under `src/main/docker/`; `35f2bb37` removed 102 lines from
+  it (every one a `-Djavax.net.ssl.trustStore` block, on 11 services)
+- OBSERVED (added 2026-10-05): `doc/development/integration-test-topology.adoc` (+351 lines by `35f2bb37`)
+  and `integration-tests/scripts/start-integration-container.sh`, which derives readiness probes from the
+  compose services — so any new instance touches both
+- OBSERVED (added 2026-10-05): `integration-tests/src/test/java/.../ItProfileConfigBindingWiringTest.java`
+  — inside the declared directory but a NEW constraint, and the thing that blocks D5's M-50/M-52 fixtures
 - OBSERVED: `integration-tests/src/main/docker/` — fixtures: a route overlapping `/auth`, the TLS
   relaxation keys, a short-TTL instance, toxiproxy wiring
 - HYPOTHESIS: `benchmarks/src/main/resources/k6-scripts/` — the load test of deliverable 9, if it is

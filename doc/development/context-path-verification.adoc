@@ -146,8 +146,12 @@ Observed, over plain HTTP (`ctxpath-default`, host port `8080`) and over HTTPS/h
 
 | `GET /no-such-route`
 | `404 Not Found`, `Content-Type: application/problem+json`,
-  `{"type":"urn:api-sheriff:problem:input-validation","title":"Input Validation","status":404}`
+  `{"type":"urn:api-sheriff:problem:routing","title":"Routing","status":404}`
 |===
+
+The `404` body in this table is restated from the problem category an unrouted address reports under
+(link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]);
+it was not re-observed in a new run.
 
 *Both answers carry the gateway's envelope, and at the default path they always will.* With
 `quarkus.http.root-path=/` every request is in context by construction, so the plain-`404` shape of
@@ -290,10 +294,13 @@ between them is the operator-facing consequence of choosing a non-root path.
 | `GET /gw/no-such-route` (in context)
 a| `404 Not Found` +
 `Content-Type: application/problem+json` +
-`{"type":"urn:api-sheriff:problem:input-validation","title":"Input Validation","status":404}`
+`{"type":"urn:api-sheriff:problem:routing","title":"Routing","status":404}`
 
 The request reached the gateway's catch-all and failed deny-by-default route selection, so it is
-answered by the gateway, in the gateway's RFC 9457 envelope.
+answered by the gateway, in the gateway's RFC 9457 envelope. This body is restated from the problem
+category an unrouted address reports under
+(link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]);
+it was not re-observed in a new run.
 
 | `GET /no-such-route` (off context)
 a| `404 Not Found` +

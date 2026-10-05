@@ -57,7 +57,7 @@ it asks for a bound, not for its removal.
 5. **Documentation**: `doc/configuration.adoc` for both new keys, and the threat model — the fetch-storm
    argument stays, now stated WITH its bound. ADR-0011 records `refreshIntervalSeconds` as "effectively
    fixed at 600 seconds today; deployments cannot tune key refresh cadence"; deliverable 2 falsifies that
-   sentence, so amend or supersede ADR-0011 in the same act (⚠ do not take ordinal 0053, 0056 or 0057).
+   sentence, so amend or supersede ADR-0011 in the same act (⚠ next free ordinal is 0060 — 0053, 0056, 0057, 0058 and 0059 are taken; re-checked 2026-10-05).
 
 Split guard: 5 deliverables — well within the operator-authorized 12.
 
@@ -75,30 +75,45 @@ Split guard: 5 deliverables — well within the operator-authorized 12.
   interval and passes `first.getRefreshIntervalSeconds()` (the library default) to `RetryingJwksLoader`
   — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java:270-279`,
   orchestrator-verified at HEAD 2026-10-02.
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: TokenValidatorProducer:360-401 builder sets no refresh interval; :277-278 passes first.getRefreshIntervalSeconds() to RetryingJwksLoader
 - OBSERVED: no `refresh_interval` (and no grace-period) key exists anywhere in
   `api-sheriff/src/main/resources/schema/gateway.schema.json` — zero occurrences at HEAD. So there is no
   knob today, exactly as filed.
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: gateway.schema.json jwks block (329-347) is additionalProperties false with source/url/file/allowed_egress_hosts/tls_profile only
 - OBSERVED: ADR-0011 states `refreshIntervalSeconds` is effectively fixed at 600 s and untunable by
   deployments — `doc/adr/0011-…adoc:220`.
-- HYPOTHESIS: the non-fetching read lives in the token-sheriff library (`HttpJwksLoader.getKeyInfo`
-  consults current keys, then retired sets within grace, then returns empty; `RetryingJwksLoader` is pure
-  delegation and its fast retry applies only until the first successful load), so deliverable 1 needs a
-  seam the gateway can reach WITHOUT forking the library. Read by the downstream at token-sheriff 0.9.6,
-  NOT re-verified here — confirm/refute at the resolved `token-sheriff` jar §
-  `HttpJwksLoader.getKeyInfo` / `RetryingJwksLoader`, and settle at outline whether the bounded fetch
-  belongs upstream in token-sheriff or in the gateway's own loader wrapper (verify-at-outline).
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: ADR-0011:221 states refreshIntervalSeconds is effectively fixed at 600 s and untunable; 224-226 say the same for grace and maxRetiredKeySets
+- **RESOLVED 2026-10-05 (cleanup, re-grounded at `35f2bb37`) — the seam is IN THIS REPOSITORY.** The
+  earlier hypothesis attributed both halves to the library and left an outline fork ("if the bounded fetch
+  belongs in token-sheriff, that half leaves this repository"). Half of it was right and half was wrong:
+  the non-fetching read IS the library's (`HttpJwksLoader.getKeyInfo` in 0.9.6 — current keys, then retired
+  sets within grace, then empty), but `RetryingJwksLoader` is **the gateway's own class** under
+  `api-sheriff/.../auth/`, carrying its own scheduler and fresh-delegate retry. ⛔ **The fork is therefore
+  closed: the bounded unknown-`kid` fetch can be built here, in `RetryingJwksLoader`, with no upstream
+  change and no library fork.** Deliverable 2 (`refresh_interval_seconds`) stays a pass-through of the
+  library's existing config field, confirmed present by `javap`:
+  `HttpJwksLoaderConfig.DEFAULT_REFRESH_INTERVAL_IN_SECONDS = 600`, alongside `keyRotationGracePeriod` and
+  `maxRetiredKeySets` — so the grace period of deliverable 2 is also already a library knob.
 - HYPOTHESIS: the 600 s figure is the library's `DEFAULT_REFRESH_INTERVAL_IN_SECONDS`, so deliverable 2 is
   a pass-through rather than a new scheduler — confirm/refute at the same jar § that constant
   (verify-at-outline).
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: token-sheriff-validation 0.9.6 (pom:63) HttpJwksLoaderConfig DEFAULT_REFRESH_INTERVAL_IN_SECONDS=600 confirmed by javap; config also carries keyRotationGracePeriod and maxRetiredKeySets
 - HYPOTHESIS: readiness stays `UP` through the whole window (`doc/configuration.adoc` tells operators to
   "alert on it separately"), so no readiness change is in scope and the WARN of deliverable 3 is the only
   signal added — confirm/refute at `doc/configuration.adoc` § the JWKS readiness rows and the health
   contract PLAN-13 shipped (verify-at-outline).
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: readiness is DOWN only until an issuer has a key set then stays UP (configuration.adoc:2160-2165); GatewayReadinessCheck reads KeySetState only
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java` — the
   loader-config construction and the `RetryingJwksLoader` wrapper
+- OBSERVED (added 2026-10-05): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java`
+  — **the seam deliverable 1 builds in**: the gateway-owned wrapper holding the scheduler and the
+  fresh-delegate retry. The earlier surface named only `TokenValidatorProducer`, which is where the config
+  is assembled, not where the fetch decision lives
+- OBSERVED (added 2026-10-05): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/IssuerKeySetStatus.java`
+  — candidate home for the last-loaded instant deliverable 3's WARN must name
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/IssuerConfig.java` — the
   `jwks` block gaining both keys
 - OBSERVED: `api-sheriff/src/main/resources/schema/gateway.schema.json` — `refresh_interval_seconds` and

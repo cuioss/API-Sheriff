@@ -491,20 +491,23 @@ environment:
   - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
 ----
 
-*Deployment, BFF back-channel leg* -- two levers reach this leg. A named
-`egress_tls.oidc_tls_profile` keeps the provider's CA off every other leg and is described in
-<<_scenario_bff_oidc_back_channel>>. The integration stack uses the other one, the JVM default trust
-store, which reaches every leg that names no profile of its own; on the native image it has to arrive
-as command-line `-D` arguments.
+*Policy, BFF back-channel leg* -- two levers reach this leg. The integration stack uses the named one:
+`egress_tls.oidc_tls_profile` names the profile the JWKS issuer above already names, so the one
+binding above serves both legs and the provider's CA stays off every other leg. The key is described
+in <<_scenario_bff_oidc_back_channel>>.
 
 [source,yaml]
-.integration-tests/docker-compose.yml (api-sheriff service)
+.integration-tests/src/main/docker/sheriff-config/gateway.yaml
 ----
-command:
-  - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
-  - -Djavax.net.ssl.trustStorePassword=localhost-trust
-  - -Djavax.net.ssl.trustStoreType=PKCS12
+egress_tls:
+  oidc_tls_profile: benchmark-idp
 ----
+
+The other lever is the JVM default trust store, which reaches every leg that names no profile of its
+own; on the native image it has to arrive as command-line `-D` arguments. No shipped descriptor
+supplies a store for this purpose. The key set, and the recipe for a store that keeps the public
+roots, are in link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store
+REPLACES the platform bundle].
 
 === Failure mode
 
@@ -811,9 +814,10 @@ both. A bearer-only gateway builds no identity-provider client, and on it both k
 
 === Configuration
 
-No shipped descriptor sets either key: the default posture is the shipped one. Both blocks are copied
-from link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel], and a
-deployment uses one of them, not both.
+A deployment uses one of the two blocks below, not both. No shipped descriptor sets
+`oidc_verify_hostname`, so the relaxation is copied from
+link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel]. The integration
+descriptors name the trust profile, so that block and its binding are copied from them.
 
 *Policy* -- the hostname relaxation.
 
@@ -827,21 +831,29 @@ egress_tls:
 *Policy* -- the trust profile, by logical name only.
 
 [source,yaml]
-.doc/configuration.adoc (The BFF OIDC back-channel)
+.integration-tests/src/main/docker/sheriff-config/gateway.yaml
 ----
 egress_tls:
-  oidc_tls_profile: corporate-idp   # logical name only; anchors supplied by the deployment
+  oidc_tls_profile: benchmark-idp
 ----
 
 *Deployment* -- the relaxation needs none. The profile is bound like every other trust profile,
-through `+quarkus.tls.<name>.trust-store.*+`, copied from
-link:bff-session.adoc#_private_ca_self_signed_idp[the server-session operator guide].
+through `+quarkus.tls.<name>.trust-store.*+`. The integration stack binds `benchmark-idp` once, in a
+mounted properties file, and that one binding serves this leg and the JWKS fetch
+(<<_scenario_private_ca_idp>>).
 
 [source,properties]
-.doc/user/bff-session.adoc (Private-CA / self-signed IdP)
+.integration-tests/src/main/docker/certificates/benchmark-idp-trust.properties
 ----
-quarkus.tls.corporate-idp.trust-store.p12.path=/etc/sheriff/corporate-ca.p12
-quarkus.tls.corporate-idp.trust-store.p12.password=${TRUSTSTORE_PASSWORD}
+quarkus.tls.benchmark-idp.trust-store.p12.path=/app/certificates/localhost-truststore.p12
+quarkus.tls.benchmark-idp.trust-store.p12.password=localhost-trust
+----
+
+[source,yaml]
+.integration-tests/docker-compose.yml (api-sheriff service)
+----
+environment:
+  - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
 ----
 
 === Failure mode

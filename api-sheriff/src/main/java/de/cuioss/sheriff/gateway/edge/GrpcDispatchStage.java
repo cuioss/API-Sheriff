@@ -63,17 +63,25 @@ public final class GrpcDispatchStage {
     /**
      * Dispatches the gRPC request to the route's forced-h2 upstream, streaming the (byte-capped)
      * request body opaquely and returning the response whose body and trailers are not yet consumed.
+     * <p>
+     * The body is always streamed: gRPC is {@code POST}-only, so a gRPC request is never bodyless
+     * and no late body refusal can arrive. A request that declares a length is framed by it like any
+     * other dispatched request — the declared value becomes the upstream {@code Content-Length} and
+     * the forwarded body is held to exactly that many bytes (see {@link DispatchStage}).
      *
      * @param route          the resolved route runtime holding the shared forced-h2 client and guard
      * @param method         the request method (gRPC is always {@code POST})
      * @param requestUri     the upstream request URI
      * @param forwardHeaders the mode-filtered header set computed by stage 5
      * @param requestBody    the inbound request body as a live read stream
+     * @param declaredLength the request's checked declared {@code Content-Length}, or a negative
+     *                       value when it declares none
      * @return the upstream response (body and trailers still streaming)
      * @throws GatewayException carrying the mapped error-contract event on any dispatch failure
      */
     public HttpClientResponse dispatch(RouteRuntime route, HttpMethod method, String requestUri,
-            Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody) {
-        return dispatchStage.dispatch(route, method, requestUri, forwardHeaders, requestBody);
+            Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody, long declaredLength) {
+        return dispatchStage.dispatch(route, method, requestUri, forwardHeaders, requestBody,
+                DispatchStage.BodyFraming.streamed(declaredLength));
     }
 }

@@ -1051,8 +1051,10 @@ prefix). Material bound under a profile name therefore does *not* move the regis
 and `ApiSheriff-17` reporting that tier as still on the platform bundle is the correct answer rather
 than a stale one. No *tracked descriptor* declares such a profile: across the `gateway.yaml` files
 committed to this repository the only trust profiles named are `benchmark-idp` and `it-upstream`, and
-the private-CA trust the integration stack actually uses arrives through the
-`-Djavax.net.ssl.trustStore` triple above. The `corporate-ca` and `corporate-idp` names appearing in
+the private-CA trust the integration stack actually uses arrives through those two names --
+`jwks.tls_profile` and `egress_tls.oidc_tls_profile` name the first, `egress_tls.upstream_tls_profile`
+the second -- and not through the `-Djavax.net.ssl.trustStore` triple above, which no tracked
+descriptor passes. The `corporate-ca` and `corporate-idp` names appearing in
 this document's own snippets are illustrative examples -- no shipped descriptor declares either.
 
 The two levers are *independent*: moving only one leaves the other half of the gateway's outbound
@@ -1600,10 +1602,12 @@ because that store replaces the public roots too.
 it to the browser; the gateway opens no connection to the identity provider for it, so neither key
 is in play there.
 
-No shipped deployment descriptor declares either key -- the default posture is the shipped one -- so
-this leg owes no deployment-activation instance; the reasoning is recorded in
+No shipped deployment descriptor declares `oidc_verify_hostname` -- verification on is the shipped
+posture -- so the relaxation owes no deployment-activation instance; the reasoning is recorded in
 link:development/declared-limit-assertion-coverage.adoc#_the_egress_relaxation_keys_owe_no_activation_instance[Declared-limit
-assertion coverage].
+assertion coverage]. `oidc_tls_profile` is declared: the integration stack's descriptors name the
+`benchmark-idp` profile for this leg, `ItProfileConfigBindingWiringTest` is the wiring guard for that
+declaration, and that stack's BFF login suites exercise the leg through it.
 
 [[_protocols]]
 === `protocol`
@@ -1617,21 +1621,24 @@ link:architecture.adoc#_protocol_support[Architecture -- Protocol Support].
 
 A `protocol: websocket` route carries one additional per-route block --
 link:#_websocket[`websocket`] -- holding both WebSocket keys:
-link:#_allowed_origins[`allowed_origins`] (a mandatory `Origin` allowlist on bearer WebSocket
-routes) and `idle_timeout_seconds` (the established-relay idle-timeout bound). Both are
+link:#_allowed_origins[`allowed_origins`] (a mandatory `Origin` allowlist on bearer and session
+WebSocket routes) and `idle_timeout_seconds` (the established-relay idle-timeout bound). Both are
 documented immediately below.
 
 [[_allowed_origins]]
 === `websocket.allowed_origins` (WebSocket routes)
 
-A per-route `Origin` allowlist for a `protocol: websocket` route whose *effective* auth is
-`require: bearer`. It is declared *inside the route's `websocket` block* -- `allowed_origins` is
+A per-route `Origin` allowlist for a `protocol: websocket` route. It is *mandatory* when the route's
+*effective* auth is `require: bearer` or `require: session`, and optional on a `require: none`
+route (link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]). It is declared *inside
+the route's `websocket` block* -- `allowed_origins` is
 not a route-level key, and writing it as a sibling of `websocket` fails the boot as an unknown
 key. It is *`security_headers`-adjacent* -- an `Origin`-header check performed at the handshake,
 not a routing matcher -- but, unlike the gateway/anchor-scoped
 link:#_security_headers[`security_headers`] block, it is scoped *per route*: the set of browser
-origins allowed to open a socket is a property of the individual bearer WebSocket route. The
-check runs on the HTTP upgrade request, *before* the upstream is dialled.
+origins allowed to open a socket is a property of the individual WebSocket route. The
+check runs on the HTTP upgrade request, *before* the upstream is dialled. A session route does not
+inherit `oidc.session.csrf.trusted_origins`; it declares this list itself.
 
 [cols="1,3"]
 |===
@@ -1641,8 +1648,8 @@ check runs on the HTTP upgrade request, *before* the upstream is dialled.
 | A *list* of origin strings, each `scheme://host[:port]`.
 
 | Default
-| *None.* There is deliberately no "any origin" default. On a bearer WebSocket route the field
-  is *mandatory and non-empty* (see Fail-closed).
+| *None.* There is deliberately no "any origin" default. On a bearer or session WebSocket route
+  the field is *mandatory and non-empty* (see Fail-closed).
 
 | Allowed values / matching
 | *Exact match*, compared as full origins (scheme + host + port). The *host* is compared
@@ -1652,22 +1659,24 @@ check runs on the HTTP upgrade request, *before* the upstream is dialled.
 
 | Fail-closed / validation
 | The upgrade request's `Origin` header must *exactly match* a listed origin or the *handshake is
-  rejected* before any upstream dial. An *absent or empty* `websocket.allowed_origins` on a bearer
-  WebSocket route *fails the boot* -- deny-by-default: a bearer socket with no allowlist would
-  otherwise admit every origin, which is never the intended posture. A `websocket` block on a
-  non-`websocket` route, or `allowed_origins` on a WebSocket route whose effective auth is not
-  `require: bearer`, is a configuration error and fails the boot.
+  rejected* before any upstream dial. An *absent or empty* `websocket.allowed_origins` on a
+  WebSocket route whose effective auth is `require: bearer` or `require: session` *fails the boot*
+  -- deny-by-default: an authenticated socket with no allowlist would otherwise admit every origin,
+  which is never the intended posture. The refusal names the route and its effective auth. A
+  `require: none` WebSocket route may omit the list, and its upgrade then proceeds without an
+  `Origin` check; a list it does declare is enforced like any other. A `websocket` block on a
+  non-`websocket` route is a configuration error and fails the boot.
 |===
 
 [source,yaml]
 ----
-# a bearer WebSocket route (endpoints/*.yaml)
+# a bearer WebSocket route (endpoints/*.yaml); a require: session route declares the same block
 - id: live-updates
   protocol: websocket
   match: { path_prefix: /api/stream, host: api.example.com }
   auth: { require: bearer }
   websocket:                       # BOTH WebSocket keys live inside this block
-    allowed_origins:               # MANDATORY, non-empty on a bearer WS route; exact origins
+    allowed_origins:               # MANDATORY, non-empty on a bearer or session WS route; exact origins
       - https://app.example.com    #   (scheme+host+port), host case-insensitive, no wildcards
     idle_timeout_seconds: 300      # optional; default 300 (see "websocket" below)
   upstream: { path: /stream }
@@ -1685,7 +1694,8 @@ below. It is valid only on a `protocol: websocket` route.
 | Field | Meaning
 
 | `allowed_origins`
-| The fail-closed `Origin` allowlist -- *mandatory and non-empty* on a bearer WebSocket route.
+| The fail-closed `Origin` allowlist -- *mandatory and non-empty* on a bearer or session WebSocket
+  route.
   Documented in full under link:#_allowed_origins[`websocket.allowed_origins`] above.
 
 | `idle_timeout_seconds`
@@ -4022,7 +4032,7 @@ endpoint serves `DELETE`/`HEAD` and *not* `GET`/`POST`; other endpoints keep the
 
 *Runtime.* After route selection, a request whose method is not in the matched route's
 effective `allowed_methods` is rejected with `405 Method Not Allowed` and an `Allow` header
-listing the effective set (`INPUT_VALIDATION` event); the upstream is never called. `TRACE` and
+listing the effective set (`METHOD_NOT_ALLOWED`, a `ROUTING` event); the upstream is never called. `TRACE` and
 `CONNECT` are *never* permitted -- they are not proxyable through the data plane and cannot
 appear in any `allowed_methods` list (listing either fails the boot).
 
@@ -4470,15 +4480,15 @@ control, which is the rule above doing exactly the work it was added for.
   a CR, LF or any other control character fails the boot.
 * A `security_headers.header_modes` entry -- global or anchor -- naming a header its own block does
   not enable fails the boot.
-* A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
-  *non-empty* link:#_allowed_origins[`websocket.allowed_origins`] list; an absent or empty
-  allowlist *fails the boot* (fail-closed -- there is no "any origin" default). Each entry is an
+* A `protocol: websocket` route whose *effective* auth is `require: bearer` or `require: session`
+  must declare a *non-empty* link:#_allowed_origins[`websocket.allowed_origins`] list; an absent or
+  empty allowlist *fails the boot* (fail-closed -- there is no "any origin" default). A
+  `require: none` WebSocket route may omit it. Each declared entry, on any route, is an
   exact origin (`scheme://host[:port]`, host compared case-insensitively, scheme and port exact);
   wildcards, suffix forms, and regular expressions are rejected. Both WebSocket keys live inside
   the route's `websocket` block -- `allowed_origins` written as a route-level sibling of
-  `websocket` fails the boot as an unknown key. A `websocket` block on a non-`websocket` route,
-  or `allowed_origins` on a WebSocket route whose effective auth is not `require: bearer`, fails
-  the boot.
+  `websocket` fails the boot as an unknown key. A `websocket` block on a non-`websocket` route
+  fails the boot.
 * `websocket.idle_timeout_seconds`, when declared, must be a *positive integer* (default `300`
   when omitted); it is valid only on a `protocol: websocket` route.
 * The `edge_hardening` block is optional, and so is each of its members. An omitted `admission_cap`

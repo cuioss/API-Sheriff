@@ -182,9 +182,10 @@ final class OneOffGatewayContainers {
      * the demo directory. Nothing else is mounted — in particular no signing-key directory, so the
      * container holds no signing-key file a descriptor could name.
      * <p>
-     * The three trust-store arguments are the ones every compose gateway passes: the confidential-client
-     * engine dials Keycloak with the JVM default trust manager, and Keycloak serves the stack's
-     * self-signed certificate.
+     * No trust argument follows the image: the OIDC back-channel trusts Keycloak, which serves the
+     * stack's self-signed certificate, through the {@code benchmark-idp} profile the descriptor names as
+     * {@code egress_tls.oidc_tls_profile} and {@code QUARKUS_CONFIG_LOCATIONS} binds to the stack's
+     * trust store.
      * <p>
      * The management listener keeps the stack certificate; only the application listener presents the
      * pair the caller names, which is the one another container verifies when it dials the gateway
@@ -217,10 +218,7 @@ final class OneOffGatewayContainers {
                 "-v", gateway.descriptor().toAbsolutePath() + ":/app/sheriff-config/gateway.yaml:ro",
                 "-v", ASSETS.toAbsolutePath() + ":/app/assets:ro",
                 "-v", DEMO_SPA.toAbsolutePath().normalize() + ":/app/demo:ro",
-                IMAGE,
-                "-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12",
-                "-Djavax.net.ssl.trustStorePassword=localhost-trust",
-                "-Djavax.net.ssl.trustStoreType=PKCS12"));
+                IMAGE));
         docker("start the one-off BFF gateway " + gateway.name(), arguments.toArray(String[]::new));
     }
 

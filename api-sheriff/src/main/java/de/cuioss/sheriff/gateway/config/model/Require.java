@@ -54,6 +54,22 @@ public enum Require {
     SESSION;
 
     /**
+     * Whether this posture authenticates the caller.
+     * <p>
+     * Every posture other than {@link #NONE} is authenticated, so a posture added later is
+     * authenticated by default and inherits every rule keyed on this predicate — the fail-closed
+     * direction for a security gateway. Rules that hold authenticated routes to a stricter
+     * contract (the WebSocket {@code allowed_origins} requirement among them) consult this
+     * predicate rather than naming the authenticated constants.
+     *
+     * @return {@code true} for every posture except {@link #NONE}
+     * @since 1.0
+     */
+    public boolean isAuthenticated() {
+        return this != NONE;
+    }
+
+    /**
      * The configuration spelling of this posture — the lowercase form as it appears in
      * {@code gateway.yaml}.
      * <p>

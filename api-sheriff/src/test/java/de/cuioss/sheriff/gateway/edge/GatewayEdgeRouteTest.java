@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -72,6 +73,7 @@ import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -118,6 +120,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Boot-time and lifecycle contract of the public data-plane edge. The per-request serving behaviour
@@ -381,6 +385,55 @@ class GatewayEdgeRouteTest {
             return Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
+        }
+    }
+
+    /**
+     * A relay that fails while it is being started — here the real {@link ResponseStage} handed an
+     * upstream response that already ended, whose {@code pipeTo} throws "Response already ended" — is
+     * answered through the same failure path as a relay that fails mid-stream: the client receives a
+     * well-framed {@code 502} instead of waiting for a response that never comes.
+     */
+    @Nested
+    @DisplayName("a relay that cannot start still answers the client")
+    class RelayStartFailure {
+
+        @Test
+        @DisplayName("answers an empty 502 when the upstream response ended before the relay subscribed")
+        void answersBadGatewayWhenTheRelayCannotStart() throws Exception {
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.response().end("tiny"))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            HttpClient upstreamClient = vertx.createHttpClient();
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> upstreamClient
+                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .compose(HttpClientRequest::send)
+                    .compose(response -> response.end().map(response))
+                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), () -> new ResponseStage()
+                            .relay(ended, ctx.response(), false, null, Map.of(), Map.of()))));
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the relaying front server to start listening");
+            HttpClient client = vertx.createHttpClient();
+            try {
+                String answer = Awaits.connect(client
+                                .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .compose(HttpClientRequest::send)
+                                .compose(response -> response.body()
+                                        .map(body -> response.statusCode() + " [" + body + "]")),
+                        "the answer to a relay that could not start");
+
+                assertEquals("502 []", answer,
+                        "the relay-start failure ends the response as a 502 framed for the empty body it carries,"
+                                + " not with the upstream Content-Length the relay had already copied");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the relaying front server to close");
+                Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+                Awaits.teardown(upstream.close(), "the stub upstream to close");
+            }
         }
     }
 
@@ -1390,6 +1443,258 @@ class GatewayEdgeRouteTest {
                 Awaits.teardown(client.close(), "the HTTP client to close");
                 Awaits.teardown(front.close(), "the edge front server to close");
             }
+        }
+    }
+
+    /**
+     * The three routing rejections over a live edge: an address no route serves, a method outside the
+     * selected route's allowlist, and a terminated request whose {@code Host} names a reserved
+     * passthrough hostname. Each answers under the {@code routing} problem type and moves the edge's
+     * own {@code sheriff_errors_total} series, whose {@code event} label is the only thing that tells
+     * the two {@code 404}s on an unrouted address apart — on the wire they are identical there.
+     * <p>
+     * The problem type, title and label values are exact literals because they are the contract a
+     * client and a dashboard read.
+     */
+    @Nested
+    @DisplayName("routing rejections over the live edge (routing problem type and event metric label)")
+    class RoutingRejectionContract {
+
+        private static final String ERRORS_TOTAL = "sheriff_errors_total";
+        private static final String ROUTING_TYPE_MEMBER = "\"type\":\"urn:api-sheriff:problem:routing\"";
+        private static final String ROUTING_TITLE_MEMBER = "\"title\":\"Routing\"";
+        private static final String PASSTHROUGH_SNI = "backend.internal.example";
+        private static final String ROUTE_ID = "api";
+        private static final String UNROUTED_PATH = "/nothing";
+
+        private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        /** What the client observed: the status, every response header, and the body. */
+        private record Rejection(int status, List<String> headers, String body) {
+        }
+
+        @Test
+        @DisplayName("an unrouted path answers 404 under the routing problem type and counts NO_ROUTE_MATCHED")
+        void unroutedPathAnswersRoutingProblem() throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of());
+
+                assertRoutingProblem(404, rejection);
+                awaitSingleRoutingSeries(SheriffMetrics.NO_ROUTE, "NO_ROUTE_MATCHED");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("a disallowed method answers 405 under the routing problem type and counts METHOD_NOT_ALLOWED")
+        void disallowedMethodAnswersRoutingProblem() throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.DELETE,
+                        LoopbackHost.ADDRESS, "/" + ROUTE_ID + "/resource", Map.of());
+
+                assertRoutingProblem(405, rejection);
+                awaitSingleRoutingSeries(ROUTE_ID, "METHOD_NOT_ALLOWED");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("a smuggled passthrough Host answers 404 under the routing problem type and counts PASSTHROUGH_HOST_SMUGGLED")
+        void smuggledHostAnswersRoutingProblem() throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        PASSTHROUGH_SNI, UNROUTED_PATH, Map.of());
+
+                assertRoutingProblem(404, rejection);
+                awaitSingleRoutingSeries(SheriffMetrics.NO_ROUTE, "PASSTHROUGH_HOST_SMUGGLED");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("the unrouted 404 and the smuggled-host 404 are identical on the wire yet move two event series")
+        void unroutedAndSmuggledAreIdenticalOnTheWireButCountedApart() throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection unrouted = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of());
+                Rejection smuggled = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        PASSTHROUGH_SNI, UNROUTED_PATH, Map.of());
+
+                assertAll("the two 404s cannot be told apart by a client",
+                        () -> assertEquals(404, unrouted.status()),
+                        () -> assertEquals(unrouted.status(), smuggled.status()),
+                        () -> assertEquals(unrouted.headers(), smuggled.headers()),
+                        () -> assertEquals(unrouted.body(), smuggled.body()));
+                Awaits.until(() -> routingCount(SheriffMetrics.NO_ROUTE, "NO_ROUTE_MATCHED") == 1.0
+                                && routingCount(SheriffMetrics.NO_ROUTE, "PASSTHROUGH_HOST_SMUGGLED") == 1.0,
+                        "each 404 to move its own sheriff_errors_total event series exactly once",
+                        Awaits.CONNECT_CEILING_SECONDS);
+                assertEquals(2, registry.find(ERRORS_TOTAL).counters().size(),
+                        "two rejections that differ only in cause are two series, never one");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        @ParameterizedTest(name = "Accept: {0}")
+        @CsvSource({"application/problem+json, application/problem+json",
+                "'text/html,application/xhtml+xml', text/html"})
+        @DisplayName("on an unrouted address a reserved passthrough Host answers a 404 identical to the unrouted one")
+        void reservedHostOnAnUnroutedAddressAnswersIdentically(String accept, String expectedContentType)
+                throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI, errorPagePortal());
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection unrouted = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of("Accept", accept));
+                Rejection reserved = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        PASSTHROUGH_SNI, UNROUTED_PATH, Map.of("Accept", accept));
+
+                assertAll("the two 404s on an unrouted address for Accept: " + accept,
+                        () -> assertEquals(404, unrouted.status()),
+                        () -> assertTrue(unrouted.headers().stream()
+                                        .anyMatch(header -> header.startsWith("content-type: " + expectedContentType)),
+                                () -> "the unrouted answer must be negotiated to " + expectedContentType + ": "
+                                        + unrouted.headers()),
+                        () -> assertEquals(unrouted.status(), reserved.status()),
+                        () -> assertEquals(unrouted.headers(), reserved.headers()),
+                        () -> assertEquals(unrouted.body(), reserved.body()));
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("on an address a route serves a reserved passthrough Host answers 404")
+        void reservedHostOnAServedAddressAnswersNotFound() throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        PASSTHROUGH_SNI, "/" + ROUTE_ID + "/resource", Map.of());
+
+                assertRoutingProblem(404, rejection);
+                awaitSingleRoutingSeries(SheriffMetrics.NO_ROUTE, "PASSTHROUGH_HOST_SMUGGLED");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        /** A portal answering the gateway's HTML error pages, configured as the error-page tests do. */
+        private PortalEndpoint errorPagePortal() {
+            return PortalEndpoint.of(PortalConfig.builder().path("/portal").title("Portal").errorPages(true).build(),
+                    PortalCatalog.empty(), PortalRenderer.builtIn(), (cookie, now) -> SessionIdentity.anonymous(),
+                    null, false, "/");
+        }
+
+        @Test
+        @DisplayName("no sheriff_errors_total tag value carries request-derived input from a smuggled-host request")
+        void errorTagsCarryNoRequestDerivedInput() throws Exception {
+            String hostMarker = "mkhost7f3a";
+            String pathMarker = "mkpath91c2";
+            String headerMarker = "mkheader55d0";
+            String markedSni = hostMarker + ".internal.example";
+            HttpServer front = startFront(markedSni);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                        markedSni, "/" + pathMarker, Map.of("X-Probe", headerMarker));
+
+                assertEquals(404, rejection.status());
+                awaitSingleRoutingSeries(SheriffMetrics.NO_ROUTE, "PASSTHROUGH_HOST_SMUGGLED");
+                for (var counter : registry.find(ERRORS_TOTAL).counters()) {
+                    for (var tag : counter.getId().getTags()) {
+                        for (String marker : List.of(hostMarker, pathMarker, headerMarker)) {
+                            assertFalse(tag.getValue().contains(marker),
+                                    () -> "sheriff_errors_total tag '%s' carried request-derived input '%s': %s"
+                                            .formatted(tag.getKey(), marker, tag.getValue()));
+                        }
+                    }
+                }
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        private void assertRoutingProblem(int expectedStatus, Rejection rejection) {
+            assertAll("routing problem",
+                    () -> assertEquals(expectedStatus, rejection.status()),
+                    () -> assertTrue(rejection.body().contains(ROUTING_TYPE_MEMBER), rejection.body()),
+                    () -> assertTrue(rejection.body().contains(ROUTING_TITLE_MEMBER), rejection.body()));
+        }
+
+        /** Waits for the edge's own recorder to have moved exactly the named routing series, once. */
+        private void awaitSingleRoutingSeries(String route, String event) throws TimeoutException {
+            Awaits.until(() -> routingCount(route, event) == 1.0,
+                    "the edge to count " + event + " on route " + route + " under category=routing",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            assertEquals(1, registry.find(ERRORS_TOTAL).counters().size(),
+                    "one rejection moves one sheriff_errors_total series");
+        }
+
+        private double routingCount(String route, String event) {
+            var counter = registry.find(ERRORS_TOTAL)
+                    .tags("route", route, "category", "routing", "event", event).counter();
+            return counter == null ? 0.0 : counter.count();
+        }
+
+        /** Boots an edge over one GET-only route, reserving {@code passthroughSni}, recording into {@link #registry}. */
+        private HttpServer startFront(String passthroughSni) throws Exception {
+            return startFront(passthroughSni, PortalEndpoint.inert());
+        }
+
+        /** As {@link #startFront(String)}, with {@code portal} answering the gateway's error pages. */
+        private HttpServer startFront(String passthroughSni, PortalEndpoint portal) throws Exception {
+            GatewayConfig config = GatewayConfig.builder().version(1)
+                    .tls(TlsConfig.builder().passthroughSni(Map.of(passthroughSni, "backend")).build())
+                    .build();
+            Router router = Router.router(vertx);
+            new GatewayEdgeRoute(new RouteTable(List.of(route(ROUTE_ID, Protocol.HTTP, Require.NONE))), config,
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
+                    new SheriffMetrics(registry), BffRuntime.inert(), unconsultedTrustProfileResolver(),
+                    portal).registerRoutes(router);
+            return Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+        }
+
+        private Rejection send(HttpClient client, int port, io.vertx.core.http.HttpMethod method, String host,
+                String uri, Map<String, String> headers) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(port, LoopbackHost.ADDRESS))
+                    .setHost(host).setPort(port)
+                    .setMethod(method).setURI(uri);
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                options.putHeader(header.getKey(), header.getValue());
+            }
+            return Awaits.connect(client.request(options)
+                            .compose(HttpClientRequest::send)
+                            .compose(response -> response.body().map(body -> new Rejection(response.statusCode(),
+                                    response.headers().entries().stream()
+                                            .map(entry -> entry.getKey().toLowerCase(Locale.ROOT) + ": "
+                                                    + entry.getValue())
+                                            .sorted().toList(),
+                                    body == null ? "" : body.toString()))),
+                    "the edge response to " + method + " " + uri);
         }
     }
 

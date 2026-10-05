@@ -33,6 +33,12 @@ public enum EventCategory {
     /** Path / parameter / header pipeline, collection limits, or body-size violations. */
     INPUT_VALIDATION("input-validation", "Input Validation"),
 
+    /**
+     * Routing rejections: no route for the address, a reserved passthrough host on a terminated
+     * connection, or a method outside the route's allowlist.
+     */
+    ROUTING("routing", "Routing"),
+
     /** Missing or invalid bearer token, or invalid / expired session. */
     AUTHENTICATION("authentication", "Authentication"),
 

@@ -61,23 +61,39 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 ## Claim Labels
 
 - HYPOTHESIS: `PendingAuthorizationStore.InMemory` bounds at `DEFAULT_MAX_PENDING = 10_000` and evicts the oldest beyond capacity — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/` § pending-authorization store and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § store construction (verify-at-outline)
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer:443 DEFAULT_MAX_PENDING=10_000 construction unchanged
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer:252 DEFAULT_MAX_PENDING=10_000 and :443 InMemory(DEFAULT_MAX_PENDING)
 - HYPOTHESIS: eviction is global rather than per-client, so a flood from one client evicts another client's live record — confirm/refute at the same store's eviction method (verify-at-outline)
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore byte-unchanged since 3e3addc; single shared map eviction
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: InMemory.store evicts oldest beyond capacity on one global LinkedHashMap; no per-client partition
 - HYPOTHESIS: `rate_limit` is reserved in the schema with no reader — confirm/refute at `api-sheriff/src/main/resources/schema/gateway.schema.json` § `rate_limit` and a grep for its config accessor (verify-at-outline)
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: rate_limit still only RateLimitConfig model; no consumer anywhere in main
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RateLimitConfig accepted-and-ignored; referenced only by RouteConfig and ConfigModelReflection
 - OBSERVED: `LoginFlow.initiate` creates the pending record and validates the return URL's origin — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate still creates the pending record then sameOrigin-validates the return URL
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate:129-144 same-origin-validates then creates and stores the record; the PAR push now runs first at :132
 - OBSERVED (cleanup re-grounding, 3abc370): the binding cookie is minted from the newly created record's own id — `PendingAuthorizationRecord.create(...)` → `pendingStore.store(pending)` → `bindingCookieCodec.toSetCookieHeader(pending.id())` — so no inbound binding identity exists at record-creation time — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate still stores the record then mints the cookie from pending.id(); PAR (#377) added no reorder
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow:138-142 create then store then toSetCookieHeader(pending.id()); PAR added a push but no reorder of cookie minting
 - OBSERVED: `PendingAuthorizationStore.InMemory` keys one shared insertion-ordered map on `pending.id()` with no per-client partition, and `evictOldestBeyondCapacity` walks that single map — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` § `InMemory`, `evictOldestBeyondCapacity`
-  - verdict: corroborated | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore unchanged; single map keyed on pending.id() with no per-client partition
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore:75-121 keys one LinkedHashMap on pending.id(); eviction walks that single keySet
 - Verify-first clause (SETTLED and absorbed 2026-09-21): the clause's own "if not" branch fired — a per-binding cap keyed on an existing cookie is not viable, and deliverable 1 now carries the three re-scoped options. What remains open for outline is only WHICH option, and the cost of option (a)'s pre-login cookie on the unauthenticated path.
-  - verdict: contradicted | checked_at: e8db85bf | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: still rescoped; a per-binding cap on an existing cookie remains unviable - unchanged since 3e3addc
+  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: clause holds at HEAD: the cookie is minted from the new record (LoginFlow:142) so no inbound identity exists at creation time; the earlier contradicted verdict recorded the clause premise failing - the re-scope stands and the clause itself is now true
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` — the store and its eviction (corrected 2026-09-21: it lives in `bff/pending/`, not `bff/login/`)
+- OBSERVED (added 2026-10-05, re-grounding at `35f2bb37`): ⛔ **`rate_limit` is declared in the WRONG
+  schema by this spec.** It is a PER-ROUTE key in
+  `api-sheriff/src/main/resources/schema/endpoint.schema.json:295`; `gateway.schema.json` carries no
+  `rate_limit` at all. Any work on the reserved key edits the endpoint schema
+- OBSERVED (added 2026-10-05): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/SessionWidening.java`
+  and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java` — PLAN-23's
+  OTHER creators of pending records, sharing the one store. ⛔ An admission cap must not throttle a widening
+  or a step-up while bounding logins
+- OBSERVED (added 2026-10-05): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java`
+  (the WARN record for evicting a live record) and
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java` (the eviction metric,
+  moved ~66 lines by `5ddf8081`)
+- ⚠ OBSERVED (added 2026-10-05): since PAR (`e8db85bf`), `LoginFlow.initiate` pushes the authorization
+  request to the IdP **before** storing the pending record (`LoginFlow:132` ahead of `:138`), so a login
+  flood now also hits the IdP's PAR endpoint. **Any admission cap must sit before `authorize`**, not merely
+  before the store — see `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/PushedAuthorizationRequests.java`
 - OBSERVED (added 2026-10-02, re-grounding at `e8db85bf`):
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationRecord.java` — grew
   ~110 lines for PLAN-23's session widening (a `Widening` record kind with sub/attempt). It is a SIBLING
@@ -100,14 +116,20 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 
 ## Hand-Off Command
 
+> Path corrected 2026-10-05: the ledger moved from the retired `.plan/local/orchestrator/` address to the
+> git-tracked `.plan/orchestrator/`. The old path is what `phase-1-init` would have persisted as this plan's
+> `source_id`, and the current tooling classifies it `unrecognised_id` — which is exactly what made PLAN-23
+> finish with `emit-landing: not orchestrated` and file no landing message. Emitting this spec from the old
+> path would repeat that.
+
 ```text
-/plan-marshall task="implement .plan/local/orchestrator/kidicap-gateway-requirements/plans/PLAN-21-login-flood-pending-records.md"
+/plan-marshall task="implement .plan/orchestrator/kidicap-gateway-requirements/plans/PLAN-21-login-flood-pending-records.md"
 ```
 
 ## Write-Boundary
 
 The plan implementing this spec touches only its own repository source and tests. It creates
-and edits NO file under `.plan/local/orchestrator/` other than its own
+and edits NO file under `.plan/orchestrator/` other than its own
 `inbox/{sender}-{seq}` message — the orchestrator owns every other ledger write — and reports
 its outcome through its PR and its inbox message. The inbox exception's qualifiers and the
 sole sanctioned write mechanism are stated in

@@ -358,3 +358,9 @@ portal:
   template_dir: /app/sheriff-config/portal
   cache_seconds: 60
   error_pages: true
+# --- Trust for the BFF OIDC back-channel -- mirrored from the base document ------------------------
+# Binds the BFF back-channel — the calls the oidc block above makes to Keycloak — to the trust
+# profile the JWKS issuers already name through jwks.tls_profile. Mirrored verbatim, like the portal
+# block, so this overlay stays the base document minus tls.passthrough_sni and nothing else.
+egress_tls:
+  oidc_tls_profile: benchmark-idp
