@@ -445,6 +445,11 @@ class ConfigValidationCommandTest {
             int exitCode = run(Map.of(), ConfigValidationCommand.FLAG, pathWithNul);
 
             assertUsageError(exitCode, "is not a valid path");
+            assertAll("control character neutralised",
+                    () -> assertEquals(-1, errLines().getFirst().indexOf(0),
+                            () -> "the NUL of the argument is echoed raw: " + errLines()),
+                    () -> assertTrue(errLines().getFirst().contains("'bad?path'"),
+                            () -> "the NUL is replaced by '?': " + errLines()));
         }
     }
 }

@@ -281,7 +281,27 @@ public final class ConfigValidationCommand {
 
     private static void emit(PrintStream stream, String line) {
         // cui-rewrite:disable CuiLoggerStandardsRecipe
-        stream.println(line); // NOSONAR java:S106 pre-boot offline check: no logging manager yet; the report is program output
+        stream.println(withoutControlCharacters(line)); // NOSONAR java:S106 pre-boot offline check: no logging manager yet; the report is program output
+    }
+
+    /**
+     * Replaces every control character except line feed and tab with {@code ?} before a line is
+     * written.
+     * <p>
+     * A report line carries operator-supplied text — a file name, a JSON pointer built from YAML keys,
+     * a parser message quoting the offending source line, the command-line argument — and the report
+     * is read on terminals and in CI logs. An escape sequence, a carriage return or another control
+     * character in that text could otherwise rewrite or hide what the reader sees (CWE-150). Line feed
+     * is kept because a YAML parser message deliberately spans lines, and tab because it is harmless.
+     *
+     * @param line the line about to be written
+     * @return {@code line} with every other control character replaced by {@code ?}
+     */
+    private static String withoutControlCharacters(String line) {
+        StringBuilder sanitized = new StringBuilder(line.length());
+        line.codePoints().forEach(codePoint -> sanitized.appendCodePoint(
+                Character.isISOControl(codePoint) && codePoint != '\n' && codePoint != '\t' ? '?' : codePoint));
+        return sanitized.toString();
     }
 
     /**
