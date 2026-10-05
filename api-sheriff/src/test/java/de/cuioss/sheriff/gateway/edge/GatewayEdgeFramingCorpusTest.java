@@ -66,6 +66,7 @@ import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -190,8 +191,8 @@ class GatewayEdgeFramingCorpusTest {
         vertx = Vertx.vertx();
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         upstreamServer = Awaits.connect(vertx.createHttpServer().connectionHandler(
-                connection -> connection.closeHandler(closed -> upstreamClosedConnections.add(connection))
-        ).requestHandler(this::handleUpstreamRequest).listen(0, LoopbackHost.ADDRESS),
+                        connection -> connection.closeHandler(closed -> upstreamClosedConnections.add(connection))
+                ).requestHandler(this::handleUpstreamRequest).listen(0, LoopbackHost.ADDRESS),
                 "the stub upstream server to start listening");
 
         // No security_defaults block at all: allow_get_with_content_length_body is unset.
@@ -246,7 +247,7 @@ class GatewayEdgeFramingCorpusTest {
     /** Starts an edge whose gateway document declares {@code allow_get_with_content_length_body: true}. */
     private int startOptInEdge() throws Exception {
         return startEdge(GatewayConfig.builder().version(1)
-                .securityDefaults(new SecurityDefaultsConfig(null, null, Boolean.TRUE, null)).build(),
+                        .securityDefaults(new SecurityDefaultsConfig(null, null, Boolean.TRUE, null)).build(),
                 optInMeterRegistry);
     }
 
@@ -703,7 +704,7 @@ class GatewayEdgeFramingCorpusTest {
         String label = method + " /overlong";
         assertAll("a body longer than its declared length",
                 () -> assertTrue(refusal instanceof StreamResetException
-                                || refusal instanceof Integer status && status >= 400,
+                        || refusal instanceof Integer status && status >= 400,
                         () -> "the request must be refused, not served: " + refusal),
                 () -> assertTrue(upstreamBodyBytes(label) <= declared,
                         () -> "a byte beyond the declared length reached the upstream: " + upstreamBodyBytes(label)),
@@ -748,7 +749,7 @@ class GatewayEdgeFramingCorpusTest {
             // The reset reaches the request side as well; the response side is what is asserted.
         });
         CompletableFuture<@Nullable Throwable> responseEnded = new CompletableFuture<>();
-        io.vertx.core.Future<HttpClientResponse> head = request.response().onSuccess(response -> {
+        Future<HttpClientResponse> head = request.response().onSuccess(response -> {
             response.handler(chunk -> {
             });
             response.exceptionHandler(responseEnded::complete);
@@ -847,7 +848,7 @@ class GatewayEdgeFramingCorpusTest {
     }
 
     /** The answer to {@code request}: its response, with the body read whole. */
-    private static io.vertx.core.Future<Answer> answerOf(HttpClientRequest request) {
+    private static Future<Answer> answerOf(HttpClientRequest request) {
         return request.response().compose(response -> response.body()
                 .map(body -> new Answer(response, body.toString(), request.connection())));
     }
