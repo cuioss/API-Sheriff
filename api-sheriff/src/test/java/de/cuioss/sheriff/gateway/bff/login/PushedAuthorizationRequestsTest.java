@@ -745,7 +745,7 @@ class PushedAuthorizationRequestsTest {
      */
     private static void assertNoneIsDisclosed(List<String> secrets, Throwable... refusals) {
         SheriffDebugCapture.assertDebugIsCaptured(PushedAuthorizationRequests.class, ParClient.class);
-        List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
+        List<LogRecord> records = SheriffDebugCapture.capturedRecords();
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
         List<Executable> checks = new ArrayList<>();
         for (LogRecord captured : records) {

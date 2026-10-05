@@ -466,7 +466,7 @@ class BoundTokenEndpointClientTest {
      */
     private static void assertNothingScriptedIsDisclosed(Throwable refused, List<String> secrets) {
         SheriffDebugCapture.assertDebugIsCaptured(BoundTokenEndpointClient.class, TokenEndpointClient.class);
-        List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
+        List<LogRecord> records = SheriffDebugCapture.capturedRecords();
         assertFalse(records.isEmpty(), "no record was captured at all, so the absence would prove nothing");
         List<Executable> checks = new ArrayList<>();
         for (LogRecord captured : records) {

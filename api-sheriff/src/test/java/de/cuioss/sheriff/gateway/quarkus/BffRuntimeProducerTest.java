@@ -4076,7 +4076,7 @@ class BffRuntimeProducerTest {
         private void assertNoRecordCarriesTheSecret(SecretFixture fixture) {
             SheriffDebugCapture.assertDebugIsCaptured(BffRuntimeProducer.class, PushedAuthorizationRequests.class,
                     BoundTokenEndpointClient.class, ParClient.class, TokenEndpointClient.class);
-            List<LogRecord> records = TestLoggerFactory.getTestHandler().getRecords();
+            List<LogRecord> records = SheriffDebugCapture.capturedRecords();
             assertFalse(records.isEmpty(),
                     "no record was captured at all, so the absence of the secret would prove nothing");
             List<String> forbidden = List.of(fixture.secret(),
