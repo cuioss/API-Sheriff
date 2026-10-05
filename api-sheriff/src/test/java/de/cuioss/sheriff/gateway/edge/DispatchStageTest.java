@@ -629,11 +629,10 @@ class DispatchStageTest {
      * waiting for a pooled connection is never sent, a request in flight is reset, and a response
      * that was received and paused but never reached the caller is reset.
      * <p>
-     * Every case runs over an upstream client holding at most one HTTP/1.1 connection, so a released
-     * exchange is observable twice over: the stub upstream sees the connection of the released
-     * exchange closed, and the next dispatch on the same client is served. The attempt's own route
-     * carries a guard with a short timeout; every follow-up dispatch runs on a route over the same
-     * client whose guard leaves it ample time.
+     * Every case runs over an upstream client holding at most one HTTP/1.1 connection, so the next
+     * dispatch on the same client is served only once the attempt has been released. The attempt's
+     * own route carries a guard with a short timeout; every follow-up dispatch runs on a route over
+     * the same client whose guard leaves it ample time.
      */
     @Nested
     @DisplayName("release of an attempt the dispatch stopped waiting for")
