@@ -390,6 +390,49 @@ class GatewayEdgeFramingCorpusTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"", "+5", "-1", "5x", "99999999999999999999"})
+    @DisplayName("a Content-Length that is not a decimal number fitting a long is refused")
+    void contentLengthThatIsNotADecimalLongIsRefused(String contentLength) throws Exception {
+        String raw = "POST /echo/not-decimal HTTP/1.1" + CRLF + host()
+                + "Content-Length: " + contentLength + CRLF + CRLF + Generators.letterStrings(5, 5).next();
+
+        Exchange exchange = exchange(raw);
+
+        // Two layers refuse this shape, the transport and the framing gate behind it; the verdict
+        // owed is the same whichever of them answers first.
+        assertRefusedByTransportOrGate(exchange);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "+5", "-1", "5x", "99999999999999999999"})
+    @DisplayName("HTTP/2 — a Content-Length that is not a decimal number fitting a long refuses its stream alone")
+    void contentLengthThatIsNotADecimalLongIsRefusedOnHttp2(String contentLength) throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        HttpClientRequest refused = open(http2Client, frontPort, "POST", "/echo/not-decimal");
+        CompletableFuture<Object> outcome = new CompletableFuture<>();
+        refused.exceptionHandler(outcome::complete);
+        refused.response().onSuccess(response -> outcome.complete(response.statusCode()))
+                .onFailure(outcome::complete);
+        refused.putHeader(CONTENT_LENGTH, contentLength);
+
+        refused.end(Generators.letterStrings(5, 5).next());
+        Object refusal = Awaits.connect(outcome, "the stream to be refused");
+        Answer after = sendAfter(http2Client, frontPort);
+        awaitUpstreamSettled();
+
+        // The transport resets the stream, or the framing gate answers it 400: either is a refusal.
+        assertAll("a Content-Length that is not a decimal number on HTTP/2",
+                () -> assertTrue(refusal instanceof StreamResetException || Integer.valueOf(400).equals(refusal),
+                        () -> "the stream must be refused, not served: " + refusal),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream must succeed"),
+                () -> assertSame(refused.connection(), after.connection(),
+                        "the further stream must reuse the connection the refused stream was sent on"),
+                () -> assertEquals(List.of(AFTER_GET), upstreamStarted,
+                        "nothing of the refused stream may reach the upstream"),
+                () -> assertEquals(List.of(), upstreamAborted));
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"5\nhello\r\n0\r\n\r\n", "5\r\nhello\n0\r\n\r\n", "5\r\nhello\r\n0\n\n"})
     @DisplayName("a bare-LF chunk terminator is refused by the transport")
     void bareLineFeedChunkTerminator(String chunkedBody) throws Exception {
@@ -917,6 +960,19 @@ class GatewayEdgeFramingCorpusTest {
                 () -> assertEquals(List.of(400), exchange.statuses(), exchange.raw()),
                 () -> assertEquals(0, occurrences(exchange.raw(), PROBLEM_JSON_400), exchange.raw()),
                 () -> assertUpstreamSawOnlyTheDrain(exchange));
+    }
+
+    /**
+     * The verdict of an entry both the transport and the framing gate refuse: the gate's verdict when
+     * its problem document is what answered, the transport's otherwise. Either way the upstream saw
+     * nothing of it.
+     */
+    private void assertRefusedByTransportOrGate(Exchange exchange) {
+        if (exchange.raw().contains(PROBLEM_JSON_400)) {
+            assertRejectedByGate(exchange);
+        } else {
+            assertRefusedByTransport(exchange);
+        }
     }
 
     private void assertUpstreamSawOnlyTheDrain(Exchange exchange) throws Exception {
