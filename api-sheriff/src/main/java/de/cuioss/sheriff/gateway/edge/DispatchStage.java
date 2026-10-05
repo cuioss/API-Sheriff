@@ -132,6 +132,9 @@ public final class DispatchStage {
     /** The upstream request header the checked declared length is written to. */
     private static final String CONTENT_LENGTH = "Content-Length";
 
+    /** The parameter name the null checks report for a missing request method. */
+    private static final String METHOD_PARAMETER = "method";
+
     /** The methods that carry no body upstream unless they declare a positive length. */
     private static final Set<HttpMethod> BODYLESS_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
 
@@ -187,7 +190,7 @@ public final class DispatchStage {
     public HttpClientResponse dispatch(RouteRuntime route, HttpMethod method, String requestUri,
             Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody, BodyFraming framing) {
         Objects.requireNonNull(route, "route");
-        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(method, METHOD_PARAMETER);
         Objects.requireNonNull(requestUri, "requestUri");
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
         Objects.requireNonNull(requestBody, "requestBody");
@@ -220,7 +223,7 @@ public final class DispatchStage {
      */
     public static AssetSource.Served serveAsset(AssetSource source, HttpMethod method, String subPath) {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(method, METHOD_PARAMETER);
         Objects.requireNonNull(subPath, "subPath");
         return source.serve(method, subPath);
     }
@@ -430,7 +433,7 @@ public final class DispatchStage {
          */
         public static BodyFraming of(HttpMethod method, long declaredLength,
                 Consumer<GatewayException> lateViolation) {
-            Objects.requireNonNull(method, "method");
+            Objects.requireNonNull(method, METHOD_PARAMETER);
             return new BodyFraming(BODYLESS_METHODS.contains(method) && declaredLength <= 0, declaredLength,
                     lateViolation);
         }

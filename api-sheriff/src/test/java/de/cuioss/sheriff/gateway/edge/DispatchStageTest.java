@@ -919,7 +919,7 @@ class DispatchStageTest {
 
         @Test
         @DisplayName("an inbound failure that follows an upstream failure leaves the failure attributed to the upstream")
-        void inboundFailureAfterAnUpstreamFailureKeepsTheUpstreamAttribution() throws Exception {
+        void inboundFailureAfterAnUpstreamFailureKeepsTheUpstreamAttribution() {
             TestReadStream inbound = new TestReadStream();
             // The upstream drops the request; only once the dispatch has seen that failure does the
             // inbound stream fail — before the dispatching thread goes on to read the outcome.
