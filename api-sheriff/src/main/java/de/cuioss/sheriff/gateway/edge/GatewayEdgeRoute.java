@@ -2412,7 +2412,10 @@ public class GatewayEdgeRoute {
      * Builds the per-shape SmallRye Fault-Tolerance guard: a circuit breaker plus an upstream
      * timeout, with retry added only for a route that enables it. Gateway rejections
      * ({@link GatewayException}) are skipped by the breaker, so they never count as an upstream
-     * failure, and abort the retry, so they never trigger one. A dispatch the client itself ended —
+     * failure. Whether a failed attempt is retried is decided by the retry predicate
+     * {@link DispatchStage#allowsRetryAfter(Throwable)}, after the attempt failed and before any
+     * re-entry: it never retries a gateway rejection, and a retry it refuses is not recorded by the
+     * breaker. A dispatch the client itself ended —
      * a body-cap breach, an inbound request body that failed after dispatch began, a body on a
      * bodyless method, a body disagreeing with its declared length — reaches the guard as such a
      * skipped {@link GatewayException} (see {@link DispatchStage}). SmallRye Fault Tolerance has no
@@ -2439,7 +2442,7 @@ public class GatewayEdgeRoute {
         builder.withTimeout().duration(30, ChronoUnit.SECONDS).done();
         if (shape.retryEnabled()) {
             builder.withRetry().maxRetries(2).delay(100, ChronoUnit.MILLIS)
-                    .abortOn(GatewayException.class).done();
+                    .whenException(DispatchStage::allowsRetryAfter).done();
         }
         return builder.build();
     }

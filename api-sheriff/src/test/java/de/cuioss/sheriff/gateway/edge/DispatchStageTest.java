@@ -74,6 +74,7 @@ import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
@@ -610,7 +611,7 @@ class DispatchStageTest {
                     .retryEnabled(true)
                     .resilienceGuard(Guard.create()
                             .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                            .abortOn(GatewayException.class).done()
+                            .whenException(DispatchStage::allowsRetryAfter).done()
                             .build())
                     .build();
         }
@@ -872,6 +873,11 @@ class DispatchStageTest {
         return assertInstanceOf(GatewayException.class, failure.getCause());
     }
 
+    /**
+     * The guard's retry predicate, {@link DispatchStage#allowsRetryAfter(Throwable)}, decides whether a
+     * failed attempt is retried. Every guarded case runs a 1 + 2 retry guard deciding through that
+     * production predicate, so tests and production cannot drift apart.
+     */
     @Nested
     @DisplayName("stream-aware retry gating on the guarded dispatch path")
     class RetryGating {
@@ -880,12 +886,44 @@ class DispatchStageTest {
             return new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
-        /** A retry-enabled guard (1 + 2 retries), aborting on {@link GatewayException} like production. */
+        /** A retry-enabled guard (1 + 2 retries) deciding through the production retry predicate. */
         private Guard retryGuard() {
             return Guard.create()
                     .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                    .abortOn(GatewayException.class).done()
+                    .whenException(DispatchStage::allowsRetryAfter).done()
                     .build();
+        }
+
+        @Test
+        @DisplayName("the retry predicate refuses a retry outside a guarded dispatch")
+        void predicateFailsClosedOutsideAGuardedDispatch() {
+            assertFalse(DispatchStage.allowsRetryAfter(new IllegalStateException("upstream down")),
+                    "without a dispatch's retry state the predicate must refuse the retry");
+        }
+
+        @Test
+        @DisplayName("never retries a gateway rejection, even when the dispatch would otherwise allow it")
+        void neverRetriesAGatewayRejection() {
+            // Arrange — an idempotent GET with no body byte sent, whose attempt ends in a rejection
+            DispatchStage stage = newStage();
+            StreamAwareRetryGate gate = new StreamAwareRetryGate(true);
+            AtomicInteger attempts = new AtomicInteger();
+            AtomicLong bytesSent = new AtomicLong();
+            Callable<HttpClientResponse> rejected = () -> {
+                attempts.incrementAndGet();
+                throw new GatewayException(EventType.CONTENT_TOO_LARGE, "Request body exceeded max_body_bytes");
+            };
+
+            // Act
+            var guard = retryGuard();
+            GatewayException raised = assertThrows(GatewayException.class,
+                    () -> stage.guardedDispatch(guard, gate, HttpMethod.GET, bytesSent::get, () -> false,
+                            rejected));
+
+            // Assert — the rejection ends the dispatch unchanged after a single attempt
+            assertAll("a gateway rejection",
+                    () -> assertEquals(1, attempts.get(), "a gateway rejection must never be retried"),
+                    () -> assertEquals(EventType.CONTENT_TOO_LARGE, raised.getEventType()));
         }
 
         @Test
@@ -917,7 +955,7 @@ class DispatchStageTest {
         }
 
         @Test
-        @DisplayName("never retries a non-idempotent POST — the retry re-entry is aborted")
+        @DisplayName("never retries a non-idempotent POST — the retry is refused when the attempt fails")
         void neverRetriesPost() {
             // Arrange
             DispatchStage stage = newStage();
@@ -1211,6 +1249,109 @@ class DispatchStageTest {
         }
     }
 
+    /**
+     * What the circuit breaker records for a dispatch whose retry is not taken. The guard has the
+     * production shape — a breaker skipping {@link GatewayException}, a timeout inside it and a
+     * 1 + 2 retry outside it, deciding through the production retry predicate
+     * {@link DispatchStage#allowsRetryAfter(Throwable)} — over a retry-enabled route, and every
+     * breaker outcome is counted through the breaker's own success and failure callbacks.
+     */
+    @Nested
+    @DisplayName("circuit-breaker accounting of a vetoed retry")
+    class VetoedRetryAccounting {
+
+        /** The attempt timeout, well below the stub upstream's never-arriving answer. */
+        private static final long ATTEMPT_TIMEOUT_MILLIS = 300L;
+        private static final String HELD_PATH = "/held";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpClient upstreamClient;
+        private DispatchStage stage;
+        private Guard guard;
+        private final AtomicInteger breakerSuccesses = new AtomicInteger();
+        private final AtomicInteger breakerFailures = new AtomicInteger();
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            // The stub upstream accepts every request and never answers it.
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(_ -> {
+                // Received, never answered.
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
+            upstreamClient = vertx.createHttpClient();
+            stage = new DispatchStage(BODY_CAP, new UpstreamFailureMapper(new GatewayEventCounter()));
+            guard = Guard.create()
+                    .withCircuitBreaker()
+                    .requestVolumeThreshold(20)
+                    .failureRatio(0.5)
+                    .delay(1, ChronoUnit.MINUTES)
+                    .skipOn(GatewayException.class)
+                    .onSuccess(breakerSuccesses::incrementAndGet)
+                    .onFailure(breakerFailures::incrementAndGet)
+                    .done()
+                    .withTimeout().duration(ATTEMPT_TIMEOUT_MILLIS, ChronoUnit.MILLIS).done()
+                    .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
+                    .whenException(DispatchStage::allowsRetryAfter).done()
+                    .build();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the stub upstream to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("a vetoed retry is not recorded by the circuit breaker: an upstream failure counts once, as a failure")
+        void vetoedRetryAfterAnUpstreamFailureIsNotRecordedByTheBreaker() throws Exception {
+            RouteRuntime unreachable = route(UnreachablePort.pick());
+
+            GatewayException rejection = rejectionOf(dispatchPost(unreachable));
+
+            assertAll("a POST whose upstream could not be reached",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, rejection.getEventType()),
+                    () -> assertEquals(1, breakerFailures.get(), "the upstream failure is recorded exactly once"),
+                    () -> assertEquals(0, breakerSuccesses.get(),
+                            "the retry that is not taken must not be recorded by the breaker at all"));
+        }
+
+        @Test
+        @DisplayName("a vetoed retry is not recorded by the circuit breaker: an attempt timeout counts once, as a failure")
+        void vetoedRetryAfterAnAttemptTimeoutIsNotRecordedByTheBreaker() throws Exception {
+            RouteRuntime unanswering = route(upstream.actualPort());
+
+            GatewayException rejection = rejectionOf(dispatchPost(unanswering));
+
+            assertAll("a POST whose attempt timed out",
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, rejection.getEventType()),
+                    () -> assertEquals(1, breakerFailures.get(), "the attempt timeout is recorded exactly once"),
+                    () -> assertEquals(0, breakerSuccesses.get(),
+                            "the retry that is not taken must not be recorded by the breaker at all"));
+        }
+
+        /** A retry-enabled proxy route to {@code port} on loopback, guarded by the production-shaped guard. */
+        private RouteRuntime route(int port) {
+            return RouteRuntime.builder()
+                    .id("vetoed-retry")
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, port, ""))
+                    .httpClient(upstreamClient)
+                    .retryEnabled(true)
+                    .resilienceGuard(guard)
+                    .build();
+        }
+
+        /** Runs one streamed POST dispatch to the held path on a virtual thread, as the edge does. */
+        private Future<HttpClientResponse> dispatchPost(RouteRuntime route) {
+            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.POST, HELD_PATH, Map.of(),
+                    new TestReadStream(), DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH)));
+        }
+    }
+
     @Nested
     @DisplayName("asset terminal-action serving")
     class AssetServing {
@@ -1314,7 +1455,7 @@ class DispatchStageTest {
                     .httpClient(interceptingClient(upstreamClient, stall::hold))
                     .resilienceGuard(Guard.create()
                             .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                            .abortOn(GatewayException.class).done()
+                            .whenException(DispatchStage::allowsRetryAfter).done()
                             .build())
                     .build();
             DispatchStage stage = new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));

@@ -23,7 +23,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -120,15 +119,17 @@ import org.jspecify.annotations.Nullable;
  * is never sent late, one in flight is reset, and a response it already received and paused is
  * released with it. Only a response actually handed to the caller is exempt.
  * <p>
- * <strong>Stream-aware retry gating.</strong> When the route enables SmallRye retry, the guarded
- * lambda may be re-invoked after a failure. A streamed request cannot be safely replayed once any
- * body byte has crossed to the upstream, and a non-idempotent verb must never be re-sent — so every
- * retry <em>re-entry</em> (never the first attempt) is vetted by a {@link StreamAwareRetryGate}
- * against the request method and the running body-bytes-sent count. A disallowed re-entry is aborted
- * by re-raising the first attempt's failure as a mapped {@link GatewayException}, which the guard's
- * {@code abortOn(GatewayException.class)} contract turns into an immediate abort — no duplicate
- * upstream request is ever issued. A bodyless request never subscribes the inbound stream to an
- * attempt, so it stays retryable for as long as no body byte has arrived.
+ * <strong>Stream-aware retry gating.</strong> When the route enables SmallRye retry, a failed attempt
+ * may be retried. A streamed request cannot be safely replayed once any body byte has crossed to the
+ * upstream, a non-idempotent verb must never be re-sent, and the one-shot inbound body stream cannot be
+ * re-attached once an attempt subscribed it — so whether a failed attempt is retried is decided by
+ * {@link #allowsRetryAfter(Throwable)}, the guard's retry predicate, which vets the request method and
+ * the running body-bytes-sent count through a {@link StreamAwareRetryGate} and refuses once the body
+ * stream was subscribed. The decision is taken when an attempt fails, before any re-entry: a refused
+ * retry is never re-entered, so it is not recorded by the circuit breaker, and no duplicate upstream
+ * request is ever issued. A {@link GatewayException} is never retried. A bodyless request never
+ * subscribes the inbound stream to an attempt, so it stays retryable for as long as no body byte has
+ * arrived.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -153,6 +154,13 @@ public final class DispatchStage {
 
     /** The declared length of a request that declares none. */
     static final long NO_DECLARED_LENGTH = -1L;
+
+    /**
+     * The retry state of the dispatch the guard is running, bound on the dispatching thread for the
+     * duration of its guard call. The guard is shared by every route of one resilience shape, so this
+     * is how its retry predicate learns which dispatch failed.
+     */
+    private static final ScopedValue<RetryState> RETRY_STATE = ScopedValue.newInstance();
 
     private final long maxBodyBytes;
     private final UpstreamFailureMapper failureMapper;
@@ -186,12 +194,13 @@ public final class DispatchStage {
     /**
      * Dispatches the request to the route's upstream, sending its body as {@code framing} directs —
      * none for a bodyless request, otherwise streamed byte-capped and, when a length is declared,
-     * framed by it — and returning the response whose body is not yet consumed. Every retry re-entry
-     * is vetted by a {@link StreamAwareRetryGate} so a non-idempotent method or a request that has
-     * already streamed a body byte is never re-sent (see the class javadoc).
+     * framed by it — and returning the response whose body is not yet consumed. Whether a failed
+     * attempt is retried is decided by the guard's retry predicate, {@link #allowsRetryAfter(Throwable)},
+     * so a non-idempotent method or a request that has already streamed a body byte is never re-sent
+     * (see the class javadoc).
      *
      * @param method         the request method — used both to build the upstream request and to
-     *                       gate retry re-entries for idempotency
+     *                       decide whether a failed attempt may be retried
      * @param route          the resolved route runtime holding the shared client and guard
      * @param requestUri     the upstream request URI (see {@link #upstreamRequestUri})
      * @param forwardHeaders the mode-filtered header set computed by stage 5
@@ -254,23 +263,44 @@ public final class DispatchStage {
     }
 
     /**
-     * Runs {@code attempt} through the route's resilience {@code guard}, vetting every retry
-     * re-entry: the first attempt always proceeds, but each subsequent re-entry is aborted — by
-     * re-raising the prior failure as a mapped {@link GatewayException} (which the guard's
-     * {@code abortOn(GatewayException.class)} contract honours) — whenever <em>either</em> the
-     * {@code retryGate} refuses a retry for {@code method} at the current {@code bytesSent} count,
-     * <em>or</em> {@code bodyStreamConsumed} reports that the one-shot request-body stream was
-     * already subscribed on a prior attempt. The inbound body {@link ReadStream} is single-use:
-     * re-attaching an already-subscribed stream to a fresh upstream request would silently stall
-     * waiting for events that already fired on the first attempt, so such a re-entry must fail
-     * explicitly rather than hang — even in the {@code bytesSent == 0} case, since the stream is
-     * subscribed the instant the first attempt reaches {@code request.send(...)}, before any byte
-     * crosses. Package-private so the retry-gating decision can be exercised without a live upstream.
+     * The guard's retry predicate: whether the attempt that just failed with {@code failure} may be
+     * retried. The route's guard evaluates it after an attempt failed and before any re-entry, so a
+     * retry it refuses is never re-entered and is not recorded by the circuit breaker.
+     * <p>
+     * A {@link GatewayException} anywhere in the failure's cause chain is never retried: a dispatch
+     * the client ended, and a failure already mapped to the error contract, end the dispatch. Any other
+     * failure is retried only while the dispatch's own state permits it — the {@link StreamAwareRetryGate}
+     * allows a retry for the request method at the current body-bytes-sent count, and the one-shot
+     * request-body stream was not subscribed by an attempt. The inbound body {@link ReadStream} is
+     * single-use: re-attaching an already-subscribed stream to a fresh upstream request would silently
+     * stall waiting for events that already fired, so such a retry is refused even when no body byte
+     * was counted, since the stream is subscribed the instant an attempt reaches
+     * {@code request.send(...)}, before any byte crosses.
+     * <p>
+     * The dispatch's state is read from the scoped value {@link #guardedDispatch} binds around the
+     * guard call. Evaluated outside such a call, the predicate fails closed and refuses the retry.
+     *
+     * @param failure the failure the attempt ended with
+     * @return {@code true} only when the attempt may be retried
+     */
+    static boolean allowsRetryAfter(Throwable failure) {
+        if (extractGatewayException(failure) != null || !RETRY_STATE.isBound()) {
+            return false;
+        }
+        return RETRY_STATE.get().allowsRetry();
+    }
+
+    /**
+     * Runs {@code attempt} through the route's resilience {@code guard}, with this dispatch's retry
+     * state — {@code method}, {@code retryGate}, the running {@code bytesSent} count and whether the
+     * {@code bodyStreamConsumed} — bound for the guard's retry predicate,
+     * {@link #allowsRetryAfter(Throwable)}, which decides whether a failed attempt is retried. Every
+     * failure leaves as a mapped {@link GatewayException}. Package-private so the retry decision can
+     * be exercised without a live upstream.
      */
     HttpClientResponse guardedDispatch(Guard guard, StreamAwareRetryGate retryGate, HttpMethod method,
             LongSupplier bytesSent, BooleanSupplier bodyStreamConsumed, Callable<HttpClientResponse> attempt) {
-        AtomicInteger attemptIndex = new AtomicInteger();
-        AtomicReference<Throwable> priorFailure = new AtomicReference<>();
+        RetryState retryState = new RetryState(method, retryGate, bytesSent, bodyStreamConsumed);
         // The trailing catch below is a deliberate catch-all, and the only shape that compiles:
         // Guard#call propagates the checked Exception declared by the Callable it wraps, while
         // guardedDispatch itself declares no throws clause — so a narrower catch would leave that
@@ -280,27 +310,22 @@ public final class DispatchStage {
         // to the client.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            return guard.call(() -> {
-                if (attemptIndex.getAndIncrement() > 0
-                        && (bodyStreamConsumed.getAsBoolean()
-                        || !retryGate.allowsRetry(method, bytesSent.getAsLong()))) {
-                    throw failureMapper.toGatewayException(priorFailure.get());
-                }
+            // A synchronous guarded call runs on this thread, retries included, so the binding is
+            // visible wherever the guard evaluates its retry predicate.
+            return ScopedValue.where(RETRY_STATE, retryState).call(() -> guard.call(() -> {
                 try {
                     return attempt.call();
                 } catch (ExecutionException executionFailure) {
                     // awaitDispatch blocks on CompletableFuture#get, which wraps the real cause (e.g. a
                     // client-side body-cap GatewayException from ByteCappedBodyStream) in an
-                    // ExecutionException. Unwrap it so the guard's skipOn(GatewayException.class) and
-                    // abortOn(GatewayException.class) rules see the actual GatewayException rather than
-                    // the wrapper — otherwise a client-caused rejection is miscounted as an upstream
-                    // failure and can trip the circuit breaker for reasons unrelated to upstream health.
+                    // ExecutionException. Unwrap it so the breaker's skipOn(GatewayException.class) rule
+                    // and the retry predicate see the actual GatewayException rather than the wrapper —
+                    // otherwise a client-caused rejection is miscounted as an upstream failure and can
+                    // trip the circuit breaker for reasons unrelated to upstream health.
                     Throwable cause = executionFailure.getCause();
-                    Exception unwrapped = cause instanceof Exception exception ? exception : executionFailure;
-                    priorFailure.set(unwrapped);
-                    throw unwrapped;
+                    throw cause instanceof Exception exception ? exception : executionFailure;
                 }
-            }, HttpClientResponse.class);
+            }, HttpClientResponse.class));
         } catch (GatewayException direct) {
             throw direct;
         } catch (Exception guarded) {
@@ -505,6 +530,26 @@ public final class DispatchStage {
     }
 
     /**
+     * What the guard's retry predicate needs to know about one dispatch.
+     *
+     * @param method             the request method
+     * @param retryGate          the route's retry gate
+     * @param bytesSent          the running count of body bytes forwarded to the upstream
+     * @param bodyStreamConsumed whether an attempt subscribed the one-shot inbound body stream
+     */
+    private record RetryState(HttpMethod method, StreamAwareRetryGate retryGate, LongSupplier bytesSent,
+            BooleanSupplier bodyStreamConsumed) {
+
+        /**
+         * @return {@code true} when the body stream was not subscribed and the retry gate allows a
+         *         retry at the current body-bytes-sent count
+         */
+        boolean allowsRetry() {
+            return !bodyStreamConsumed.getAsBoolean() && retryGate.allowsRetry(method, bytesSent.getAsLong());
+        }
+    }
+
+    /**
      * The request-body side of one dispatch, shared by every attempt the guard makes: how the body
      * is sent with an attempt's upstream request, and the client-caused abort an attempt reports in
      * place of the transport failure its own abort produced.
@@ -575,8 +620,8 @@ public final class DispatchStage {
                 request.putHeader(CONTENT_LENGTH, Long.toString(declaredLength));
             }
             // The one-shot inbound body stream is subscribed the instant it is handed to
-            // request.send(...); mark it so a retry re-entry never re-attaches the consumed stream
-            // (which would stall) — see guardedDispatch's bodyStreamConsumed gate.
+            // request.send(...); mark it so a retry never re-attaches the consumed stream (which would
+            // stall) — see allowsRetryAfter.
             subscribed.set(true);
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
                     request::reset, bytesSent::addAndGet);
