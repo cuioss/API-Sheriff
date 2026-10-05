@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The three rejections that say "this request addresses nothing the gateway serves that way" — no route matched (404), a Host naming a hostname reserved for passthrough (404) and a method outside the route's allowlist (405) — report under a ROUTING category of their own (slug routing, type urn:api-sheriff:problem:routing, title Routing) instead of INPUT_VALIDATION, a breaking change to the public problem type with no alias; the two 404s stay identical on the wire and are separated for the operator by a bounded event label, which changes the label set of sheriff_errors_total to {route,category,event} for every series; the verb-gate 405 and the smuggled-host 404 become eligible for the negotiated HTML error page.
+// summary: The three rejections that say "this request addresses nothing the gateway serves that way" — no route matched (404), a Host naming a hostname reserved for passthrough (404) and a method outside the route's allowlist (405) — report under a ROUTING category of their own (slug routing, type urn:api-sheriff:problem:routing, title Routing) instead of INPUT_VALIDATION, a breaking change to the public problem type with no alias; on an address no route serves the two 404s stay identical on the wire, and they are separated for the operator by a bounded event label, which changes the label set of sheriff_errors_total to {route,category,event} for every series; the verb-gate 405 and the smuggled-host 404 become eligible for the negotiated HTML error page.
 // tags: error-contract, problem-details, routing, metrics, event-taxonomy, html-error-pages, grpc, breaking-change
 // affects: api-sheriff
 // supersedes:
@@ -62,8 +62,9 @@ Three further questions follow from moving them.
 
 == Decision
 
-*A rejection that is a statement about the route table reports under a `ROUTING` category. The two
-`404`s in it are one answer on the wire and two values on a bounded metric label.*
+*A rejection that is a statement about the route table reports under a `ROUTING` category. On an
+address no route serves, the two `404`s in it are one answer on the wire; they are always two values
+on a bounded metric label.*
 
 === The category
 
@@ -99,9 +100,9 @@ none of them holds a copy.
 
 === The smuggled host shares the category and the response
 
-`PASSTHROUGH_HOST_SMUGGLED` is a member of `ROUTING`, and its response is the response of an unrouted
-address: the same status, the same problem type and title, the same headers and the same negotiation.
-The reason is disclosure. A response that differed for a reserved hostname would let an anonymous
+`PASSTHROUGH_HOST_SMUGGLED` is a member of `ROUTING`. On an address no route serves, its response is
+the response of that unrouted address: the same status, the same problem type and title, the same
+headers and the same negotiation. The reason is disclosure. A response that differed for a reserved hostname would let an anonymous
 caller enumerate the `passthrough_sni` set by sending `Host` values and comparing answers. The
 passthrough backends are deliberately unreachable through the terminated listener, and their names
 are part of what that guard protects.
@@ -112,7 +113,8 @@ under its own event name.
 
 === The `event` label
 
-The two `404`s are indistinguishable on the wire and separable on the metric. `sheriff_errors_total`
+On an address no route serves, the two `404`s are indistinguishable on the wire; on the metric they
+are always separable. `sheriff_errors_total`
 carries an `event` label whose value is the `EventType` name:
 
 ----
@@ -151,9 +153,9 @@ Two members change their classification in `ErrorPageClassifier` from `KEEP_SHAP
 link:0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053].
 
 * *`PASSTHROUGH_HOST_SMUGGLED`.* An unrouted address answers a browser navigation with the HTML page.
-  A smuggled host that answered the same navigation with `application/problem+json` would make the
-  two `404`s distinguishable by body shape, which is the disclosure the shared response exists to
-  prevent. Eligibility follows from wire identity; it is not a separate choice.
+  A smuggled host that answered the same navigation on that address with `application/problem+json`
+  would make the two `404`s there distinguishable by body shape, which is the disclosure the shared
+  response exists to prevent. Eligibility follows from wire identity; it is not a separate choice.
 * *`METHOD_NOT_ALLOWED`.* A `405` is reachable by navigation, for instance a link to an address that
   serves `POST` only. A browser shown a JSON document for it has no page to read.
 
@@ -189,8 +191,9 @@ there.
 
 * The category answers the first diagnostic question. `Routing` sends the reader to the route table,
   the host binding and the verb allowlist; `Input Validation` is left meaning what it says.
-* The set of reserved passthrough hostnames is not readable from the outside. Status, type, title,
-  headers and body shape are those of an unrouted address in both the JSON and the HTML answer.
+* On an address no route serves, the set of reserved passthrough hostnames is not readable from the
+  answer. Status, type, title, headers and body shape are those of the unrouted address in both the
+  JSON and the HTML answer.
 * The operator loses nothing by that. The smuggle attempt is counted under its own `event` value and
   logged, so an alert on `event="PASSTHROUGH_HOST_SMUGGLED"` is one label matcher.
 * The `event` label separates every pair of events that share a category, not only the two `404`s:
@@ -270,8 +273,9 @@ bought nothing.
 
 The rejected options fall into two groups. One group keeps the wire or the metric unchanged and pays
 for it with a category that misleads or a distinction that cannot be made. The other makes the
-distinction where the caller can read it. The decision separates the two audiences: the caller gets
-one answer for both `404`s, and the operator gets a label the caller never sees.
+distinction where the caller can read it. The decision separates the two audiences: on an address no
+route serves the caller gets one answer for both `404`s, and the operator gets a label the caller
+never sees.
 
 == References
 

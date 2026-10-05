@@ -465,10 +465,13 @@ that follows a request with rejected framing on the same connection; never reuse
 connection that carried a request whose inbound framing failed. Prefer end-to-end HTTP/2 where
 possible.
 
-Two components enforce it. The HTTP transport refuses what it cannot frame at all, with a bare
+Three components enforce it. The HTTP transport refuses what it cannot frame at all, with a bare
 `400` and a closed connection. The gateway's `FramingGate` refuses what the transport does frame
 but two parsers could read differently, with a `400` problem document
-(`SECURITY_FILTER_VIOLATION`). Each clause, who enforces it and the test that pins it:
+(`SECURITY_FILTER_VIOLATION`). The gate decides on headers; the proxy dispatch (`DispatchStage`)
+enforces the body rules no header can decide: a bodyless method is sent upstream with no body and
+refused when one arrives, and a forwarded body is framed by its declared length. Each clause, who
+enforces it and the test that pins it:
 
 [cols="3,1,3", options="header"]
 |===
@@ -503,6 +506,37 @@ but two parsers could read differently, with a `400` problem document
 | `FramingGate`
 | `GatewayEdgeFramingCorpusTest` (`getWithContentLengthBodyIsRejectedWhenOptInIsUnset`);
   `FramingGateTest.GetBodyOptIn`
+
+| A declared body on `HEAD`, with the opt-in below set as well
+| `FramingGate`
+| `GatewayEdgeFramingCorpusTest` (`headWithDeclaredLengthIsRefusedEvenWithTheOptIn`, over HTTP/2)
+
+| A `GET` or `HEAD` without a positive declared `Content-Length` never carries a body upstream, on
+  any protocol: it is sent with no body, and its first inbound body byte, whatever its size, refuses
+  it as `SECURITY_FILTER_VIOLATION`. While the dispatch is awaited the refusal is answered `400` and
+  on HTTP/2 ends only that stream; once the response has started, the client stream is reset, never
+  cleanly ended. A stream that ends with an empty final frame carries no body and is served. The
+  opt-in below does not relax this rule
+| edge (`DispatchStage`, `GatewayEdgeRoute`)
+| `GatewayEdgeFramingCorpusTest` (`bodylessMethodNeverCarriesABodyUpstreamOnHttp2`,
+  `optInAdmitsOnlyADeclaredLengthGetBodyOnHttp2`, `bodylessMethodEndingWithAnEmptyFrameIsServed`,
+  `bodyByteAfterTheResponseStartedResetsTheStream`); `DispatchStageTest.BodylessWatch`,
+  `DispatchStageTest.BodylessDispatch`
+
+| A request that declares a `Content-Length` -- any method, the opt-in `GET` below included -- is
+  forwarded with that length as the upstream `Content-Length` and never re-framed as chunked, on
+  HTTP/1.1 and HTTP/2; the forwarded body is held to exactly that many bytes. A byte beyond the
+  declared length is never forwarded and refuses the request as `SECURITY_FILTER_VIOLATION`; a body
+  that ends short of it resets the upstream request as `INBOUND_BODY_ABORTED`. A request that
+  declares no length keeps the framing the transport chooses
+| edge (`DispatchStage`); on HTTP/2 the transport refuses a body longer than its declared length
+  before dispatch sees it
+| `GatewayEdgeFramingCorpusTest` (`optInGetIsForwardedFramedByItsDeclaredLength`,
+  `declaredLengthRequestIsForwardedFramedByItsLength`, `zeroDeclaredLengthIsForwardedFramedAsZero`,
+  `bodyLongerThanItsDeclaredLengthIsRefused`, `undeclaredLengthKeepsTheTransportFraming`);
+  `DispatchStageTest` (`forwardsABodyOfExactlyItsDeclaredLength`,
+  `refusesAChunkCrossingTheDeclaredLength`, `abortsAnEndShortOfTheDeclaredLength`,
+  `appliesNoLengthBoundWithoutADeclaredLength`)
 
 | A `Connection` token naming a framing header (`Content-Length`, `Transfer-Encoding`, `Host`)
   or a trust header (`Authorization`, `Forwarded`, `X-Forwarded-For`, `-Host`, `-Proto`, `-Port`)
@@ -539,9 +573,19 @@ but two parsers could read differently, with a `400` problem document
 The gate runs once, at stage 1, before route selection. No later stage changes the inbound
 header set, so there is no mutated set to validate again: request headers are immutable, and
 the headers sent upstream are a separate map that never carries the client's `Content-Length`
-or `Transfer-Encoding` (the request-direction never-forward set, GW-03). The upstream client
-writes its own framing. Resetting an upstream request closes its connection on HTTP/1.x, which
-is what the corpus pins; on HTTP/2 it resets the stream.
+or `Transfer-Encoding` (the request-direction never-forward set, GW-03). The framing of the
+forwarded body is written by dispatch, not relayed. A request that declares a length is forwarded
+with the value the gate and the `max_body_bytes` pre-check admitted, and with exactly that many
+bytes. A request that declares none keeps the framing the upstream client chooses. A `GET` or
+`HEAD` without a positive declared length is sent with no body at all. Resetting an upstream
+request closes its connection on HTTP/1.x, which is what the corpus pins; on HTTP/2 it resets the
+stream.
+
+The bodyless-method rule binds the proxy dispatch, the one terminal action that streams an
+inbound body. The other terminal actions a `GET` or `HEAD` can reach forward no inbound body
+either. An asset route is served by method and path alone, whether its source is a directory or
+an upstream. A redirect, the portal and the gateway's reserved paths write answers the gateway
+authors.
 
 *Status:* PARTIAL. API Sheriff sits *behind* other proxies (the whole forwarded-header design
 assumes it), so framing agreement is a first-class requirement, not an inherited default. The
@@ -551,17 +595,20 @@ starts admitting one of those shapes. Every HTTP/1.1 corpus entry writes raw byt
 socket, and every entry asserts both the status of each response and the exact list of requests
 the upstream saw.
 
-The row is off COVERED because the assertion below is not pinned in full. One corpus entry speaks
-HTTP/2 to the gateway and pins that a gate rejection ends only its own stream. Every other entry
-speaks HTTP/1.1, and the upstream side of the corpus is HTTP/1.1 throughout: no test drives the
-remaining gate clauses or an inbound body failure after dispatch over HTTP/2, and none drives the
-upstream reset against an HTTP/2 upstream. Two clauses are pinned by `FramingGateTest` alone and
-by no corpus entry: a body on `HEAD`, and a repeated or comma-separated `Content-Length`.
+The row is off COVERED because the assertion below is not pinned in full. Over HTTP/2 the corpus
+pins that a gate rejection ends only its own stream, that a declared body on `HEAD` is refused,
+the bodyless-method rule, and the framing of a body with and without a declared length. The
+smuggling entries speak HTTP/1.1, and the upstream side of the corpus is HTTP/1.1 throughout: no
+test drives the remaining gate clauses or an inbound body failure after dispatch over HTTP/2, and
+none drives the upstream reset against an HTTP/2 upstream. One clause is pinned by
+`FramingGateTest` alone and by no corpus entry: a repeated or comma-separated `Content-Length`.
 
 *Assertion.* A request with both `Content-Length` and `Transfer-Encoding`, a HEAD/GET with a
 body, or a `Connection: Content-Length` cleanup attempt is rejected (400) and never produces
 two upstream requests; a smuggling test corpus (CL.TE/TE.CL/TE.TE/CL.0) run through the
-gateway produces zero desyncs; a request queued behind a rejected one is not processed; an
+gateway produces zero desyncs; a request queued behind a rejected one is not processed; a `GET`
+or `HEAD` without a positive declared `Content-Length` never carries a body upstream, on any
+protocol; a request that declares a length reaches the upstream framed by exactly that length; an
 upstream request whose inbound body failed is reset and its connection is not reused. That
 failure is reported under the dedicated event `INBOUND_BODY_ABORTED`, attributed to the client,
 and is not counted as a failure by the route's circuit breaker.
@@ -580,9 +627,13 @@ explicitly enabled. The boundary is drawn where the smuggling risk is, not where
   `Connection`-list framing-strip rule are independent checks unaffected by the opt-in; the CL+TE
   check runs *before* the body-on-bodyless-method check, so a `GET` carrying both is still rejected.
 * `HEAD` with a body remains rejected on every leg.
+* A `GET` body that no `Content-Length` declares stays refused on every protocol: the opt-in admits
+  a declared length, and the bodyless-method rule above refuses any other `GET` body on its first
+  byte.
 
 The residual exposure is therefore a well-framed, unambiguously-delimited `GET` body -- a shape both
-front-end and back-end agree on, which is what makes it not a desync vector. With the key omitted or
+front-end and back-end agree on, which is what makes it not a desync vector. It is forwarded framed
+by its declared length, with exactly that many bytes, never re-framed as chunked. With the key omitted or
 `false`, every rejection above is preserved bit-for-bit.
 
 [#gw-03]
@@ -2902,9 +2953,9 @@ compile-checked classification. A new event type or exit fails compilation until
 eligible set is a missing scope or failed CSRF check (`403`), an unrouted address, a `Host`
 reserved for passthrough or a `source: directory` asset miss (`404`), a method outside the route's
 allowlist (`405`), a body over the route cap (`413`), an upstream failure, an
-open circuit or an upstream timeout (`502`/`503`/`504`), and a failed OIDC callback. The two
-`404`s of an unrouted address and of a reserved `Host` negotiate alike, so the body shape does not
-tell them apart
+open circuit or an upstream timeout (`502`/`503`/`504`), and a failed OIDC callback. On an address
+no route serves, the two `404`s of the unrouted address and of a reserved `Host` negotiate alike,
+so the body shape does not tell them apart
 (link:adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]). Every relayed
 origin response, the `source: upstream` asset relay, the gRPC and WebSocket relays, a relay that failed
 after the response head, the admission `503`, gRPC trailers-only rejections and unexpected internal
@@ -2931,7 +2982,7 @@ outstanding hardening work (next section).
 | ID | Control (short) | Owner | Status
 
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
-| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED` and not counted as a circuit-breaker failure | Gateway (`FramingGate`, `GatewayEdgeRoute`, `DispatchStage`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; on HTTP/2 only the stream-scoped gate rejection is pinned)
+| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED` and not counted as a circuit-breaker failure | Gateway (`FramingGate`, `GatewayEdgeRoute`, `DispatchStage`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; on HTTP/2 the stream-scoped gate rejection, a declared body on `HEAD`, the bodyless-method rule and declared-length framing are pinned, the other gate clauses and an inbound body failure after dispatch are not)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED
