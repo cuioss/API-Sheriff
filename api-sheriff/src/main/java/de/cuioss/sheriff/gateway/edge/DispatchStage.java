@@ -538,7 +538,7 @@ public final class DispatchStage {
      * @param bodyStreamConsumed whether an attempt subscribed the one-shot inbound body stream
      */
     private record RetryState(HttpMethod method, StreamAwareRetryGate retryGate, LongSupplier bytesSent,
-            BooleanSupplier bodyStreamConsumed) {
+    BooleanSupplier bodyStreamConsumed) {
 
         /**
          * @return {@code true} when the body stream was not subscribed and the retry gate allows a
