@@ -64,8 +64,8 @@ stream are not violations, so a stream ending with an empty final DATA frame is 
 The refusal takes the shape the gate's own framing rejection takes. While the dispatch is still
 awaited, it is the dispatch's failure, answered `400` like any other framing rejection. On HTTP/2
 only the offending stream ends, never the connection. If the first byte arrives after the upstream
-response has been handed over for relay, a status can no longer be written. The client stream is
-then reset, never cleanly ended, so a truncated response is not presented as complete. The upstream
+response has been handed over for relay, the client stream is reset instead, never cleanly ended,
+so a truncated response is not presented as complete. The upstream
 exchange is aborted, and nothing was forwarded because the upstream request carried no body.
 
 The rule does not test the protocol version. On HTTP/1.1 such a request carries no body bytes by
@@ -128,8 +128,8 @@ arrived. A violation is a gateway rejection and is never retried.
 * The rule is split across two components. The gate refuses what the headers declare, and dispatch
   refuses what the stream carries. A reader of either component alone sees half of the property, so
   both carry the cross-reference.
-* A late violation, one whose first body byte arrives after the response head has gone out, can only
-  be answered by a stream reset. The client sees a reset rather than a `400`.
+* A late violation, one whose first body byte arrives after the response has been handed over for
+  relay, is answered by a stream reset. The client sees a reset rather than a `400`.
 * A declared-length request is now held to an exact byte count. A client whose body disagrees with
   its own declared length is refused rather than tolerated, on every route.
 * Dispatch's signature carries the framing decision, so every dispatch entry point, the gRPC path

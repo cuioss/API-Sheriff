@@ -1653,14 +1653,15 @@ public class GatewayEdgeRoute {
 
     /**
      * The late-violation callback of a proxied request (see {@link DispatchStage.BodyFraming}): a body
-     * byte on a bodyless method that arrived only after the upstream response head was relayed.
+     * byte on a bodyless method that arrived only after the dispatch handed the upstream response over
+     * for relay.
      * <p>
-     * A {@code 400} can no longer be written then, and ending the response would present a truncated
-     * answer as complete, so the client response is <strong>reset</strong> instead — on HTTP/2 the one
-     * stream, with {@code CANCEL}. The refusal is metered and logged like every other
-     * {@link EventType#SECURITY_FILTER_VIOLATION} ({@link #reportRejection}). The callback runs on the
-     * inbound request's event loop, before the dispatch resets the upstream request, so the response is
-     * reset before the aborted relay could end it; the flag stashed under
+     * The dispatch can no longer answer it with a {@code 400} then, and ending the response would
+     * present a truncated answer as complete, so the client response is <strong>reset</strong> instead
+     * — on HTTP/2 the one stream, with {@code CANCEL}. The refusal is metered and logged like every
+     * other {@link EventType#SECURITY_FILTER_VIOLATION} ({@link #reportRejection}). The callback runs on
+     * the inbound request's event loop, before the dispatch resets the upstream request, so the
+     * response is reset before the aborted relay could end it; the flag stashed under
      * {@link #LATE_BODY_REFUSED_KEY} keeps {@link #failRelay} from ending it afterwards.
      */
     private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
