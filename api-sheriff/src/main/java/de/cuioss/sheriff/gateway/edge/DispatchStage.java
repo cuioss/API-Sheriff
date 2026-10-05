@@ -99,10 +99,10 @@ import org.jspecify.annotations.Nullable;
  * {@link EventType#SECURITY_FILTER_VIOLATION}), never as the transport error the aborted upstream
  * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
  * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
- * breaker, though: SmallRye
- * Fault Tolerance has no neutral outcome, so a skipped exception is recorded as a success, in the
- * closed and in the half-open state alike. Keeping client-ended dispatches out of the breaker's
- * window altogether would need the guarded call to be restructured, which the gateway does not do.
+ * breaker, though: SmallRye Fault Tolerance has no neutral outcome, so a skipped exception is
+ * recorded as a success, in the closed and in the half-open state alike. Keeping client-ended
+ * dispatches out of the breaker's window altogether would need the guarded call to be restructured,
+ * which the gateway does not do.
  * <p>
  * The client abort is honoured only when it preceded the transport failure: it is read once, at
  * the moment the attempt's send fails, so a client that goes away only after the upstream already
@@ -269,11 +269,10 @@ public final class DispatchStage {
      * retry it refuses is never re-entered and is not recorded by the circuit breaker.
      * <p>
      * A {@link GatewayException} in the failure's cause chain (followed to a bounded depth) is never
-     * retried: a dispatch
-     * the client ended, and a failure already mapped to the error contract, end the dispatch. Any other
-     * failure is retried only while the dispatch's own state permits it — the {@link StreamAwareRetryGate}
-     * allows a retry for the request method at the current body-bytes-sent count, and the one-shot
-     * request-body stream was not subscribed by an attempt. The inbound body {@link ReadStream} is
+     * retried: a dispatch the client ended, and a failure already mapped to the error contract, end
+     * the dispatch. Any other failure is retried only while the dispatch's own state permits it — the
+     * {@link StreamAwareRetryGate} allows a retry for the request method at the current
+     * body-bytes-sent count, and the one-shot request-body stream was not subscribed by an attempt. The inbound body {@link ReadStream} is
      * single-use: re-attaching an already-subscribed stream to a fresh upstream request would silently
      * stall waiting for events that already fired, so such a retry is refused even when no body byte
      * was counted, since the stream is subscribed the instant an attempt reaches
