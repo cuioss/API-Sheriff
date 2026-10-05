@@ -851,7 +851,7 @@ class DispatchStageTest {
             try {
                 // Nothing counts this latch down, so only an interrupt ends the wait early.
                 return new CountDownLatch(1).await(Awaits.CONNECT_CEILING_SECONDS, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupt) {
+            } catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
                 return true;
             }
@@ -1322,7 +1322,7 @@ class DispatchStageTest {
 
         @Test
         @DisplayName("a vetoed retry is not recorded by the circuit breaker: an attempt timeout counts once, as a failure")
-        void vetoedRetryAfterAnAttemptTimeoutIsNotRecordedByTheBreaker() throws Exception {
+        void vetoedRetryAfterAnAttemptTimeoutIsNotRecordedByTheBreaker() {
             RouteRuntime unanswering = route(upstream.actualPort());
 
             GatewayException rejection = rejectionOf(dispatchPost(unanswering));
