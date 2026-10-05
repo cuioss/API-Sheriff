@@ -1,0 +1,210 @@
+= ADR-0060: Dispatch sends a bodyless method no body and frames every declared-length body by exactly that length
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The framing gate decides on headers, and dispatch owns what actually crosses to the upstream: a GET or HEAD without a positive declared Content-Length is sent upstream with no body on every protocol and its first inbound body byte, whatever its size, refuses the request (400 while the dispatch is awaited, a stream reset once the response has started), while every other request that declares a checked Content-Length is forwarded with that validated length as the upstream Content-Length and held to exactly that many bytes; a request without a declared length keeps the transport's framing; a headers-time rejection, a size-cap safeguard, an HTTP/2-only rule, a GET-only framing rule and relaying the client's own header are rejected
+// tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+The gateway settles HTTP framing at the edge because framing decides where one message ends and the
+next begins, and a gateway that disagrees with its upstream about that boundary is the precondition
+for request smuggling. The framing gate does this before route selection, and it can only decide on
+what has arrived by then: the request line and the headers.
+
+On HTTP/1.1 the headers are the whole framing story. A message body exists exactly when
+`Content-Length` or `Transfer-Encoding` says so, so a gate that reads those two headers sees every
+body the connection will carry. HTTP/2 breaks that equivalence. A body is carried by DATA frames,
+and `content-length` is an optional, advisory header beside them. A stream can carry body bytes that
+no header announces, and a stream can also end with an empty final DATA frame that carries no bytes
+at all. At the moment the gate runs, the two are indistinguishable: neither has declared anything,
+and the frames that tell them apart have not arrived yet.
+
+That puts the rule "a bodyless method carries no body" at a choice point. The gate cannot enforce it
+for an undeclared body without guessing from absence, and the body is consumed long after the gate
+has finished. The question is which component owns the guarantee that no body bytes reach the
+upstream on a bodyless method.
+
+A second, related question sits at the same seam. The client's `Content-Length` is in the gateway's
+request-direction never-forward set: it is a claim about the client's message, and the dispatch path
+re-establishes the framing of what it actually sends. When dispatch streams a body without a length,
+the transport frames it as chunked. A request that arrived with an unambiguous declared length then
+reaches the upstream in a different framing from the one the gateway validated, and the upstream
+learns the message boundary from a mechanism the gateway never checked.
+
+Both questions come down to the same thing: where the gateway's validated view of the body becomes
+the upstream's view of it.
+
+== Decision
+
+*The framing gate decides on headers; dispatch owns what actually crosses to the upstream. A
+bodyless method is sent with no body and refused on its first body byte, and a declared length
+frames the forwarded body by exactly that length. One rule per question, on every protocol.*
+
+=== A bodyless method is sent with no body, and its first body byte refuses it
+
+A `GET` or `HEAD` without a positive declared `Content-Length` is dispatched with no body at all: the
+inbound stream is never handed to the upstream request. A watcher consumes the inbound stream
+instead. Its first chunk carrying at least one byte, whatever its size, records a
+`SECURITY_FILTER_VIOLATION` and resets the upstream request. A zero-length chunk and the end of the
+stream are not violations, so a stream ending with an empty final DATA frame is served normally.
+
+The refusal takes the shape the gate's own framing rejection takes. While the dispatch is still
+awaited, it is the dispatch's failure, answered `400` like any other framing rejection. On HTTP/2
+only the offending stream ends, never the connection. If the first byte arrives after the upstream
+response has been handed over for relay, a status can no longer be written. The client stream is
+then reset, never cleanly ended, so a truncated response is not presented as complete. The upstream
+exchange is aborted, and nothing was forwarded because the upstream request carried no body.
+
+The rule does not test the protocol version. On HTTP/1.1 such a request carries no body bytes by
+framing, so the watcher never fires there. The only effect on HTTP/1.1 is that the upstream request
+carries no body instead of an empty streamed one. The property is stated once and holds everywhere:
+a bodyless method never carries a body upstream, on any protocol.
+
+A `GET` with a positive declared `Content-Length` admitted by the gateway-wide opt-in is not on this
+path. It is a declared-length request and is framed as the next section describes. `HEAD` is refused
+on every leg, as the gate already requires. The gateway-answered `GET` and `HEAD` actions (asset
+serving, redirects, the portal and the reserved paths) never subscribe the inbound body, so they
+have no body to forward and are unaffected.
+
+=== A declared length frames the forwarded body, and the body is held to it
+
+Every request that is not on the bodyless path and carries a checked declared `Content-Length` is
+forwarded with that value as the upstream `Content-Length`. This covers the opt-in `GET`, `POST`,
+`PUT`, `PATCH`, `DELETE` and a gRPC request that declares one. The transport therefore frames the
+body by length and never re-frames it as chunked. "Checked" means the value the framing gate and
+the `max_body_bytes` pre-check admitted. The client's own header is still never relayed: dispatch
+writes the value it validated.
+
+Because the upstream now takes its message boundary from that value, the forwarded body is held to
+it exactly. The bound sits in the same streaming counter that enforces `max_body_bytes`, not in a
+separate stage. A chunk that would carry the total past the declared length is not forwarded. It
+records a `SECURITY_FILTER_VIOLATION` and resets the upstream request. An inbound body that ends
+short of the declared length resets the upstream request as `INBOUND_BODY_ABORTED`. The upstream
+never waits on, or completes, a message of another length.
+
+A request that declares no length keeps the framing the transport chooses. The rule has no per-method
+scope: one length rule covers every method.
+
+=== Retry stays safe without special cases
+
+A bodyless request never subscribes the inbound stream to an upstream attempt, so the stream-aware
+retry gate sees it as bodyless and the request stays retryable for as long as no body byte has
+arrived. A violation is a gateway rejection and is never retried.
+
+== Consequences
+
+=== Positive
+
+* The bodyless-method property is a property of what crosses to the upstream, not an inference from
+  headers. It holds for a body that no header declares, and it costs no false rejection of a stream
+  that ends with an empty frame.
+* The guarantee does not depend on a size limit. The first byte decides, so the configured body cap
+  is a resource bound and not the safeguard for this rule.
+* HTTP/1.1 and HTTP/2 obey one statement of each rule. There is no version branch for the two
+  protocols to drift apart along.
+* The length the upstream reads is one the gateway validated, and the bytes it receives match that
+  length exactly. The gateway's and the upstream's view of the message boundary cannot diverge for a
+  declared-length request.
+* Upstreams that require a length-framed body, and the opt-in `GET` with body in particular, receive
+  the framing the client sent instead of a chunked re-encoding of it.
+* The framing gate keeps its pre-route, headers-only position and its HTTP/1.1 rules unchanged. The
+  new guarantees are added behind it, not woven into it.
+
+=== Negative
+
+* The rule is split across two components. The gate refuses what the headers declare, and dispatch
+  refuses what the stream carries. A reader of either component alone sees half of the property, so
+  both carry the cross-reference.
+* A late violation, one whose first body byte arrives after the response head has gone out, can only
+  be answered by a stream reset. The client sees a reset rather than a `400`.
+* A declared-length request is now held to an exact byte count. A client whose body disagrees with
+  its own declared length is refused rather than tolerated, on every route.
+* Dispatch's signature carries the framing decision, so every dispatch entry point, the gRPC path
+  included, has to state it explicitly.
+
+=== Risks
+
+* *Narrowing the rule to HTTP/2.* On HTTP/1.1 the watcher never fires and reads as dead code. A
+  version check that skips it there would quietly reintroduce two rules where there is one, and the
+  first transport change that lets an HTTP/1.1 request carry an undeclared body would find no guard.
+* *Moving enforcement back to the gate.* A headers-time check looks simpler. It is the alternative
+  rejected below, and reintroducing it as a simplification would refuse legitimate streams that end
+  with an empty DATA frame while still deciding on information the gate does not have.
+* *Decoupling the length header from the byte bound.* Writing the declared length upstream is safe
+  only because the same stream enforces it. A refactor that keeps the header and drops the exact
+  bound, for instance by moving the counter out of the forwarding stream, hands the upstream a
+  boundary the gateway no longer enforces.
+* *Treating the size cap as the safeguard.* A future change that admits small bodies on a bodyless
+  method because the cap bounds them would trade the property for a resource limit.
+
+== Alternatives Considered
+
+*Reject at headers time in the framing gate.* Refuse a `GET` or `HEAD` whose HTTP/2 stream was not
+ended together with its headers, keeping all framing decisions in one stage. Rejected because a
+client may legally end the stream with an empty final DATA frame, so the check would refuse
+conforming requests. It would also decide on absence, before the frames that tell a body from an
+empty end have arrived. The gate's position before route selection is deliberate, and it is exactly
+why the gate cannot see the body.
+
+*Rely on the body cap to bound the harm.* Let an undeclared body through and treat `max_body_bytes`
+as the limit on what it can do. Rejected because the cap bounds size, not presence. A bodyless method
+carrying any body is the violation, whatever its size, and an upstream that receives one has already
+been handed a message the gateway's framing model says does not exist.
+
+*Apply the rule to HTTP/2 only.* Gate the no-body send on the protocol version, since only HTTP/2
+can carry an undeclared body. Rejected because on HTTP/1.1 the unified rule costs nothing: the
+watcher never fires, and the only change is that the upstream request carries no body. A version
+branch would turn one property into two statements that can drift.
+
+*Frame by declared length only for the opt-in `GET`.* Fix the re-framing where the opt-in introduced
+the visible case and leave other methods to the transport. Rejected because the re-framing applies
+to every declared-length request equally. Scoping the fix by method would leave the validated length
+and the forwarded framing disagreeing for the most common body-bearing requests.
+
+*Relay the client's own `Content-Length`.* Forward the header instead of writing a value at dispatch.
+Rejected because the header is a claim about the client's message, and the gateway's header policy
+withholds it for that reason. Writing the validated value and enforcing it on the stream makes the
+upstream's boundary one the gateway has proven, not one it has passed along.
+
+*Buffer the body to learn its length.* Read the whole body, then forward it with an exact length.
+Rejected because the data plane streams request bodies and never buffers them. Buffering would trade
+a framing guarantee for a memory exposure proportional to the body cap on every request.
+
+The rejected options either decide too early, on headers that cannot see the body, or decide too
+loosely, with a size limit, a protocol branch or a method scope standing in for the property. The
+chosen position enforces each property at the one point where the gateway both knows the truth and
+controls what the upstream receives.
+
+== Generalisation
+
+When a protocol lets a message carry content that its metadata does not announce, a check on the
+metadata cannot enforce a rule about the content. It can only refuse what was announced. The
+diagnostic question is: *at which point does the component both know what the message actually
+carries and control what is passed on?* The rule belongs there. An earlier stage keeps the checks it
+can make on what it sees. Likewise, when a component re-establishes a framing on the far side of a
+trust boundary, the framing it writes should be the value it validated, and it should enforce that
+value on the bytes it sends, so the downstream boundary is one the component has proven rather than
+one it has only relayed.
+
+== References
+
+* link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029 -- The GET-with-body opt-in relaxes only the Content-Length leg] -- the headers-time gate this record completes on the dispatch side; the opt-in `GET` it admits is forwarded framed by its declared length.
+* link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- A security bound is re-asserted at every later stage] -- the obligation the dispatch-side re-assertion of the bodyless-method bound satisfies.
+* link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037 -- The gateway-owned header sets] -- the never-forward set that withholds the client's `Content-Length`, which dispatch replaces with the value it validated.
+* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap] -- the streaming counter that also holds a declared-length body to its exact length.
+* link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] and link:0008-data-plane-transport.adoc[ADR-0008 -- Data-plane transport] -- the streaming, never-buffered body model that rules out buffering to learn a length.
+* link:../architecture.adoc[Architecture] -- the inbound pipeline, the framing gate's position and the dispatch stage.
+* link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class, and the bodyless-method evidence row.
