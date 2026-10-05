@@ -465,8 +465,7 @@ that follows a request with rejected framing on the same connection; never reuse
 connection that carried a request whose inbound framing failed. Prefer end-to-end HTTP/2 where
 possible.
 
-Three components enforce it. The HTTP transport refuses what it cannot frame at all, with a bare
-`400` and a closed connection. The gateway's `FramingGate` refuses what the transport does frame
+The HTTP transport refuses what it cannot frame at all, with a bare `400` and a closed connection. The gateway's `FramingGate` refuses what the transport does frame
 but two parsers could read differently, with a `400` problem document
 (`SECURITY_FILTER_VIOLATION`). The gate decides on headers; the proxy dispatch (`DispatchStage`)
 enforces the body rules no header can decide: a bodyless method is sent upstream with no body and
