@@ -605,10 +605,11 @@ the upstream saw.
 The row is off COVERED because the assertion below is not pinned in full. Over HTTP/2 the corpus
 pins that a gate rejection ends only its own stream, that a declared body on `HEAD` is refused,
 that a non-decimal `Content-Length` refuses only its own stream, the bodyless-method rule, and the
-framing of a body with and without a declared length. The smuggling entries speak HTTP/1.1, and the upstream side of the corpus is HTTP/1.1 throughout: no
-test drives the remaining gate clauses or an inbound body failure after dispatch over HTTP/2, and
-none drives the upstream reset against an HTTP/2 upstream. One clause is pinned by
-`FramingGateTest` alone and by no corpus entry: a repeated or comma-separated `Content-Length`.
+framing of a body with and without a declared length. The smuggling entries speak HTTP/1.1, and
+the upstream side of the corpus is HTTP/1.1 throughout: no test drives the remaining gate clauses
+or an inbound body failure after dispatch over HTTP/2, and none drives the upstream reset against
+an HTTP/2 upstream. One clause is pinned by `FramingGateTest` alone and by no corpus entry: a
+repeated or comma-separated `Content-Length`.
 
 *Assertion.* A request with both `Content-Length` and `Transfer-Encoding`, a HEAD/GET with a
 body, or a `Connection: Content-Length` cleanup attempt is rejected (400) and never produces
