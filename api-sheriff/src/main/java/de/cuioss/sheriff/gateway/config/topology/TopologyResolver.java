@@ -47,7 +47,8 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Resolves topology aliases to decomposed upstreams for enabled endpoints and for the
- * supplied additional aliases (pipeline step 6).
+ * supplied additional aliases (the topology stage of
+ * {@link de.cuioss.sheriff.gateway.config.boot.ConfigBootPipeline}).
  * <p>
  * Each alias (pattern {@code [A-Z][A-Z0-9_]*}) is read from the
  * {@code topology.properties} file, run through the same {@code ${VAR}} /
@@ -76,7 +77,7 @@ import org.jspecify.annotations.Nullable;
  * result), never collected. This asymmetry is deliberate: this resolver runs
  * <em>before</em>
  * {@link de.cuioss.sheriff.gateway.config.validation.ConfigValidator} in the boot
- * pipeline, so failing here would abort the boot at step 6 and make the validator's
+ * pipeline, so failing here would abort the boot at the topology stage and make the validator's
  * unresolved-passthrough-alias rule unreachable. Skipping leaves that validator rule
  * the sole reporter of the failure and keeps violation collection to a single pass.
  * An unresolvable placeholder or a <em>malformed</em> (as opposed to unresolved) URL is
