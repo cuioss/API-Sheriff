@@ -382,7 +382,8 @@ class DispatchStageTest {
         @Test
         @DisplayName("the first body byte refuses the request as SECURITY_FILTER_VIOLATION and aborts once")
         void firstBodyByteRefusesTheRequest() {
-            String chunk = Generators.letterStrings(1, 8).next();
+            // The marker keeps a short generated chunk from occurring in the fixed disposition by chance.
+            String chunk = "client-chosen-body-" + Generators.letterStrings(1, 8).next();
 
             source.emit(Buffer.buffer(chunk));
 
