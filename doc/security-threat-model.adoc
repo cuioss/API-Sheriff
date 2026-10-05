@@ -513,9 +513,9 @@ enforces it and the test that pins it:
 | A `GET` or `HEAD` without a positive declared `Content-Length` never carries a body upstream, on
   any protocol: it is sent with no body, and its first inbound body byte, whatever its size, refuses
   it as `SECURITY_FILTER_VIOLATION`. While the dispatch is awaited the refusal is answered `400` and
-  on HTTP/2 ends only that stream; once the response has started, the client stream is reset, never
-  cleanly ended. A stream that ends with an empty final frame carries no body and is served. The
-  opt-in below does not relax this rule
+  on HTTP/2 ends only that stream; once the response has been handed over for relay, the client
+  stream is reset, never cleanly ended. A stream that ends with an empty final frame carries no body
+  and is served. The opt-in below does not relax this rule
 | edge (`DispatchStage`, `GatewayEdgeRoute`)
 | `GatewayEdgeFramingCorpusTest` (`bodylessMethodNeverCarriesABodyUpstreamOnHttp2`,
   `optInAdmitsOnlyADeclaredLengthGetBodyOnHttp2`, `bodylessMethodEndingWithAnEmptyFrameIsServed`,

@@ -555,10 +555,10 @@ public final class DispatchStage {
      * resets the upstream request — the same ordering {@link ByteCappedBodyStream} keeps. While the
      * dispatch is still awaited, the dispatch reports that exception and the edge answers
      * {@code 400}. Once the dispatch has {@linkplain #handOver() handed its response over} for relay,
-     * a {@code 400} can no longer be written; the refusal goes to the late-violation callback instead,
-     * which runs before the upstream request is reset, so the edge ends the client response before the
-     * aborted relay could end it cleanly. The choice between the two is made under this watch's
-     * monitor, so a refusal takes exactly one of them.
+     * the refusal goes to the late-violation callback instead, which runs before the upstream request
+     * is reset, so the edge ends the client response before the aborted relay could end it cleanly.
+     * The choice between the two is made under this watch's monitor, so a refusal takes exactly one of
+     * them.
      * <p>
      * <strong>Armed once per dispatch.</strong> The inbound stream is single-use and no retry attempt
      * sends a body, so one watch serves every attempt; its abort action resets whichever attempt is

@@ -378,9 +378,10 @@ gate decides on headers, so a body that no header declares -- on HTTP/2, DATA fr
 declared `Content-Length` is sent upstream with no body, on every protocol, and its first inbound
 body byte, whatever its size, refuses it as `SECURITY_FILTER_VIOLATION`. While the dispatch is
 awaited the refusal is answered `400` and ends what it arrived on, as a gate rejection does: the
-HTTP/2 stream alone, or the HTTP/1.x connection. Once the response has started, the client stream
-is reset rather than cleanly ended, so a truncated response never reads as complete. A stream that
-ends with an empty final frame carries no body and is served. Every other request that declares a
+HTTP/2 stream alone, or the HTTP/1.x connection. Once the response has been handed over for relay,
+the client stream is reset rather than cleanly ended, so a truncated response never reads as
+complete. A stream that ends with an empty final frame carries no body and is served. Every other
+request that declares a
 `Content-Length`, whatever its method, is forwarded framed by it: dispatch writes the value the gate
 and the `max_body_bytes` pre-check admitted as the upstream `Content-Length` and sends exactly that
 many bytes. A byte beyond it is never forwarded and refuses the request as

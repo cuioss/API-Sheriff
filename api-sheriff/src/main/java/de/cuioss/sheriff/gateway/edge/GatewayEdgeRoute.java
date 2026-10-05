@@ -1277,8 +1277,7 @@ public class GatewayEdgeRoute {
 
     /**
      * Meters and logs a categorized {@link GatewayException} rejection without answering it — the
-     * accounting half of {@link #handleGatewayRejection}, shared with a refusal that can no longer be
-     * answered because the response has already started (see {@link #lateBodyRefusal}).
+     * accounting half of {@link #handleGatewayRejection}, shared with {@link #lateBodyRefusal}.
      */
     private void reportRejection(RoutingContext ctx, GatewayException rejected) {
         // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
