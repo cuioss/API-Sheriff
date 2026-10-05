@@ -150,10 +150,10 @@ class ConfigBootPipelineTest {
 
         assertNull(outcome.assembly());
         assertEquals(List.of(
-                new ConfigError("topology.properties", "ALPHA", "Cannot resolve placeholder in topology alias 'ALPHA': "
-                        + "Unresolved environment variable: SHERIFF_TEST_ABSENT_ALPHA_URL"),
-                new ConfigError("topology.properties", "BETA",
-                        "Unresolved topology alias 'BETA' referenced by enabled endpoint 'beta'")),
+                        new ConfigError("topology.properties", "ALPHA", "Cannot resolve placeholder in topology alias 'ALPHA': "
+                                + "Unresolved environment variable: SHERIFF_TEST_ABSENT_ALPHA_URL"),
+                        new ConfigError("topology.properties", "BETA",
+                                "Unresolved topology alias 'BETA' referenced by enabled endpoint 'beta'")),
                 outcome.violations());
     }
 
@@ -186,7 +186,7 @@ class ConfigBootPipelineTest {
 
         assertNull(outcome.assembly());
         assertEquals(List.of(new ConfigError("application.properties", "quarkus.http.limits.max-body-size",
-                "2048 exceeds framework limit 1024; raise quarkus.http.limits.max-body-size to at least 2048")),
+                        "2048 exceeds framework limit 1024; raise quarkus.http.limits.max-body-size to at least 2048")),
                 outcome.violations());
     }
 
@@ -222,7 +222,7 @@ class ConfigBootPipelineTest {
 
         ConfigBootPipeline.Outcome outcome = pipelineWith(
                 Map.of("SHERIFF_TEST_INJECTED_WEB_URL", "https://fixed.internal:9443")).run(configDir,
-                        FRAMEWORK_LIMIT_BYTES);
+                FRAMEWORK_LIMIT_BYTES);
 
         ConfigBootPipeline.Assembly assembly = outcome.assembly();
         assertNotNull(assembly, () -> "unexpected " + outcome.violations());
@@ -246,9 +246,9 @@ class ConfigBootPipelineTest {
 
         assertAll("defaults reported, outcome otherwise valid",
                 () -> assertEquals(List.of(
-                        new DefaultedPlaceholder("gateway.yaml", "/metadata/config_version",
-                                "SHERIFF_TEST_CONFIG_VERSION"),
-                        new DefaultedPlaceholder("topology.properties", "WEB_BACKEND", "SHERIFF_TEST_WEB_URL")),
+                                new DefaultedPlaceholder("gateway.yaml", "/metadata/config_version",
+                                        "SHERIFF_TEST_CONFIG_VERSION"),
+                                new DefaultedPlaceholder("topology.properties", "WEB_BACKEND", "SHERIFF_TEST_WEB_URL")),
                         outcome.defaulted()),
                 () -> assertTrue(outcome.violations().isEmpty(), () -> "unexpected " + outcome.violations()),
                 () -> assertNotNull(outcome.assembly()));

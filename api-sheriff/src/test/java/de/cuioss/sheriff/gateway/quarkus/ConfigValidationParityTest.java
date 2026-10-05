@@ -266,7 +266,7 @@ class ConfigValidationParityTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpus")
     @DisplayName("The boot and the offline check report the same ordered violations")
-    void bootAndOfflineReportTheSameViolations(CorpusSet set) throws IOException {
+    void bootAndOfflineReportTheSameViolations(CorpusSet set) throws Exception {
         Path configDir = set.source().materialize(tempDir);
         EnvSecretResolver resolver = new EnvSecretResolver(set.environment()::get);
 
@@ -287,7 +287,7 @@ class ConfigValidationParityTest {
 
     @Test
     @DisplayName("The framework body limit is the one intended difference, reported offline as not checked")
-    void frameworkBodyLimitIsTheOnlyIntendedDifference() throws IOException {
+    void frameworkBodyLimitIsTheOnlyIntendedDifference() throws Exception {
         Files.writeString(tempDir.resolve("gateway.yaml"), """
                 version: 1
                 anchors:

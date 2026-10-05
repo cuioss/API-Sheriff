@@ -258,7 +258,7 @@ public final class ConfigBootPipeline {
      * @since 1.0
      */
     public record Outcome(List<ConfigError> violations, List<DefaultedPlaceholder> defaulted,
-            List<String> notChecked, @Nullable Assembly assembly) {
+    List<String> notChecked, @Nullable Assembly assembly) {
 
         /**
          * Canonical constructor copying every list defensively and enforcing that an assembly is
@@ -285,7 +285,7 @@ public final class ConfigBootPipeline {
      * @since 1.0
      */
     public record Assembly(GatewayConfig gateway, List<EndpointConfig> enabledEndpoints, ResolvedTopology topology,
-            RouteTable routeTable) {
+    RouteTable routeTable) {
 
         /**
          * Canonical constructor requiring every component and copying the endpoint list.

@@ -2860,10 +2860,10 @@ class ConfigLoaderTest {
             ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
             assertEquals(List.of(
-                    new ConfigError("gateway.yaml", "/oidc/redirect_uri",
-                            "Unresolved environment variable: FIRST_MISSING, SECOND_MISSING"),
-                    new ConfigError("gateway.yaml", "/oidc/login/default_return_url",
-                            "Unresolved environment variable: THIRD_MISSING")),
+                            new ConfigError("gateway.yaml", "/oidc/redirect_uri",
+                                    "Unresolved environment variable: FIRST_MISSING, SECOND_MISSING"),
+                            new ConfigError("gateway.yaml", "/oidc/login/default_return_url",
+                                    "Unresolved environment variable: THIRD_MISSING")),
                     exception.errors());
             assertTrue(exception.errors().stream()
                             .noneMatch(error -> error.message().contains(setValue)
@@ -2882,14 +2882,14 @@ class ConfigLoaderTest {
             ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(defaulted::add);
 
             assertEquals(List.of(
-                    new DefaultedPlaceholder("gateway.yaml", "/oidc/login/default_return_url", "TAB"),
-                    new DefaultedPlaceholder("endpoints/home.yaml", "/endpoint/id", "ENDPOINT_ID")),
+                            new DefaultedPlaceholder("gateway.yaml", "/oidc/login/default_return_url", "TAB"),
+                            new DefaultedPlaceholder("endpoints/home.yaml", "/endpoint/id", "ENDPOINT_ID")),
                     defaulted);
             assertAll("the defaults were applied, yet no recorded field carries them",
                     () -> assertEquals("/app/" + gatewayDefault, loaded.gateway().oidc().login().defaultReturnUrl()),
                     () -> assertEquals(endpointDefault, loaded.endpoints().getFirst().id()),
                     () -> assertTrue(defaulted.stream().noneMatch(entry -> entry.toString().contains(gatewayDefault)
-                            || entry.toString().contains(endpointDefault)),
+                                    || entry.toString().contains(endpointDefault)),
                             () -> "a default literal reached a recorded field: " + defaulted));
         }
 

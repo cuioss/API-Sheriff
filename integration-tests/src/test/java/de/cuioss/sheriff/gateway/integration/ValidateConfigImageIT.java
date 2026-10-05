@@ -185,7 +185,7 @@ class ValidateConfigImageIT {
 
     @Test
     @DisplayName("a set carrying a validator violation exits 1 and prints the JVM pipeline's INVALID line")
-    void invalidSetExitsOne() throws IOException {
+    void invalidSetExitsOne() throws Exception {
         Path invalidSet = writeWorldReadableSet(INVALID_GATEWAY);
         List<String> expected = new ConfigBootPipeline(new EnvSecretResolver(Map.<String, String>of()::get))
                 .run(invalidSet, null).violations().stream()

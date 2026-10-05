@@ -155,7 +155,7 @@ class TopologyResolverTest {
                 "an unresolved ${VAR} on an enabled endpoint alias must fail the boot");
 
         assertEquals(List.of(topologyError("ORDERS",
-                "Cannot resolve placeholder in topology alias 'ORDERS': Unresolved environment variable: ORDERS_URL")),
+                        "Cannot resolve placeholder in topology alias 'ORDERS': Unresolved environment variable: ORDERS_URL")),
                 exception.errors());
     }
 
@@ -207,11 +207,11 @@ class TopologyResolverTest {
                 () -> resolver.resolve(file, endpoints, List.of()));
 
         assertEquals(List.of(
-                topologyError("ALPHA",
-                        "Cannot resolve placeholder in topology alias 'ALPHA': Unresolved environment variable: ALPHA_URL"),
-                topologyError("BETA", "Cannot resolve placeholder in topology alias 'BETA': "
-                        + "Unresolved environment variable: BETA_HOST, BETA_PORT"),
-                topologyError("GAMMA", "Unresolved topology alias 'GAMMA' referenced by enabled endpoint 'gamma'")),
+                        topologyError("ALPHA",
+                                "Cannot resolve placeholder in topology alias 'ALPHA': Unresolved environment variable: ALPHA_URL"),
+                        topologyError("BETA", "Cannot resolve placeholder in topology alias 'BETA': "
+                                + "Unresolved environment variable: BETA_HOST, BETA_PORT"),
+                        topologyError("GAMMA", "Unresolved topology alias 'GAMMA' referenced by enabled endpoint 'gamma'")),
                 exception.errors());
         assertTrue(exception.getMessage().contains("3 error(s)"),
                 () -> "the exception message summarises every failure: " + exception.getMessage());
@@ -261,7 +261,7 @@ class TopologyResolverTest {
                 () -> resolver.resolve(file, endpoints, List.of("SECURE")));
 
         assertEquals(List.of(topologyError("SECURE",
-                "Topology URL for alias 'SECURE' must use an http or https scheme, but was 'ftp'")),
+                        "Topology URL for alias 'SECURE' must use an http or https scheme, but was 'ftp'")),
                 exception.errors());
     }
 
@@ -382,7 +382,7 @@ class TopologyResolverTest {
                 "an unresolvable enabled-endpoint base_url alias must still fail the boot");
 
         assertEquals(List.of(topologyError("MISSING",
-                "Unresolved topology alias 'MISSING' referenced by enabled endpoint 'missing'")),
+                        "Unresolved topology alias 'MISSING' referenced by enabled endpoint 'missing'")),
                 exception.errors());
     }
 
@@ -418,7 +418,7 @@ class TopologyResolverTest {
                 "a non-http(s) topology alias scheme must be rejected at boot");
 
         assertEquals(List.of(topologyError("ORDERS",
-                "Topology URL for alias 'ORDERS' must use an http or https scheme, but was 'ftp'")),
+                        "Topology URL for alias 'ORDERS' must use an http or https scheme, but was 'ftp'")),
                 exception.errors());
     }
 }

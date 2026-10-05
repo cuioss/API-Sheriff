@@ -954,7 +954,7 @@ public final class ConfigLoader {
      * applied in-file default.
      */
     private record DocumentPass(JsonNode schemaTree, String file, List<ConfigError> errors,
-            Consumer<DefaultedPlaceholder> defaultedSink) {
+    Consumer<DefaultedPlaceholder> defaultedSink) {
     }
 
     /**

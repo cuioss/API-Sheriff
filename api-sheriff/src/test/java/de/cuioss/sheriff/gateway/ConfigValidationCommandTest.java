@@ -238,7 +238,7 @@ class ConfigValidationCommandTest {
                     () -> assertEquals(ConfigValidationCommand.EXIT_INVALID, exitCode),
                     () -> assertFalse(expected.isEmpty(), "the fixture must violate a validator rule"),
                     () -> assertEquals(expected.stream()
-                            .map(v -> "INVALID " + v.file() + " [" + v.pointer() + "]: " + v.message()).toList(),
+                                    .map(v -> "INVALID " + v.file() + " [" + v.pointer() + "]: " + v.message()).toList(),
                             invalid),
                     () -> assertTrue(invalid.stream()
                                     .anyMatch(line -> line.contains("is type 'bff' and must declare access: authenticated")),
@@ -258,7 +258,7 @@ class ConfigValidationCommandTest {
             assertAll("topology violation",
                     () -> assertEquals(ConfigValidationCommand.EXIT_INVALID, exitCode),
                     () -> assertEquals(List.of("INVALID topology.properties [WEB_BACKEND]: "
-                            + "Unresolved topology alias 'WEB_BACKEND' referenced by enabled endpoint 'web'"),
+                                    + "Unresolved topology alias 'WEB_BACKEND' referenced by enabled endpoint 'web'"),
                             outLinesStartingWith("INVALID ")));
         }
 
@@ -335,10 +335,10 @@ class ConfigValidationCommandTest {
                     () -> assertEquals(ConfigValidationCommand.EXIT_VALID, exitCode,
                             "an applied default never changes the exit code"),
                     () -> assertEquals(List.of(
-                            "DEFAULTED gateway.yaml [/metadata/config_version]: ${SHERIFF_TEST_CONFIG_VERSION} unset,"
-                                    + " in-file default applied",
-                            "DEFAULTED topology.properties [WEB_BACKEND]: ${SHERIFF_TEST_WEB_URL} unset,"
-                                    + " in-file default applied"),
+                                    "DEFAULTED gateway.yaml [/metadata/config_version]: ${SHERIFF_TEST_CONFIG_VERSION} unset,"
+                                            + " in-file default applied",
+                                    "DEFAULTED topology.properties [WEB_BACKEND]: ${SHERIFF_TEST_WEB_URL} unset,"
+                                            + " in-file default applied"),
                             outLinesStartingWith("DEFAULTED ")),
                     () -> assertEquals("RESULT: violations=0 defaulted=2 not-checked=" + NOT_CHECKED_COUNT,
                             outLines().getLast()),
