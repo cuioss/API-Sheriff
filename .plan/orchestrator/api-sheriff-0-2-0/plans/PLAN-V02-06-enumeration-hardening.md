@@ -97,10 +97,12 @@ must work through that negotiation, not around it.
    re-scope rather than force it. Verify the exact enforcement call site at outline against the
    h2/gRPC termination code.
 
-   **Also the `gw-02` residue.** `PLAN-V02-13` left threat-model row `gw-02` (request framing) at
-   `PARTIAL`: the HTTP/2 clauses beyond the stream-scoped gate rejection are not pinned. They are
-   HTTP/2 framing bounds of the same kind as this deliverable's, so close them here and flip `gw-02`
-   with `gw-08`, or report which clause remains open.
+   **Also the `gw-02` residue.** Threat-model row `gw-02` (request framing) is `PARTIAL`. It is pinned
+   for HTTP/1.1, and on HTTP/2 for the stream-scoped gate rejection, a declared body on `HEAD`, the
+   bodyless-method rule and declared-length framing. Still unpinned on HTTP/2: the other framing-gate
+   clauses, and an inbound body failure after dispatch. They are HTTP/2 framing bounds of the same kind
+   as this deliverable's, so close them here and flip `gw-02` with `gw-08`, or report which clause
+   remains open.
 
    Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
    `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives

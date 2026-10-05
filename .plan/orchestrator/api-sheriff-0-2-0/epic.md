@@ -55,6 +55,12 @@ would otherwise force a retrofit.
   their two tests and `doc/configuration.adoc`. Neither spec declared `DispatchStage.java`; V02-10's
   overlap came from an unplanned relay-race fix found at the merge queue. It integrated cleanly. Treat
   any plan touching the edge relay as overlapping `edge/**`, whatever its declared surface says.
+- **Out-of-epic edge work (2026-10-05):** `fix-four-audit-findings-and-bff-flaky-test` landed as
+  #385 (`11f9c38a`): bodyless-method dispatch, a bounded `status_family` metric label, abort
+  attribution, and the flaky `BffRuntimeProducerTest` fix (the residue V02-13's landing reported). It
+  is not a row of this queue. A second out-of-epic plan, `relay-release-and-jsse-env-guard`, is live
+  and again touches `edge/DispatchStage.java` and `edge/GatewayEdgeRoute.java`; its subject is not
+  recorded here. Anything in this queue declaring `edge/**` sequences behind it.
 
 ## Workstreams
 
@@ -290,8 +296,15 @@ doc-only or build-light plan for the second and third slots.
   `demo-client/doc/integration-sample.adoc`; and the PROHIBITED ASSERTION scope wording in
   `demo-client/doc/playwright-suite.adoc`. The issue comment also names `doc/plan/04-request-pipeline.adoc`,
   which no longer exists — discharged. Stage a small plan when wanted.
-- **ADR-0059 IS `Proposed`** (added 2026-10-04). The ROUTING problem category is shipped; the record
-  needs an acceptance decision. Operator call, or `PLAN-V02-04`'s status sweep.
+- **ADR-0059 AND ADR-0060 ARE `Proposed`** (added 2026-10-04; ADR-0060 added 2026-10-05). Both
+  decisions are shipped — the ROUTING problem category (#383) and bodyless-method dispatch with exact
+  declared-length framing (#385). Each record needs an acceptance decision. Operator call, or
+  `PLAN-V02-04`'s status sweep.
+- **OPERATOR DECISION OWED: a simplification in `DispatchStage`'s inbound-body handling** (added
+  2026-10-05, inbox `fix-four-audit-findings-and-bff-flaky-test-001.md`). The plan behind #385 left one
+  simplification finding there for an operator decision instead of changing it. The finding text is
+  not in this ledger; read it in that plan's archived findings. `DispatchStage` is shared with live
+  work, so decide before another plan touches the edge relay.
 
 - **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08`, NONE STAGED** (added 2026-10-03; the plan's claims,
   each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
@@ -444,6 +457,14 @@ doc-only or build-light plan for the second and third slots.
   cross-check` counts the plan-less sentinel `.plan/local/plans/NO_PLAN` (`"sentinel": true`) as a
   live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
   `next` while it exists; the operator ruled that verdict wrong and overrode it.
+
+## Inbox Drain — 2026-10-05 (sender `fix-four-audit-findings-and-bff-flaky-test`, a plan outside this epic)
+
+One message, valid, consumed and archived; the queue is empty afterwards.
+
+| Message | Kind | Disposition | Where it went |
+|---|---|---|---|
+| `fix-four-audit-findings-and-bff-flaky-test-001.md` | finding | observed | Corroborated: #385 merged as `11f9c38a`, 34 PR checks green, no unresolved review thread, post-merge benchmark (run 37315527076) and `main` Maven Build (run 37315523469, `deploy-snapshot` included) green, ADR-0060 `Proposed`. Absorbed: the ADR watch now covers ADR-0059 and ADR-0060; a new watch for the `DispatchStage` decision; `PLAN-V02-06` D8's `gw-02` note narrowed to what is still unpinned; the module-attribution gap appended as a recurrence to lesson `2026-10-03-06-007`. No queue change. |
 
 ## Inbox Drain — 2026-10-04 (senders `plan-v02-13-terminal-rejection-contract`, `plan-v02-10-per-client-tls-trust`)
 
