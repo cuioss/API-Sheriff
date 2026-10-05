@@ -107,7 +107,8 @@ public enum EventType {
      * {@code security_filter.max_body_bytes} cap. This event is a body that stopped arriving, whatever
      * its size. It is <strong>not</strong> a {@link #SECURITY_FILTER_VIOLATION}: no filter judged the
      * request, and an ordinary dropped upload raises no security warning. It is attributed to the
-     * client, never to the upstream, so the route's circuit breaker does not count it as a failure.
+     * client, never to the upstream, so it is not counted as a failure by the route's circuit breaker
+     * and is recorded by it as a success.
      */
     INBOUND_BODY_ABORTED(EventCategory.INPUT_VALIDATION, 400),
 

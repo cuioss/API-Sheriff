@@ -1484,7 +1484,7 @@ public class GatewayEdgeRoute {
         // proxied response is the one path where the default-mode map defers to an origin header.
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        relayOnEventLoop(ctx, stageSetCookies, () -> responseStage.relay(upstream, ctx.response(),
+        relayOnEventLoop(ctx, stageSetCookies, upstream, () -> responseStage.relay(upstream, ctx.response(),
                 route.isNotModifiedEnabled(), route.getLocationRewriter(), setHeaders, defaultHeaders));
     }
 
@@ -1581,8 +1581,8 @@ public class GatewayEdgeRoute {
         List<String> stageSetCookies = request.responseSetCookies();
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        relayOnEventLoop(ctx, stageSetCookies, () -> responseStage.relayWithTrailers(upstream, ctx.response(),
-                route.isNotModifiedEnabled(), setHeaders, defaultHeaders));
+        relayOnEventLoop(ctx, stageSetCookies, upstream, () -> responseStage.relayWithTrailers(upstream,
+                ctx.response(), route.isNotModifiedEnabled(), setHeaders, defaultHeaders));
     }
 
     /**
@@ -1699,12 +1699,22 @@ public class GatewayEdgeRoute {
      * longer be piped throws from {@code pipeTo} synchronously). A thrown failure must not escape this
      * runOnContext task: it would reach only Vert.x's uncaught-exception handler, the client response
      * would never end, and the client would wait for its own timeout.
+     * <p>
+     * <strong>A relay that fails to start releases the upstream response.</strong> The dispatched
+     * upstream response is still paused when the relay is started, and only the relay would consume
+     * it. When starting the relay throws, the upstream exchange is therefore reset before the client is
+     * answered — on HTTP/1.x its connection is closed instead of being held, on HTTP/2 the one stream is
+     * reset. For a response that already ended the reset is a no-op. A failure the relay reports on its
+     * future goes to {@code failRelay} as described above; the upstream exchange is not reset on that
+     * path.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
+     * @param upstream        the dispatched upstream response the relay streams
      * @param relay           starts the relay and returns the future completing when it has finished
      */
-    static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, Supplier<Future<Void>> relay) {
+    static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, HttpClientResponse upstream,
+            Supplier<Future<Void>> relay) {
         ctx.vertx().runOnContext(v -> {
             Future<Void> relayed;
             // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
@@ -1715,6 +1725,8 @@ public class GatewayEdgeRoute {
                 applyStageSetCookies(ctx.response(), stageSetCookies);
                 relayed = relay.get();
             } catch (RuntimeException startFailure) {
+                // Nothing consumes the paused upstream response once the relay did not start: release it.
+                upstream.request().reset();
                 relayed = Future.failedFuture(startFailure);
             }
             relayed.onFailure(failure -> failRelay(ctx, failure));
@@ -2412,12 +2424,15 @@ public class GatewayEdgeRoute {
      * Builds the per-shape SmallRye Fault-Tolerance guard: a circuit breaker plus an upstream
      * timeout, with retry added only for a route that enables it. Gateway rejections
      * ({@link GatewayException}) are skipped by the breaker, so they never count as an upstream
-     * failure, and abort the retry, so they never trigger one. A dispatch the client itself ended —
-     * a body-cap breach, an inbound request body that failed after dispatch began, a body on a
-     * bodyless method, a body disagreeing with its declared length — reaches the guard as such a
-     * skipped {@link GatewayException} (see {@link DispatchStage}). SmallRye Fault Tolerance has no
-     * neutral outcome, so the breaker records a skipped exception as a success; keeping these
-     * dispatches out of its window would need the guarded call to be restructured.
+     * failure. Whether a failed attempt is retried is decided by the retry predicate
+     * {@link DispatchStage#allowsRetryAfter(Throwable)}, after the attempt failed and before any
+     * re-entry: it never retries a gateway rejection, and a retry it refuses is not recorded by the
+     * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
+     * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
+     * length — reaches the guard as such a skipped {@link GatewayException} (see
+     * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records
+     * a skipped exception as a success; keeping these dispatches out of its window would need the
+     * guarded call to be restructured.
      */
     private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
         // Include retryEnabled in the breaker name: RouteRuntimeAssembler's guardCache is keyed by the
@@ -2439,7 +2454,7 @@ public class GatewayEdgeRoute {
         builder.withTimeout().duration(30, ChronoUnit.SECONDS).done();
         if (shape.retryEnabled()) {
             builder.withRetry().maxRetries(2).delay(100, ChronoUnit.MILLIS)
-                    .abortOn(GatewayException.class).done();
+                    .whenException(DispatchStage::allowsRetryAfter).done();
         }
         return builder.build();
     }
