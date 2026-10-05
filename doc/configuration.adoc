@@ -161,13 +161,19 @@ route-`id` uniqueness across files, `upstream_defaults` and `allowed_methods` wh
 `allowed_methods` verb membership, topology-alias resolvability, the `base_url`-only-with-a-proxy-route
 rule, the one-terminal-action rule and the open-redirect review of a `redirect` location, and
 same-prefix / same-exact-path disjointness. Every
-violation the schema gate and the configuration-validator rules detect is collected in a single
-pass and reported together, rather than one at a time, and any violation refuses the boot. The one
-deliberate exception is an unresolvable `base_url` alias of an *enabled* endpoint: the topology
-resolver runs *before* the aggregating validator and *throws* on it
-(link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]), so that single failure aborts
-the boot on its own rather than joining the aggregated report. An unresolvable `passthrough_sni`
-alias, by contrast, is deferred to the validator and aggregated with the rest.
+violation the configuration-validator rules detect is collected in a single pass and reported
+together, rather than one at a time, and any violation refuses the boot; the schema gate collects its
+violations the same way within the load stage, which runs first and stops the pass when it fails.
+Topology resolution runs as its own stage *before* the validator
+(link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]), and it aggregates the same way:
+every failure of the resolution pass -- each unresolvable `base_url` alias of an *enabled* endpoint,
+each placeholder that cannot be resolved, each malformed URL -- is reported together, as one
+`ApiSheriff-200` entry per failure (file `topology.properties`, the alias as pointer) followed by the
+`ApiSheriff-201` summary. A pass with a topology failure stops at that stage, so the validator's
+violations of the same configuration are reported once the topology resolves. An unresolvable
+`passthrough_sni` alias is not a topology-stage failure: it is deferred to the validator and
+aggregated with the rest. The offline check `--validate-config` reports the same entries without
+booting -- see link:user/offline-config-validation.adoc[Offline Configuration Validation].
 
 == Gateway Configuration (`gateway.yaml`)
 

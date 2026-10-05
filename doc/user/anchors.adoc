@@ -209,6 +209,11 @@ every violation in the single validation pass (never fails fast):
 * An `access: public` anchor *must not* declare an `auth` block at all -- public is the *absence*
   of auth, so the `require: none` posture lives on the endpoint (or route) rather than the anchor.
 
+These rules, and every other anchor rule on this page that fails the boot, can be checked before a
+gateway boots the configuration: `--validate-config` runs the boot's own validation offline and
+reports each violation with the file and pointer the boot would name. See
+link:offline-config-validation.adoc[Offline Configuration Validation].
+
 Like the policy blocks, the axes vanish at runtime: `type` selects the route's terminal action
 during route-table assembly and `access` is materialized onto each asset route's response
 envelope; the request pipeline never consults an anchor.

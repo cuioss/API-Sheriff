@@ -115,6 +115,13 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   the codebase offers a secure default with an override route. Read it before assuming an
   environment variable can change a given behaviour.
 
+| link:offline-config-validation.adoc[Offline Configuration Validation (`--validate-config`)]
+| Checking a configuration directory before a gateway boots it, with the boot's own rules: the
+  container-image and JVM-runner invocations, the report on standard output and its `INVALID`,
+  `DEFAULTED`, `NOT CHECKED` and `RESULT:` lines, the exit codes `0` / `1` / `2`, the placeholder
+  policy (supply the variables the deployment supplies; an unset `${VAR}` is a violation, an unset
+  `${VAR:-default}` is listed), the boot refusals the check cannot see, and a CI snippet.
+
 | link:container-image.adoc[Container Image -- Pulling, Running and Verifying]
 | The operator layer for the published image at `ghcr.io/cuioss/api-sheriff`: the two-tag scheme and
   why no `:latest` exists, a `docker run` that reflects what the artifact actually requires (a

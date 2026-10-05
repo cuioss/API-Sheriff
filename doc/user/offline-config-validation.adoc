@@ -1,0 +1,306 @@
+= API Sheriff -- Offline Configuration Validation (`--validate-config`)
+:toc:
+:toclevels: 2
+:sectnums:
+
+How to check a configuration directory -- `gateway.yaml`, the `endpoints/` files and
+`topology.properties` -- *before* a gateway boots it: the two invocations, what the report says and
+where it goes, the exit codes a pipeline acts on, the placeholder policy, and the boot refusals the
+check cannot see. The decision behind the flag is recorded in
+link:../adr/0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061];
+this page describes how to use it.
+
+== What the check is
+
+The gateway binary answers one extra command-line token: `--validate-config <dir>`. It is handled
+before the framework starts, so the check binds no port, opens no listener, contacts no identity
+provider and reads no deployment key material. It runs on a laptop or a CI runner that has none of
+those.
+
+*The verdict is the boot's own.* The check does not carry a second set of rules. It runs the same
+configuration pipeline the boot runs -- load (read, schema, placeholder substitution, binding), the
+endpoint-enablement filter, topology resolution, the semantic validator and route-table assembly --
+and prints the violations that pipeline returns. A configuration the boot refuses at one of those
+stages is reported here with the same file, the same pointer and the same message the boot logs as
+`ApiSheriff-200`. A parity test runs both paths over the shipped configuration sets and over sets
+failing at every stage and requires the two violation lists to be identical, so the two cannot drift
+apart unnoticed.
+
+*A clean run is not a promise that the boot will start.* Some boot refusals depend on deployment
+keys, the running JDK, trust stores or a listener bind rather than on the configuration directory.
+The check cannot evaluate those, and it names every one of them on every run -- see
+<<_what_is_not_checked_offline>>.
+
+== Running the check
+
+=== From the container image
+
+Use the image you deploy. Mount the configuration directory read-only, pass the placeholder variables
+the deployment supplies with `-e`, and append the flag after the image name -- it is handed to the
+image's executable:
+
+[source,bash]
+----
+docker run --rm --network none \
+  -v "$PWD/sheriff-config:/app/sheriff-config:ro" \
+  -e SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32 \
+  ghcr.io/cuioss/api-sheriff:<version> \
+  --validate-config /app/sheriff-config
+----
+
+* `--network none` is not required, but it costs nothing and makes the "contacts nothing" property
+  visible: the check needs no network.
+* The image runs as `nonroot`, a different user than the one who owns your files. Every file in the
+  mounted directory must be readable by others, or the check reports `gateway.yaml` as unreadable and
+  exits `2`.
+* Replace the `-e` line with the variables *your* deployment sets -- see <<_placeholder_policy>>. The
+  example shows the one variable the compose sample's `gateway.yaml` requires.
+* The flag is part of the binary from the release after 0.2.3 onwards. An older image does not know
+  the token and does not run the check, so pin a release that carries it.
+
+The container-specific flags and the image's other prerequisites are covered in
+link:container-image.adoc[Container Image].
+
+=== From source, on the JVM
+
+A CI pipeline that builds the gateway from source runs the JVM runner it has just built:
+
+[source,bash]
+----
+./mvnw -B -ntp package -pl api-sheriff -am -DskipTests
+SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32 \
+  java -jar api-sheriff/target/quarkus-app/quarkus-run.jar --validate-config deployment/compose-sample/docker/sheriff-config
+----
+
+The runner and the image answer the flag identically. The only difference is where the placeholder
+variables come from: the shell environment of the `java` process instead of `-e`.
+
+== Output and streams
+
+* *The report goes to standard output.* Every line described in <<_report_lines>> is written there,
+  so `> report.txt` captures the whole verdict.
+* *Usage errors and unreadable input go to standard error*, as one line starting with
+  `validate-config:`, and nothing is written to standard output.
+* *Diagnostic log lines may also appear on standard error.* The shared pipeline code can log while it
+  runs. Those lines are not part of the report and never change it or the exit code; read the
+  report from standard output and the exit code from the process.
+
+== Exit codes
+
+[cols="1,4"]
+|===
+| Code | Meaning
+
+| `0`
+| No violation. `DEFAULTED` and `NOT CHECKED` lines may be present; they are informational and never
+  change the exit code.
+
+| `1`
+| At least one `INVALID` line was printed. The boot would refuse this configuration.
+
+| `2`
+| Usage error or unreadable input. Nothing was validated. This covers a missing directory argument,
+  an argument that is not a valid path, a directory that does not exist, is not a directory or is not
+  readable, and a directory whose `gateway.yaml` is missing, is not a regular file or is not
+  readable.
+|===
+
+A file the pipeline itself cannot read or parse -- an endpoint file with broken YAML, an oversized
+document -- is a violation of the load stage, not unreadable input: it is reported as an `INVALID`
+line and exits `1`, exactly as the boot refuses it.
+
+[[_report_lines]]
+== Report lines
+
+The report is a fixed sequence of line types, in this order:
+
+`INVALID <file> [<pointer>]: <message>`::
+One entry per violation, in pipeline order. The file, the JSON pointer and the message are the ones
+the boot logs as `ApiSheriff-200`. The entry is one line, except where the message itself spans
+lines -- a YAML parser error quotes the offending line and points at the column underneath it.
++
+----
+INVALID gateway.yaml [/oidc/sender_constraint/key_file]: Unresolved environment variable: OIDC_DPOP_KEY_FILE
+----
+
+`DEFAULTED <file> [<pointer>]: ${<NAME>} unset, in-file default applied`::
+One line per `${NAME:-default}` placeholder whose variable was unset, so the in-file default was
+used. The line names the variable and the location only -- never the default and never any value.
++
+----
+DEFAULTED topology.properties [UPSTREAM]: ${TOPOLOGY_UPSTREAM} unset, in-file default applied
+----
+
+`NOT CHECKED: <name> - <reason>`::
+One line per boot refusal the check cannot evaluate, printed on every run, valid or not. The
+separator between name and reason is a plain ASCII hyphen.
++
+----
+NOT CHECKED: mTLS listener - tls.mtls.enabled without client_ca: listener wiring, checked at boot
+----
+
+`POLICY:`::
+One fixed line stating that `${VAR}` placeholders were resolved from the environment of this run.
+
+`RESULT: violations=<n> defaulted=<n> not-checked=<n>`::
+The last line, carrying the three counts.
++
+----
+RESULT: violations=0 defaulted=2 not-checked=9
+----
+
+A run that reaches the validation stage lists nine `NOT CHECKED` entries: the framework body limit
+and the eight families described below. A run that stops earlier, on a load or topology violation,
+lists only the eight families, because it never reached the body-limit check.
+
+[[_placeholder_policy]]
+== Placeholder policy
+
+`${VAR}` placeholders are substituted from the environment of the run, *exactly as the boot
+substitutes them* -- the check uses the boot's own substitution engine. The consequences, written
+down plainly:
+
+* *Supply the same variables the deployment supplies.* The verdict holds for the environment of this
+  run. For a container deployment those are the `-e` / `environment:` entries that feed placeholders
+  in the configuration directory; deployment keys such as `QUARKUS_*` are not read by the check.
+* *An unset `${VAR}` is a violation.* It is reported as an `INVALID` line naming the variable and its
+  location, and it is never treated as valid. A pipeline that forgets a variable fails, which is the
+  intended direction.
+* *An unset `${VAR:-default}` is listed, not failed.* It appears as a `DEFAULTED` line naming the
+  variable and its location only. The default itself is never printed, and the line does not change
+  the exit code.
+* *A variable the target deployment sets differently is validated with the value of this run.* The
+  check cannot know what another environment will supply. If production sets `TOPOLOGY_UPSTREAM` and
+  your pipeline does not, the run validates the in-file default and lists it as `DEFAULTED`; supply
+  the production value to validate that instead.
+* *Secrets stay out of the report.* The report echoes no configuration value beyond what the
+  pipeline's own violation messages carry, and never a secret. A placeholder carrying a secret is
+  still substituted, so a secret the deployment supplies through a variable may be needed for the
+  check to pass -- supply it the way the deployment does.
+
+Where placeholders may appear and how topology aliases and `ENDPOINT_<ID>_ENABLED` resolve is covered
+in link:environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Environment-Variable
+Overrides -- Topology and endpoint enablement].
+
+[[_what_is_not_checked_offline]]
+== What is not checked offline
+
+Every boot refusal the check cannot evaluate is printed as a `NOT CHECKED` line on every run, so none
+is skipped silently. They fall into two groups.
+
+=== The framework body limit
+
+`quarkus.http.limits.max-body-size` is a runtime framework key outside the configuration directory.
+The boot compares the largest declared `max_body_bytes` against it; the check has no value to compare
+against and names it instead. At runtime a breach is reported as an `ApiSheriff-200` entry for file
+`application.properties`, followed by `ApiSheriff-201`.
+
+=== The eight out-of-pipeline families
+
+These refusals are raised outside the configuration pipeline. Each one stops the boot; the right-hand
+column names how the boot reports it.
+
+[cols="1,2,2"]
+|===
+| Family | What is not checked | How the boot reports it
+
+| server TLS declaration
+| Listener key material against `quarkus.http.insecure-requests`, the TLS bucket name, mTLS and
+  passthrough coherence -- deployment keys.
+| Startup fails with a refusal naming the declaration and both remedies. A plain-HTTP main listener
+  that *is* declared is reported as the warning `ApiSheriff-121`.
+
+| TLS listener settings
+| `tls.min_version` and `tls.cipher_suites` against the running JDK, `tls.alpn`.
+| Startup fails with a refusal naming the offending key.
+
+| mTLS listener
+| `tls.mtls.enabled` without `client_ca`.
+| Startup fails with a refusal naming `tls.mtls.client_ca`.
+
+| SNI front listener
+| The `tls.passthrough_sni` front-listener bind -- a bind, not a configuration verdict.
+| A failed bind fails the start; a successful one is announced by `ApiSheriff-7`.
+
+| token validation
+| `token_validation` present, the JWKS source shape (`source` / `url` / `host` / `file`, an
+  unsupported source), `jwks.tls_profile` together with `egress_tls.jwks_verify_hostname: false`, the
+  file-sourced JWKS load.
+| Startup fails with a `CONFIG_INVALID` refusal naming the key.
+
+| JWKS / egress trust profiles
+| A named trust profile that is unbound, anchor-free or trust-all -- deployment `quarkus.tls.*`
+  material.
+| Startup fails with a `CONFIG_INVALID` refusal naming the profile key.
+
+| BFF runtime
+| Client-authentication and sender-constraint key files, cookie key material,
+  `egress_tls.oidc_tls_profile` together with `egress_tls.oidc_verify_hostname: false`.
+| Startup fails with a `CONFIG_INVALID` refusal naming the key.
+
+| portal template
+| The operator `portal.html` refusal -- the template file is deployment material.
+| `ApiSheriff-202`.
+|===
+
+*Four of these depend on `gateway.yaml` alone* and could, in principle, be judged from the file. They
+are still not checked offline, because lifting them into the pipeline would change how the boot
+reports them. Each is named individually on every run, so a clean report never hides them:
+
+. `jwks.tls_profile` on an issuer while `egress_tls.jwks_verify_hostname` is `false`;
+. `tls.mtls.enabled: true` without `tls.mtls.client_ca`;
+. the JWKS source shape of an issuer (`source` / `url` / `host` / `file`, or an unsupported source);
+. `egress_tls.oidc_tls_profile` while `egress_tls.oidc_verify_hostname` is `false`.
+
+Review these four by eye when you change the keys involved, or let a boot in a staging environment
+judge them.
+
+== Running it in CI
+
+A job that builds the runner and validates one set with the deployment's variables:
+
+[source,yaml]
+----
+jobs:
+  validate-config:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@<sha>  # pin actions by commit SHA
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@<sha>
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+      - run: ./mvnw -B -ntp package -pl api-sheriff -am -DskipTests
+      - name: Validate the production configuration
+        env:                                   # exactly what the deployment supplies
+          SHERIFF_TRUSTED_PROXIES: 10.0.0.5/32,10.0.0.6/32
+        run: java -jar api-sheriff/target/quarkus-app/quarkus-run.jar --validate-config config/production
+----
+
+Any non-zero exit fails the step. Pass variables through `env:`, never by interpolating `${{ }}`
+expressions into the `run:` script. A pipeline that does not build from source runs the
+container-image invocation instead.
+
+This repository runs the same check over every configuration set it ships -- the compose sample, the
+integration-test set, its eight compose-mounted variants and the two standalone one-off sets -- in
+link:../../.github/workflows/config-validation.yml[`.github/workflows/config-validation.yml`]. It is a
+worked example of assembling a set the way the deployment mounts it and giving each set exactly its
+own variables.
+
+== See also
+
+* link:../adr/0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]
+  -- why the check is a pre-boot flag over the boot's own pipeline, and the alternatives rejected.
+* link:anchors.adoc[Anchors] -- the fail-closed anchor rules the check evaluates.
+* link:endpoint-routes.adoc[Endpoint Route Configuration] -- the endpoint-file rules the check
+  evaluates.
+* link:environment-variable-overrides.adoc[Environment-Variable Overrides] -- which values come from
+  the environment, and how placeholders resolve.
+* link:container-image.adoc[Container Image] -- pulling and running the image the check ships in.
+* link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-200`, `ApiSheriff-201` and the other boot
+  records named above.
+* link:README.adoc[Operator Guide] -- the index for this documentation layer.
