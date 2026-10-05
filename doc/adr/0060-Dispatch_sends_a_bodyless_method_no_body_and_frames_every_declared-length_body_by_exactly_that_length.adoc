@@ -27,7 +27,8 @@ what has arrived by then: the request line and the headers.
 On HTTP/1.1 the headers are the whole framing story. A message body exists exactly when
 `Content-Length` or `Transfer-Encoding` says so, so a gate that reads those two headers sees every
 body the connection will carry. HTTP/2 breaks that equivalence. A body is carried by DATA frames,
-and `content-length` is an optional, advisory header beside them. A stream can carry body bytes that
+and `content-length` is optional; when present, it asserts the content length but does not delimit
+the DATA frames. A stream can carry body bytes that
 no header announces, and a stream can also end with an empty final DATA frame that carries no bytes
 at all. At the moment the gate runs, the two are indistinguishable: neither has declared anything,
 and the frames that tell them apart have not arrived yet.
