@@ -99,7 +99,7 @@ must work through that negotiation, not around it.
 
    **Also the `gw-02` residue.** Threat-model row `gw-02` (request framing) is `PARTIAL`. It is pinned
    for HTTP/1.1, and on HTTP/2 for the stream-scoped gate rejection, a declared body on `HEAD`, the
-   bodyless-method rule and declared-length framing. Still unpinned on HTTP/2: the other framing-gate
+   refusal of a non-decimal `Content-Length`, the bodyless-method rule and declared-length framing. Still unpinned on HTTP/2: the other framing-gate
    clauses, and an inbound body failure after dispatch. They are HTTP/2 framing bounds of the same kind
    as this deliverable's, so close them here and flip `gw-02` with `gw-08`, or report which clause
    remains open.

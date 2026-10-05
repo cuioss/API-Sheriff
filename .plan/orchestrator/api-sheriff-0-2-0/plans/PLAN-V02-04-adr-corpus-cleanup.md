@@ -70,7 +70,14 @@ filename, never by a number quoted here.
    is not.
 
    **Statuses are the largest part of this.** 35 of 55 records read `Proposed` when last counted, most
-   of them for shipped work. That makes this a sweep, not a spot-fix; re-count at outline.
+   of them for shipped work. That makes this a sweep, not a spot-fix; re-count at outline. ADR-0059
+   and ADR-0060 are among them; both decisions have shipped.
+
+   **One known untrue sentence:** ADR-0008 says timeouts *"are transport options on the shared Vert.x
+   client (connect/read per upstream tuple), not fault-tolerance timeouts"*, but
+   `GatewayEdgeRoute.guardFor` applies a 30-second fault-tolerance timeout
+   (`withTimeout().duration(30, ChronoUnit.SECONDS)`). Amend or supersede that sentence; check the
+   rest of ADR-0008 against the resilience guard while there.
 
    Two records are owned by other plans and must not be pre-empted:
    - **`0005`** (framework-agnostic core) is being reversed by `PLAN-V02-01`. Note the pending
@@ -101,6 +108,8 @@ filename, never by a number quoted here.
   - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032/0033 artifact-purity/nullable correctly named
 - OBSERVED: `0005-module-structure.adoc` is still `Accepted` and `0027` is not re-opened, so V02-01 and V02-09 have not pre-empted this audit — confirm again at outline (verify-at-outline)
   - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0005 still Accepted, 0027 not re-opened; V02-01/V02-09 not landed
+
+- OBSERVED: ADR-0008's statement that timeouts are transport options and not fault-tolerance timeouts is contradicted by the shipped resilience guard — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § `guardFor` (`withTimeout().duration(30, ChronoUnit.SECONDS)`), on `origin/main` at `84afdba0`
 
 ## Expected Surface
 

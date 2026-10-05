@@ -55,12 +55,13 @@ would otherwise force a retrofit.
   their two tests and `doc/configuration.adoc`. Neither spec declared `DispatchStage.java`; V02-10's
   overlap came from an unplanned relay-race fix found at the merge queue. It integrated cleanly. Treat
   any plan touching the edge relay as overlapping `edge/**`, whatever its declared surface says.
-- **Out-of-epic edge work (2026-10-05):** `fix-four-audit-findings-and-bff-flaky-test` landed as
-  #385 (`11f9c38a`): bodyless-method dispatch, a bounded `status_family` metric label, abort
-  attribution, and the flaky `BffRuntimeProducerTest` fix (the residue V02-13's landing reported). It
-  is not a row of this queue. A second out-of-epic plan, `relay-release-and-jsse-env-guard`, is live
-  and again touches `edge/DispatchStage.java` and `edge/GatewayEdgeRoute.java`; its subject is not
-  recorded here. Anything in this queue declaring `edge/**` sequences behind it.
+- **Out-of-epic edge work (2026-10-05):** two plans outside this queue changed the edge relay and
+  have both landed. `fix-four-audit-findings-and-bff-flaky-test` as #385 (`11f9c38a`): bodyless-method
+  dispatch, a bounded `status_family` metric label, abort attribution, the flaky `BffRuntimeProducerTest`
+  fix. `relay-release-and-jsse-env-guard` as #386 (`84afdba0`): abandoned upstream calls released,
+  refused retries kept out of the circuit breaker, a non-decimal `Content-Length` refused by the framing
+  gate. No plan outside this queue now holds `edge/**`. Every staged spec declaring `edge/**` was
+  grounded before both; re-read `DispatchStage`, `GatewayEdgeRoute` and `FramingGate` at outline.
 
 ## Workstreams
 
