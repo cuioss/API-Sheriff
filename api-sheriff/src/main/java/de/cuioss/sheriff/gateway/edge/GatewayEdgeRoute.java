@@ -1484,7 +1484,7 @@ public class GatewayEdgeRoute {
         // proxied response is the one path where the default-mode map defers to an origin header.
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        relayOnEventLoop(ctx, stageSetCookies, () -> responseStage.relay(upstream, ctx.response(),
+        relayOnEventLoop(ctx, stageSetCookies, upstream, () -> responseStage.relay(upstream, ctx.response(),
                 route.isNotModifiedEnabled(), route.getLocationRewriter(), setHeaders, defaultHeaders));
     }
 
@@ -1581,8 +1581,8 @@ public class GatewayEdgeRoute {
         List<String> stageSetCookies = request.responseSetCookies();
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        relayOnEventLoop(ctx, stageSetCookies, () -> responseStage.relayWithTrailers(upstream, ctx.response(),
-                route.isNotModifiedEnabled(), setHeaders, defaultHeaders));
+        relayOnEventLoop(ctx, stageSetCookies, upstream, () -> responseStage.relayWithTrailers(upstream,
+                ctx.response(), route.isNotModifiedEnabled(), setHeaders, defaultHeaders));
     }
 
     /**
@@ -1699,12 +1699,21 @@ public class GatewayEdgeRoute {
      * longer be piped throws from {@code pipeTo} synchronously). A thrown failure must not escape this
      * runOnContext task: it would reach only Vert.x's uncaught-exception handler, the client response
      * would never end, and the client would wait for its own timeout.
+     * <p>
+     * <strong>A relay that fails to start releases the upstream response.</strong> The dispatched
+     * upstream response is still paused when the relay is started, and only the relay would consume
+     * it. When starting the relay throws, the upstream exchange is therefore reset before the client is
+     * answered — on HTTP/1.x its connection is closed instead of being held, on HTTP/2 the one stream is
+     * reset. For a response that already ended the reset is a no-op. A failure the relay reports on its
+     * future is handled exactly as before.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
+     * @param upstream        the dispatched upstream response the relay streams
      * @param relay           starts the relay and returns the future completing when it has finished
      */
-    static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, Supplier<Future<Void>> relay) {
+    static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, HttpClientResponse upstream,
+            Supplier<Future<Void>> relay) {
         ctx.vertx().runOnContext(v -> {
             Future<Void> relayed;
             // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
@@ -1715,6 +1724,8 @@ public class GatewayEdgeRoute {
                 applyStageSetCookies(ctx.response(), stageSetCookies);
                 relayed = relay.get();
             } catch (RuntimeException startFailure) {
+                // Nothing consumes the paused upstream response once the relay did not start: release it.
+                upstream.request().reset();
                 relayed = Future.failedFuture(startFailure);
             }
             relayed.onFailure(failure -> failRelay(ctx, failure));
