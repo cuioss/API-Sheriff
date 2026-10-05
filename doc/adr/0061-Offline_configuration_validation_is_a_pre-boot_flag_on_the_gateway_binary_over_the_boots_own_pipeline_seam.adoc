@@ -1,0 +1,233 @@
+= ADR-0061: Offline configuration validation is a pre-boot flag on the gateway binary over the boot's own pipeline seam
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: A configuration directory is validated offline by the gateway binary itself -- a --validate-config <dir> token recognised in main and answered before the framework starts, so no container, listener, identity-provider client or bind exists -- and the verdict is the boot's own, because the check and the boot call one shared framework-agnostic pipeline seam. Placeholders resolve from the process environment exactly as at boot, an unset bare variable is a violation, an applied in-file default is listed by name and location only, every boot refusal outside the seam is printed as NOT CHECKED, and the exit code is 0 / 1 / 2.
+// tags: configuration, validation, offline, ci, entry-point, pre-boot, dual-role-binary, placeholders, single-sourcing, packaging
+// affects: api-sheriff, integration-tests, deployment
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A gateway configuration directory -- `gateway.yaml`, the `endpoints/` files and
+`topology.properties` -- is only judged when the gateway boots. The boot is fail-closed:
+it loads, schema-validates, substitutes placeholders, resolves the topology, runs the
+semantic validator and assembles the route table, and it refuses to start on the first
+stage that reports a violation. That is the right behaviour for a running gateway and the
+wrong place to find out. A change to a configuration repository is reviewed and merged
+long before any instance boots it, and the only way to learn whether the boot will accept
+it is to boot it -- with its listeners, its identity-provider clients, its trust material
+and its network.
+
+An offline check answers that question earlier, but it raises three structural choices
+that are worth settling once rather than per implementation.
+
+*What gives the verdict.* A check is only useful if its verdict is the boot's verdict. A
+second validator, written for the check, drifts from the boot the first time a rule is
+added to one and not the other, and a check that passes a file the boot refuses is worse
+than no check: it converts a loud refusal at deploy time into a confident green in review.
+
+*What ships it.* The check can be a mode of the existing executable, a separate artifact,
+or a mode of the framework. Each shape decides what has to be started to answer the
+question, and the question must be answerable without binding a port, contacting an
+identity provider or reading deployment key material -- a CI runner has none of those, and
+an operator checking a directory on a laptop should not need them.
+
+*What happens to what it cannot see.* Some boot refusals do not depend on the
+configuration directory at all, or not on it alone: they depend on deployment keys, on the
+running JDK, on trust stores, on a listener bind. An offline check cannot evaluate them,
+and the dangerous failure is the silent one -- a check that simply does not mention a
+refusal it never evaluated lets a reader conclude it passed.
+
+Placeholders sharpen the last point. A `${VAR}` reference is resolved from the
+environment, so the value the boot validates is not in the file. A check that skips
+placeholder-bearing values leaves exactly the deployment-specific values unchecked; a
+check that resolves them makes its verdict depend on the environment of the run.
+
+== Decision
+
+**The offline check is a pre-boot mode of the gateway binary, and its verdict is computed
+by the same pipeline seam the boot runs.**
+
+*One seam, two callers.* The framework-agnostic part of the boot -- load (read, schema,
+placeholder substitution, bind), the endpoint-enablement filter, topology resolution, the
+semantic validator, the framework body-limit check and route-table assembly -- is a single
+seam in the framework-agnostic `config.boot` package (ADR-0005). It returns every
+violation of the stage that stopped it as data and logs nothing of its own. The boot's
+framework-bound producer calls it and reports each violation as its configuration-violation
+record before refusing to start; the offline check calls it and prints each violation as a
+report line. A parity test runs both callers over the shipped configuration sets and over
+sets failing at each stage and requires the two ordered violation lists to be identical, so
+single-sourcing is enforced rather than asserted.
+
+*A flag on the existing binary, routed in `main`.* The binary recognises the exact token
+`--validate-config` followed by a directory, after the health-probe token and before the
+framework is started, on the precedent of the pre-boot health probe (ADR-0039). The
+framework's run method is reached only once the listeners are bound, so a branch there
+would already have opened what the check must never open. The logic lives in its own
+measured class; the entry point stays an untestable shim that only routes.
+
+*The native startup path needs nothing new.* The pre-boot branch runs before any CDI
+container, listener, identity-provider client or bind exists. It uses the same loader,
+schema and binding classes the boot uses, so the reflection and resource registrations the
+native image already carries for the boot are the ones the check needs. The native image is
+exercised by an integration test that runs the flag on the real distroless image and
+asserts its exit codes and the absence of any listener announcement.
+
+*Placeholder policy.* Placeholders are substituted from the process environment through
+the boot's own substitution engine, so offline and boot agree for the same environment.
+Every unset bare `${VAR}` is reported as a violation naming the variable and its location;
+it is never treated as valid. Every `${VAR:-default}` that fell back to its in-file default
+is listed as a `DEFAULTED` line naming the variable and its location -- never the default
+and never any value -- because the target deployment may set it differently. `DEFAULTED`
+lines never change the exit code. A fixed policy line states that the verdict holds for the
+environment of this run.
+
+*Exit-code and stream contract.* The report goes to standard output: one
+`INVALID <file> [<pointer>]: <message>` line per violation in pipeline order, one
+`DEFAULTED` line per applied default, one `NOT CHECKED` line per boot refusal the check
+cannot evaluate, the policy line, and a final `RESULT:` line carrying the violation,
+defaulted and not-checked counts. A usage error or unreadable input is one line on standard
+error. The exit code is `0` when no violation was printed, `1` when at least one was, and
+`2` for a missing directory argument, a directory that does not exist, is not a directory
+or is unreadable, or a missing or unreadable `gateway.yaml`. Log lines the shared pipeline
+code emits may appear on standard error and never change the report or the exit code.
+
+*Coverage boundary.* The seam covers the loader (file size, YAML expansion limits, the
+secret-reference rule, placeholders, schema, binding), topology resolution, every
+semantic-validator rule and route-table assembly. The framework request-body ceiling is a
+runtime framework key outside the configuration directory, so the check passes it as
+unknown and reports it as `NOT CHECKED`; the parity test pins it as the one intended
+difference between the two callers. The boot refusals raised outside the seam are printed as
+a fixed `NOT CHECKED` catalogue on every run, valid or not, in eight families:
+
+. *server TLS declaration* -- listener key material against the insecure-requests setting,
+  the TLS bucket name, mTLS / passthrough coherence (ADR-0025);
+. *TLS listener settings* -- the minimum version and cipher suites against the running JDK,
+  ALPN;
+. *mTLS listener* -- mTLS enabled without a client CA;
+. *SNI front listener* -- the passthrough front-listener bind (ADR-0017);
+. *token validation* -- the presence of token validation, the JWKS source shape, the JWKS
+  trust profile combined with JWKS hostname verification switched off (ADR-0041), the
+  file-sourced JWKS load;
+. *JWKS / egress trust profiles* -- a named trust profile that is unbound, anchor-free or
+  trust-all;
+. *BFF runtime* -- client-authentication and sender-constraint key files, cookie key
+  material, the OIDC trust profile combined with OIDC hostname verification switched off
+  (ADR-0045, ADR-0058);
+. *portal template* -- the operator portal-template refusal (ADR-0053).
+
+Four of these refusals depend on `gateway.yaml` alone: the JWKS trust-profile and
+hostname-verification collision, mTLS without a client CA, the JWKS source shape, and the
+OIDC trust-profile and hostname-verification collision. They stay `NOT CHECKED` rather than
+being lifted into the seam, because lifting them would move their boot reporting from their
+current refusal channel into the configuration-violation record; each is named individually
+in the catalogue on every run. The unsupported-protocol refusal of the protocol registry
+cannot fire, because every protocol the model declares is registered; it is recorded here
+and not printed.
+
+== Consequences
+
+=== Positive
+
+* A configuration change can be judged in review, by the same rules the boot applies, on a
+  machine with no listener, no identity provider and no deployment key material.
+* The check cannot drift from the boot on any pipeline stage: both call one seam, and the
+  parity test turns a divergence into a failing build.
+* One deployable remains. The container image and the JVM runner both carry the check, so
+  an operator uses the artifact they already deploy and a CI pipeline building from source
+  uses the runner it already builds.
+* Nothing is skipped silently. Every refusal the check cannot evaluate is named on every
+  run, and every value that came from an in-file default rather than the environment is
+  named without being printed.
+
+=== Negative
+
+* **The verdict holds for the environment of the run.** A variable the target deployment
+  sets differently is validated with this run's value, and an unset bare variable is a
+  violation, so a pipeline that does not supply the deployment's variables reports them as
+  `INVALID`. That is the intended direction -- an unset variable is never valid -- but it
+  means the check has to be given the same variables the deployment supplies.
+* **A clean run is not a promise that the boot will start.** The `NOT CHECKED` families,
+  the four `gateway.yaml`-only refusals among them, can still refuse the boot.
+* **The binary's command line carries a third role.** Every future argument must be
+  distinguishable from both pre-boot tokens; the exact whole-token match keeps that cost at
+  zero and is the property to preserve.
+
+=== Risks
+
+* The pre-boot branch runs before the framework initialises logging, so log lines the
+  shared code emits may be dropped or formatted differently. The report is written to the
+  output stream rather than through the logger, so the verdict is unaffected; routing the
+  report through the logger would remove it rather than improve it.
+* The `NOT CHECKED` catalogue is maintained by hand. A new boot refusal raised outside the
+  seam has to be added to it, or the check passes a file the boot refuses without saying so.
+
+== Alternatives Considered
+
+**A standalone validation artifact.** A separate executable or library carrying only the
+configuration pipeline. It would keep the gateway binary single-purpose and could be
+consumed without the gateway. Rejected because it needs a second deployable and the
+extraction of the framework-agnostic core into its own module -- the extraction ADR-0005
+names as a revisit trigger -- while the only consumer here is the same binary that already
+contains the pipeline. A second artifact is a second thing to build, version, publish and
+keep in step, bought for a consumer that does not exist.
+
+**Quarkus command mode.** Running the check as a framework command-mode application. It
+would use the framework's own entry-point mechanism instead of a branch in `main`.
+Rejected because command mode still starts the CDI container and the HTTP listeners before
+the command runs, which violates the requirement that the check binds nothing and contacts
+nothing. The reversal verdict on ADR-0005 that a sibling plan (PLAN-V02-01) was preparing,
+which also evaluates command mode, could not be read when this decision was taken: it had
+not landed, ADR-0005 is still Accepted and no reversal ADR exists. Its landing is a revisit
+trigger for this decision.
+
+**A dedicated validator written for the check.** Re-implementing the rules the check needs
+in a separate code path. Rejected because it creates the drift the check exists to remove:
+the first rule added to the boot and not to the check makes the check pass a file the boot
+refuses.
+
+**Skipping placeholder-bearing values.** Validating the file without substituting
+`${VAR}` references. It would make the verdict independent of the environment. Rejected
+because it leaves precisely the deployment-specific values unchecked; resolving them and
+naming the environment dependence is the honest form.
+
+**Lifting the four `gateway.yaml`-only refusals into the seam.** It would let the check
+evaluate them. Rejected because their boot reporting would move from their current refusal
+channel into the configuration-violation record, a behaviour change to the boot made for
+the check's convenience; naming them as not checked keeps the boot unchanged and the gap
+visible.
+
+The rejected packaging options either start more than the check may start or ship more
+than the consumer needs; the rejected verdict options either compute the verdict somewhere
+other than the boot's own seam or leave the values that matter most unevaluated.
+
+=== What would reverse the decision
+
+* A reversal of ADR-0005 that extracts the framework-agnostic core into its own module
+  would make a standalone artifact cheap; the seam would move with it unchanged.
+* A consumer that needs the check without the gateway binary would justify a separate
+  artifact.
+* A framework entry-point mode that starts neither the CDI container nor any listener would
+  remove the reason for routing in `main`.
+
+== References
+
+* link:0005-module-structure.adoc[ADR-0005] -- the framework-agnostic package boundary the seam lives inside, and the core-module extraction it names as a revisit trigger
+* link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] -- the topology-resolution asymmetry the seam preserves
+* link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017] -- the SNI front-listener bind named as not checked
+* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023] -- the framework body-limit check the offline check reports as not checked
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] -- the server-TLS refusals outside the seam
+* link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039] -- the pre-boot routing precedent this flag follows
+* link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041] -- the JWKS hostname-verification collision named as not checked
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045] -- the OIDC hostname-verification collision named as not checked
+* link:0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053] -- the portal-template refusal named as not checked
+* link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058] -- the BFF client-authentication and sender-constraint key material named as not checked
+* link:../user/offline-config-validation.adoc[Offline configuration validation] -- the operator page for the flag
