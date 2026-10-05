@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -31,7 +32,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("FramingGate — D3b GW-02 anti-smuggling framing gate")
@@ -357,6 +360,77 @@ class FramingGateTest {
 
         private static PipelineRequest chunkedPost(List<String> transferEncodings) {
             return request(HttpMethod.POST, Map.of("transfer-encoding", transferEncodings), -1L, true);
+        }
+    }
+
+    /**
+     * A single {@code Content-Length} must be {@code 1*DIGIT} as received and must fit a {@code long}.
+     * Every request is built the way the edge builds it: the declared length is the value parsed as
+     * the edge parses it, {@code -1} where it does not parse, and a body is present for a positive
+     * declared length.
+     */
+    @Nested
+    @DisplayName("A Content-Length that is not a decimal number fitting a long")
+    class DecimalContentLength {
+
+        private static final String NOT_DECIMAL = "Framing rejected: Content-Length is not a decimal number";
+
+        static Stream<Arguments> nonDecimalContentLengths() {
+            return Stream.of(HttpMethod.POST, HttpMethod.GET)
+                    .flatMap(method -> Stream.of("", "+5", "-1", "5x", "99999999999999999999", "9223372036854775808")
+                            .map(contentLength -> Arguments.of(method, contentLength)));
+        }
+
+        @ParameterizedTest(name = "{0} with Content-Length [{1}]")
+        @MethodSource("nonDecimalContentLengths")
+        @DisplayName("refuses a Content-Length that is not a decimal number fitting a long")
+        void refusesAContentLengthThatIsNotADecimalLong(HttpMethod method, String contentLength) {
+            PipelineRequest request = asTheEdgeBuildsIt(method, contentLength);
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request),
+                    () -> "a Content-Length of [" + contentLength + "] on " + method + " must be refused");
+
+            assertAll(
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType()),
+                    () -> assertEquals(NOT_DECIMAL, thrown.getMessage(),
+                            "the detail is fixed and carries nothing of the received value"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"0", "42", "007", "9223372036854775807"})
+        @DisplayName("admits a decimal Content-Length fitting a long, leading zeros included")
+        void admitsADecimalContentLengthFittingALong(String contentLength) {
+            PipelineRequest request = asTheEdgeBuildsIt(HttpMethod.POST, contentLength);
+
+            assertDoesNotThrow(() -> gate.process(request),
+                    () -> "[" + contentLength + "] is valid Content-Length syntax and must be admitted");
+        }
+
+        @Test
+        @DisplayName("a signed Content-Length on a bodyless method is reported by the decimal rule")
+        void signedContentLengthOnABodylessMethodIsReportedByTheDecimalRule() {
+            PipelineRequest request = asTheEdgeBuildsIt(HttpMethod.GET, "+5");
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+            assertAll(
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType()),
+                    () -> assertEquals(NOT_DECIMAL, thrown.getMessage(),
+                            "the decimal rule runs before the bodyless-method check"));
+        }
+
+        private static PipelineRequest asTheEdgeBuildsIt(HttpMethod method, String contentLength) {
+            long declaredLength = parsedAsTheEdgeParsesIt(contentLength);
+            return request(method, Map.of("content-length", List.of(contentLength)), declaredLength,
+                    declaredLength > 0);
+        }
+
+        private static long parsedAsTheEdgeParsesIt(String contentLength) {
+            try {
+                return Long.parseLong(contentLength.strip());
+            } catch (NumberFormatException _) {
+                return -1L;
+            }
         }
     }
 

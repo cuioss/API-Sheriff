@@ -36,6 +36,11 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  *       the classic front-end/back-end desync primer;</li>
  *   <li><strong>CL.CL</strong>: more than one {@code Content-Length} field, or a single field
  *       carrying a comma-separated value list;</li>
+ *   <li><strong>non-decimal Content-Length</strong>: a single {@code Content-Length} that is not
+ *       {@code 1*DIGIT} as received — empty, signed, or carrying any character other than an ASCII
+ *       digit — or whose value does not fit a {@code long}. Leading zeros are valid syntax and are
+ *       admitted. The gate enforces this itself, independently of what the transport already
+ *       refuses;</li>
  *   <li><strong>TE.TE</strong>: a {@code Transfer-Encoding} that is repeated, or whose single value
  *       is anything other than exactly {@code chunked} (compared case-insensitively, with no
  *       trimming and no list parsing). {@code chunked, identity}, {@code xchunked} and a second
@@ -74,6 +79,8 @@ public final class FramingGate {
 
     private static final String TRANSFER_ENCODING = "Transfer-Encoding";
 
+    private static final String CONTENT_LENGTH = "Content-Length";
+
     /** The only transfer coding the gate admits; any other value, or a repeated field, is rejected. */
     private static final String CHUNKED = "chunked";
 
@@ -102,6 +109,7 @@ public final class FramingGate {
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
         rejectConflictingFraming(request);
+        rejectNonDecimalContentLength(request);
         rejectBodyOnBodylessMethod(request);
         rejectAmbiguousTransferEncoding(request);
         rejectFramingHeaderStrip(request);
@@ -111,10 +119,10 @@ public final class FramingGate {
      * Rejects the TE.TE shape: a {@code Transfer-Encoding} that is repeated or is not exactly
      * {@code chunked}.
      * <p>
-     * It runs after the two checks above on purpose. A request that also carries
-     * {@code Content-Length}, or that uses a bodyless method, is already rejected there with the
-     * detail text those checks have always produced, so this check adds rejections without changing
-     * an existing one. The value is compared as received: it is not trimmed and not split on commas,
+     * It runs after the {@code Content-Length} checks and the bodyless-method check on purpose. A
+     * request that also carries {@code Content-Length}, or that uses a bodyless method, is already
+     * rejected by those checks with the detail text they have always produced, so this check adds
+     * rejections without changing an existing one. The value is compared as received: it is not trimmed and not split on commas,
      * because any leniency here is exactly the room an obfuscated coding needs to be read as
      * {@code chunked} by one parser and as something else by the next.
      */
@@ -136,15 +144,55 @@ public final class FramingGate {
         // multiple Content-Length headers or as a single field with a comma-separated value list —
         // is ambiguous and MUST be rejected, since it is a classic HTTP request-smuggling vector.
         // This is checked before the CL+TE coexistence rule below.
-        List<String> contentLengths = request.headerValues("Content-Length");
+        List<String> contentLengths = request.headerValues(CONTENT_LENGTH);
         if (contentLengths.size() > 1) {
             throw violation("Multiple Content-Length headers present");
         }
         if (!contentLengths.isEmpty() && contentLengths.getFirst().indexOf(',') >= 0) {
             throw violation("Content-Length header carries a comma-separated value list");
         }
-        if (request.hasHeader("Content-Length") && request.hasHeader(TRANSFER_ENCODING)) {
+        if (request.hasHeader(CONTENT_LENGTH) && request.hasHeader(TRANSFER_ENCODING)) {
             throw violation("Content-Length and Transfer-Encoding both present");
+        }
+    }
+
+    /**
+     * Rejects a {@code Content-Length} that is not a decimal number fitting a {@code long}.
+     * <p>
+     * It runs right after {@link #rejectConflictingFraming}, so at most one value without a comma
+     * remains, and every rejection that check produces keeps its detail text. The value must be
+     * {@code 1*DIGIT} as received — ASCII {@code 0}-{@code 9} only, not trimmed, no sign, consistent
+     * with the {@code Transfer-Encoding} rule — and must fit a {@code long}; leading zeros are valid
+     * syntax. The detail text is fixed and carries nothing of the received value. The gate decides on
+     * this itself rather than inheriting the bound from the transport.
+     */
+    private static void rejectNonDecimalContentLength(PipelineRequest request) {
+        List<String> contentLengths = request.headerValues(CONTENT_LENGTH);
+        if (!contentLengths.isEmpty() && !isDecimalLong(contentLengths.getFirst())) {
+            throw violation("Content-Length is not a decimal number");
+        }
+    }
+
+    /**
+     * @param value a received header value
+     * @return {@code true} when {@code value} is one or more ASCII digits whose number fits a {@code long}
+     */
+    private static boolean isDecimalLong(String value) {
+        if (value.isEmpty()) {
+            return false;
+        }
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character < '0' || character > '9') {
+                return false;
+            }
+        }
+        try {
+            Long.parseLong(value);
+            return true;
+        } catch (NumberFormatException _) {
+            // Only digits remain, so the one way to fail here is a value beyond Long.MAX_VALUE.
+            return false;
         }
     }
 
