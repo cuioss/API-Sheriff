@@ -105,6 +105,41 @@ decision.
 
 ## Decisions
 
+- 2026-10-05 — **Cleanup at `35f2bb37`: 58 claims re-grounded, three contradicted, three specs narrowed.**
+  Five commits had landed since the last pass, two of them on the staged specs' own surfaces (`e8db85bf`
+  PAR/DPoP, `35f2bb37` which removed 102 `-Djavax.net.ssl.trustStore` lines from the IT compose file and
+  added a guard forbidding `oidc_verify_hostname`). What moved:
+  - **PLAN-24's outline fork CLOSED, in the favourable direction.** The earlier hypothesis put the
+    non-fetching read and its retry wrapper both in token-sheriff. Half was wrong: `RetryingJwksLoader` is
+    the gateway's OWN `auth/` class, so the bounded unknown-`kid` fetch is in-repo work with no library
+    fork, and `refresh_interval_seconds` is a pass-through of a config field the library already has.
+  - **PLAN-25 lost one deliverable and had one blocked.** D10 is obsolete (the javadoc it would correct is
+    already accurate). D5's M-50/M-52 are blocked as filed: the new `ItProfileConfigBindingWiringTest`
+    forbids the very keys and JSSE arguments those fixtures need, so relaxing TLS now requires amending a
+    deliberate guard — a decision, not a test detail. Eight deliverables stay live.
+  - **PLAN-26 shrank because PLAN-23 had already done most of it.** The threat model already carries the
+    "Not delivered: token revocation at logout" paragraph and the accepted cookie-mode residual, both from
+    PLAN-23's own merge. The over-claim that remains is two lines — the Control line (1871) asserting
+    refresh-token-family revocation, and the summary row (2955) reading `COVERED (server)` with no caveat.
+    Deliverable 3 dropped. The security point is undiminished and the fix is now two lines.
+  - **The retired-path defect was found in this epic's OWN staged specs and fixed.** PLAN-20 and PLAN-21
+    still carried `/plan-marshall task="implement .plan/local/orchestrator/…"` hand-off commands. That is
+    precisely the pointer form the current tooling classifies `unrecognised_id`, and precisely what made
+    PLAN-23 finish with `emit-landing: not orchestrated`. Emitting either spec from the old path would have
+    repeated it. Both corrected, each carrying a note saying why; the SHIPPED specs keep their original
+    paths because they are frozen records of what was actually emitted.
+  - Surface corrections applied and verified by re-reading the parser: PLAN-20 22→29 entries (the
+    `DispatchStage` body-streaming seam, `TokenRefreshCoordinator`, `OidcConfig.StepUp`,
+    `ApiSheriffLogMessages`), PLAN-21 14→18 (incl. the spec naming the WRONG schema for `rate_limit` — it
+    is per-route in `endpoint.schema.json`, not `gateway.schema.json` — and PAR now pushing to the IdP
+    BEFORE the pending store, so an admission cap must sit ahead of `authorize`), PLAN-24 12→14, PLAN-25
+    4→8, PLAN-26 6→9.
+  - Duplication cross-check: **zero** shared-origin matches across 3 epics and the live plan set; the file
+    overlaps are all against the ARCHIVED `deployment-configurability` epic (1–6 mostly-doc files each),
+    so nothing is superseded.
+  - ADR ordinals: 0058 (PAR/DPoP) and 0059 (routing) are now taken, so **0060 is next free** — every spec
+    that warned about 0053 was carrying stale guidance and now says so.
+
 - 2026-10-02 — **PLAN-20 re-scoped rather than retired.** PLAN-23 (#369) shipped the gateway-declared half
   of scope step-up — a reserved `StepUpEndpoint`, silent-then-one-interactive widening, and a
   `403 problem+json` carrying `step_up_url` — which is nearly the shape of PLAN-20's deliverable 3, and
