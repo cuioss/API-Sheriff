@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.testsupport;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -103,12 +104,34 @@ public final class SheriffDebugCapture implements BeforeEachCallback, AfterEachC
             String name = type.getName();
             String marker = "debug capture control " + CONTROL_SEQUENCE.incrementAndGet();
             Logger.getLogger(name).log(Level.FINE, marker);
-            assertTrue(TestLoggerFactory.getTestHandler().getRecords().stream()
+            assertTrue(capturedRecords().stream()
                             .anyMatch(captured -> Level.FINE.equals(captured.getLevel())
                                     && name.equals(captured.getLoggerName()) && marker.equals(captured.getMessage())),
                     "a DEBUG record of " + name + " is not captured, so the absence of a value in the captured "
                             + "records would say nothing about the DEBUG output of that logger");
         }
+    }
+
+    /**
+     * Returns an immutable snapshot of the records the test handler has captured so far.
+     *
+     * <p>Read the captured records through this method, never by iterating
+     * {@code TestLoggerFactory.getTestHandler().getRecords()} directly. That method returns the
+     * handler's live {@code Collections.synchronizedList}, and streaming or for-each iterating it does
+     * not hold the list's monitor. A record published concurrently by another thread — a stub
+     * identity provider, an HTTP client callback — then throws a
+     * {@link java.util.ConcurrentModificationException} out of the assertion, failing a test whose
+     * code under test behaved correctly. {@link List#copyOf(java.util.Collection)} copies through the
+     * list's {@code toArray()}, which a synchronized list executes under its monitor, so the snapshot
+     * is taken atomically and can be iterated freely.
+     *
+     * <p>The snapshot does not see records published after it was taken; an assertion that states an
+     * absence covers the records captured up to the point of the call.
+     *
+     * @return the records captured up to now, in capture order
+     */
+    public static List<LogRecord> capturedRecords() {
+        return List.copyOf(TestLoggerFactory.getTestHandler().getRecords());
     }
 
     /**

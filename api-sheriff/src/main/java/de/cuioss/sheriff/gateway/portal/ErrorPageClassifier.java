@@ -34,10 +34,11 @@ import org.jspecify.annotations.Nullable;
  *       can meaningfully land on: an unrouted address, a smuggled passthrough host, a method outside
  *       the route's allowlist, a missing scope, a CSRF rejection, a body over the route cap, an
  *       upstream failure, an open circuit or an upstream timeout, a failed OIDC callback, and a
- *       directory-asset miss. {@link EventType#PASSTHROUGH_HOST_SMUGGLED} is eligible because an
- *       unrouted address answers a navigation with the HTML page; a smuggled host answering the
- *       same navigation with {@code problem+json} would make the two {@code 404}s distinguishable
- *       by body shape. {@link EventType#METHOD_NOT_ALLOWED} is eligible because a {@code 405} is
+ *       directory-asset miss. {@link EventType#PASSTHROUGH_HOST_SMUGGLED} is eligible because, on an
+ *       address no route serves, it answers in place of {@link EventType#NO_ROUTE_MATCHED}, which
+ *       answers a navigation with the HTML page; a smuggled host answering the same navigation there
+ *       with {@code problem+json} would make the two {@code 404}s on that address distinguishable by
+ *       body shape. {@link EventType#METHOD_NOT_ALLOWED} is eligible because a {@code 405} is
  *       reachable by navigation, and a browser shown a JSON document for it has no page to read.</li>
  *   <li>{@link Classification#KEEP_SHAPE} — every other exit keeps its current body and content
  *       type. That includes, above all, every response <strong>relayed from an origin</strong>
