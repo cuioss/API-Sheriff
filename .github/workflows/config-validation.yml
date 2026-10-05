@@ -1,0 +1,228 @@
+# OFFLINE CONFIGURATION CHECK — runs `--validate-config` (ADR-0061) over every configuration set this
+# repository ships, so a set the gateway would refuse at boot fails a pull request instead of a
+# deployment or an integration-test bring-up.
+#
+# A NEW FILE rather than a job in maven.yml: maven.yml is a thin caller of the organisation's reusable
+# build, and this check needs neither its matrix nor its secrets. It builds the JVM runner and nothing
+# else.
+#
+# WHICH SETS, AND HOW EACH IS ASSEMBLED. Each set is validated as the gateway that runs it actually
+# sees it, not as the files happen to lie in the tree:
+#
+#   * compose-sample   deployment/compose-sample/docker/sheriff-config, as is.
+#   * integration-test integration-tests/src/main/docker/sheriff-config, as is.
+#   * the eight compose-mounted variants (cookie, cookie-refresh, egress-verify-off, egress-verify-on,
+#     mtls, passthrough-empty, refresh, ws-admission): integration-tests/docker-compose.yml mounts the
+#     shared sheriff-config directory and overlays ONLY gateway.yaml with the variant's document, so
+#     each is assembled as a copy of the shared directory with the variant gateway.yaml on top.
+#   * the two standalone sets (late-idp, jwks-egress-mismatch): no compose service runs them.
+#     OneOffGatewayContainers.startGateway mounts the set's own gateway.yaml plus ONLY
+#     sheriff-config/endpoints/assets-secure.yaml, with no topology.properties and none of the other
+#     shared endpoint files — those carry proxy routes naming anchors and upstream aliases these
+#     documents do not declare. They are assembled exactly that way.
+#
+# PLACEHOLDER VARIABLES. Each set is validated with exactly the ${VAR} placeholder variables its
+# deployment supplies: the compose service's environment for the compose-mounted sets, the compose
+# sample's for the compose sample. Every set therefore gets its OWN step, and that step's `env:` block
+# is the whole of its variable set — nothing is shared at job level, so no set can pass on a variable
+# another set's deployment supplies. The values are copied from the two docker-compose.yml files; they
+# are fixed test and sample values, never production material. The two standalone sets get no
+# variables at all: neither their gateway.yaml nor assets-secure.yaml carries a placeholder, so their
+# reports must carry no INVALID and no DEFAULTED line, and the helper asserts that.
+#
+# Variables reach the shell through `env:` only, never through `${{ }}` expansion inside a run block —
+# expression interpolation into a script body is a script-injection sink.
+#
+# Any non-zero exit fails the job, and every set's report is appended to the job summary.
+
+name: Config Validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'api-sheriff/src/**'
+      - 'deployment/compose-sample/docker/sheriff-config/**'
+      - 'integration-tests/src/main/docker/sheriff-config*/**'
+      - '.github/workflows/config-validation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api-sheriff/src/**'
+      - 'deployment/compose-sample/docker/sheriff-config/**'
+      - 'integration-tests/src/main/docker/sheriff-config*/**'
+      - '.github/workflows/config-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-config:
+    name: Offline configuration check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build the JVM runner
+        run: ./mvnw -B -ntp package -pl api-sheriff -am -DskipTests
+
+      # Writes the per-set helper and assembles the composite sets under $RUNNER_TEMP. Nothing is
+      # written into the checkout, so the committed sets stay exactly as they are.
+      #
+      # The helper fails the step on any non-zero exit of the check, and ALSO when the report carries
+      # no RESULT line: a run that exits 0 without one did not execute the check at all, and a green
+      # step must mean a set was actually validated. `timeout` bounds a runner that, instead of
+      # answering the flag, started the gateway and waits for traffic.
+      - name: Prepare the configuration sets
+        shell: bash
+        run: |
+          helper="$RUNNER_TEMP/validate-set.sh"
+          cat > "$helper" <<'HELPER'
+          #!/usr/bin/env bash
+          # usage: validate-set.sh <label> <config-dir> [--expect-no-defaulted]
+          set -uo pipefail
+          label="$1"
+          dir="$2"
+          mode="${3:-}"
+          report="$RUNNER_TEMP/report-${label}.txt"
+          timeout 120 java -jar api-sheriff/target/quarkus-app/quarkus-run.jar --validate-config "$dir" > "$report"
+          status=$?
+          {
+            echo "### ${label}"
+            echo
+            echo '```'
+            cat "$report"
+            echo '```'
+            echo
+            echo "exit code: ${status}"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$report"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::--validate-config exited ${status} for the ${label} set"
+            exit "$status"
+          fi
+          if ! grep -q '^RESULT: ' "$report"; then
+            echo "::error::the ${label} report carries no RESULT line, so the check did not run"
+            exit 1
+          fi
+          if [ "$mode" = "--expect-no-defaulted" ] && grep -qE '^(INVALID|DEFAULTED) ' "$report"; then
+            echo "::error::the ${label} set takes no placeholder variables, yet its report carries an INVALID or DEFAULTED line"
+            exit 1
+          fi
+          HELPER
+          chmod +x "$helper"
+
+          docker_dir=integration-tests/src/main/docker
+          base="$docker_dir/sheriff-config"
+          sets="$RUNNER_TEMP/config-sets"
+          mkdir -p "$sets"
+          for variant in cookie cookie-refresh egress-verify-off egress-verify-on mtls passthrough-empty refresh ws-admission; do
+            cp -R "$base" "$sets/$variant"
+            cp "$docker_dir/sheriff-config-$variant/gateway.yaml" "$sets/$variant/gateway.yaml"
+          done
+          for standalone in late-idp jwks-egress-mismatch; do
+            mkdir -p "$sets/$standalone/endpoints"
+            cp "$docker_dir/sheriff-config-$standalone/gateway.yaml" "$sets/$standalone/gateway.yaml"
+            cp "$base/endpoints/assets-secure.yaml" "$sets/$standalone/endpoints/assets-secure.yaml"
+          done
+          {
+            echo "## Offline configuration check (--validate-config)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # deployment/compose-sample/docker-compose.yml, service api-sheriff.
+      - name: Validate the compose-sample set
+        env:
+          SHERIFF_TRUSTED_PROXIES: 192.0.2.10/32,192.0.2.11/32
+        run: '"$RUNNER_TEMP/validate-set.sh" compose-sample deployment/compose-sample/docker/sheriff-config'
+
+      # integration-tests/docker-compose.yml, service api-sheriff.
+      - name: Validate the integration-test set
+        env:
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
+          ENDPOINT_PORTAL_HIDDEN_ENABLED: 'false'
+        run: '"$RUNNER_TEMP/validate-set.sh" integration-test integration-tests/src/main/docker/sheriff-config'
+
+      # Service api-sheriff-cookie (api-sheriff-cookie-2 mounts the same set with the same values).
+      - name: Validate the cookie variant
+        env:
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
+          SESSION_ENCRYPTION_KEY: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
+        run: '"$RUNNER_TEMP/validate-set.sh" cookie "$RUNNER_TEMP/config-sets/cookie"'
+
+      # Service api-sheriff-cookie-refresh.
+      - name: Validate the cookie-refresh variant
+        env:
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-rsa.pem
+          SESSION_ENCRYPTION_KEY: Y29va2llLXJlZnJlc2gtc2VhbGluZy1rZXktMDEyMzQ=
+        run: '"$RUNNER_TEMP/validate-set.sh" cookie-refresh "$RUNNER_TEMP/config-sets/cookie-refresh"'
+
+      # Service api-sheriff-egress-verify-off.
+      - name: Validate the egress-verify-off variant
+        env:
+          TOPOLOGY_UPSTREAM: https://mismatched-tls-backend:8443
+          TOPOLOGY_UNTRUSTED: https://passthrough-backend:8443
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
+        run: '"$RUNNER_TEMP/validate-set.sh" egress-verify-off "$RUNNER_TEMP/config-sets/egress-verify-off"'
+
+      # Service api-sheriff-egress-verify-on.
+      - name: Validate the egress-verify-on variant
+        env:
+          TOPOLOGY_UPSTREAM: https://mismatched-tls-backend:8443
+          TOPOLOGY_UNTRUSTED: https://passthrough-backend:8443
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
+        run: '"$RUNNER_TEMP/validate-set.sh" egress-verify-on "$RUNNER_TEMP/config-sets/egress-verify-on"'
+
+      # Service api-sheriff-mtls.
+      - name: Validate the mtls variant
+        env:
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
+        run: '"$RUNNER_TEMP/validate-set.sh" mtls "$RUNNER_TEMP/config-sets/mtls"'
+
+      # Service api-sheriff-passthrough-empty (api-sheriff-no-certificate mounts the same set with the
+      # same placeholder values).
+      - name: Validate the passthrough-empty variant
+        env:
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
+        run: '"$RUNNER_TEMP/validate-set.sh" passthrough-empty "$RUNNER_TEMP/config-sets/passthrough-empty"'
+
+      # Service api-sheriff-refresh.
+      - name: Validate the refresh variant
+        env:
+          OIDC_CLIENT_SECRET: refresh-secret
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-rsa.pem
+        run: '"$RUNNER_TEMP/validate-set.sh" refresh "$RUNNER_TEMP/config-sets/refresh"'
+
+      # Service api-sheriff-ws-admission.
+      - name: Validate the ws-admission variant
+        env:
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
+        run: '"$RUNNER_TEMP/validate-set.sh" ws-admission "$RUNNER_TEMP/config-sets/ws-admission"'
+
+      # JwksLateIdpReadinessIT's one-off gateway: no placeholder variables.
+      - name: Validate the late-idp standalone set
+        run: '"$RUNNER_TEMP/validate-set.sh" late-idp "$RUNNER_TEMP/config-sets/late-idp" --expect-no-defaulted'
+
+      # JwksEgressMismatchIT's one-off gateway: no placeholder variables.
+      - name: Validate the jwks-egress-mismatch standalone set
+        run: '"$RUNNER_TEMP/validate-set.sh" jwks-egress-mismatch "$RUNNER_TEMP/config-sets/jwks-egress-mismatch" --expect-no-defaulted'
