@@ -2,7 +2,7 @@
 # UBI micro base (has a shell, needed by the RUN step below that creates the JFR output directory —
 # a RUN cannot execute on a shell-less distroless base)
 # No baked-in certificates — mount TLS certs at runtime via volumes or secrets
-FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:f268e0a3729d77e62ea811c43a19ed1b2689b9ba9f6cfeb1184d6a3469cf255c
+FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:92d9a99523ead649b12b6904f68959f2c252893b6b03ba7a2f55a9965be0fa24
 
 # Supplied by the build (docker compose build.args.APP_VERSION); the jfr Compose overlay re-specifies
 # only context and dockerfile, so it inherits that arg from the base service. The `dev` default is
