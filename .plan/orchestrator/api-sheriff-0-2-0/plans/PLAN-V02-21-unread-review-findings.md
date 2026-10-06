@@ -11,7 +11,7 @@ workstream: WS-05
 
 ## Objective
 
-Fix the review findings that still hold on `main`, and record an explicit decline with its reason for
+Fix the review findings that still hold on `main` (all six were found and checked), and record an explicit decline with its reason for
 the parts that do not. The fixes are small and local: one log level in the cookie-mode session
 binding, the integration start script's polling loops, three properties of the integration compose
 stack, and the image name in one integration test.
@@ -20,7 +20,7 @@ stack, and the image name in one integration test.
 
 | # | Finding (source PR) | Checked on `main` | Disposition |
 |---|---|---|---|
-| 1 | "…localhost." (#147) | Arrived truncated; not verifiable | **Open** — the operator supplies the full text; until then it is out of this plan |
+| 1 | The start script prints the Keycloak URL with a literal port while the health URL is derived from the compose model (#147, CodeRabbit "Derive the Keycloak public target too") | **Holds.** `start-integration-container.sh` prints `https://localhost:1443/auth`, while `KEYCLOAK_HEALTH_URL` comes from the compose discovery block | **Fix** — D2 |
 | 2 | `COOKIE_SESSION_SEALED` logged at INFO on every refresh, not only at login (#118) | **Holds.** `SealedSessionCookieCodec` logs `BffLogMessages.INFO.COOKIE_SESSION_SEALED` inside `seal`, and `CookieSessionBinding` reaches `seal` from both `bind` (login) and `persist` (refresh, widening) | **Fix** — D1 |
 | 3 | Keycloak retry count is a literal `120`; polling loops duplicated, no `wait_for_url` helper (#147, #100) | **Holds.** `start-integration-container.sh` has three near-identical loops: Keycloak (`120` attempts), go-httpbin (`30`), nginx-static (`30`) | **Fix** — D2 |
 | 4a | `api-sheriff` `depends_on` lacks `passthrough-backend` and `toxiproxy` (#100) | **Holds.** It depends on `keycloak`, `go-httpbin`, `asset-origin` and `grpc-echo` only, and the start script waits for neither missing service | **Fix** — D3, after confirming which gateway services route to them |
@@ -40,7 +40,8 @@ stack, and the image name in one integration test.
    `wait_for_url` function taking the URL, the curl options, the attempt count, a label and the
    service name for the log hint. Name the attempt counts (Keycloak `120`, the backends `30`) as
    variables at the top of the script. Behaviour, messages and exit codes stay as they are; the
-   Keycloak probe keeps its `-f` and certificate options.
+   Keycloak probe keeps its `-f` and certificate options. Derive the printed Keycloak URL from the
+   same compose discovery the health URL uses, instead of the literal port `1443`.
 3. **Three compose fixes in `integration-tests/docker-compose.yml`.**
    - Add `passthrough-backend` and `toxiproxy` to the `depends_on` of every gateway service whose
      routes reach them, with `condition: service_healthy` (both have healthchecks). Find the services
