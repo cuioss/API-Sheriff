@@ -320,7 +320,7 @@ public final class ConfigValidationCommand {
         line.codePoints().forEach(codePoint -> {
             if (codePoint == '\n') {
                 rendered.append("\\n");
-            } else if (codePoint != '\t' && isReplacedCharacter(codePoint)) {
+            } else if (isReplacedCharacter(codePoint)) {
                 rendered.append('?');
             } else {
                 rendered.appendCodePoint(codePoint);
@@ -333,14 +333,14 @@ public final class ConfigValidationCommand {
      * Reports whether a code point is replaced by {@code ?} in a report line.
      *
      * @param codePoint the code point to classify
-     * @return {@code true} for a control character and for a character of type
+     * @return {@code true} for a control character other than tab and for a character of type
      *         {@link Character#FORMAT}, {@link Character#LINE_SEPARATOR} or
      *         {@link Character#PARAGRAPH_SEPARATOR}
      */
     private static boolean isReplacedCharacter(int codePoint) {
         return switch (Character.getType(codePoint)) {
             case Character.FORMAT, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR -> true;
-            default -> Character.isISOControl(codePoint);
+            default -> codePoint != '\t' && Character.isISOControl(codePoint);
         };
     }
 
