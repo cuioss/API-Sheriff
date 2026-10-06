@@ -105,6 +105,37 @@ decision.
 
 ## Decisions
 
+- 2026-10-06 — **Cleanup at `6788bdae`: 28 claims re-grounded across the five staged specs, none newly
+  contradicted, four specs corrected.** Twenty commits had landed since the last pass (`35f2bb37`), three of
+  them releases (0.2.2, 0.2.3 and 0.2.4 are tagged; trunk is 0.2.5-SNAPSHOT). What moved:
+  - **The ADR ordinal guidance went stale again.** 0060 (dispatch framing, #385) and 0061 (offline config
+    validation, #387) are taken, so **0062 is next free**. PLAN-24 and PLAN-26 both said 0060 and now say
+    0062, each with a note that the figure has gone stale twice and must be re-listed before allocating.
+  - **PLAN-20's replay seam was rewritten underneath it, and is still absent.** #385 and #386 changed
+    `DispatchStage` by +629/−90; the body still streams with no replay buffer, and the class javadoc now
+    states that a streamed request cannot be safely replayed once a byte has crossed upstream. ADR-0060
+    was added to the spec's Expected Surface (29→30 entries, verified by membership in `corpus surfaces`)
+    as required reading before deliverable 2.
+  - **PLAN-26's threat-model line references moved, its content did not.** #386 added ~59 lines above the
+    BFF section: the over-claiming Control line is now at 1930 and the summary row at 3014. The spec
+    carries the new positions and says to locate by text.
+  - **PLAN-25 and PLAN-21 are unchanged in substance.** The IT tree and the compose file are untouched
+    since `35f2bb37` apart from the new `ValidateConfigImageIT`; `bff/`, `auth/`, `BffRuntimeProducer`,
+    the schemas and the config model are untouched too, which is why 14 of the 28 verdicts rest on "file
+    not in the diff" rather than on a re-read.
+  - Duplication cross-check: **zero** shared-origin matches over 24 sibling specs in 2 epics
+    (`api-sheriff-0-2-0`, `api-sheriff-0-3-0`) and an empty live plan set; nothing superseded, nothing
+    redistributed. ⚠ The FILE overlap with those two epics is broad — every staged spec here shares
+    files with several of theirs (`doc/configuration.adoc`, `doc/adr/`, `BffRuntimeProducer`, `auth/`,
+    the IT compose file) — so `next` must be read against their queues, not only this one.
+  - The 30 verdicts on SHIPPED specs were left at their old shas and read stale by design: a shipped
+    spec's premise is settled by its landing, not by re-grounding.
+  - Executor regenerated from plan-marshall 0.1.1826 to 0.1.1855 (local, git-ignored) because the `land`
+    verb did not exist in the old one; `marshal.json` is still at 0.1.1818 and its reconcile is an
+    operator action (`/marshall-steward upgrade`). The shared ledger worktree was on
+    `chore/orchestrator-cleanup-1005`, which the new store seam refuses; it was clean and fully contained
+    in `origin/main`, so it was switched to a fresh `chore/orchestrator-ledger` cut from `origin/main`.
+
 - 2026-10-05 — **Cleanup at `35f2bb37`: 58 claims re-grounded, three contradicted, three specs narrowed.**
   Five commits had landed since the last pass, two of them on the staged specs' own surfaces (`e8db85bf`
   PAR/DPoP, `35f2bb37` which removed 102 `-Djavax.net.ssl.trustStore` lines from the IT compose file and
@@ -335,6 +366,10 @@ decision.
   exclusion is unestablished for that window and the report reads as success. Plugin-side; filed as
   plan-marshall lesson `2026-09-23-05-003`. — source: operator report, PLAN-17 landing
 
+> ↪ **RESOLVED 2026-10-06 by plan-marshall 0.1.1855**: `corpus cross-check` now excludes the sentinel
+> before counting (`excluded_sentinel_plan_count: 1`) and reports `candidate_comparison_determinate: true`
+> for this epic, so the `next` gate no longer fails closed on it and no operator override is needed. Was:
+
 - `orchestrator corpus cross-check` (plan-marshall 0.1.1728) counts `.plan/local/plans/NO_PLAN` — the
   plan-less operations sentinel (`status.json` `metadata.sentinel: true`, no `references.json`) — as a
   live plan with no comparable surface. That sets `candidate_comparison_determinate: false`
@@ -377,6 +412,13 @@ decision.
   token" and "revoke at the IdP" mean. — observed 2026-10-02 by the orchestrator
 
 ## Watches
+
+- **The "0.2.2 release" trigger named by five watches below has FIRED — three times over.** Tags 0.2.2,
+  0.2.3 and 0.2.4 exist (observed 2026-10-06). The actions those watches owe are: the breaking-change
+  release note for AS-14, telling the downstream that `oidc_verify_hostname` and the six routing AS items
+  are consumable, offering the release to the downstream's Helm test, and confirming the unobserved
+  main-branch Maven Builds. ⚠ Whether any of them was done is NOT observed — the orchestrator did not read
+  the release notes or the downstream. Confirm each, then retire the watch. — trigger: now
 
 > ↪ Relocated to `settled.md` § "PLAN-15 PR chain, retired" — PR #320 merged; the chain is closed
 
