@@ -515,7 +515,7 @@ class ConfigValidationCommandTest {
                     () -> assertTrue(errLines().getFirst().contains("abs?ent?dir"),
                             () -> "U+202E and U+2028 are replaced by '?': " + errLines()),
                     () -> assertFalse(errLines().getFirst().contains(rightToLeftOverride)
-                                    || errLines().getFirst().contains(lineSeparator),
+                            || errLines().getFirst().contains(lineSeparator),
                             () -> "a raw U+202E or U+2028 is echoed: " + errLines()));
         }
     }
