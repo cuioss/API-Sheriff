@@ -115,9 +115,10 @@ line and exits `1`, exactly as the boot refuses it.
 The report is a fixed sequence of line types, in this order:
 
 `INVALID <file> [<pointer>]: <message>`::
-One entry per violation, in pipeline order. The file, the JSON pointer and the message are the ones
-the boot logs as `ApiSheriff-200`. The entry is one line, except where the message itself spans
-lines -- a YAML parser error quotes the offending line and points at the column underneath it.
+One line per violation, in pipeline order. The file, the JSON pointer and the message are the ones
+the boot logs as `ApiSheriff-200`. A message that itself spans lines -- a YAML parser error quotes the
+offending line and points at the column underneath it -- stays on its `INVALID` line, with each line
+feed printed as the two characters `\n`.
 +
 ----
 INVALID gateway.yaml [/oidc/sender_constraint/key_file]: Unresolved environment variable: OIDC_DPOP_KEY_FILE
@@ -148,6 +149,18 @@ The last line, carrying the three counts.
 ----
 RESULT: violations=0 defaulted=2 not-checked=9
 ----
+
+*Every record is exactly one line*, on standard output and on standard error alike, so a script can
+read the report line by line. Text taken from the configuration directory or the command line -- a
+file name, a pointer, a message, the directory argument -- is rendered so it cannot break that rule
+or disguise what is printed:
+
+* a line feed is printed as the two characters `\n`;
+* a carriage return, an escape or any other control character is printed as `?` (a tab is kept);
+* a Unicode format character -- a bidirectional override or isolate, a zero-width character -- and a
+  Unicode line or paragraph separator are printed as `?`.
+
+A message free of those characters is printed exactly as the boot logs it.
 
 A run that reaches the validation stage lists nine `NOT CHECKED` entries: the framework body limit
 and the eight families described below. A run that stops earlier, on a load or topology violation,

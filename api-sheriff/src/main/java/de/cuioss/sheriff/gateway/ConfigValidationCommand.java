@@ -19,12 +19,12 @@ import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.boot.ConfigBootPipeline;
@@ -66,6 +66,11 @@ import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
  * <li>a final {@code RESULT: violations=<n> defaulted=<n> not-checked=<n>} line.</li>
  * </ol>
  * Usage errors and unreadable input are reported as one line on the {@code err} stream.
+ * <p>
+ * Every record — each report line and the error line — is exactly one line: a line feed inside a
+ * field, such as a multi-line YAML parser message, is printed as the two characters {@code \n}, and
+ * control characters and Unicode format, line-separator and paragraph-separator characters are
+ * printed as {@code ?}.
  *
  * <h2>Exit codes</h2>
  * <ul>
@@ -117,6 +122,9 @@ public final class ConfigValidationCommand {
 
     private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String ERROR_PREFIX = "validate-config: ";
+
+    /** Opening of every input error that names the configuration directory; the quote is closed by the caller. */
+    private static final String CONFIG_DIR_PREFIX = "configuration directory '";
 
     /** Reasons for the keys the pipeline itself reports as not checked. */
     private static final Map<String, String> PIPELINE_NOT_CHECKED_REASONS = Map.of(
@@ -210,7 +218,7 @@ public final class ConfigValidationCommand {
         Path configDir;
         try {
             configDir = Path.of(argument);
-        } catch (InvalidPathException e) {
+        } catch (InvalidPathException _) {
             emit(err, ERROR_PREFIX + "'" + argument + "' is not a valid path");
             return EXIT_USAGE;
         }
@@ -246,17 +254,17 @@ public final class ConfigValidationCommand {
      */
     private static Optional<String> inputError(Path configDir) {
         if (!Files.exists(configDir)) {
-            return Optional.of("configuration directory '" + configDir + "' does not exist");
+            return Optional.of(CONFIG_DIR_PREFIX + configDir + "' does not exist");
         }
         if (!Files.isDirectory(configDir)) {
             return Optional.of("'" + configDir + "' is not a directory");
         }
         if (!Files.isReadable(configDir)) {
-            return Optional.of("configuration directory '" + configDir + "' is not readable");
+            return Optional.of(CONFIG_DIR_PREFIX + configDir + "' is not readable");
         }
         Path gatewayFile = configDir.resolve(GATEWAY_FILE);
         if (!Files.isRegularFile(gatewayFile)) {
-            return Optional.of("configuration directory '" + configDir + "' contains no " + GATEWAY_FILE);
+            return Optional.of(CONFIG_DIR_PREFIX + configDir + "' contains no " + GATEWAY_FILE);
         }
         if (!Files.isReadable(gatewayFile)) {
             return Optional.of("'" + gatewayFile + "' is not readable");
@@ -271,37 +279,69 @@ public final class ConfigValidationCommand {
      * @return every not-checked entry, the pipeline's first
      */
     private static List<NotChecked> notChecked(List<String> pipelineNotChecked) {
-        List<NotChecked> entries = new ArrayList<>(pipelineNotChecked.size() + OUT_OF_PIPELINE_REFUSALS.size());
-        for (String key : pipelineNotChecked) {
-            entries.add(new NotChecked(key, PIPELINE_NOT_CHECKED_REASONS.getOrDefault(key, UNKNOWN_NOT_CHECKED_REASON)));
-        }
-        entries.addAll(OUT_OF_PIPELINE_REFUSALS);
-        return entries;
+        return Stream.concat(
+                pipelineNotChecked.stream().map(key -> new NotChecked(key,
+                        PIPELINE_NOT_CHECKED_REASONS.getOrDefault(key, UNKNOWN_NOT_CHECKED_REASON))),
+                OUT_OF_PIPELINE_REFUSALS.stream()).toList();
     }
 
     private static void emit(PrintStream stream, String line) {
         // cui-rewrite:disable CuiLoggerStandardsRecipe
-        stream.println(withoutControlCharacters(line)); // NOSONAR java:S106 pre-boot offline check: no logging manager yet; the report is program output
+        stream.println(asSingleReportLine(line)); // NOSONAR java:S106 pre-boot offline check: no logging manager yet; the report is program output
     }
 
     /**
-     * Replaces every control character except line feed and tab with {@code ?} before a line is
-     * written.
+     * Renders a report record as exactly one printable line before it is written.
      * <p>
-     * A report line carries operator-supplied text — a file name, a JSON pointer built from YAML keys,
-     * a parser message quoting the offending source line, the command-line argument — and the report
-     * is read on terminals and in CI logs. An escape sequence, a carriage return or another control
-     * character in that text could otherwise rewrite or hide what the reader sees (CWE-150). Line feed
-     * is kept because a YAML parser message deliberately spans lines, and tab because it is harmless.
+     * A report record carries operator-supplied text — a file name, a JSON pointer built from YAML
+     * keys, a parser message quoting the offending source line, the command-line argument — and the
+     * report is read on terminals, in CI logs and by line-oriented tools. The method therefore
+     * guarantees two things about the returned text:
+     * <ul>
+     * <li><strong>One record, one line.</strong> A line feed is printed as the two characters
+     * {@code \n} (backslash, {@code n}), so a multi-line parser message, or a file name or argument
+     * containing a line feed, stays on the line of its own record and cannot be read as a further
+     * report line.</li>
+     * <li><strong>Nothing that rewrites or hides text.</strong> Every other control character —
+     * including carriage return and escape — and every Unicode character of type
+     * {@link Character#FORMAT} (bidirectional overrides and isolates, zero-width characters),
+     * {@link Character#LINE_SEPARATOR} or {@link Character#PARAGRAPH_SEPARATOR} is replaced by
+     * {@code ?}. Tab is kept because it is harmless.</li>
+     * </ul>
+     * Text free of those characters is returned unchanged, so a single-line message is printed
+     * byte for byte as the pipeline produced it.
      *
-     * @param line the line about to be written
-     * @return {@code line} with every other control character replaced by {@code ?}
+     * @param line the record about to be written
+     * @return {@code line} as one line, with line feeds escaped and the other characters above
+     *         replaced by {@code ?}
      */
-    private static String withoutControlCharacters(String line) {
-        StringBuilder sanitized = new StringBuilder(line.length());
-        line.codePoints().forEach(codePoint -> sanitized.appendCodePoint(
-                Character.isISOControl(codePoint) && codePoint != '\n' && codePoint != '\t' ? '?' : codePoint));
-        return sanitized.toString();
+    private static String asSingleReportLine(String line) {
+        StringBuilder rendered = new StringBuilder(line.length());
+        line.codePoints().forEach(codePoint -> {
+            if (codePoint == '\n') {
+                rendered.append("\\n");
+            } else if (codePoint != '\t' && isReplacedCharacter(codePoint)) {
+                rendered.append('?');
+            } else {
+                rendered.appendCodePoint(codePoint);
+            }
+        });
+        return rendered.toString();
+    }
+
+    /**
+     * Reports whether a code point is replaced by {@code ?} in a report line.
+     *
+     * @param codePoint the code point to classify
+     * @return {@code true} for a control character and for a character of type
+     *         {@link Character#FORMAT}, {@link Character#LINE_SEPARATOR} or
+     *         {@link Character#PARAGRAPH_SEPARATOR}
+     */
+    private static boolean isReplacedCharacter(int codePoint) {
+        return switch (Character.getType(codePoint)) {
+            case Character.FORMAT, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR -> true;
+            default -> Character.isISOControl(codePoint);
+        };
     }
 
     /**

@@ -229,9 +229,10 @@ class TopologyResolverTest {
                 .auth(new AuthConfig(Require.NONE, null, null))
                 .build();
         List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"), second);
+        List<String> additionalAliases = List.of("MISSING");
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of("MISSING")));
+                () -> resolver.resolve(file, endpoints, additionalAliases));
 
         assertEquals(1, exception.errors().size(), () -> "one refusal per alias, got " + exception.errors());
     }
@@ -242,9 +243,10 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=${ORDERS_URL}\n");
         TopologyResolver resolver = resolverWith(Map.of());
         List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
+        List<String> additionalAliases = List.of("ABSENT");
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of("ABSENT")));
+                () -> resolver.resolve(file, endpoints, additionalAliases));
 
         assertEquals(List.of("ORDERS"), exception.errors().stream().map(ConfigError::pointer).toList(),
                 "only the enabled alias is refused; the absent additional alias is left to ConfigValidator");
@@ -256,9 +258,10 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=https://orders.internal\nSECURE=ftp://secure.internal\n");
         TopologyResolver resolver = resolverWith(Map.of());
         List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
+        List<String> additionalAliases = List.of("SECURE");
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of("SECURE")));
+                () -> resolver.resolve(file, endpoints, additionalAliases));
 
         assertEquals(List.of(topologyError("SECURE",
                         "Topology URL for alias 'SECURE' must use an http or https scheme, but was 'ftp'")),

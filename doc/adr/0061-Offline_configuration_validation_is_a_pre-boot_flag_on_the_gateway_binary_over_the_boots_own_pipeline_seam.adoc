@@ -95,7 +95,10 @@ environment of this run.
 `DEFAULTED` line per applied default, one `NOT CHECKED` line per boot refusal the check
 cannot evaluate, the policy line, and a final `RESULT:` line carrying the violation,
 defaulted and not-checked counts. A usage error or unreadable input is one line on standard
-error. The exit code is `0` when no violation was printed, `1` when at least one was, and
+error. Every record is exactly one line: a line feed inside a field -- a multi-line YAML parser
+message, a file name or an echoed argument -- is printed as the two characters `\n`, and control
+characters and Unicode format, line-separator and paragraph-separator characters are printed as
+`?`, so a line-oriented reader can never see one record as several. The exit code is `0` when no violation was printed, `1` when at least one was, and
 `2` for a missing directory argument, a directory that does not exist, is not a directory
 or is unreadable, or a missing or unreadable `gateway.yaml`. Log lines the shared pipeline
 code emits may appear on standard error and never change the report or the exit code.

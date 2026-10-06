@@ -326,8 +326,8 @@ class ConfigValidationCommandTest {
                     metadata:
                       config_version: "${SHERIFF_TEST_CONFIG_VERSION:-%s}"
                     """.formatted(versionDefault));
-            writeProxyEndpointAndTopology("WEB_BACKEND=${SHERIFF_TEST_WEB_URL:-https://%s.internal:8443}\n"
-                    .formatted(hostDefault));
+            writeProxyEndpointAndTopology("WEB_BACKEND=${SHERIFF_TEST_WEB_URL:-https://%s.internal:8443}"
+                    .formatted(hostDefault) + "\n");
 
             int exitCode = runOverConfigDir(Map.of());
 
@@ -450,6 +450,73 @@ class ConfigValidationCommandTest {
                             () -> "the NUL of the argument is echoed raw: " + errLines()),
                     () -> assertTrue(errLines().getFirst().contains("'bad?path'"),
                             () -> "the NUL is replaced by '?': " + errLines()));
+        }
+    }
+
+    @Nested
+    @DisplayName("One record per line")
+    class OneRecordPerLine {
+
+        private static final List<String> RECORD_PREFIXES = List.of("INVALID ", "DEFAULTED ", "NOT CHECKED: ",
+                "POLICY: ", "RESULT: ");
+
+        @Test
+        @DisplayName("A line feed in an echoed argument is printed as a literal \\n on the single error line")
+        void lineFeedInArgumentStaysOnOneLine() {
+            Path absent = configDir.resolve("first" + '\n' + "INVALID forged.yaml [/x]: second");
+
+            int exitCode = run(Map.of(), ConfigValidationCommand.FLAG, absent.toString());
+
+            assertAll("one error line",
+                    () -> assertEquals(ConfigValidationCommand.EXIT_USAGE, exitCode),
+                    () -> assertTrue(outLines().isEmpty(), () -> "nothing is written to out: " + outLines()),
+                    () -> assertEquals(1, errLines().size(), () -> "exactly one err line: " + errLines()),
+                    () -> assertTrue(errLines().getFirst().contains("first\\nINVALID forged.yaml [/x]: second"),
+                            () -> "the line feed is printed as \\n: " + errLines()));
+        }
+
+        @Test
+        @DisplayName("A multi-line parser message is printed on its INVALID line with literal \\n separators")
+        void multiLineParserMessageStaysOnOneLine() throws Exception {
+            writeGateway("""
+                    version: 1
+                    metadata: [unclosed
+                    """);
+
+            int exitCode = runOverConfigDir(Map.of());
+
+            List<String> invalid = outLinesStartingWith("INVALID ");
+            assertAll("one INVALID line",
+                    () -> assertEquals(ConfigValidationCommand.EXIT_INVALID, exitCode),
+                    () -> assertEquals(1, invalid.size(), () -> "violations " + invalid),
+                    () -> assertTrue(invalid.getFirst().startsWith("INVALID gateway.yaml "),
+                            () -> "the violation names the file: " + invalid),
+                    () -> assertTrue(invalid.getFirst().contains("\\n"),
+                            () -> "the parser message's line feeds are printed as \\n: " + invalid),
+                    () -> assertTrue(outLines().stream()
+                                    .allMatch(line -> RECORD_PREFIXES.stream().anyMatch(line::startsWith)),
+                            () -> "every out line is a whole record: " + outLines()),
+                    () -> assertTrue(outLines().getLast().startsWith("RESULT: violations=1 "),
+                            () -> "the result line counts one violation: " + outLines()));
+        }
+
+        @Test
+        @DisplayName("Unicode format and separator characters are printed as '?'")
+        void formatAndSeparatorCharactersAreReplaced() {
+            String rightToLeftOverride = String.valueOf((char) 0x202E);
+            String lineSeparator = String.valueOf((char) 0x2028);
+            Path absent = configDir.resolve("abs" + rightToLeftOverride + "ent" + lineSeparator + "dir");
+
+            int exitCode = run(Map.of(), ConfigValidationCommand.FLAG, absent.toString());
+
+            assertAll("characters replaced",
+                    () -> assertEquals(ConfigValidationCommand.EXIT_USAGE, exitCode),
+                    () -> assertEquals(1, errLines().size(), () -> "exactly one err line: " + errLines()),
+                    () -> assertTrue(errLines().getFirst().contains("abs?ent?dir"),
+                            () -> "U+202E and U+2028 are replaced by '?': " + errLines()),
+                    () -> assertFalse(errLines().getFirst().contains(rightToLeftOverride)
+                                    || errLines().getFirst().contains(lineSeparator),
+                            () -> "a raw U+202E or U+2028 is echoed: " + errLines()));
         }
     }
 }
