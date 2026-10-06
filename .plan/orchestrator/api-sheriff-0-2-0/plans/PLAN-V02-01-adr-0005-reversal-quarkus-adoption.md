@@ -63,7 +63,10 @@ they must land together. D5 and D7 stay together: the audit runs over the store 
    **OBSERVED**: a `public final class`, a pattern-matching switch writing into a `StringBuilder`,
    with call sites in `BffRuntime` and in `GatewayEdgeRoute.problemBody` (the problem+json body).
    The payloads are maps, collections, strings, numbers, booleans and null, which the Jackson already
-   on the classpath (`quarkus-resteasy-jackson`) serialises; note that `JsonWriter` maps NaN and
+   on the classpath (`quarkus-resteasy-jackson`) serialises. Two Jackson lines are now on the classpath:
+   Quarkus's Jackson 2, and Jackson 3 (`tools.jackson`) brought by `json-schema-validator`, with
+   `jackson-annotations` pinned in the root `pom.xml` to serve both (#397). Use Quarkus's Jackson 2
+   and do not add a dependency on the Jackson 3 line; note that `JsonWriter` maps NaN and
    infinity to `null` and unknown types through `String.valueOf`. Replace with the Quarkus-provided
    serializer.
    **⚠ DEPENDENCY APPROVAL REQUIRED**: the operator suggested **dsl-json** for fixed-DTO shapes.
