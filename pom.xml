@@ -4,7 +4,7 @@
     <parent>
         <groupId>de.cuioss</groupId>
         <artifactId>cui-quarkus-parent</artifactId>
-        <version>1.7.5</version>
+        <version>1.7.6</version>
         <relativePath />
     </parent>
     <groupId>de.cuioss.sheriff.gateway</groupId>
@@ -62,6 +62,7 @@
     <properties>
         <version.token-sheriff>0.9.6</version.token-sheriff>
         <version.json-schema-validator>3.0.8</version.json-schema-validator>
+        <version.jackson-annotations>2.22</version.jackson-annotations>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
         <!-- The ONE language-level input (ADR-0001). cui-parent-pom defaults it to 21 and reads it in
@@ -144,6 +145,19 @@
                 <groupId>com.networknt</groupId>
                 <artifactId>json-schema-validator</artifactId>
                 <version>${version.json-schema-validator}</version>
+            </dependency>
+            <!-- jackson-annotations is shared by BOTH Jackson lines: Quarkus's Jackson 2 and the
+                 Jackson 3 (tools.jackson) that json-schema-validator brings. Jackson 3.2.x is built
+                 against annotations 2.22 (it references JsonApplyView), while quarkus-bom 3.40.x manages
+                 annotations at 2.21 - a mismatch the JVM never trips over but the native image does,
+                 since it resolves every reference at build time. Annotations stay backward compatible,
+                 so the newer of the two lines serves Quarkus's databind as well. This explicit entry
+                 overrides the imported BOMs; re-check it on every Quarkus or json-schema-validator bump
+                 and drop it once quarkus-bom manages annotations at or above the Jackson 3 line's. -->
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>${version.jackson-annotations}</version>
             </dependency>
             <!-- Internal modules -->
             <dependency>

@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   build:
-    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-build.yml@5fa6dc4d8c092673b5e729e1f06f9759be5ad47d # v0.35.0
+    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-build.yml@b2de4107d3d53a41a7edab7e2513887c309b8237 # v0.36.0
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       OSS_SONATYPE_USERNAME: ${{ secrets.OSS_SONATYPE_USERNAME }}
@@ -73,7 +73,7 @@ jobs:
           echo "Scanning pinned base image: ${BASE}"
 
       - name: Generate the SPDX SBOM for the pinned base image
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ steps.base.outputs.image }}
           format: spdx-json

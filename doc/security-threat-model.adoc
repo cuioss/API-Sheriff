@@ -487,9 +487,9 @@ enforces it and the test that pins it:
 | `GatewayEdgeFramingCorpusTest` (`obfuscatedTransferEncodingTheTransportReadsAsChunked`,
   `repeatedTransferEncoding`)
 
-| `Content-Length` beside a coding the transport does not read as `chunked`
-| `FramingGate`
-| `GatewayEdgeFramingCorpusTest` (`obfuscatedTransferEncodingTheTransportIgnores`);
+| `Content-Length` beside a coding whose final coding is not `chunked` (e.g. `xchunked`)
+| transport, with `FramingGate` as backstop
+| `GatewayEdgeFramingCorpusTest` (`obfuscatedTransferEncodingWhoseFinalCodingIsNotChunked`);
   `FramingGateTest` (`rejectsConflictingFraming`)
 
 | A sole `Transfer-Encoding` that is repeated or is not exactly `chunked`
