@@ -131,6 +131,16 @@ needs no translation.
   `doc/user/tls-scenarios.adoc`, and no longer `TokenValidatorProducer.java` or `doc/user/`. Running
   `PLAN-V02-08` and the shipped specs are untouched. From here on a spec is corrected in place;
   no dated section is appended to it.
+- **2026-10-06 — the server-mode session store stays custom; a session-management security audit is
+  added to `PLAN-V02-01`.** Operator decision after a review of the store against the usual failures of
+  hand-rolled HTTP sessions. `@SessionScoped` is rejected (Servlet-backed, needs `quarkus-undertow`,
+  never active on the Vert.x edge route); Vert.x `SessionStore` is rejected (fixes idle timeout and
+  reaping but drops the size cap, the absolute lifetime and `sid`/`sub` logout, and needs new
+  infrastructure to cluster). The store keeps its design and gains ID rotation on step-up and widening,
+  an idle timeout and a periodic sweep (D5). Multi-replica server mode is served by sticky sessions in
+  the orchestration layer. D7 is a very thorough audit of both session modes against every known
+  successful attack class on session management — the plan's most important deliverable; unfixed
+  findings are reported to the operator only. `PLAN-V02-01` grows to seven deliverables, unsplit.
 
 ## Sequencing Constraints
 
