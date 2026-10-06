@@ -80,22 +80,22 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
   hop-by-hop and conditional headers — it does **not** strip `Server`/`X-Powered-By`, so an upstream
   emitting them leaks them through; `relay()` and `relayWithTrailers()` both copy every forwardable
   upstream header through that one filter.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage isForwardableResponseHeader :74, relay() :100, relayWithTrailers() :172; no Server/X-Powered-By strip anywhere; ConnectionHeaders RESPONSE_STRIP :78 unchanged
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage.isForwardableResponseHeader drops only ConnectionHeaders.RESPONSE_STRIP and etag/last-modified; no Server or X-Powered-By handling in main; relay and relayWithTrailers share the filter
 - OBSERVED: security headers are opt-in today — `pipeline/SecurityHeadersStage.java` emits HSTS /
   nosniff / frame-deny only when the `security_headers` block enables each.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersStage OwnedHeader HSTS/NOSNIFF/FRAME_OPTIONS each still gated by the security_headers block
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersStage.OwnedHeader emits HSTS, nosniff and frame DENY only when the security_headers block enables each; portal responses force CSP and nosniff
 - OBSERVED: error bodies are already clean — `edge/GatewayEdgeRoute.java` `renderProblem` emits a
   minimal `{"type","title","status"}` with generic `EventCategory` titles, no stack/framework signature.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem problem+json body shape not independently re-read; GatewayEdgeRoute +276 lines were portal HTML machinery (#343)
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.renderProblem/problemBody emit type, title, status plus extension members only from a GatewayException; HTML page only for Accept text/html; no stack or framework text
 - HYPOTHESIS: the gateway itself emits no `Server`/`X-Powered-By` by default (Vert.x/Quarkus default;
   no `quarkus.http.server-header` property exists — override idiom is `quarkus.http.header."Server".value`).
   Confirm/refute at outline with a live `curl -I` against the running native gateway (verify-at-outline)
   — do not build self-header suppression for a header we do not emit; the real work is the *upstream*
   passthrough strip.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a live curl -I, as the spec itself states
+  - verdict: unverifiable | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a live curl -I against the native gateway; statically no quarkus.http.header or server-header property exists (control: application.properties carries 21 quarkus.http keys)
 - Verify-first clause: enumerate the actual set of identity-leaking headers an upstream can send (the IT
   stack: Keycloak, go-httpbin) and confirm which pass through today before fixing the allowlist.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural live-IT-stack instruction, not a static claim
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still accurate: the IT stack runs Keycloak and go-httpbin 2.23.1 and RESPONSE_STRIP is a deny list, so which identity headers pass is still unenumerated
 
 ## Expected Surface
 

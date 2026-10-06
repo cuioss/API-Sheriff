@@ -2,9 +2,9 @@
   "id": "PLAN-V02-13",
   "slug": "terminal-rejection-contract",
   "workstream": "WS-03",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-v02-13-terminal-rejection-contract",
+  "pr": "383",
+  "landing": "landings/PLAN-V02-13.md",
   "seq": 13
 }

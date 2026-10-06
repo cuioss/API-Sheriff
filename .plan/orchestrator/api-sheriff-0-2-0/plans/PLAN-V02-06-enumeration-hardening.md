@@ -16,19 +16,19 @@ unauthenticated** sources while keeping honest 401/403 for authenticated callers
 boundary, and introduces a **per-client 404-rate detection substrate** (a CrowdSec-`http-probing`-style
 leaky bucket) with a written contract that `PLAN-V02-07` consumes.
 
-## Boundary with PLAN-V02-13
+## The rejection contract this plan builds on
 
-Both plans edit the same rejection dispatch in `GatewayEdgeRoute`. The split is fixed:
+`PLAN-V02-13` has landed (#383, ADR-0059). The concerns at the rejection dispatch in
+`GatewayEdgeRoute` are split as follows:
 
 | Concern | Owner |
 |---|---|
-| WHICH `EventCategory` a rejection carries (the taxonomy, incl. a new `ROUTING` category) | `PLAN-V02-13` |
-| HOW a rejection is RENDERED to a browser vs. a JSON client (`Accept` negotiation) | already on `main`: `portal/ErrorPageClassifier`; `PLAN-V02-13` owns the remaining reclassification |
+| WHICH `EventCategory` a rejection carries | on `main`: routing rejections (`NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, `METHOD_NOT_ALLOWED`) report under `ROUTING` (`urn:api-sheriff:problem:routing`) |
+| HOW a rejection is RENDERED to a browser vs. a JSON client (`Accept` negotiation) | on `main`: `portal/ErrorPageClassifier` |
 | WHETHER an untrusted caller sees the honest code or a uniform 404 (the trust-boundary branch) | this plan, D1 |
 | Response-TIMING uniformity on the reject path | this plan, D2 |
 
-This plan changes the code a rejection resolves TO; `PLAN-V02-13` changes what it is CALLED. This plan
-does not touch the category assignment and does not alter the content negotiation — its uniform-404
+This plan changes the code a rejection resolves TO, not what it is CALLED. It does not touch the category assignment and does not alter the content negotiation — its uniform-404
 must work through that negotiation, not around it.
 
 ## Deliverables
@@ -39,9 +39,15 @@ must work through that negotiation, not around it.
    trust boundary keep honest `401/403`. **Stated as its own line item** (behaviour change; the
    trust-boundary condition is the crux — an outline must not collapse it to "return 404").
 
+   **The reject path cannot see the caller's authentication state today.** `PipelineRequest` carries
+   only the selected route and the mediated bearer, and `renderProblem` receives the context, the
+   request, the event type and its extensions. The trust-boundary branch therefore needs the pipeline
+   to thread an authentication outcome to the render point; that threading is part of this
+   deliverable, and `pipeline/PipelineRequest.java` is part of its surface.
+
    - `renderProblem` is already content-negotiating: `portal/ErrorPageClassifier` marks
-     `NO_ROUTE_MATCHED`, `PATH_NOT_ALLOWED`, `METHOD_NOT_ALLOWED` and `TOKEN_MISSING` as
-     HTML-eligible. Design the uniform-404 against that negotiating renderer, and do not reintroduce
+     `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, `PATH_NOT_ALLOWED`, `METHOD_NOT_ALLOWED` and
+     `TOKEN_MISSING` as HTML-eligible. Design the uniform-404 against that negotiating renderer, and do not reintroduce
      a status or shape oracle through the HTML branch.
    - `renderProblem` has several call sites in `GatewayEdgeRoute.java` (five when last counted). The
      trust-boundary branch must account for every one; re-count at outline.
@@ -97,6 +103,20 @@ must work through that negotiation, not around it.
    re-scope rather than force it. Verify the exact enforcement call site at outline against the
    h2/gRPC termination code.
 
+   **Also the `gw-02` residue.** Threat-model row `gw-02` (request framing) is `PARTIAL`. It is pinned
+   for HTTP/1.1, and on HTTP/2 for the stream-scoped gate rejection, a declared body on `HEAD`, the
+   refusal of a non-decimal `Content-Length`, the bodyless-method rule and declared-length framing. Still unpinned on HTTP/2: the other framing-gate
+   clauses, and an inbound body failure after dispatch. They are HTTP/2 framing bounds of the same kind
+   as this deliverable's, so close them here and flip `gw-02` with `gw-08`, or report which clause
+   remains open.
+
+   **Legitimate traffic already hits the reset bound.** The post-merge benchmark's
+   `run-k6-upload-small-benchmark` sees the gateway send `GOAWAY` `ENHANCE_YOUR_CALM` (*"Maximum number
+   of RST frames reached"*) on `POST /upload/small` under 50 virtual users — 95 to 134 times per run
+   since at least #382, and enough to fail the run on #387 (Open Defect 16). Find where the resets come
+   from before choosing a bound: a reset-rate limit that trips on an ordinary upload workload is the
+   wrong limit, and this benchmark is the regression test for whatever is chosen.
+
    Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
    `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives
    framing.
@@ -113,30 +133,31 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 - OBSERVED (the oracle): the differentiated codes are real — `events/EventType.java`: `NO_ROUTE_MATCHED`
   (404), `TOKEN_MISSING` (401), `PATH_NOT_ALLOWED` (400); rendered by `edge/GatewayEdgeRoute.java`
   `renderProblem` per the event's HTTP mapping.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType PATH_NOT_ALLOWED:58(400) NO_ROUTE_MATCHED:62(404) TOKEN_MISSING:101(401) unchanged
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType NO_ROUTE_MATCHED 404, TOKEN_MISSING 401, PATH_NOT_ALLOWED 400; renderProblem takes status from eventType.httpStatus(); NO_ROUTE_MATCHED is now category ROUTING
 - OBSERVED: deny-by-default routing (no listing) — `pipeline/RouteSelectionStage.java`
   (`NO_ROUTE_MATCHED`, "the gateway never forwards an unmatched request").
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: RouteSelectionStage:38 comment intact; process():74 still throws NO_ROUTE_MATCHED
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: RouteSelectionStage throws GatewayException(NO_ROUTE_MATCHED) and documents that an unmatched request is never forwarded
 - OBSERVED: no per-client recon detection exists — `events/GatewayEventCounter.java` counts events
   globally (Micrometer), not per-source; a grep for a per-client/leaky-bucket construct returns nothing.
   Confirm/refute at `events/` § its counter set (verify-at-outline).
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter still flat ConcurrentHashMap<EventType,AtomicLong>; no sliding-window construct in main (control: 14 EventCounter refs)
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter is a global EventType-to-AtomicLong map; no per-client, leaky-bucket or rate construct in main beyond the reserved unused RateLimitConfig (control reached main sources)
 - HYPOTHESIS: the "trusted / authenticated caller" signal needed for the trust-boundary branch is
   available at the render point (the request carries its auth outcome). Confirm/refute at
   `edge/GatewayEdgeRoute.java` § where `renderProblem` is called and what auth state is in scope
   (verify-at-outline) — if the reject path cannot see auth state, the branch needs the pipeline to
-  thread it, which widens the deliverable.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem(ctx, request, eventType) signature unchanged at GatewayEdgeRoute:1500
+  thread it, which widens the deliverable. Re-grounding refuted it; D1 now carries the threading.
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: PipelineRequest carries no authentication outcome (only selectedRoute and mediatedBearer) and renderProblem receives ctx, request, eventType, extensions; D1 re-scoped to thread the outcome, PipelineRequest added to the surface
 - Verify-first clause: confirm that collapsing to 404 does not break the shipped BFF/XHR contracts
   (the user-info endpoint deliberately returns 401-not-redirect for XHR) — the uniform-404 must NOT
   apply to those authenticated-session flows; scope the "untrusted" predicate against the landed auth
   model, not this spec's prose.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: UserInfoEndpoint javadoc :64-66 still 401 problem+json never redirect; now references content negotiation (ErrorPageClassifier, #343)
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: UserInfoEndpoint javadoc: no live session yields 401 problem+json, never a redirect; reserved paths resolve before the route table
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` `renderProblem` — the trust-boundary-aware uniform-404 branch
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/RouteSelectionStage.java` — the route-miss origin of `NO_ROUTE_MATCHED`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/PipelineRequest.java` — D1: carries no authentication outcome today; the trust-boundary branch needs one threaded to the render point
 - OBSERVED absence → NEW: a per-client recon-detection component under `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/` or a new package
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java` / `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/GatewayEventCounter.java` — a new trip event + counter
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**` — config for the threshold / trusted-source predicate / response action
@@ -147,10 +168,9 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 
 ## Dependencies and Sequencing
 
-- Depends on: `PLAN-V02-13`, for D1's taxonomy only. It re-categorises `NO_ROUTE_MATCHED` and
-  `METHOD_NOT_ALLOWED` out of `INPUT_VALIDATION`; building the uniform-404 branch against a taxonomy
-  that is about to change means doing it twice. Content negotiation is no longer a reason to wait —
-  it is already on `main`.
+- Depends on: none. The taxonomy this plan's uniform-404 branch is built against has landed with
+  `PLAN-V02-13` (#383). Re-read `GatewayEdgeRoute` and `DispatchStage` at outline: both were changed
+  by `PLAN-V02-13` and `PLAN-V02-10` after this spec was last grounded.
 - Depended on by: `PLAN-V02-07`, which consumes D3 and D7 and must not run before this plan lands.
 - Overlaps with: `PLAN-V02-05` on `ResponseStage` and the edge. The two are close enough that the
   disjointness check should read `PLAN-V02-05`'s current outline if it is in flight, not only its

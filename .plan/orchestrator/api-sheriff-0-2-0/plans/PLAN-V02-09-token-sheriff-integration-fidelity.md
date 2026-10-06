@@ -160,17 +160,17 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 ## Claim Labels
 
 - OBSERVED: token-sheriff is pinned at `0.9.6` — `api-sheriff/pom.xml`
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: api-sheriff/pom.xml:63 version.token-sheriff 0.9.6
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: version.token-sheriff 0.9.6 in the root pom.xml, consumed by api-sheriff/pom.xml through the BOM
 - OBSERVED: the `quarkus.arc.exclude-types` exclusion of token-sheriff health/metrics beans is unconditional — `application.properties`
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties:345 exclusion unconditional, no profile scoping
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties quarkus.arc.exclude-types covers ...quarkus.health.* and ...quarkus.metrics.*, declared unconditionally in no profile
 - OBSERVED: readiness already reads live `IssuerKeySetStatus` — `GatewayReadinessCheck`
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayReadinessCheck imports IssuerKeySetStatus :19, fields :141/:153
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayReadinessCheck reads IssuerKeySetStatus loaded/configured/failed counts, a non-fetching live per-issuer state
 - OBSERVED: the token validator's `SecurityEventCounter` is bound to no meter; `SheriffMetrics` binds only cui-http's counter — D3's metrics half
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics binds only de.cuioss.http SecurityEventCounter; validator counter feeds SignatureOnlyTokenVerifier only
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics.bindSecurityEventCounter binds only cui-http's counter; the validator counter feeds SignatureOnlyTokenVerifier only
 - OBSERVED: `ADR-0027` carries no `#641`/`#617` reference — `doc/adr/0027-*.adoc`
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: grep #641|#617 in doc/adr/0027-*.adoc: no match
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/0027-*.adoc contains neither 641 nor 617 (control matched its Status line)
 - OBSERVED: `token-sheriff-validation-0.9.6.jar` ships `META-INF/native-image/.../reflect-config.json` — `unzip -l` of the resolved artifact
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: unzip -l token-sheriff-validation-0.9.6.jar lists META-INF/native-image/.../reflect-config.json
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: unzip -l of token-sheriff-validation-0.9.6.jar lists META-INF/native-image/.../reflect-config.json and native-image.properties
 
 ## Expected Surface
 
@@ -186,9 +186,10 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 
 ## Dependencies and Sequencing
 
-- Depends on: **`PLAN-V02-08` and `PLAN-V02-12`.** All three write `BffRuntimeProducer` and the
-  `oidc` block. The chain is `PLAN-V02-08` → `PLAN-V02-12` → this plan, strictly sequential, never
-  concurrent.
+- Depends on: **`PLAN-V02-12`.** Both write `BffRuntimeProducer` and the `oidc` block, and this plan
+  goes after it. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058); scope D3's discovery probe
+  against the PAR-and-DPoP login it introduced. Never concurrent with `PLAN-V02-20`, which writes the
+  same block.
 - Sequence after `PLAN-V02-01` (ADR-0005 reversal) where possible. That plan's premise is that
   hand-rolled equivalents were built where a platform mechanism already existed, and this plan asks
   the same question of token-sheriff. Its ADR verdict sets the standing rule D2 should apply rather

@@ -89,20 +89,20 @@ found by inspection rather than by a gate.
 - **OBSERVED** — epic Open Defect (6): the IT suite cannot detect resource-lifecycle or layer-boundary
   defect classes. Two shipped instances (`218b5c` WebSocket permit leak, fixed in `#126`; the
   body-cap derivation defect, fixed in `#131 #134`).
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: #126/#131 fix commits untouched in af63895..05f6ee3
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: epic Open Defect 6 matches; #126 releases the WebSocket admission permit, #131 derives the body limit and 413, #134 follows #131
 - **OBSERVED** — the benchmark lane runs **12** k6 goals, and both formerly quarantined
   goals are enabled (`skip.benchmark.upload.large` and `skip.benchmark.websocket.echo` both default
   `false` in `benchmarks/pom.xml`). The lane is green — re-verify at outline rather than inheriting it.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmarks/pom.xml:39,49 both skip flags false
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmarks/pom.xml has 12 run-k6 executions; skip.benchmark.upload.large and skip.benchmark.websocket.echo both false
 - **HYPOTHESIS — the benchmark lane is not currently *gating*.** It runs post-merge on the PR and does
   not block the merge itself. Confirm against `.github/workflows/benchmark.yml` (verify-at-outline).
   **If it is not gating, deliverable 1's "benchmark lane" branch carries making it gate as a stated
   cost, not as an afterthought.**
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmark.yml still pull_request closed + merged==true, post-merge only
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmark.yml runs on pull_request closed with merged==true (plus tags and dispatch), post-merge, so it cannot block a merge
 - **Verify-first clause**: re-read both fixed defects' regression tests before deciding. If those fixes
   already added detection that generalises, this plan narrows to documenting that and the
   design question is largely settled.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural verify-first instruction, still accurate
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause applicable: the benchmark lane already boots api-sheriff-ws-admission for the permit-exhaustion regression
 
 ## Expected Surface
 

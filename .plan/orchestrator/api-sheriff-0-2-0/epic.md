@@ -40,14 +40,31 @@ would otherwise force a retrofit.
   record keeps `0053`). The next free ordinal on `origin/main` at `6bb90765` is `0057`, which
   supersedes the "next free ADR is 0055" figure in the resume anchor. Re-derive it on the branch at
   implementation time; a duplicate now fails the build.
-- **PLAN-V02-08** (running since 2026-10-01): emitted under an operator override of the fail-closed
-  candidate comparison; the record is the 2026-10-01 entry in `logs/decision.log`. A follow-up to
-  align the cookie sealing key with its file-based key model is held as a Watch until it lands.
-  ADR ordinal: the mailbox finding `inbox/to/plan-v02-08-fapi-2-0-conformance/orchestrator-001.md`
-  still reads `unconsumed`, but the worktree observed later the same day carries
-  `0056-A_header_matchers…` and its own record as `0057-The_BFF_pushes…`, so the collision is
-  resolved on the branch. Every other staged spec has an overlap row against this plan's actual
-  footprint, so nothing else is emittable until it lands.
+- **PLAN-V02-08** — SHIPPED 2026-10-02 as PR #377 (`e8db85bf`, code and ADR-0058) plus PR #378
+  (`3a1182e5`, documentation), see `landings/PLAN-V02-08.md`. `PLAN-V02-12`, `PLAN-V02-09` and
+  `PLAN-V02-15` no longer wait on it. Its held follow-up is staged as `PLAN-V02-20`.
+- **PLAN-V02-20** (staged 2026-10-03): the cookie sealing key provided as a file, like the two
+  signing keys. It writes the `oidc` block and `BffRuntimeProducer`, so it is never concurrent with
+  `PLAN-V02-12` or `PLAN-V02-09`.
+- **PLAN-V02-13** — SHIPPED 2026-10-03 as PR #383 (`5ddf8081`, ADR-0059), see
+  `landings/PLAN-V02-13.md`. `PLAN-V02-06` no longer waits on it; `PLAN-V02-07` now waits on
+  `PLAN-V02-06` alone.
+- **PLAN-V02-10** — SHIPPED 2026-10-04 as PR #382 (`35f2bb37`), see `landings/PLAN-V02-10.md`.
+- **PLAN-V02-14** — SHIPPED 2026-10-06 as PR #387 (`1a20edad`, ADR-0061), see `landings/PLAN-V02-14.md`.
+  Issue #175 closed. Its residue for `PLAN-V02-01` (command-mode revisit, three unused overloads) is in
+  that spec.
+- **Collision the gate did not predict (2026-10-04):** `PLAN-V02-13` and `PLAN-V02-10` ran together
+  as the only disjoint pair, and both changed `edge/DispatchStage.java`, `edge/GatewayEdgeRoute.java`,
+  their two tests and `doc/configuration.adoc`. Neither spec declared `DispatchStage.java`; V02-10's
+  overlap came from an unplanned relay-race fix found at the merge queue. It integrated cleanly. Treat
+  any plan touching the edge relay as overlapping `edge/**`, whatever its declared surface says.
+- **Out-of-epic edge work (2026-10-05):** two plans outside this queue changed the edge relay and
+  have both landed. `fix-four-audit-findings-and-bff-flaky-test` as #385 (`11f9c38a`): bodyless-method
+  dispatch, a bounded `status_family` metric label, abort attribution, the flaky `BffRuntimeProducerTest`
+  fix. `relay-release-and-jsse-env-guard` as #386 (`84afdba0`): abandoned upstream calls released,
+  refused retries kept out of the circuit breaker, a non-decimal `Content-Length` refused by the framing
+  gate. No plan outside this queue now holds `edge/**`. Every staged spec declaring `edge/**` was
+  grounded before both; re-read `DispatchStage`, `GatewayEdgeRoute` and `FramingGate` at outline.
 
 ## Workstreams
 
@@ -67,28 +84,7 @@ needs no translation.
 
 ## Renumbering Map — `api-sheriff-next` → this epic
 
-The `api-sheriff-next` backlog was split by target version on **2026-08-04** and retired. Plan specs
-were renumbered; **their in-body `PLAN-NN` references were deliberately NOT rewritten**, because many
-point at `api-sheriff-roadmap` plans that keep their own numbers. Resolve any in-body reference
-through this map first; if the number is not listed here, it belongs to `api-sheriff-roadmap` or to
-`api-sheriff-0-3-0` and is unchanged.
-
-| Was | Now | Plan |
-|---|---|---|
-| PLAN-38 | **PLAN-V02-01** | ADR-0005 reversal / Quarkus adoption |
-| PLAN-39 | **PLAN-V02-02** | Java idiom sweep |
-| PLAN-40 | **PLAN-V02-03** | Documentation restructure |
-| PLAN-47 | **PLAN-V02-04** | ADR corpus cleanup |
-| PLAN-17 | **PLAN-V02-05** | Response hygiene |
-| PLAN-18 | **PLAN-V02-06** | Enumeration hardening |
-| PLAN-19 | **PLAN-V02-07** | Threat classification |
-| PLAN-49 | **PLAN-V02-08** | FAPI 2.0 conformance |
-| PLAN-46 | **PLAN-V02-09** | Token-Sheriff integration fidelity |
-| PLAN-48 | **PLAN-V02-10** | Per-client TLS trust |
-| PLAN-44 | **PLAN-V02-11** | Resource-exhaustion test home |
-
-Moved to `api-sheriff-0-3-0`: PLAN-20 → PLAN-V03-01, PLAN-21 → PLAN-V03-02, PLAN-22 → PLAN-V03-03,
-PLAN-41 → PLAN-V03-04.
+> ↪ Relocated to `settled.md` § "Renumbering Map — `api-sheriff-next` → this epic" — the 2026-10-02 restatement removed old plan numbers from every staged spec; older log and anchor text still uses them
 
 ## Decisions
 
@@ -175,6 +171,19 @@ doc-only or build-light plan for the second and third slots.
 
 ## Open Defects
 
+16. **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
+    `ENHANCE_YOUR_CALM` ("Maximum number of RST frames reached")** (added 2026-10-06, found at the
+    `PLAN-V02-14` landing). Run 37430198468 on #387 failed `run-k6-upload-small-benchmark`: 134
+    `POST /upload/small` requests were refused this way and the `checks` / `http_req_failed` thresholds
+    were crossed. The same `GOAWAY` appears 95–105 times in each of the three preceding, passing
+    runs (#382, #385, #386), so the benchmark has been near its threshold for a while and #387 — which
+    touches no edge, HTTP/2 or upload code — is not the cause. Where the resets come from (client
+    behaviour, the gateway's upload path, or the transport's default reset-flood limit) is not
+    established. The benchmark lane does not gate merges, so nothing blocked; a later benchmark run
+    may pass or fail on the same tree. `PLAN-V02-06` D8 now carries this as evidence.
+
+15. > ↪ Relocated to `settled.md` § "Open Defect 15 — snapshot deploy 401 after the Maven 3.10.0 bump (resolved 2026-10-03)" — resolved by cuioss-organization v0.35.0, verified on main
+
 14. **HIGH, SECURITY — OWNER: `PLAN-V02-11` (adopted 2026-08-09) — `MtlsHandshakeIT` fails 2/3 under `-Pjfr` only: FAIL-OPEN ON HANDSHAKE
     REJECTION.** GitHub issue **[#201](https://github.com/cuioss/API-Sheriff/issues/201)**, verified
     OPEN. Opened 2026-08-09 by `PLAN-V02-16` and **correctly not fixed there** — it sits outside that
@@ -211,9 +220,7 @@ doc-only or build-light plan for the second and third slots.
     it is a behavioural change to boot-time allocation plus a nullability-contract change reaching
     `RouteRuntime` and `DispatchStage` — a design task, not a sweep edit, so it needs a home rather
     than a follow-up commit.
-13. **LOW — CLOSED AS AN ORPHAN 2026-08-09: FOLDED INTO `PLAN-V02-09`.** `TokenValidatorProducer.applyJwks` qualifies for a switch conversion but sat outside
-    `PLAN-V02-02` D5's declared surface and was correctly left alone. **Natural home: `PLAN-V02-09`**,
-    which already owns that file. Fold it there rather than carrying it as standalone work.
+13. > ↪ Relocated to `settled.md` § "Open Defect 13 — applyJwks orphan, folded into PLAN-V02-09 (closed 2026-08-09)" — closed; the method no longer exists
 
 1. **MEDIUM — upstream stack-identity leak.** `edge/ResponseStage` `isForwardableResponseHeader`
    (:63) filters only hop-by-hop and conditional headers, so an upstream emitting `Server` or
@@ -265,6 +272,39 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
+- **DECLINED REFACTOR FROM #387, NONE STAGED** (added 2026-10-06). CodeRabbit proposed deriving the
+  offline validator's NOT CHECKED catalogue from shared refusal descriptors instead of a hand-kept list
+  (ADR-0061 § Risks). Declined in #387 because it reaches the TLS, JWKS, BFF and portal refusal paths.
+  Stage a plan when the hand-kept list drifts or the refusal paths are touched anyway.
+
+- **ISSUE #189 REMAINDER, NONE STAGED** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
+  a demo-client panel (`demo-client/src/main/resources/spa/index.html`, `app.js`) that fires each
+  rejection variant and reports status, `Content-Type` and redirect; `doc/variants/01-base-gateway.adoc`;
+  `demo-client/doc/integration-sample.adoc`; and the PROHIBITED ASSERTION scope wording in
+  `demo-client/doc/playwright-suite.adoc`. The issue comment also names `doc/plan/04-request-pipeline.adoc`,
+  which no longer exists — discharged. Stage a small plan when wanted.
+- **ADR-0059 AND ADR-0060 ARE `Proposed`** (added 2026-10-04; ADR-0060 added 2026-10-05). Both
+  decisions are shipped — the ROUTING problem category (#383) and bodyless-method dispatch with exact
+  declared-length framing (#385). Each record needs an acceptance decision. Operator call, or
+  `PLAN-V02-04`'s status sweep.
+- **OPERATOR DECISION OWED: a simplification in `DispatchStage`'s inbound-body handling** (added
+  2026-10-05, inbox `fix-four-audit-findings-and-bff-flaky-test-001.md`). The plan behind #385 left one
+  simplification finding there for an operator decision instead of changing it. The finding text is
+  not in this ledger; read it in that plan's archived findings. `DispatchStage` is shared with live
+  work, so decide before another plan touches the edge relay.
+
+- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08`, NONE STAGED** (added 2026-10-03; the plan's claims,
+  each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
+  which now drives one outbound pushed request per call (threat model `BFF-20`) — owned by the sibling
+  epic `kidicap-gateway-requirements` as its staged `PLAN-21` (login-flood pending records), so not a
+  candidate for this queue; refusing a
+  configuration whose two key files name the same file; re-measuring the cookie size with the `cnf`
+  claim present; the engine's nonce-retry gaps, and a refused token response discarding its refresh
+  token instead of revoking it; no canonical-form check on `oidc.login.path` and
+  `oidc.user_info.path`; three imprecise executable texts; two answers chosen conservatively at the
+  merge (`502` on a refused widening re-drive push, `400` with ApiSheriff-134 for an unbound token on
+  a widening callback). No conformance-suite run was made, so no FAPI conformance claim exists.
+  Stage a plan from this list when one of them is wanted; until then it is a record, not work.
 - **INHERITED TOOLING AND PROJECT-CONFIG CONSTRAINTS — not fixable by any plan here, and every plan
   in this epic runs under them.** Carried as one watch rather than five duplicated entries so the
   copies cannot drift; full text and evidence live in the `api-sheriff-roadmap` ledger under the
@@ -384,19 +424,6 @@ doc-only or build-light plan for the second and third slots.
   is shell-expanded into a filename list**, silently dropping real hits. That third one is a
   different mechanism from the other two (shell expansion, not tool behaviour), so knowing the first
   two does not predict it. **Run a control query before trusting any asserted absence.**
-- **FOLLOW-UP HELD UNTIL `PLAN-V02-08` LANDS — align the cookie sealing key with the file-based key
-  model** (added 2026-10-01, inbox `plan-v02-08-fapi-2-0-conformance-001.md`, `finding`, disposition
-  `observed`). Operator backlog request made during V02-08's outline, explicitly out of that plan's
-  scope. V02-08 gives its two signing keys (`private_key_jwt`, DPoP proof key) one model: a provided
-  key is a mounted PEM file referenced by path, an omitted key is generated at startup. The cookie
-  sealing key (`oidc.session.encryption_key`, `CookieKeyMaterial`) keeps a base64 value from an
-  environment variable, so provided key material would be supplied two ways. **Not staged now, on
-  the message's own instruction:** the model was still being settled when it was written (one
-  sub-point awaited operator confirmation), so read the landed plan and its ADR first. When staged
-  it is a breaking change to the `oidc` block and joins the sequential chain V02-08 → V02-12 →
-  V02-09; it must not run concurrently with them. Open design question the spec must settle: a
-  symmetric AES-256 key has no PEM form. **Retire this Watch by staging the spec at V02-08's
-  landing analysis.** The claims about V02-08's key model are the sender's, not yet corroborated.
 - **CONTRACT TESTS RUN ONLY WHEN A BUILD RUNS** (added 2026-10-01, `PLAN-V02-19` landing). The ADR
   ordinal-uniqueness test and the module-list test are Maven tests, so a documentation-only change
   — which skips the build by this repository's own rule — can still land a duplicate ordinal or a
@@ -420,47 +447,25 @@ doc-only or build-light plan for the second and third slots.
   live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
   `next` while it exists; the operator ruled that verdict wrong and overrode it.
 
+## Inbox Drain — 2026-10-06 (sender `plan-v02-14-offline-config-validation`)
+
+> ↪ Relocated to `settled.md` § "Inbox Drain — 2026-10-06 (sender `plan-v02-14-offline-config-validation`)" — every message consumed and archived; logs/decision.log stays authoritative
+
+## Inbox Drain — 2026-10-05 (sender `fix-four-audit-findings-and-bff-flaky-test`, a plan outside this epic)
+
+> ↪ Relocated to `settled.md` § "Inbox Drain — 2026-10-05 (sender `fix-four-audit-findings-and-bff-flaky-test`, a plan outside this epic)" — every message consumed and archived; logs/decision.log stays authoritative
+
+## Inbox Drain — 2026-10-04 (senders `plan-v02-13-terminal-rejection-contract`, `plan-v02-10-per-client-tls-trust`)
+
+> ↪ Relocated to `settled.md` § "Inbox Drain — 2026-10-04 (senders `plan-v02-13-terminal-rejection-contract`, `plan-v02-10-per-client-tls-trust`)" — every message consumed and archived; logs/decision.log stays authoritative
+
+## Inbox Drain — 2026-10-03 (sender `plan-v02-08-fapi-2-0-conformance`, at its landing)
+
+> ↪ Relocated to `settled.md` § "Inbox Drain — 2026-10-03 (sender `plan-v02-08-fapi-2-0-conformance`, at its landing)" — every message consumed and archived; logs/decision.log stays authoritative
+
 ## Inbox Drain — 2026-09-24 (sender `deployment-configurability`, closing hand-off)
 
-20 messages, all from the sibling epic `deployment-configurability` as it closed: 2 findings and 18
-candidate lessons. Each one was verified against `origin/main` at `05f6ee3` before being
-dispositioned, and each has a matching `decision.log` line.
-
-**The headline finding was already stale, and in a worse way than it said.** Message `-001` reported
-a duplicate ADR ordinal `0050`. PR #348 (the sibling's PLAN-29) did clear it, by renaming the portal
-ADR to `0053`. But PR #346 claimed `0053` for the header-matcher ADR concurrently and merged
-**afterwards**, so `main`, and released `0.2.3`, carry a new duplicate, `0053`. The ordinal space has
-now collided twice in one week, across two epics, with nothing to catch it. That is why
-`PLAN-V02-19` adds a uniqueness contract test as well as the renumber.
-
-| Message | Kind | Disposition | Where it went |
-|---|---|---|---|
-| `-001` | finding | staged | `PLAN-V02-19` D1+D2. The 0050 claim is refuted as stale; the live 0053 duplicate is fixed and guarded. |
-| `-002` | candidate-lesson | promoted | `2026-09-24-15-001`. The stale-image half is fixed (#341); the open half is the local `revision=dev` label, which cannot discriminate images. |
-| `-003` | candidate-lesson | folded | `PLAN-V02-19` D3, the module-list contract test. This is open, unowned work rather than a lesson. |
-| `-004` | candidate-lesson | discarded | Fixed in PR #314 and mechanically guarded by `TokenClientDslJsonReflectionTest.shouldRegisterEveryEngineDslJsonConverter` (verified on `main`). |
-| `-005` | candidate-lesson | promoted | `2026-09-24-15-002` |
-| `-006` | candidate-lesson | promoted | `2026-09-24-15-003` |
-| `-007` | candidate-lesson | folded | Watch (30), recorded as its third recurrence (tooling, owned upstream). |
-| `-008` | candidate-lesson | promoted | `2026-09-24-15-004`, the closed-set-restated-at-N-sites lesson. It also carries `-013` and `-016`. |
-| `-009` | candidate-lesson | promoted | `2026-09-24-15-005` |
-| `-010` | candidate-lesson | promoted | `2026-09-24-15-006` |
-| `-011` | candidate-lesson | promoted | `2026-09-24-15-007` |
-| `-012` | candidate-lesson | promoted | `2026-09-24-15-008` |
-| `-013` | candidate-lesson | folded | Into `2026-09-24-15-004`, as a recurrence of the same shape in the same plan. |
-| `-014` | candidate-lesson | promoted | `2026-09-24-15-009` |
-| `-015` | candidate-lesson | promoted | `2026-09-24-15-010` |
-| `-016` | candidate-lesson | folded | Into `2026-09-24-15-004`. Its `review_body` half is already binding via `CLAUDE.md` Git Workflow steps 6 and 8. |
-| `-017` | candidate-lesson | promoted | `2026-09-24-15-011` |
-| `-018` | candidate-lesson | promoted | `2026-09-24-15-012` |
-| `-019` | candidate-lesson | promoted | `2026-09-24-15-013`, quantified evidence for any revisit of `re_review_on_loopback: false`. |
-| `-020` | finding | folded | `PLAN-V02-19` D4 (Sonar `java:S3398`). The claim is verified: the method is called only from nested `HttpUpstreamFetcher`. |
-
-All 13 promotions were filed with `--allow-foreign-store`. The store's bundle-ownership guard does
-not recognise project-local component names (`api-sheriff`, `project:…`, `integration-tests`) as
-belonging to this repo, but these lessons are about this repository and lived in this same store
-before the sibling epic closed. Bodies are carried verbatim from the payloads, each with a
-provenance section.
+> ↪ Relocated to `settled.md` § "Inbox Drain — 2026-09-24 (sender `deployment-configurability`, closing hand-off)" — every message consumed and archived; logs/decision.log stays authoritative
 
 ## Post-Merge Verification — `deploy-snapshot`
 

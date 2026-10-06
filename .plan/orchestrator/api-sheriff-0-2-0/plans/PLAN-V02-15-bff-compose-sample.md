@@ -71,7 +71,9 @@ sample exists to save.**
    because the sample already ships Keycloak with a realm import and a confidential client. What is
    missing:
    - an `oidc` block with `session.mode: server` in `docker/sheriff-config/gateway.yaml`, written
-     against the shape of the `oidc` block on `main` at outline — `PLAN-V02-08` reshapes that block
+     against the block as ADR-0058 left it: PAR and DPoP are mandatory, and client authentication is
+     `private_key_jwt` with a generated or provided key unless a client secret is configured. Decide
+     which the sample shows, and make the realm's `sample-client` match it
    - one `require: session` route
    - a static page as `final_redirect`
    - whatever the confidential client still needs; verify at outline whether `sample-client` is
@@ -117,11 +119,11 @@ pre-commit process.
   A search for an `oidc` block or a `session` key returns nothing; `gateway.yaml` names BFF
   sessions among the deliberate omissions and documents the public anchor's absent auth block;
   `endpoints/demo-api.yaml` is `require: none`.
-  - verdict: corroborated | checked_at: 4228d42fc8f95e44a0798ae8d9df0af326d4742a | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: deployment/compose-sample: 14 tracked files; no oidc:/session: key; gateway.yaml names BFF sessions among the omissions; demo-api.yaml require: none
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 14 tracked files under deployment/compose-sample; no oidc block or session key; gateway.yaml names BFF sessions among the omissions; demo-api.yaml require: none
 - OBSERVED: a Keycloak realm import already ships at
   `deployment/compose-sample/docker/keycloak/sample-realm.json`, and it carries the confidential
   client `sample-client`, so D1's client work is at most an edit rather than new infrastructure.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json:28-36 sample-client confidential, client-secret, standard flow
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json carries sample-client, publicClient false, placeholder secret
 
 ## Expected Surface
 
@@ -140,7 +142,7 @@ pre-commit process.
   only if D5 is explicitly deferred, which defers the one deliverable that keeps the sample from
   becoming the de-facto addressing specification. Prefer sequencing after `PLAN-V02-12` over
   emitting a partial.
-- Overlaps with: `PLAN-V02-08` and `PLAN-V02-12` on the compose sample and `doc/user/`;
+- Overlaps with: `PLAN-V02-12` on the compose sample and `doc/user/`;
   `PLAN-V02-14` on `.github/workflows/**` and `doc/user/compose-sample.adoc`. The disjointness gate
   decides at emit time.
 - Surface note: `deployment/compose-sample/.env` carries the version pins. Any pin bump touches the

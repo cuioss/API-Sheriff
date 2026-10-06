@@ -2,9 +2,9 @@
   "id": "PLAN-V02-08",
   "slug": "fapi-2-0-conformance",
   "workstream": "WS-04",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-08-fapi-2-0-conformance",
-  "pr": "",
-  "landing": "",
+  "pr": "377",
+  "landing": "landings/PLAN-V02-08.md",
   "seq": 8
 }
