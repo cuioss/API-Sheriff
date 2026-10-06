@@ -355,13 +355,16 @@ class GatewayEdgeFramingCorpusTest {
     }
 
     @Test
-    @DisplayName("TE.TE — Content-Length beside a coding the transport does not read as chunked is rejected by the gate")
-    void obfuscatedTransferEncodingTheTransportIgnores() throws Exception {
+    @DisplayName("TE.TE — Content-Length beside a request coding whose final coding is not chunked is refused by the transport")
+    void obfuscatedTransferEncodingWhoseFinalCodingIsNotChunked() throws Exception {
         String raw = contentLengthBesideTransferEncoding("Transfer-Encoding: xchunked" + CRLF);
 
         Exchange exchange = exchange(raw);
 
-        assertRejectedByGate(exchange);
+        // A request cannot be framed by connection close (RFC 9112 6.3), so the transport refuses a
+        // final coding other than chunked before the framing gate runs; the gate's own verdict on
+        // this shape is pinned by FramingGateTest.
+        assertRefusedByTransport(exchange);
     }
 
     @Test
