@@ -150,8 +150,9 @@ The last line, carrying the three counts.
 RESULT: violations=0 defaulted=2 not-checked=9
 ----
 
-*Every record is exactly one line*, on standard output and on standard error alike, so a script can
-read the report line by line. Text taken from the configuration directory or the command line -- a
+*Every record is exactly one line* -- each report line on standard output and the `validate-config:`
+error line on standard error -- so a script can read the report line by line. The diagnostic log
+lines described under Output and streams are not records and carry no such guarantee. Text taken from the configuration directory or the command line -- a
 file name, a pointer, a message, the directory argument -- is rendered so it cannot break that rule
 or disguise what is printed:
 
