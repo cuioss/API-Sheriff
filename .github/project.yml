@@ -26,3 +26,8 @@ pages:
 github-automation:
   auto-merge-build-versions: true
   auto-merge-build-timeout: 900
+
+cuioss-review-bot:
+  enabled: true
+  packs: [java, javascript, oci]
+  additional_rules: []
