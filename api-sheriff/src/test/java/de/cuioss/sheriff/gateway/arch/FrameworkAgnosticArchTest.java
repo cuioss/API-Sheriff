@@ -30,9 +30,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * ADR-0005 framework-agnostic package-boundary gate. Asserts that the agnostic
- * core packages ({@code config.model}, {@code config.validation}, {@code events},
- * {@code forward}, {@code pipeline}) carry no framework imports, so the request
- * pipeline stays portable across the framework edge.
+ * core packages ({@code config.boot}, {@code config.model}, {@code config.validation},
+ * {@code events}, {@code forward}, {@code pipeline}) carry no framework imports, so the
+ * request pipeline stays portable across the framework edge and the boot configuration
+ * pipeline the offline configuration check shares with the boot stays runnable without it.
  * <p>
  * The {@code routing} package is deliberately <em>excluded</em> from the agnostic set
  * (operator resolution 2026-07-19): {@code routing.RouteRuntime} holds the shared Vert.x
@@ -53,6 +54,7 @@ class FrameworkAgnosticArchTest {
      * absent — see the class Javadoc.
      */
     private static final String[] AGNOSTIC_PACKAGES = {
+            "de.cuioss.sheriff.gateway.config.boot..",
             "de.cuioss.sheriff.gateway.config.model..",
             "de.cuioss.sheriff.gateway.config.validation..",
             "de.cuioss.sheriff.gateway.events..",
@@ -91,8 +93,8 @@ class FrameworkAgnosticArchTest {
         ArchRule rule = noClasses()
                 .that().resideInAnyPackage(AGNOSTIC_PACKAGES)
                 .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
-                .because("ADR-0005 requires config.model, config.validation, events, forward, and "
-                        + "pipeline to remain framework-agnostic (routing is excluded by design)");
+                .because("ADR-0005 requires config.boot, config.model, config.validation, events, forward, "
+                        + "and pipeline to remain framework-agnostic (routing is excluded by design)");
 
         rule.check(PRODUCTION_CLASSES);
     }

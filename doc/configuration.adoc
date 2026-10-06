@@ -161,13 +161,27 @@ route-`id` uniqueness across files, `upstream_defaults` and `allowed_methods` wh
 `allowed_methods` verb membership, topology-alias resolvability, the `base_url`-only-with-a-proxy-route
 rule, the one-terminal-action rule and the open-redirect review of a `redirect` location, and
 same-prefix / same-exact-path disjointness. Every
-violation the schema gate and the configuration-validator rules detect is collected in a single
-pass and reported together, rather than one at a time, and any violation refuses the boot. The one
-deliberate exception is an unresolvable `base_url` alias of an *enabled* endpoint: the topology
-resolver runs *before* the aggregating validator and *throws* on it
-(link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]), so that single failure aborts
-the boot on its own rather than joining the aggregated report. An unresolvable `passthrough_sni`
-alias, by contrast, is deferred to the validator and aggregated with the rest.
+violation the configuration-validator rules detect is collected in a single pass and reported
+together, rather than one at a time, and any violation refuses the boot; the schema gate collects its
+violations the same way within the load stage, which runs first and stops the pass when it fails.
+Topology resolution runs as its own stage *before* the validator
+(link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]), and it aggregates the same way:
+every failure of the resolution pass is reported together, as `ApiSheriff-200` entries followed by
+the `ApiSheriff-201` summary. Each alias is attempted at most once per pass -- an alias shared by
+several endpoints, or by an endpoint and a `passthrough_sni` target, included -- and contributes at
+most one entry (file `topology.properties`, the alias as pointer), for the first of these failures it
+hits: a `base_url` alias of an *enabled* endpoint that `topology.properties` does not define, a
+placeholder substitution that fails, or a URL that is malformed, not absolute or not `http`/`https`.
+A failed substitution is therefore one entry per alias; when it fails on unset variables, its message
+names every unset variable of that value. An unreadable `topology.properties` is a single entry with an empty pointer. A pass with
+a topology failure stops at that stage, so the validator's violations of the same configuration are
+reported once the topology resolves. A `tls.passthrough_sni` target that `topology.properties` does
+not define is skipped by the topology stage and left to the validator, which reports it with the
+rest -- unless an enabled endpoint uses the same alias as its `base_url`, in which case it is refused
+at the topology stage as that endpoint's undefined alias. A `passthrough_sni` target that *is*
+defined but whose placeholder fails or whose URL is malformed fails the topology stage like any other
+alias. The offline check `--validate-config` reports the same entries without booting -- see
+link:user/offline-config-validation.adoc[Offline Configuration Validation].
 
 == Gateway Configuration (`gateway.yaml`)
 

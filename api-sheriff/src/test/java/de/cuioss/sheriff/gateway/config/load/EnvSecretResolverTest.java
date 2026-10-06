@@ -15,11 +15,15 @@
  */
 package de.cuioss.sheriff.gateway.config.load;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 
@@ -34,8 +38,10 @@ import org.junit.jupiter.api.Test;
  * Tests for {@link EnvSecretResolver}, the single D4 substitution engine: reference
  * detection, bare-reference classification for the secrets rule, required
  * {@code ${NAME}} and optional {@code ${NAME:-default}} substitution, multiple
- * placeholders per scalar, the loud missing-variable and malformed-placeholder
- * boot failures, and secret-leak safety of the failure messages.
+ * placeholders per scalar, the loud missing-variable failure naming every unset
+ * variable of a scalar, the malformed-placeholder boot failure, the name-only
+ * reporting of applied in-file defaults, and secret-leak safety of the failure
+ * messages.
  */
 @EnableGeneratorController
 class EnvSecretResolverTest {
@@ -109,7 +115,144 @@ class EnvSecretResolverTest {
         EnvSecretResolver resolver = resolverWith(Map.of());
         MissingVariableException exception = assertThrows(MissingVariableException.class,
                 () -> resolver.resolve("${ABSENT}"));
-        assertEquals("ABSENT", exception.variableName());
+        assertEquals(List.of("ABSENT"), exception.variableNames());
+        assertEquals("Unresolved environment variable: ABSENT", exception.getMessage(),
+                "the single-variable message keeps its established wording");
+    }
+
+    @Test
+    @DisplayName("A scalar with two unset required variables names both, in occurrence order")
+    void throwsNamingEveryMissingVariableInOrder() {
+        EnvSecretResolver resolver = resolverWith(Map.of());
+
+        MissingVariableException exception = assertThrows(MissingVariableException.class,
+                () -> resolver.resolve("${FIRST}-${SECOND}"));
+
+        assertEquals(List.of("FIRST", "SECOND"), exception.variableNames());
+        assertEquals("Unresolved environment variable: FIRST, SECOND", exception.getMessage());
+    }
+
+    @Test
+    @DisplayName("A missing variable referenced twice in one scalar is named once")
+    void namesRepeatedMissingVariableOnce() {
+        EnvSecretResolver resolver = resolverWith(Map.of());
+
+        MissingVariableException exception = assertThrows(MissingVariableException.class,
+                () -> resolver.resolve("${TWICE}/${TWICE}"));
+
+        assertEquals(List.of("TWICE"), exception.variableNames());
+    }
+
+    @Test
+    @DisplayName("With one unset and one set required variable, only the unset one is named")
+    void namesOnlyTheUnsetVariable() {
+        String setValue = Generators.letterStrings(8, 16).next();
+        EnvSecretResolver resolver = resolverWith(Map.of("PRESENT", setValue));
+
+        MissingVariableException exception = assertThrows(MissingVariableException.class,
+                () -> resolver.resolve("${PRESENT}:${ABSENT}"));
+
+        assertEquals(List.of("ABSENT"), exception.variableNames());
+        assertFalse(exception.getMessage().contains(setValue), "the set variable's value is never echoed");
+    }
+
+    @Test
+    @DisplayName("An unset variable with a default never contributes to a missing-variable failure")
+    void unsetVariableWithDefaultDoesNotThrow() {
+        EnvSecretResolver resolver = resolverWith(Map.of());
+
+        String resolved = assertDoesNotThrow(() -> resolver.resolve("${OPTIONAL:-fallback}"));
+
+        assertEquals("fallback", resolved);
+    }
+
+    @Test
+    @DisplayName("The tracking overload reports an unset ${A:-x} by its variable name")
+    void trackingReportsDefaultedVariable() {
+        EnvSecretResolver resolver = resolverWith(Map.of());
+        List<String> defaulted = new ArrayList<>();
+
+        String resolved = resolver.resolve("${A:-x}", defaulted::add);
+
+        assertEquals("x", resolved);
+        assertEquals(List.of("A"), defaulted);
+    }
+
+    @Test
+    @DisplayName("The tracking overload reports nothing when the defaulted variable is set")
+    void trackingReportsNothingForSetVariable() {
+        EnvSecretResolver resolver = resolverWith(Map.of("A", Generators.letterStrings(4, 10).next()));
+        List<String> defaulted = new ArrayList<>();
+
+        resolver.resolve("${A:-x}", defaulted::add);
+
+        assertTrue(defaulted.isEmpty(), () -> "a set variable applied no default, but got " + defaulted);
+    }
+
+    @Test
+    @DisplayName("The tracking overload reports a variable defaulted twice in one scalar once")
+    void trackingReportsRepeatedDefaultOnce() {
+        EnvSecretResolver resolver = resolverWith(Map.of());
+        List<String> defaulted = new ArrayList<>();
+
+        String resolved = resolver.resolve("${A:-x}${A:-y}", defaulted::add);
+
+        assertEquals("xy", resolved);
+        assertEquals(List.of("A"), defaulted);
+    }
+
+    @Test
+    @DisplayName("The tracking overload reports defaults in first-occurrence order")
+    void trackingReportsDefaultsInOccurrenceOrder() {
+        EnvSecretResolver resolver = resolverWith(Map.of());
+        List<String> defaulted = new ArrayList<>();
+
+        resolver.resolve("${SECOND:-2}${FIRST:-1}${SECOND:-3}", defaulted::add);
+
+        assertEquals(List.of("SECOND", "FIRST"), defaulted);
+    }
+
+    @Test
+    @DisplayName("A default applied before an unset bare variable is reported, then the scalar fails naming the bare one")
+    void trackingReportsDefaultEvenWhenScalarLaterFails() {
+        EnvSecretResolver resolver = resolverWith(Map.of());
+        List<String> defaulted = new ArrayList<>();
+
+        MissingVariableException exception = assertThrows(MissingVariableException.class,
+                () -> resolver.resolve("${A:-x}${B}", defaulted::add));
+
+        assertAll("default reported, bare variable named",
+                () -> assertEquals(List.of("A"), defaulted),
+                () -> assertEquals(List.of("B"), exception.variableNames()));
+    }
+
+    @Test
+    @DisplayName("The tracking consumer never receives the default literal")
+    void trackingNeverReceivesDefaultLiteral() {
+        String sentinelDefault = "sentinel" + Generators.letterStrings(8, 16).next();
+        EnvSecretResolver resolver = resolverWith(Map.of());
+        List<String> defaulted = new ArrayList<>();
+
+        String resolved = resolver.resolve("${SECRET_FALLBACK:-" + sentinelDefault + "}", defaulted::add);
+
+        assertEquals(sentinelDefault, resolved);
+        assertEquals(List.of("SECRET_FALLBACK"), defaulted);
+        assertTrue(defaulted.stream().noneMatch(name -> name.contains(sentinelDefault)),
+                () -> "the default literal must never reach the consumer: " + defaulted);
+    }
+
+    @Test
+    @DisplayName("The plain resolve overload behaves exactly like the tracking overload")
+    void plainOverloadMatchesTrackingSubstitution() {
+        EnvSecretResolver resolver = resolverWith(Map.of("HOST", "orders.internal"));
+        String raw = "https://${HOST}:${PORT:-9000}";
+
+        String plain = resolver.resolve(raw);
+        String tracked = resolver.resolve(raw, name -> {
+            // substitution result only
+        });
+
+        assertEquals(plain, tracked);
     }
 
     @Test
@@ -160,7 +303,7 @@ class EnvSecretResolverTest {
                 () -> resolver.resolve("${USER}:${PASS}@${ABSENT}"));
 
         String message = exception.getMessage();
-        assertEquals("ABSENT", exception.variableName());
+        assertEquals(List.of("ABSENT"), exception.variableNames());
         assertTrue(message.contains("ABSENT"), "message should name the missing variable");
         assertFalse(message.contains(userSecret), () -> "message must not leak the resolved USER secret: " + message);
         assertFalse(message.contains(passSecret), () -> "message must not leak the resolved PASS secret: " + message);
@@ -175,7 +318,7 @@ class EnvSecretResolverTest {
         MissingVariableException exception = assertThrows(MissingVariableException.class,
                 () -> resolver.resolve("${SECRET}/${MISSING}"));
 
-        assertEquals("MISSING", exception.variableName());
+        assertEquals(List.of("MISSING"), exception.variableNames());
         assertFalse(exception.getMessage().contains(trickySecret),
                 () -> "message must not leak the resolved secret: " + exception.getMessage());
     }

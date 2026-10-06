@@ -19,6 +19,12 @@ here* -- the `base_url` alias is resolved from the topology at startup. An endpo
 all `asset` or `redirect` routes contacts no endpoint upstream and omits `base_url` (see
 <<_base_url_only_with_proxy_routes>>).
 
+The endpoint files are validated at boot together with `gateway.yaml` and `topology.properties`:
+a schema violation, an unresolvable alias or a broken cross-file rule -- a duplicate id, a
+route outside its anchor -- refuses the start. The same validation runs offline,
+before any gateway boots the files: see link:offline-config-validation.adoc[Offline Configuration
+Validation].
+
 [source,yaml]
 ----
 # endpoints/app1.yaml
