@@ -34,9 +34,11 @@ downstream of it.**
 
 ## Deliverables
 
-**Six deliverables — at the split guard.** If D3–D6 crowd each other in execution, **split the
-component conversions out and keep D1+D2 intact**; the ADR and the gate retirement are the part that
-unblocks everything else and they must land together.
+**Seven deliverables — past the split guard, proceeding unsplit on operator instruction.** D7, the
+session-management security audit, is the most important deliverable of this plan and must not be
+trimmed to fit. If D3–D6 crowd each other in execution, **split the component conversions out and
+keep D1+D2 intact**; the ADR and the gate retirement are the part that unblocks everything else and
+they must land together. D5 and D7 stay together: the audit runs over the store D5 leaves.
 
 1. **Supersede ADR-0005 with a new ADR.** **Write a new ADR that supersedes it — do not edit 0005 in
    place.** ADR-0005 records a genuine trade with consequences that were true when written; the audit
@@ -94,26 +96,52 @@ unblocks everything else and they must land together.
    `ConfigLoader.load()`, the three-argument `TopologyResolver.resolve(...)`
    (`config/topology/TopologyResolver.java`) and `EnvSecretResolver.resolve(String)`.
 
-5. **`bff/session/**` → Quarkus session mechanisms, or a recorded justification for keeping it.**
-   **OBSERVED**: `InMemorySessionStore` is a `final class` holding three plain `HashMap`s
-   (`byId`, `bySid`, `bySub`), with lazy expiry on `resolve` plus `sweepExpired`, and **no CDI
-   annotation of any kind**. Every mutating and reading method is `synchronized`, `create` reclaims
-   expired entries when at capacity, and an expiry-versus-capacity regression test pins that model.
-   Alongside it: `SessionStore`, `SessionRecord`, `SessionBinding`, `ServerSessionBinding`,
-   `SessionCookieCodec`.
-   Answer the operator's question directly — **is this a re-implementation of session management?**
-   Partly yes and the design is deliberate; the plan must determine whether Quarkus/Vert.x session
-   handling covers the **actual requirements**, which include back-channel logout by `sub` and by
-   `sid` in O(1). **That indexing requirement is the thing to test any replacement against** — a
-   generic session store that cannot destroy every session for a subject on a back-channel logout is
-   not a substitute, and dropping that capability to adopt a framework API would be a security
-   regression.
+5. **`bff/session/**` — keep the hand-rolled store, record why, and close its three gaps.**
+
+   **Decided with the operator (2026-10-06).** The server-mode session store stays custom. The two
+   platform alternatives were examined and are rejected; the ADR from D1 records both, with these
+   reasons:
+   - **`@SessionScoped` CDI beans.** In Quarkus this scope is backed by a Servlet `HttpSession` and
+     exists only with `quarkus-undertow`. The gateway's traffic is handled by one Vert.x catch-all
+     route (`GatewayEdgeRoute.registerRoutes(@Observes Router)`), which never passes a servlet, so
+     the session context would never be active. Making it active means moving the edge onto
+     servlets — the streaming, HTTP/2, gRPC-trailer, WebSocket and passthrough design this
+     gateway is built on.
+   - **Vert.x Web `SessionStore` (`LocalSessionStore`, `ClusteredSessionStore`).** It would supply
+     an idle timeout and a periodic reaper, but it has no size cap, no absolute lifetime and no
+     lookup by `sid` or `sub`, and its reaper deletes without a callback, so an index beside it goes
+     stale. A clustered store needs a cluster manager or a Redis/Infinispan store module — new
+     dependencies and infrastructure. The adaptation would keep most of the custom code anyway.
+     **Verify at outline:** whether a `put` after a `delete` re-creates a session in the Vert.x
+     store. It is the one unverified point in this rejection; record the answer in the ADR.
+   - Speed of destroying sessions by `sid` or `sub` is **not** a criterion. The requirement is that a
+     back-channel logout ends every matching session promptly.
+
+   **Close the three gaps the current store has** (each a known session-management weakness):
+   - **A new session ID on every privilege change.** Step-up and scope widening
+     (`bff/reserved/CallbackEndpoint`) rewrite the record under the same `sessionId` with a new
+     `acr` and new tokens, and set no new cookie. Mint a new ID, store the record under it, delete
+     the old one, and set the new cookie, in one step that keeps the write-back guarantee.
+   - **An idle timeout** beside the existing absolute lifetime (`ttl_seconds`). Track the last
+     access, add a configuration key with a secure default, and document it.
+   - **Expired sessions dropped promptly.** Today an expired record — with its access, refresh and
+     ID tokens — stays in memory until it is looked up or the store reaches `max_sessions`. Add a
+     periodic sweep so tokens are not held longer than the session lives.
+
+   **Keep what is right today**, and inherit its tests rather than re-deriving them: 256-bit
+   `SecureRandom` IDs; the `__Host-` cookie with `Secure; HttpOnly; SameSite=Lax; Path=/`; a fresh ID
+   at login; the single-monitor concurrency model and `replaceIfPresent`, which stop a logged-out
+   session being written back; the fail-closed `max_sessions` cap.
    - `bff/logout/BackchannelLogoutReceiver` is the live caller of `SessionBinding#destroyBySid` and
-     `#destroyBySub`; any replacement must keep O(1) destroy for it.
+     `#destroyBySub`; logout by `sid` and `sub` must still end every matching session.
    - `bff/runtime/SessionIdentity` is a session-derived portal DTO outside `bff/session/**`; it is
-     part of the surface a replacement has to serve.
-   - If the store is kept, inherit its existing concurrency model and regression test rather than
-     re-deriving them. If it is replaced, state the replacement's concurrency model explicitly.
+     part of the surface the changes have to serve.
+
+   **Multi-replica deployments.** Server mode keeps its sessions in one process. Several replicas are
+   supported through **sticky sessions in the orchestration layer** (load balancer or ingress
+   affinity on the session cookie); state this in the operator documentation together with its
+   consequence — a replica restart or failover ends the sessions it held. Cookie mode is the
+   stateless alternative, once every replica shares the sealing key (`PLAN-V02-20`).
 
 6. **CDI/Jakarta annotation adoption across the converted surface, and `tls/` reviewed.**
    **OBSERVED**: about 16 files carry `@ApplicationScoped` and roughly 59 CDI annotations exist under
@@ -132,6 +160,52 @@ unblocks everything else and they must land together.
    `HttpClient` and a resilience `Guard` for `WEBSOCKET` routes that no longer read them (epic Open
    Defect 12). It is a boot-time assembly cleanup adjacent to this deliverable but not the same
    subject. Adopt it only if D6 touches that assembler anyway; otherwise report that it stays unowned.
+
+7. **A very thorough security audit of session management — the most important deliverable of
+   this plan.** Run it after D5, over the code as it then stands, and over **both** session modes
+   (server and cookie) and every BFF path that creates, reads, changes or ends a session: login,
+   callback, step-up and widening, refresh, the info endpoint, RP-initiated logout, back-channel
+   logout, CSRF, and the proxying of session-protected routes.
+
+   **Test against every known successful attack class, not a sample.** Build the catalogue from
+   OWASP ASVS V3 (Session Management) and the OWASP Session Management Cheat Sheet, RFC 6265bis, the
+   OAuth 2.0 Security Best Current Practice (RFC 9700), OpenID Connect Back-Channel Logout 1.0 and
+   RP-Initiated Logout 1.0, and the IETF draft on OAuth for browser-based apps (BFF pattern); add
+   published CVEs against comparable gateways and BFF libraries. At minimum it covers:
+   - **ID strength and handling** — predictability, enumeration, brute force, timing on lookup, IDs
+     in URLs, logs, `Referer` or error bodies.
+   - **Fixation and rotation** — at login, on step-up and widening, on refresh, and across the two
+     modes.
+   - **Theft and replay** — cookie theft and reuse, replay after logout and after expiry, and the
+     cookie-mode case where a stolen sealed cookie cannot be revoked server-side (state the residual
+     and its bound).
+   - **Cookie-level attacks** — cookie tossing and shadowing, `__Host-` prefix bypass, cookie-jar
+     overflow evicting the session cookie, cookie bombs, `SameSite=Lax` gaps on top-level GETs,
+     downgrade to plain HTTP, `Set-Cookie` on cacheable responses and missing `Cache-Control`.
+   - **Cross-site attacks on the session** — CSRF (including login CSRF), session riding through the
+     proxied routes, clickjacking of step-up, CORS interplay.
+   - **Flow attacks that end in a session** — authorization-code injection, mix-up (RFC 9207 `iss`),
+     PKCE and `state`/`nonce` misuse, PAR and DPoP binding gaps (ADR-0058), open redirects in return
+     and post-logout URLs.
+   - **Token lifecycle inside the session** — refresh-token theft and rotation-reuse handling,
+     concurrent refresh races, a refused token response discarding instead of revoking, tokens kept
+     after the session ends.
+   - **Logout correctness** — back-channel logout token validation (`iss`, `aud`, `iat`, `jti`
+     replay, `events`, no `nonce`), forged or replayed logout tokens, logout that misses a session,
+     and races between logout and refresh or widening.
+   - **Lifetime and capacity** — idle and absolute expiry, clock skew, store exhaustion and login
+     flooding (coordinate with `kidicap-gateway-requirements` PLAN-21, which owns pending-login
+     flooding), memory held by expired sessions.
+   - **Cookie-mode cryptography** — AES-GCM nonce uniqueness, key generation and rotation,
+     tampering, truncation, cross-session and cross-gateway reuse of a sealed payload.
+   - **Multi-replica** — sticky-routing failure modes and forged affinity cookies.
+
+   For each class record: the attack, the code path that defends against it, the test that proves
+   the defence (add one where none exists), and a verdict — defended, partially defended, or
+   vulnerable. **Fix every confirmed vulnerability in this plan** where the fix fits its surface;
+   otherwise stop and put it to the operator. **Disclosure:** following project policy, a finding
+   that is not yet fixed is reported to the operator only and is never described in public, tracked
+   text — PR descriptions, commit messages, issues, ADRs or the epic ledger — until it is fixed.
 
 ## Claim Labels
 
@@ -152,7 +226,8 @@ unblocks everything else and they must land together.
   (D4 now records why); the outline confirms and records the keep decision.
   - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: EnvSecretResolver has its own :- default syntax, malformed-placeholder refusal, all-missing-names report and defaulted-name callback, is env-only and runs on the pre-boot ConfigValidationCommand path before SmallRye exists; D4 re-scoped to keep with reason
 - **HYPOTHESIS (verify-at-outline)**: that a Quarkus session mechanism satisfies O(1) destroy-by-`sub`
-  and destroy-by-`sid`. **Confirm/refute artifact**: `SessionStore`'s interface and the back-channel
+  and destroy-by-`sid`. Superseded as a criterion on 2026-10-06 (see D5): speed is not the
+  requirement, prompt logout of every matching session is. **Confirm/refute artifact**: `SessionStore`'s interface and the back-channel
   logout call path. **Likely to be refuted; that is fine and must be reported, not worked around.**
   Re-grounding refuted it from the API (Quarkus/Vert.x session stores index by session id only); D5's
   expected outcome is *keep, with the indexing requirement as the recorded reason*. Confirm against the
@@ -163,6 +238,10 @@ unblocks everything else and they must land together.
   `tls/` package holds beyond `ClientHelloSniParser`'s role, or whether retiring the arch-gate
   breaks any other test.
   - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: the spec states exactly these absences; tls/ holds about nine CDI classes
+- OBSERVED: a step-up or widening keeps the session ID — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java` § the widening merge (`.sessionId(live.sessionId())`, persisted through `SessionBinding#persist`, which sets no new cookie), on `origin/main` at `1a20edad`
+- OBSERVED: the session has an absolute lifetime only — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java` § `Session` (`ttlSeconds`, default 3600; no idle key)
+- OBSERVED: expired sessions are removed only on lookup or when the store reaches its bound — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/InMemorySessionStore.java` § `resolve` and `create` (`sweepExpired` has no other caller)
+- HYPOTHESIS: in Vert.x Web 4.5.33 a `put` after a `delete` re-creates the session — confirm/refute at `io.vertx.ext.web.sstore.impl.LocalSessionStoreImpl` § `put` in the resolved jar (verify-at-outline); decides one reason of the D5 rejection
 
 ## Expected Surface
 
@@ -174,6 +253,10 @@ unblocks everything else and they must land together.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/logout/BackchannelLogoutReceiver.java` — D5: the live caller of `SessionBinding#destroyBySid` / `#destroyBySub`, which relies on the O(1) guarantee D5 must preserve
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionIdentity.java` — D5: a session-derived portal DTO outside the `bff/session/**` glob
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/**` — D6, review only
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/CallbackEndpoint.java` — D5: ID rotation on step-up and widening
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java`, `api-sheriff/src/main/resources/schema/gateway.schema.json`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` — D5: idle-timeout key and the periodic sweep
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/**`, `api-sheriff/src/test/**`, `integration-tests/**` — D7: the audit's subject and its proving tests; fixes land where the audit finds them
+- OBSERVED: `doc/user/bff-session.adoc`, `doc/user/bff-cookie.adoc`, `doc/security-threat-model.adoc` — D5 (sticky sessions, idle timeout), D7 (fixed findings only)
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/topology/TopologyResolver.java` — D4: the unused three-argument `resolve(...)` overload
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ConfigValidationCommand.java` — only if D1's verdict adopts Quarkus command mode and the `--validate-config` flag moves onto it (ADR-0061) (verify-at-outline)
 - HYPOTHESIS: `api-sheriff/pom.xml` — **only if** a dependency change is approved; otherwise untouched
@@ -194,7 +277,7 @@ unblocks everything else and they must land together.
 
 - **THREE-LAYER DOCS** in the same PR.
 - **SONAR ZERO-FINDINGS** — red is a HARD STOP.
-- **NAMED LINE ITEMS** — six named deliverables; an outline that collapses D6's `tls/` review into
+- **NAMED LINE ITEMS** — seven named deliverables; an outline that collapses D6's `tls/` review into
   "no change needed" without reporting is a finding.
 - **NEVER ADD DEPENDENCIES WITHOUT EXPLICIT USER APPROVAL** — binds D3 (dsl-json) directly. **ASK.**
 - **TEST THE DELIVERED ARTIFACT** and **A GREEN SUITE IS NOT EVIDENCE** — a substitution
@@ -202,6 +285,7 @@ unblocks everything else and they must land together.
 - **THE BUILD FAILS ON ANY COMPILER WARNING**, and this plan is the most exposed to it: D3–D6 swap
   hand-rolled infrastructure for platform APIs, and one that is deprecated at the pinned version
   fails the build. Budget for migrating off it, not for suppressing it.
+- **SECURITY FINDINGS STAY PRIVATE UNTIL FIXED** — binds D7: an unfixed finding goes to the operator only.
 - **RE-GROUND AT OUTLINE** — counts and line positions in this spec are leads; re-read the code.
 
 ## Finalize Boundary — the plan STOPS at the merge
