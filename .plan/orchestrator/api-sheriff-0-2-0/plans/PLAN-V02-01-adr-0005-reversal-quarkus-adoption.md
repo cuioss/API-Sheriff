@@ -79,6 +79,13 @@ unblocks everything else and they must land together.
    **If the semantics do not actually match, say so and keep it** — a forced adoption that changes
    when-and-how secrets resolve is a security-relevant regression, not a simplification.
 
+   The package now also serves the offline `--validate-config` path (ADR-0061, #387), which runs the
+   boot's own pipeline through `config/boot/ConfigBootPipeline`; a replacement must keep that path
+   giving the same verdict as the boot. Three public overloads lost their last production caller
+   with #387 and are removed here under the pre-1.0 rules unless the analysis finds a use:
+   `ConfigLoader.load()`, the three-argument `TopologyResolver.resolve(...)`
+   (`config/topology/TopologyResolver.java`) and `EnvSecretResolver.resolve(String)`.
+
 5. **`bff/session/**` → Quarkus session mechanisms, or a recorded justification for keeping it.**
    **OBSERVED**: `InMemorySessionStore` is a `final class` holding three plain `HashMap`s
    (`byId`, `bySid`, `bySub`), with lazy expiry on `resolve` plus `sweepExpired`, and **no CDI
@@ -155,6 +162,8 @@ unblocks everything else and they must land together.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/logout/BackchannelLogoutReceiver.java` — D5: the live caller of `SessionBinding#destroyBySid` / `#destroyBySub`, which relies on the O(1) guarantee D5 must preserve
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionIdentity.java` — D5: a session-derived portal DTO outside the `bff/session/**` glob
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/**` — D6, review only
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/topology/TopologyResolver.java` — D4: the unused three-argument `resolve(...)` overload
+- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ConfigValidationCommand.java` — only if D1's verdict adopts Quarkus command mode and the `--validate-config` flag moves onto it (ADR-0061) (verify-at-outline)
 - HYPOTHESIS: `api-sheriff/pom.xml` — **only if** a dependency change is approved; otherwise untouched
 - OBSERVED: `doc/architecture.adoc` and the three-layer docs for every converted component
 - OBSERVED (absence, deliberate): **no gateway behaviour change.** This is an infrastructure
@@ -166,8 +175,8 @@ unblocks everything else and they must land together.
 - **RUNS ALONE.** Retiring an arch-gate mid-flight changes the gate set every other concurrent plan
   is verified against. The one carve-out: a plan that ships no Java is unaffected by the arch gate
   and may run beside it.
-- Depended on by: `PLAN-V02-14` reads this plan's ADR verdict on platform mechanisms before choosing
-  its packaging (a read, not a blocker).
+- `PLAN-V02-14` landed first (#387) and chose a flag on the gateway binary without this plan's
+  verdict. ADR-0061 asks for a revisit if this plan adopts Quarkus command mode: decide it here.
 
 ## Standing Epic Clauses
 

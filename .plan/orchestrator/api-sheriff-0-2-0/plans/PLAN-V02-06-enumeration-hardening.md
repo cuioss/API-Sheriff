@@ -104,6 +104,13 @@ must work through that negotiation, not around it.
    as this deliverable's, so close them here and flip `gw-02` with `gw-08`, or report which clause
    remains open.
 
+   **Legitimate traffic already hits the reset bound.** The post-merge benchmark's
+   `run-k6-upload-small-benchmark` sees the gateway send `GOAWAY` `ENHANCE_YOUR_CALM` (*"Maximum number
+   of RST frames reached"*) on `POST /upload/small` under 50 virtual users — 95 to 134 times per run
+   since at least #382, and enough to fail the run on #387 (Open Defect 16). Find where the resets come
+   from before choosing a bound: a reset-rate limit that trips on an ordinary upload workload is the
+   wrong limit, and this benchmark is the regression test for whatever is chosen.
+
    Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
    `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives
    framing.

@@ -50,6 +50,9 @@ would otherwise force a retrofit.
   `landings/PLAN-V02-13.md`. `PLAN-V02-06` no longer waits on it; `PLAN-V02-07` now waits on
   `PLAN-V02-06` alone.
 - **PLAN-V02-10** — SHIPPED 2026-10-04 as PR #382 (`35f2bb37`), see `landings/PLAN-V02-10.md`.
+- **PLAN-V02-14** — SHIPPED 2026-10-06 as PR #387 (`1a20edad`, ADR-0061), see `landings/PLAN-V02-14.md`.
+  Issue #175 closed. Its residue for `PLAN-V02-01` (command-mode revisit, three unused overloads) is in
+  that spec.
 - **Collision the gate did not predict (2026-10-04):** `PLAN-V02-13` and `PLAN-V02-10` ran together
   as the only disjoint pair, and both changed `edge/DispatchStage.java`, `edge/GatewayEdgeRoute.java`,
   their two tests and `doc/configuration.adoc`. Neither spec declared `DispatchStage.java`; V02-10's
@@ -189,6 +192,17 @@ doc-only or build-light plan for the second and third slots.
 
 ## Open Defects
 
+16. **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
+    `ENHANCE_YOUR_CALM` ("Maximum number of RST frames reached")** (added 2026-10-06, found at the
+    `PLAN-V02-14` landing). Run 37430198468 on #387 failed `run-k6-upload-small-benchmark`: 134
+    `POST /upload/small` requests were refused this way and the `checks` / `http_req_failed` thresholds
+    were crossed. The same `GOAWAY` appears 95–105 times in each of the three preceding, passing
+    runs (#382, #385, #386), so the benchmark has been near its threshold for a while and #387 — which
+    touches no edge, HTTP/2 or upload code — is not the cause. Where the resets come from (client
+    behaviour, the gateway's upload path, or the transport's default reset-flood limit) is not
+    established. The benchmark lane does not gate merges, so nothing blocked; a later benchmark run
+    may pass or fail on the same tree. `PLAN-V02-06` D8 now carries this as evidence.
+
 15. **RESOLVED 2026-10-03 — snapshot deploy to Central failed with HTTP 401 on `main` after the Maven
     3.10.0 wrapper bump.** Maven 3.10.0 only sends a server's credentials to origins associated with its
     id, and the `central` server written by the organisation workflow declared none beyond
@@ -290,6 +304,11 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **DECLINED REFACTOR FROM #387, NONE STAGED** (added 2026-10-06). CodeRabbit proposed deriving the
+  offline validator's NOT CHECKED catalogue from shared refusal descriptors instead of a hand-kept list
+  (ADR-0061 § Risks). Declined in #387 because it reaches the TLS, JWKS, BFF and portal refusal paths.
+  Stage a plan when the hand-kept list drifts or the refusal paths are touched anyway.
 
 - **ISSUE #189 REMAINDER, NONE STAGED** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
   a demo-client panel (`demo-client/src/main/resources/spa/index.html`, `app.js`) that fires each
@@ -458,6 +477,28 @@ doc-only or build-light plan for the second and third slots.
   cross-check` counts the plan-less sentinel `.plan/local/plans/NO_PLAN` (`"sentinel": true`) as a
   live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
   `next` while it exists; the operator ruled that verdict wrong and overrode it.
+
+## Inbox Drain — 2026-10-06 (sender `plan-v02-14-offline-config-validation`)
+
+Twelve messages, all valid, all consumed and archived; the queue is empty afterwards. Five of the
+eleven lessons were recurrences of lessons already filed and were appended to them.
+
+| Message | Kind | Disposition | Where it went |
+|---|---|---|---|
+| `-012` | landing | reconciled | `landings/PLAN-V02-14.md`; queue row shipped |
+| `-001` | candidate-lesson | folded | recurrence appended to `2026-10-03-06-005` |
+| `-002` | candidate-lesson | promoted | `2026-10-06-08-001` — the pre-push quality gate does not run the api-sheriff module tests |
+| `-003` | candidate-lesson | folded | recurrence appended to `2026-10-04-09-002` |
+| `-004` | candidate-lesson | promoted | `2026-10-06-08-002` — LoopbackEphemeralBindArchTest rejects source-level Unicode escapes in test sources |
+| `-005` | candidate-lesson | promoted | `2026-10-06-08-003` — a self-review author excused a stale ordinal by citing a numbering that does not exist |
+| `-006` | candidate-lesson | promoted | `2026-10-06-08-004` — `ci checks pull-request-runs` reported zero runs while the PR's runs were starting |
+| `-007` | candidate-lesson | folded | recurrence appended to `2026-10-03-06-004` |
+| `-008` | candidate-lesson | promoted | `2026-10-06-08-005` — not every integration-test config set is mounted by compose; two run as standalone one-off containers |
+| `-009` | candidate-lesson | folded | recurrence appended to `2026-10-04-09-003` |
+| `-010` | candidate-lesson | folded | recurrence appended to `2026-10-04-09-004` |
+| `-011` | candidate-lesson | promoted | `2026-10-06-08-006` — Three review-bot findings on PR #387: a hand-kept coverage list needs a growth guard, line records must escape newlines, and error-grouping claims must be checked against the resolver |
+
+The `-0NN` rows are `plan-v02-14-offline-config-validation-0NN.md`.
 
 ## Inbox Drain — 2026-10-05 (sender `fix-four-audit-findings-and-bff-flaky-test`, a plan outside this epic)
 

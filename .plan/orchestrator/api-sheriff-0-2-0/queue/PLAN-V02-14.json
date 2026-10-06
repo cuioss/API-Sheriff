@@ -2,9 +2,9 @@
   "id": "PLAN-V02-14",
   "slug": "offline-config-validation",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-14-offline-config-validation",
-  "pr": "",
-  "landing": "",
+  "pr": "387",
+  "landing": "landings/PLAN-V02-14.md",
   "seq": 14
 }
