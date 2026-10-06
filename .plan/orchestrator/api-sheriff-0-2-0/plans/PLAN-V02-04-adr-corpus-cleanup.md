@@ -8,7 +8,7 @@ workstream: WS-02
 
 ## Objective
 
-`doc/adr/` has grown past fifty records and eleven thousand lines without anyone ever reading it as
+`doc/adr/` has grown past sixty records and fourteen thousand lines without anyone ever reading it as
 a whole. This plan reads it as a whole and answers four questions per record: **is it actually an
 architectural decision, is it still true, does another record already say it, and does it need to be
 this long?**
@@ -69,7 +69,7 @@ filename, never by a number quoted here.
    such rather than editing history — a superseded decision is legitimate content, an inaccurate one
    is not.
 
-   **Statuses are the largest part of this.** 35 of 55 records read `Proposed` when last counted, most
+   **Statuses are the largest part of this.** 41 of 61 records read `Proposed` when last counted, most
    of them for shipped work. That makes this a sweep, not a spot-fix; re-count at outline. ADR-0059
    and ADR-0060 are among them; both decisions have shipped.
 
@@ -98,18 +98,19 @@ filename, never by a number quoted here.
 
 ## Claim Labels
 
-- OBSERVED: `doc/adr/` held 55 records (~11,809 lines) when measured, and has grown at every measurement — `git ls-tree --name-only HEAD doc/adr/`
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 55 .adoc under doc/adr at 05f6ee3, ~11,809 lines
-- OBSERVED: 35 of 55 records read status `Proposed` — `^== Status` block per record, control-queried
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 35/55 Proposed, ^== Status block count, control-queried
+- OBSERVED: `doc/adr/` holds 61 records (`0001`–`0061`, contiguous; ~14,049 lines) at `1a20edad`, and has grown at every measurement — `git ls-tree --name-only HEAD doc/adr/`
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: doc/adr/ holds 61 records (0001-0061, contiguous) and about 14049 lines at 1a20edad, not 55 / 11809; claim and body re-scoped
+- OBSERVED: 41 of 61 records read status `Proposed` at `1a20edad` (18 Accepted or Accepted-and-amended, 1 Superseded, 1 Accepted without a period) — first line of the `== Status` block per record
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 41 of 61 records read Proposed at 1a20edad (18 Accepted or amended, 1 Superseded, 1 Accepted without period), not 35 of 55; claim and body re-scoped
 - OBSERVED: every ordinal in `doc/adr/` is claimed by exactly one record, and `AdrOrdinalUniquenessContractTest` fails the build on a duplicate — `doc/adr/` basenames `uniq -d`; the former duplicate `0053` was resolved by renumbering the header-matcher record to `0056`
-  - verdict: corroborated | checked_at: 4228d42fc8f95e44a0798ae8d9df0af326d4742a | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/ on origin/main: 56 records, uniq -d over ordinal prefixes returns nothing; header-matcher record is 0056; AdrOrdinalUniquenessContractTest present
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no duplicate ordinal across 61 basenames; AdrOrdinalUniquenessContractTest asserts it with a control; 0053 portal, 0056 header-matcher
 - OBSERVED: the artifact-purity and nullable-not-Optional records are `0032` and `0033`, each with an ordinal of its own — `doc/adr/0032-*`, `0033-*`
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032/0033 artifact-purity/nullable correctly named
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032 shipped-artifact-declares-nothing-test-shaped and 0033 nullable-not-Optional each have their own ordinal
 - OBSERVED: `0005-module-structure.adoc` is still `Accepted` and `0027` is not re-opened, so V02-01 and V02-09 have not pre-empted this audit — confirm again at outline (verify-at-outline)
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0005 still Accepted, 0027 not re-opened; V02-01/V02-09 not landed
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0005 Status Accepted with only a pending-supersession note; 0027 Status Proposed, not reopened
 
 - OBSERVED: ADR-0008's statement that timeouts are transport options and not fault-tolerance timeouts is contradicted by the shipped resilience guard — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § `guardFor` (`withTimeout().duration(30, ChronoUnit.SECONDS)`), on `origin/main` at `84afdba0`
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.guardFor builder.withTimeout().duration(30, ChronoUnit.SECONDS) beside the circuit breaker; ADR-0008 still says timeouts are transport options, not fault-tolerance timeouts
 
 ## Expected Surface
 

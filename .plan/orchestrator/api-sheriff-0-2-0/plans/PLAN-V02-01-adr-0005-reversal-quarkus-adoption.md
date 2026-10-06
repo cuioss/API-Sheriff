@@ -58,8 +58,11 @@ unblocks everything else and they must land together.
    this gate. Do not turn it into a hard gate as a side effect of this retirement.
 
 3. **`bff/runtime/JsonWriter.java` → the platform JSON mechanism.**
-   **OBSERVED**: about 126 lines, package-private, a pattern-matching switch writing into a
-   `StringBuilder`, with a single call site in `BffRuntime`. Replace with the Quarkus-provided
+   **OBSERVED**: a `public final class`, a pattern-matching switch writing into a `StringBuilder`,
+   with call sites in `BffRuntime` and in `GatewayEdgeRoute.problemBody` (the problem+json body).
+   The payloads are maps, collections, strings, numbers, booleans and null, which the Jackson already
+   on the classpath (`quarkus-resteasy-jackson`) serialises; note that `JsonWriter` maps NaN and
+   infinity to `null` and unknown types through `String.valueOf`. Replace with the Quarkus-provided
    serializer.
    **⚠ DEPENDENCY APPROVAL REQUIRED**: the operator suggested **dsl-json** for fixed-DTO shapes.
    `CLAUDE.md` § Dependency Management says *"Never add dependencies without explicit user
@@ -71,7 +74,12 @@ unblocks everything else and they must land together.
 4. **`config/load/EnvSecretResolver.java` → smallrye-config, if it genuinely duplicates it.**
    **OBSERVED**: wraps `System::getenv` behind an injectable lookup, implements `${VAR}` placeholder
    substitution, and raises `MissingVariableException` / `MalformedPlaceholderException`.
-   SmallRye Config provides expression expansion with defaults natively.
+   SmallRye Config provides expression expansion with defaults natively — **but re-grounding found the
+   semantics do not match**: the resolver has its own `:-` default syntax with no escape, refuses a
+   malformed placeholder, reports every missing name at once, calls back on defaulted names, reads the
+   environment only, and runs on the pre-boot `--validate-config` path before Quarkus (and so SmallRye)
+   exists. The expected outcome is therefore *keep it, with that reason recorded*; overturn it only on
+   evidence the pre-boot path can be served.
    **Analyze the whole `config/load` package as the operator asked, not just this class** — and be
    honest about the residue: this resolver runs against a **YAML document the gateway loads itself**,
    which is not the same lifecycle as MicroProfile Config property resolution. `ConfigLoader` also
@@ -131,26 +139,30 @@ unblocks everything else and they must land together.
   agnostic seam with the quoted no-import rule; `FrameworkAgnosticArchTest` enforces it via
   `noClasses().should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)` and excludes
   `routing` by design; `EnvSecretResolver`'s javadoc says "keeping the engine framework-agnostic";
-  `JsonWriter` is package-private; `InMemorySessionStore` is a `final class` with three
+  `JsonWriter` is a `public final class` with two call sites; `InMemorySessionStore` is a `final class` with three
   `HashMap`s, synchronized methods and no CDI annotation; about 16 files carry `@ApplicationScoped`
   with roughly 59 CDI annotations corpus-wide; `ClientHelloSniParser` hand-parses ClientHello.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0005 Accepted; FrameworkAgnosticArchTest present; JsonWriter pkg-private; config/load/ 5 files; InMemorySessionStore 7 synchronized methods; CDI now 16 files / ~59 annotations (was 11/45)
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: JsonWriter is now a public final class with a second call site in GatewayEdgeRoute.problemBody; the rest holds (ADR-0005 Accepted, FrameworkAgnosticArchTest, InMemorySessionStore three HashMaps, 16 @ApplicationScoped files); spec re-scoped
 - **HYPOTHESIS (verify-at-outline)**: that a Quarkus-supplied JSON serializer covers `JsonWriter`'s
   payload shapes. **Confirm/refute artifact**: `JsonWriter`'s call sites and the actual payloads.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: BffRuntime.java:279 still sole JsonWriter.toJson call site; whether the Quarkus serializer covers the payload shape is a design question
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: call sites in BffRuntime and GatewayEdgeRoute.problemBody serialise only Map/Collection/String/Number/Boolean/null and quarkus-resteasy-jackson is on the classpath; JsonWriter maps NaN/Infinity to null
 - **HYPOTHESIS (verify-at-outline)**: that SmallRye expression expansion matches `EnvSecretResolver`'s
   semantics. **Confirm/refute artifact**: the resolver's tests plus the YAML-load call path.
-  **Explicitly refutable — and a refutation is a valid, expected outcome.**
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: config/load/ unchanged structurally but ConfigLoader +110 lines (#341, ADR-0052 env coercion); SmallRye-vs-YAML semantics is a design question
+  **Explicitly refutable — and a refutation is a valid, expected outcome.** Re-grounding refuted it
+  (D4 now records why); the outline confirms and records the keep decision.
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: EnvSecretResolver has its own :- default syntax, malformed-placeholder refusal, all-missing-names report and defaulted-name callback, is env-only and runs on the pre-boot ConfigValidationCommand path before SmallRye exists; D4 re-scoped to keep with reason
 - **HYPOTHESIS (verify-at-outline)**: that a Quarkus session mechanism satisfies O(1) destroy-by-`sub`
   and destroy-by-`sid`. **Confirm/refute artifact**: `SessionStore`'s interface and the back-channel
   logout call path. **Likely to be refuted; that is fine and must be reported, not worked around.**
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SessionStore O(1) destroy-by-sub/sid still binding; NEW live consumer BackchannelLogoutReceiver:130/:132 (+LogoutRejection/Log, ADR-0051) added to surface
+  Re-grounding refuted it from the API (Quarkus/Vert.x session stores index by session id only); D5's
+  expected outcome is *keep, with the indexing requirement as the recorded reason*. Confirm against the
+  resolved Quarkus artifact at outline, which the re-grounding did not read.
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: BackchannelLogoutReceiver needs destroyBySid/destroyBySub, served O(1) by InMemorySessionStore secondary indexes; Quarkus/Vert.x session stores index by id only (judged from the API, not a jar); D5 re-scoped to keep with reason
 - **OBSERVED (absence)**: this spec does **not** establish which serializer the Quarkus BOM
   supplies here, what `ServerSessionBinding` or `SessionCookieCodec` do beyond existing, what the
   `tls/` package holds beyond `ClientHelloSniParser`'s role, or whether retiring the arch-gate
   breaks any other test.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: about a prior reviewer's investigation scope; FrameworkAgnosticArchTest still unretired, so retirement impact untested
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: the spec states exactly these absences; tls/ holds about nine CDI classes
 
 ## Expected Surface
 

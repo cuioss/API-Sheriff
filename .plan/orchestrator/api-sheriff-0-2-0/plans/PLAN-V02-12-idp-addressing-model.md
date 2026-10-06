@@ -174,70 +174,71 @@ reserved-path namespace is a broken contract rather than a partial one.
 - OBSERVED: `OidcConfig` carries a single `issuer` and no backchannel or discovery override —
   read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java`
   § the record header.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: OidcConfig.java:49 single @Nullable issuer, no override
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: OidcConfig has a single nullable issuer and no backchannel or discovery override (backchannelPath is the logout receiver path)
 - OBSERVED: `token_validation.issuers[]` already carries `issuer` and `jwks.url` as independent
   keys — read at `integration-tests/src/main/docker/sheriff-config/gateway.yaml`.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: gateway.yaml issuers[] issuer/jwks still sibling keys (:228-274)
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration gateway.yaml token_validation issuers carry issuer and jwks.url as independent keys
 - OBSERVED: all three realm imports pin the internal authority as canonical — read at
   `integration-tests/src/main/docker/keycloak/integration-realm.json`,
   `.../benchmark-realm.json` and
   `deployment/compose-sample/docker/keycloak/sample-realm.json`, each
   `"frontendUrl": "https://keycloak:8443"`.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: frontendUrl https://keycloak:8443 in integration(:14)/benchmark(:12)/sample(:7) realms
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: frontendUrl https://keycloak:8443 in integration-realm.json, benchmark-realm.json and the compose-sample sample-realm.json
 - OBSERVED: the browser reaches the IdP only via a Chromium host-resolver rule — read at
   `demo-client/playwright.config.js` § `hostResolverRule()`, emitting
   `MAP keycloak:8443 127.0.0.1:1443`, and documented in
   `demo-client/doc/playwright-suite.adoc`.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: playwright.config.js:51,60 host-resolver hack present
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: playwright.config.js hostResolverRule() maps keycloak:8443; playwright-suite.adoc documents the rule
 - OBSERVED: Keycloak is published directly on the host in both topologies, and no route in any
   shipped configuration proxies it — read at `integration-tests/docker-compose.yml` § `keycloak.ports`
   (`1443:8443`, `1090:9000`) and `deployment/compose-sample/docker-compose.yml`. The
   gateway's only contact is egress (JWKS + back channel), host-exact allowlisted.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration-tests docker-compose.yml:36-37 Keycloak ports published directly
-- OBSERVED: reserved paths are configuration-derived with no product default — read at
-  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/ReservedPathRegistry.java`.
-  There is no `/auth` literal in `src/main/java` outside Javadoc examples. **`/auth` is a sample
-  convention, not a product constant.**
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no /auth literal in api-sheriff/src/main/java; ReservedPathRegistry config-derived
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration compose publishes keycloak 1443:8443 and 1090:9000, compose-sample 127.0.0.1:1443:8443; no route proxies Keycloak
+- OBSERVED: the BFF reserved paths are configuration-derived — read at
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/ReservedPathRegistry.java` — with
+  ONE product default: `OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH = /auth/jwks`
+  (ADR-0058). Every other `/auth` path is a sample convention; that one is a product constant, so D4's
+  relocation changes a product default, not only the samples.
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH = /auth/jwks is a product default with an /auth literal (ADR-0058); claim re-scoped to name it
 - OBSERVED: `/bff` and `/bff-session` anchors already exist — read at
   `integration-tests/src/main/docker/sheriff-config/gateway.yaml`.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: gateway.yaml:141-154 /bff and /bff-session anchors present
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration gateway.yaml declares path_prefix /bff and /bff-session
 - OBSERVED: the six reserved paths currently live under `/auth` — read at the same file.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: gateway.yaml:298-333 six reserved paths under /auth
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: callback, logout, logout/return, backchannel, userinfo, login, step-up sit under /auth; the registry has 8 kinds including BACKCHANNEL_LOGOUT and CLIENT_JWKS
 - OBSERVED: `doc/configuration.adoc` mixes `/auth/*` and `/logout*` conventions inside one
   exhibit.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/configuration.adoc:393-410 still mixes /auth/* with /logout*
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/configuration.adoc oidc exhibit still mixes /auth/callback, /auth/login, /auth/userinfo with /logout, /logout/done, /logout/backchannel
 - OBSERVED: no ADR covers IdP addressing or exposure — a title search over the corpus finds none.
   **An asserted absence: re-verify by enumeration at outline, not by grep alone.**
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 55 ADR titles grepped, no hit; spec requires full enumeration at outline; next free ordinal 0055
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: enumerated all 61 ADR titles: none concerns IdP addressing or exposure
 - OBSERVED: ADR-0018 anticipates the relocation — read at
   `doc/adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc`.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0018 relocation language present at :79/:372
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0018 consequences: an operator wanting a reserved namespace proxied must relocate the reserved paths
 - OBSERVED: the topology SVG `doc/resources/diagrams/integration-test-topology.svg` shows
   `variant instances (11)` including `api-sheriff-plain-mgmt`; the diagram carries no disclosed
   omission, so this plan owes no gap-closing redraw.
-  - verdict: corroborated | checked_at: 4228d42fc8f95e44a0798ae8d9df0af326d4742a | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration-test-topology.svg shows variant instances (11) and names plain-mgmt; no omission to close
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration-test-topology.svg shows variant instances (11) including api-sheriff-plain-mgmt; compose starts 12 gateway services
 - HYPOTHESIS: `hostname-backchannel-dynamic=true` (with `hostname` set to a full URL and
   `proxy-headers=xforwarded`) is the supported Keycloak-side mechanism for the split, and
   `--hostname https://host/auth` with a context path is supported. Sourced from vendor
   documentation at the 26.x line, against the pinned `26.5.7` image. Confirm/refute **against the
   pinned image's own behaviour**, not against the doc page. (verify-at-outline)
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: Keycloak still 26.5.7; hostname-backchannel-dynamic behaviour needs a live container
+  - verdict: unverifiable | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs the pinned keycloak 26.5.7 image running; cannot be settled statically
 - HYPOTHESIS: the exposure allowlist (`/realms/`, `/resources/`, `/.well-known/`, `/lb-check` in;
   `/admin/`, `/realms/master/`, `/metrics`, `/health`, port 9000 out) is complete for a BFF-only
   integration. Confirm/refute by driving the full login, refresh and RP-initiated-logout round
   trip through the fronted variant with everything else blocked. (verify-at-outline)
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no /auth-fronted Keycloak variant built yet
+  - verdict: unverifiable | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a full login, refresh and logout round trip through a fronted variant that does not exist yet
 - HYPOTHESIS: the gateway's canonical-path handling defeats the non-normalized-path route to
   `/admin/`. Confirm/refute with a test, at
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/CanonicalPathGuard.java`.
   **Do not ship this as a documented advantage on the strength of reading the code.**
   (verify-at-outline)
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CanonicalPathGuard present; /admin/ behaviour needs a live test
+  - verdict: unverifiable | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CanonicalPathGuard rejects /orders/../admin and %5c samples in its test, but no test targets a Keycloak-fronting variant; the spec asks for a test
 - Verify-first clause: **re-ground every file and line reference at outline.** `PLAN-V02-08`
   reshapes the `oidc` block and `OidcConfig` ahead of this plan — read the landed shape, never this
   spec's description of it.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural re-ground-at-outline instruction
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause applicable: OidcConfig gained clientAuthentication and senderConstraint (ADR-0058), so references must be re-read at outline
 
 ## Expected Surface
 

@@ -50,25 +50,26 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 ## Claim Labels
 
 - OBSERVED: the per-event taxonomy exists and is category-typed — `events/EventType.java` (categories
-  INPUT_VALIDATION / AUTHENTICATION / AUTHORIZATION / UPSTREAM / CONFIGURATION), surfaced via
+  INPUT_VALIDATION / ROUTING / AUTHENTICATION / AUTHORIZATION / UPSTREAM / CONFIGURATION — `ROUTING` added
+  by #383, ADR-0059), surfaced via
   `events/GatewayEventCounter.java` → `quarkus/SheriffMetrics.java` (Micrometer) and WARN logging in
   `edge/GatewayEdgeRoute.java` (`SECURITY_FILTER_VIOLATION`, payload-safe). Find the WARN site by
   content — `LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, …)` — not by line.
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory still 5 values, no ROUTING; SECURITY_FILTER_VIOLATION warn site drifted to GatewayEdgeRoute:1092
+  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: EventCategory now has six values with ROUTING (ADR-0059); WARN site GatewayEdgeRoute.reportRejection SECURITY_FILTER_VIOLATION and SheriffMetrics.ERRORS_TOTAL exist; claim re-scoped
 - OBSERVED absence: no cross-request scoring / campaign notion exists — the counter is global-per-event,
   not per-client-windowed. (CRS itself scores per-request only; the cross-request accumulation is the
   net-new value here.)
-  - verdict: corroborated | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no window/sliding/campaign/anomaly/ecs/ocsf under api-sheriff/src/main/java; counter flat
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no campaign, score, windowed or per-client construct in api-sheriff/src/main; GatewayEventCounter is global per EventType (control reached RateLimitConfig)
 - HYPOTHESIS: `PLAN-V02-06`'s per-client substrate is reusable as the accumulation window for the score
   rather than a second parallel per-client store. Confirm/refute at the substrate `PLAN-V02-06` actually
   ships § its per-client state API (verify-at-outline) — **central risk**: if that substrate is
   bucket-only (recon codes) and not general-purpose, the gap is a finding against `PLAN-V02-06`'s
   substrate contract, not work to absorb here and not a reason to build a second store.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06 not landed, substrate absent -- hypothesis remains open as framed
+  - verdict: unverifiable | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06's substrate has not shipped, so reuse cannot be judged
 - Verify-first clause: scope the ECS/OCSF field set against the actual schema (Elastic Common Schema /
   OCSF event classes), not against this spec's field list, before emitting — the shape must validate
   against a real consumer.
-  - verdict: unverifiable | checked_at: 05f6ee3ebb5ae32fb75082b660e6abdb7617edb6 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural; nothing ECS/OCSF exists yet
+  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still applicable: no ECS or OCSF emitter exists and the field list is unvalidated against a schema
 
 ## Expected Surface
 
