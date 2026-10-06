@@ -41,8 +41,14 @@ because the component is this project's own.
 > |---|---|---|
 > | **1** | **mostly done** | `doc/security-threat-model.adoc` already carries a *"Not delivered: token revocation at logout"* paragraph (1904-1910), added by PLAN-23's own merge `e445e299`. The hook is still a no-op (`BffRuntimeProducer.buildLogoutEndpoint:1092-1096` passes `sessionRecord -> {}`). What still OVER-CLAIMS is narrower than filed: the **Control line (1871)** says the gateway revokes the refresh-token family, and the **summary row (2955)** reads `COVERED (server)` with no revocation caveat. Correct those two lines — do not rewrite the section |
 > | **3** | ⛔ **already done** | The accepted cookie-mode residual is already documented with its bound and mitigations (1912-1928) and the summary row already reads `PARTIAL-accepted (cookie: a response in flight can outlast the logout)`. ADR-0018 and ADR-0057 record it too. CodeRabbit's Medium rating is therefore already disposed of in the record. **Drop this deliverable** unless the re-read finds the bound understated |
-> | **5** | ordinal moved | the next free ADR ordinal is **0060** — 0053, 0056, 0057, **0058 (PAR/DPoP)** and **0059 (routing)** are taken. The filing's "do not take 0053" warning is stale |
+> | **5** | ordinal moved | the next free ADR ordinal is **0062** (re-checked 2026-10-06 at `6788bdae`) — 0058 (PAR/DPoP), 0059 (routing), **0060 (dispatch framing)** and **0061 (offline config validation)** are taken. The filing's "do not take 0053" warning is stale, and so was this row's own 0060 |
 > | 2, 4 | unchanged | the revocation-seam decision and the problem+json ADR still stand; no ADR states either rule at HEAD (ADR-0059 mentions an extension member only inside a rejected alias) |
+>
+> ⚠ **Line references re-measured 2026-10-06 at `6788bdae`** — #386 added ~59 lines above this section of the
+> threat model, so the numbers in the table above have moved; the content has not. Current positions: the
+> BFF-09 heading is at 1917, the over-claiming **Control line ("revoke the RT family") at 1930**, the
+> *Not delivered* paragraph at 1963-1969, the accepted cookie-mode residual at 1971-1987, and the
+> **summary row at 3014**. Locate each by its text, not by these numbers.
 >
 > Net: **3 deliverables live** (1 narrowed to two lines, 2, 4, 5), one dropped (3). ⛔ The security point is
 > undiminished: a Control line that claims refresh-token revocation the runtime does not perform is exactly
@@ -71,7 +77,7 @@ because the component is this project's own.
    `oidc.step_up.path`, `oidc.login.path` and `oidc.user_info.path` (refusing query, fragment, backslash,
    control characters, whitespace). The ADR check suggests an **ADR-0018 amendment** rather than a new
    record; evaluate both and take the one that keeps the reserved-path model in one place.
-   ⚠ The next free ordinal is **0060** (0053, 0056, 0057, 0058, 0059 taken — re-checked 2026-10-05); confirm by listing `doc/adr/` rather than
+   ⚠ The next free ordinal is **0062** (0053 and 0056–0061 taken — re-checked 2026-10-06 at `6788bdae`); confirm by listing `doc/adr/` rather than
    trusting `manage-adr scan`, whose success payload omits the duplicate population entirely (plan-marshall
    lesson `2026-10-02-13-00x`; this is how `main` carried two ADR-0053 files for a week).
 
@@ -86,18 +92,18 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/` § the logout handler's revocation call
   (verify-at-outline). ⛔ If BFF-09 is already corrected, close deliverable 1 and say so — do not rewrite
   a row that someone has since fixed.
-  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BFF-09 summary row (threat-model:2955) still reads COVERED (server) and the hook is still a no-op at BffRuntimeProducer:1092-1096
+  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BFF-09 summary row (threat-model:3014) still reads COVERED (server) and the Control line (:1930) still says revoke the RT family; BffRuntimeProducer unchanged since 35f2bb37 so the revocation seam is still bound to a no-op (comment :604, buildLogoutEndpoint :1077)
 - HYPOTHESIS: the cookie-mode residual is documented in the user docs but carries no disposition of
   CodeRabbit's Medium rating — confirm/refute at `doc/user/bff-cookie.adoc` and
   `doc/security-threat-model.adoc` § the cookie-mode rows (verify-at-outline).
-  - verdict: contradicted | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: the cookie-mode residual is ALREADY documented with its bound and mitigations (threat-model:1912-1928) and the summary row already reads PARTIAL-accepted - landed in e445e299
+  - verdict: contradicted | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: the cookie-mode residual is documented with its bound and mitigations (threat-model:1971-1987) and the summary row (:3014) reads PARTIAL-accepted; deliverable 3 stays dropped
 - HYPOTHESIS: neither the problem+json extension-member rule nor the reserved-path boot rule has an ADR at
   HEAD — confirm/refute by searching `doc/adr/` for both subjects (verify-at-outline).
-  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: no ADR states the problem+json extension-member rule or the reserved-path boot rule; ADR-0059 mentions an extension member only inside a rejected alias
+  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr listed at 6788bdae: 0060 is dispatch framing and 0061 offline config validation; still no ADR states the problem+json extension-member rule or the reserved-path boot rule
 - OBSERVED: ADR ordinals 0053, 0056 and 0057 are taken at HEAD (0053 once, after PR #367 resolved the
   collision; 0056 the header-matcher ADR; 0057 PLAN-23's session-scope ADR) — orchestrator-verified
   2026-10-02 by listing `doc/adr/`.
-  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr carries one 0053 plus 0056/0057; ALSO 0058 (PAR/DPoP) and 0059 (routing) are now taken so the next free ordinal is 0060
+  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr carries one 0053 plus 0056 and 0057 as claimed; 0058-0061 are also taken, so the next free ordinal is 0062
 
 ## Expected Surface
 
