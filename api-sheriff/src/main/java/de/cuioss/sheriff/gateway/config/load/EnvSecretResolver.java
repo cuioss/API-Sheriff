@@ -15,7 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.load;
 
+import java.io.Serial;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -36,7 +42,10 @@ import org.jspecify.annotations.Nullable;
  * the variable is unset.</li>
  * </ul>
  * {@code NAME} matches {@code [A-Za-z_][A-Za-z0-9_]*}. Multiple placeholders per
- * scalar are supported. There is <strong>no escape syntax</strong>: a scalar that
+ * scalar are supported, and a scalar is always walked to its end: every unset bare
+ * {@code ${NAME}} it carries is named in the one {@link MissingVariableException} it
+ * raises, so an operator sees every missing variable of the scalar at once rather than
+ * one per attempt. There is <strong>no escape syntax</strong>: a scalar that
  * contains a {@code ${} sequence which is not a well-formed placeholder fails the
  * boot with a {@link MalformedPlaceholderException} — a loud failure is always
  * preferred over silently leaving an un-substituted literal in a resolved value.
@@ -44,6 +53,10 @@ import org.jspecify.annotations.Nullable;
  * {@link #isBareReference(String)} lets the secrets rule classify a field on its
  * <em>pre-substitution</em> value: a secret must be written as a bare
  * {@code ${VAR}} reference, never a literal or a defaulted placeholder.
+ * <p>
+ * {@link #resolve(String, Consumer)} additionally reports each variable whose in-file
+ * default was applied — by <em>name only</em>, never the default and never any value —
+ * so a caller can tell an operator which settings silently fell back.
  * <p>
  * The environment lookup is constructor-injected (defaulting to
  * {@link System#getenv(String)}), keeping the engine framework-agnostic and
@@ -58,6 +71,9 @@ public final class EnvSecretResolver {
             .compile("\\$\\{([A-Za-z_]\\w*)(?::-((?:(?!\\$\\{).)*?))?}");
     private static final Pattern BARE_REFERENCE = Pattern.compile("\\$\\{[A-Za-z_]\\w*}");
     private static final String OPEN = "${";
+    private static final Consumer<String> IGNORE_DEFAULTED = name -> {
+        // The plain resolve(String) overload does not track applied defaults.
+    };
 
     private final UnaryOperator<@Nullable String> lookup;
 
@@ -106,15 +122,50 @@ public final class EnvSecretResolver {
      *
      * @param value the raw configuration value
      * @return the value with all placeholders substituted
-     * @throws MissingVariableException     when a bare {@code ${NAME}} names an
-     *                                      undefined variable
+     * @throws MissingVariableException     when one or more bare {@code ${NAME}}
+     *                                      placeholders name an undefined variable; it
+     *                                      names every such variable of the value
      * @throws MalformedPlaceholderException when the value contains a {@code ${} that
      *                                      is not a well-formed placeholder
      */
     public String resolve(String value) {
+        return resolve(value, IGNORE_DEFAULTED);
+    }
+
+    /**
+     * Substitutes every placeholder in the value exactly as {@link #resolve(String)} does,
+     * and reports each variable whose in-file default was applied.
+     * <p>
+     * Each time a {@code ${NAME:-default}} placeholder falls back to its default because
+     * {@code NAME} is unset, {@code NAME} is handed to {@code onDefaulted} — once per
+     * variable name per value, in first-occurrence order. The consumer never receives the
+     * default literal or any resolved value. A default is reported as it is applied, so it
+     * is reported even when the same value then fails on an unset bare variable.
+     * <p>
+     * Usage:
+     * {@snippet :
+     * List<String> defaulted = new ArrayList<>();
+     * String resolved = resolver.resolve("${HOST:-localhost}:${PORT:-8080}", defaulted::add);
+     * // defaulted holds HOST and PORT when neither variable is set
+     * }
+     *
+     * @param value       the raw configuration value
+     * @param onDefaulted receives the name of each variable whose in-file default applied
+     * @return the value with all placeholders substituted
+     * @throws MissingVariableException     when one or more bare {@code ${NAME}}
+     *                                      placeholders name an undefined variable; it
+     *                                      names every such variable of the value
+     * @throws MalformedPlaceholderException when the value contains a {@code ${} that
+     *                                      is not a well-formed placeholder
+     * @since 1.0
+     */
+    public String resolve(String value, Consumer<String> onDefaulted) {
+        Objects.requireNonNull(onDefaulted, "onDefaulted");
         assertNoMalformedPlaceholder(value);
         Matcher matcher = PLACEHOLDER.matcher(value);
         StringBuilder result = new StringBuilder();
+        Set<String> missing = new LinkedHashSet<>();
+        Set<String> defaulted = new HashSet<>();
         while (matcher.find()) {
             String name = matcher.group(1);
             String defaultValue = matcher.group(2);
@@ -124,10 +175,17 @@ public final class EnvSecretResolver {
                 replacement = resolved;
             } else if (defaultValue != null) {
                 replacement = defaultValue;
+                if (defaulted.add(name)) {
+                    onDefaulted.accept(name);
+                }
             } else {
-                throw new MissingVariableException(name);
+                missing.add(name);
+                replacement = "";
             }
             matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
+        }
+        if (!missing.isEmpty()) {
+            throw new MissingVariableException(List.copyOf(missing));
         }
         matcher.appendTail(result);
         return result.toString();
@@ -141,30 +199,36 @@ public final class EnvSecretResolver {
     }
 
     /**
-     * Signals that a bare {@code ${NAME}} placeholder named an undefined environment
-     * variable.
+     * Signals that one or more bare {@code ${NAME}} placeholders of a single value named
+     * an undefined environment variable.
+     * <p>
+     * The message lists every missing name comma-separated after a fixed prefix
+     * ({@code Unresolved environment variable: A, B}); it never echoes a resolved value or
+     * a default.
      *
      * @author API Sheriff Team
      * @since 1.0
      */
     public static final class MissingVariableException extends RuntimeException {
 
+        @Serial
         private static final long serialVersionUID = 1L;
 
-        private final String variableName;
+        private final List<String> variableNames;
 
-        MissingVariableException(String variableName) {
-            super("Unresolved environment variable: " + variableName);
-            this.variableName = variableName;
+        MissingVariableException(List<String> variableNames) {
+            super("Unresolved environment variable: " + String.join(", ", variableNames));
+            this.variableNames = List.copyOf(variableNames);
         }
 
         /**
-         * Returns the name of the undefined environment variable.
+         * Returns the names of every undefined environment variable of the value, in
+         * first-occurrence order and without duplicates.
          *
-         * @return the missing variable name
+         * @return the non-empty, unmodifiable list of missing variable names
          */
-        public String variableName() {
-            return variableName;
+        public List<String> variableNames() {
+            return variableNames;
         }
     }
 
@@ -178,6 +242,7 @@ public final class EnvSecretResolver {
      */
     public static final class MalformedPlaceholderException extends RuntimeException {
 
+        @Serial
         private static final long serialVersionUID = 1L;
 
         MalformedPlaceholderException() {

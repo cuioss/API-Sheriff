@@ -41,6 +41,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -95,11 +96,14 @@ import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.PoolOptions;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
@@ -392,11 +396,18 @@ class GatewayEdgeRouteTest {
      * A relay that fails while it is being started — here the real {@link ResponseStage} handed an
      * upstream response that already ended, whose {@code pipeTo} throws "Response already ended" — is
      * answered through the same failure path as a relay that fails mid-stream: the client receives a
-     * well-framed {@code 502} instead of waiting for a response that never comes.
+     * well-framed {@code 502} instead of waiting for a response that never comes, and the upstream
+     * response the relay never consumed is released.
      */
     @Nested
     @DisplayName("a relay that cannot start still answers the client")
     class RelayStartFailure {
+
+        /** The size of an upstream answer the relay never reads, far beyond what the transport buffers. */
+        private static final int LARGE_BODY_BYTES = 4 * 1024 * 1024;
+        private static final String LARGE_PATH = "/large";
+        private static final String ANSWERING_PATH = "/answering";
+        private static final String ANSWER = "ok";
 
         @Test
         @DisplayName("answers an empty 502 when the upstream response ended before the relay subscribed")
@@ -411,7 +422,7 @@ class GatewayEdgeRouteTest {
                     .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
-                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), () -> new ResponseStage()
+                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, () -> new ResponseStage()
                             .relay(ended, ctx.response(), false, null, Map.of(), Map.of()))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -428,6 +439,82 @@ class GatewayEdgeRouteTest {
                 assertEquals("502 []", answer,
                         "the relay-start failure ends the response as a 502 framed for the empty body it carries,"
                                 + " not with the upstream Content-Length the relay had already copied");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the relaying front server to close");
+                Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+                Awaits.teardown(upstream.close(), "the stub upstream to close");
+            }
+        }
+
+        /**
+         * The upstream response is received and paused exactly as {@code DispatchStage} leaves it, over
+         * an upstream client holding at most one HTTP/1.1 connection, and its body is far larger than
+         * what the transport buffers. A released response is therefore observable twice over: the stub
+         * upstream sees its connection closed, and the next request on the same client is served.
+         */
+        @Test
+        @DisplayName("a relay that fails to start releases the upstream response: its connection closes and the client serves the next request")
+        void relayThatFailsToStartReleasesTheUpstreamResponse() throws Exception {
+            // Arrange
+            List<String> closedConnections = new CopyOnWriteArrayList<>();
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                        String path = request.path();
+                        request.connection().closeHandler(_ -> closedConnections.add(path));
+                        if (LARGE_PATH.equals(path)) {
+                            request.response().end(Buffer.buffer(new byte[LARGE_BODY_BYTES]));
+                        } else {
+                            request.response().end(ANSWER);
+                        }
+                    }).listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            HttpClient upstreamClient = vertx.createHttpClient(new HttpClientOptions(),
+                    new PoolOptions().setHttp1MaxSize(1));
+            AtomicReference<@Nullable HttpClientResponse> pausedUpstream = new AtomicReference<>();
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> upstreamClient
+                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, LARGE_PATH)
+                    .compose(request -> request.send().map(received -> {
+                        received.pause();
+                        return received;
+                    }))
+                    .onSuccess(received -> {
+                        pausedUpstream.set(received);
+                        GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), received, () -> {
+                            throw new IllegalStateException("the relay could not be started");
+                        });
+                    }));
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the relaying front server to start listening");
+            HttpClient client = vertx.createHttpClient();
+            try {
+                // Act
+                String answer = Awaits.connect(client
+                                .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .compose(HttpClientRequest::send)
+                                .compose(response -> response.body()
+                                        .map(body -> response.statusCode() + " [" + body + "]")),
+                        "the answer to a relay that could not start");
+                Awaits.until(() -> closedConnections.contains(LARGE_PATH),
+                        "the upstream to see the connection of the unrelayed response closed",
+                        Awaits.CONNECT_CEILING_SECONDS);
+                String next = Awaits.connect(upstreamClient
+                                .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS,
+                                        ANSWERING_PATH)
+                                .compose(HttpClientRequest::send)
+                                .compose(response -> response.body().map(body -> response.statusCode() + " " + body)),
+                        "the next request on the single pooled upstream connection to be answered");
+
+                // Assert
+                assertAll("a relay that failed to start",
+                        () -> assertNotNull(pausedUpstream.get(),
+                                "the upstream response must have been received and paused before the relay was started"),
+                        () -> assertEquals("502 []", answer, "the client is answered with an empty 502"),
+                        () -> assertTrue(closedConnections.contains(LARGE_PATH),
+                                "the upstream connection of the unrelayed response must be closed"),
+                        () -> assertEquals("200 " + ANSWER, next,
+                                "the single pooled upstream connection must be free again for the next request"));
             } finally {
                 Awaits.teardown(client.close(), "the HTTP client to close");
                 Awaits.teardown(front.close(), "the relaying front server to close");

@@ -40,6 +40,7 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -73,19 +74,23 @@ import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Context;
 import io.vertx.core.Handler;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerRequest;
+import io.vertx.core.http.PoolOptions;
 import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -377,7 +382,8 @@ class DispatchStageTest {
         @Test
         @DisplayName("the first body byte refuses the request as SECURITY_FILTER_VIOLATION and aborts once")
         void firstBodyByteRefusesTheRequest() {
-            String chunk = Generators.letterStrings(1, 8).next();
+            // The marker keeps a short generated chunk from occurring in the fixed disposition by chance.
+            String chunk = "client-chosen-body-" + Generators.letterStrings(1, 8).next();
 
             source.emit(Buffer.buffer(chunk));
 
@@ -606,7 +612,7 @@ class DispatchStageTest {
                     .retryEnabled(true)
                     .resilienceGuard(Guard.create()
                             .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                            .abortOn(GatewayException.class).done()
+                            .whenException(DispatchStage::allowsRetryAfter).done()
                             .build())
                     .build();
         }
@@ -619,6 +625,247 @@ class DispatchStageTest {
         }
     }
 
+    /**
+     * An attempt the dispatch stops waiting for releases its upstream exchange: a request still
+     * waiting for a pooled connection is never sent, a request in flight is reset, and a response
+     * that was received and paused but never reached the caller is reset.
+     * <p>
+     * Every case runs over an upstream client holding at most one HTTP/1.1 connection, so the next
+     * dispatch on the same client is served only once the attempt has been released. The attempt's
+     * own route carries a guard with a short timeout; every follow-up dispatch runs on a route over
+     * the same client whose guard leaves it ample time.
+     */
+    @Nested
+    @DisplayName("release of an attempt the dispatch stopped waiting for")
+    class AbandonedAttempt {
+
+        /** The guard timeout of the attempt the dispatch stops waiting for. */
+        private static final long ATTEMPT_TIMEOUT_MILLIS = 500L;
+        /** The guard timeout of every follow-up dispatch, well inside the connect ceiling. */
+        private static final long PATIENT_TIMEOUT_SECONDS = Awaits.CONNECT_CEILING_SECONDS / 2;
+        /** The size of an upstream answer that is released unread. */
+        private static final int LARGE_BODY_BYTES = 4 * 1024 * 1024;
+        private static final String HELD_PATH = "/held";
+        private static final String LARGE_PATH = "/large";
+        private static final String ABANDONED_PATH = "/abandoned";
+        private static final String ANSWERING_PATH = "/answering";
+        private static final String DRAIN_PATH = "/drain";
+        private static final String ANSWER = "ok";
+        private static final String ANSWERED = "200 " + ANSWER;
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpClient upstreamClient;
+        private DispatchStage stage;
+        private Guard attemptGuard;
+        private Guard patientGuard;
+        /** Answers the request to the held path once completed with the body to answer it with. */
+        private final Promise<Buffer> releaseHeld = Promise.promise();
+        /** The path of every request the stub upstream received a head for, in arrival order. */
+        private final List<String> receivedPaths = new CopyOnWriteArrayList<>();
+        /** The path of the latest request on every upstream connection that was closed. */
+        private final List<String> closedConnections = new CopyOnWriteArrayList<>();
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            // The stub upstream answers the held path only once the test releases it, answers the
+            // large path at once with a large body, and answers every other path once it ended.
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                String path = request.path();
+                receivedPaths.add(path);
+                request.connection().closeHandler(_ -> closedConnections.add(path));
+                switch (path) {
+                    case HELD_PATH -> releaseHeld.future().onSuccess(body -> {
+                        if (!request.response().closed()) {
+                            request.response().end(body);
+                        }
+                    });
+                    case LARGE_PATH -> request.response().end(largeBody());
+                    default -> request.endHandler(_ -> request.response().end(ANSWER));
+                }
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
+            upstreamClient = vertx.createHttpClient(new HttpClientOptions(), new PoolOptions().setHttp1MaxSize(1));
+            stage = new DispatchStage(BODY_CAP, new UpstreamFailureMapper(new GatewayEventCounter()));
+            attemptGuard = Guard.create()
+                    .withTimeout().duration(ATTEMPT_TIMEOUT_MILLIS, ChronoUnit.MILLIS).done()
+                    .build();
+            patientGuard = Guard.create()
+                    .withTimeout().duration(PATIENT_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done()
+                    .build();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            releaseHeld.tryComplete(Buffer.buffer(ANSWER));
+            Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the stub upstream to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("an attempt still awaiting its response head is released: its connection closes and the client serves the next dispatch")
+        void attemptAwaitingItsResponseIsReleased() throws Exception {
+            // Act — the dispatch stops waiting while the upstream still holds the response head back.
+            GatewayException rejection = rejectionOf(dispatchGet(route(upstreamClient, attemptGuard), HELD_PATH));
+            Awaits.until(() -> receivedPaths.contains(HELD_PATH), "the upstream to receive the held request",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            releaseHeld.complete(largeBody());
+            Awaits.until(() -> closedConnections.contains(HELD_PATH),
+                    "the upstream to see the connection of the released attempt closed", Awaits.CONNECT_CEILING_SECONDS);
+            String next = answerOf(dispatchGet(route(upstreamClient, patientGuard), ANSWERING_PATH));
+
+            // Assert
+            assertAll("an attempt the dispatch stopped waiting for while its response was outstanding",
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, rejection.getEventType()),
+                    () -> assertTrue(closedConnections.contains(HELD_PATH),
+                            "the upstream connection of the released attempt must be closed"),
+                    () -> assertEquals(ANSWERED, next,
+                            "the single pooled connection must be free again for the next dispatch"));
+        }
+
+        @Test
+        @DisplayName("an attempt still queued for a pooled connection is released and never sent upstream")
+        void queuedAttemptIsNeverSent() throws Exception {
+            // Arrange — a first dispatch occupies the single pooled connection.
+            Future<HttpClientResponse> occupying = dispatchGet(route(upstreamClient, patientGuard), HELD_PATH);
+            Awaits.until(() -> receivedPaths.contains(HELD_PATH), "the upstream to receive the occupying request",
+                    Awaits.CONNECT_CEILING_SECONDS);
+
+            // Act — the dispatch stops waiting for a second attempt queued behind it; then the first
+            // completes and frees the connection, and a well-framed drain request follows on the client.
+            GatewayException rejection = rejectionOf(dispatchGet(route(upstreamClient, attemptGuard), ABANDONED_PATH));
+            releaseHeld.complete(Buffer.buffer(ANSWER));
+            String occupied = answerOf(occupying);
+            String drained = answerOf(dispatchGet(route(upstreamClient, patientGuard), DRAIN_PATH));
+
+            // Assert
+            assertAll("a queued attempt the dispatch stopped waiting for",
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, rejection.getEventType()),
+                    () -> assertEquals(ANSWERED, occupied, "the occupying dispatch is answered"),
+                    () -> assertEquals(ANSWERED, drained, "the drain request behind it must be served"),
+                    () -> assertFalse(receivedPaths.contains(ABANDONED_PATH),
+                            () -> "the released attempt must never reach the upstream, but it received " + receivedPaths));
+        }
+
+        @Test
+        @DisplayName("a paused response that never reached the caller is released: its connection closes and the client serves the next dispatch")
+        void pausedResponseIsReleased() throws Exception {
+            // Arrange — the dispatching thread is held until the response head was received and
+            // paused, and past the attempt's timeout.
+            PastTheTimeoutStall stall = new PastTheTimeoutStall();
+            HttpClient stalling = interceptingClient(upstreamClient, stall::hold);
+
+            // Act
+            GatewayException rejection = rejectionOf(dispatchGet(route(stalling, attemptGuard), LARGE_PATH));
+            Awaits.until(() -> closedConnections.contains(LARGE_PATH),
+                    "the upstream to see the connection of the released response closed", Awaits.CONNECT_CEILING_SECONDS);
+            String next = answerOf(dispatchGet(route(upstreamClient, patientGuard), ANSWERING_PATH));
+
+            // Assert
+            assertAll("a paused response the dispatch stopped waiting for",
+                    () -> assertTrue(stall.heldPastHead(),
+                            "the dispatching thread must have been held until the response head was received,"
+                                    + " otherwise this run never reached the interleaving under test"),
+                    () -> assertTrue(stall.heldPastTimeout(),
+                            "the dispatching thread must have been held past the attempt's timeout,"
+                                    + " otherwise this run never reached the interleaving under test"),
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, rejection.getEventType()),
+                    () -> assertTrue(closedConnections.contains(LARGE_PATH),
+                            "the upstream connection of the released response must be closed"),
+                    () -> assertEquals(ANSWERED, next,
+                            "the single pooled connection must be free again for the next dispatch"));
+        }
+
+        /** A proxy route over {@code client}, without retry, guarded by {@code guard}. */
+        private RouteRuntime route(HttpClient client, Guard guard) {
+            return RouteRuntime.builder()
+                    .id("abandoned-attempt")
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .httpClient(client)
+                    .resilienceGuard(guard)
+                    .build();
+        }
+
+        /** Runs one bodyless GET dispatch on a virtual thread, as the edge does. */
+        private Future<HttpClientResponse> dispatchGet(RouteRuntime route, String path) {
+            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.GET, path, Map.of(),
+                    new TestReadStream(), DispatchStage.BodyFraming.of(HttpMethod.GET, DispatchStage.NO_DECLARED_LENGTH,
+                            _ -> {
+                                // No body byte is ever sent in these cases, so no late refusal arrives.
+                            })));
+        }
+
+        /**
+         * Awaits a dispatch and reads its whole answer.
+         *
+         * @return the status and body, or a description of the failure when the dispatch was not answered
+         */
+        private String answerOf(Future<HttpClientResponse> dispatched) throws Exception {
+            HttpClientResponse response;
+            try {
+                response = Awaits.connect(dispatched, "the dispatch to be answered");
+            } catch (ExecutionException noAnswer) {
+                return "no answer: " + noAnswer.getCause();
+            }
+            io.vertx.core.Future<Buffer> body = response.body();
+            response.resume();
+            return response.statusCode() + " " + Awaits.connect(body, "the upstream answer body to arrive");
+        }
+
+        private static Buffer largeBody() {
+            return Buffer.buffer(new byte[LARGE_BODY_BYTES]);
+        }
+    }
+
+    /**
+     * Holds the dispatching thread, right after it chained the upstream send, until the composed
+     * exchange has delivered its response head and the attempt's guard timeout has interrupted the
+     * thread; it then returns normally with the interrupt status restored, so the attempt goes on to
+     * return its response to a guard whose timeout has already fired.
+     */
+    private static final class PastTheTimeoutStall {
+
+        private final AtomicBoolean heldPastHead = new AtomicBoolean();
+        private final AtomicBoolean heldPastTimeout = new AtomicBoolean();
+
+        void hold(io.vertx.core.Future<?> composed) {
+            CompletableFuture<@Nullable Object> head = new CompletableFuture<>();
+            composed.onComplete(result -> head.complete(result.result()));
+            // join() is not interruptible: an interrupt that arrives while the head is outstanding is
+            // kept as the thread's interrupt status rather than ending the wait.
+            heldPastHead.set(head.completeOnTimeout(null, Awaits.CONNECT_CEILING_SECONDS, TimeUnit.SECONDS)
+                    .join() instanceof HttpClientResponse);
+            heldPastTimeout.set(Thread.currentThread().isInterrupted() || interruptedWithinConnectCeiling());
+        }
+
+        /**
+         * Waits for the current thread to be interrupted, keeping its interrupt status set.
+         *
+         * @return whether the interrupt arrived within the connect ceiling
+         */
+        private static boolean interruptedWithinConnectCeiling() {
+            try {
+                // Nothing counts this latch down, so only an interrupt ends the wait early.
+                return new CountDownLatch(1).await(Awaits.CONNECT_CEILING_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException _) {
+                Thread.currentThread().interrupt();
+                return true;
+            }
+        }
+
+        boolean heldPastHead() {
+            return heldPastHead.get();
+        }
+
+        boolean heldPastTimeout() {
+            return heldPastTimeout.get();
+        }
+    }
+
     /** Awaits a dispatch that must fail and returns the {@link GatewayException} it raised. */
     private static GatewayException rejectionOf(Future<HttpClientResponse> dispatched) {
         ExecutionException failure = assertThrows(ExecutionException.class,
@@ -626,6 +873,11 @@ class DispatchStageTest {
         return assertInstanceOf(GatewayException.class, failure.getCause());
     }
 
+    /**
+     * The guard's retry predicate, {@link DispatchStage#allowsRetryAfter(Throwable)}, decides whether a
+     * failed attempt is retried. Every guarded case runs a 1 + 2 retry guard deciding through that
+     * production predicate, so tests and production cannot drift apart.
+     */
     @Nested
     @DisplayName("stream-aware retry gating on the guarded dispatch path")
     class RetryGating {
@@ -634,12 +886,44 @@ class DispatchStageTest {
             return new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
-        /** A retry-enabled guard (1 + 2 retries), aborting on {@link GatewayException} like production. */
+        /** A retry-enabled guard (1 + 2 retries) deciding through the production retry predicate. */
         private Guard retryGuard() {
             return Guard.create()
                     .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                    .abortOn(GatewayException.class).done()
+                    .whenException(DispatchStage::allowsRetryAfter).done()
                     .build();
+        }
+
+        @Test
+        @DisplayName("the retry predicate refuses a retry outside a guarded dispatch")
+        void predicateFailsClosedOutsideAGuardedDispatch() {
+            assertFalse(DispatchStage.allowsRetryAfter(new IllegalStateException("upstream down")),
+                    "without a dispatch's retry state the predicate must refuse the retry");
+        }
+
+        @Test
+        @DisplayName("never retries a gateway rejection, even when the dispatch would otherwise allow it")
+        void neverRetriesAGatewayRejection() {
+            // Arrange — an idempotent GET with no body byte sent, whose attempt ends in a rejection
+            DispatchStage stage = newStage();
+            StreamAwareRetryGate gate = new StreamAwareRetryGate(true);
+            AtomicInteger attempts = new AtomicInteger();
+            AtomicLong bytesSent = new AtomicLong();
+            Callable<HttpClientResponse> rejected = () -> {
+                attempts.incrementAndGet();
+                throw new GatewayException(EventType.CONTENT_TOO_LARGE, "Request body exceeded max_body_bytes");
+            };
+
+            // Act
+            var guard = retryGuard();
+            GatewayException raised = assertThrows(GatewayException.class,
+                    () -> stage.guardedDispatch(guard, gate, HttpMethod.GET, bytesSent::get, () -> false,
+                            rejected));
+
+            // Assert — the rejection ends the dispatch unchanged after a single attempt
+            assertAll("a gateway rejection",
+                    () -> assertEquals(1, attempts.get(), "a gateway rejection must never be retried"),
+                    () -> assertEquals(EventType.CONTENT_TOO_LARGE, raised.getEventType()));
         }
 
         @Test
@@ -671,7 +955,7 @@ class DispatchStageTest {
         }
 
         @Test
-        @DisplayName("never retries a non-idempotent POST — the retry re-entry is aborted")
+        @DisplayName("never retries a non-idempotent POST — the retry is refused when the attempt fails")
         void neverRetriesPost() {
             // Arrange
             DispatchStage stage = newStage();
@@ -965,6 +1249,109 @@ class DispatchStageTest {
         }
     }
 
+    /**
+     * What the circuit breaker records for a dispatch whose retry is not taken. The guard has the
+     * production shape — a breaker skipping {@link GatewayException}, a timeout inside it and a
+     * 1 + 2 retry outside it, deciding through the production retry predicate
+     * {@link DispatchStage#allowsRetryAfter(Throwable)} — over a retry-enabled route, and every
+     * breaker outcome is counted through the breaker's own success and failure callbacks.
+     */
+    @Nested
+    @DisplayName("circuit-breaker accounting of a vetoed retry")
+    class VetoedRetryAccounting {
+
+        /** The attempt timeout, well below the stub upstream's never-arriving answer. */
+        private static final long ATTEMPT_TIMEOUT_MILLIS = 300L;
+        private static final String HELD_PATH = "/held";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpClient upstreamClient;
+        private DispatchStage stage;
+        private Guard guard;
+        private final AtomicInteger breakerSuccesses = new AtomicInteger();
+        private final AtomicInteger breakerFailures = new AtomicInteger();
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            // The stub upstream accepts every request and never answers it.
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(_ -> {
+                // Received, never answered.
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
+            upstreamClient = vertx.createHttpClient();
+            stage = new DispatchStage(BODY_CAP, new UpstreamFailureMapper(new GatewayEventCounter()));
+            guard = Guard.create()
+                    .withCircuitBreaker()
+                    .requestVolumeThreshold(20)
+                    .failureRatio(0.5)
+                    .delay(1, ChronoUnit.MINUTES)
+                    .skipOn(GatewayException.class)
+                    .onSuccess(breakerSuccesses::incrementAndGet)
+                    .onFailure(breakerFailures::incrementAndGet)
+                    .done()
+                    .withTimeout().duration(ATTEMPT_TIMEOUT_MILLIS, ChronoUnit.MILLIS).done()
+                    .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
+                    .whenException(DispatchStage::allowsRetryAfter).done()
+                    .build();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the stub upstream to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("a vetoed retry is not recorded by the circuit breaker: an upstream failure counts once, as a failure")
+        void vetoedRetryAfterAnUpstreamFailureIsNotRecordedByTheBreaker() throws Exception {
+            RouteRuntime unreachable = route(UnreachablePort.pick());
+
+            GatewayException rejection = rejectionOf(dispatchPost(unreachable));
+
+            assertAll("a POST whose upstream could not be reached",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, rejection.getEventType()),
+                    () -> assertEquals(1, breakerFailures.get(), "the upstream failure is recorded exactly once"),
+                    () -> assertEquals(0, breakerSuccesses.get(),
+                            "the retry that is not taken must not be recorded by the breaker at all"));
+        }
+
+        @Test
+        @DisplayName("a vetoed retry is not recorded by the circuit breaker: an attempt timeout counts once, as a failure")
+        void vetoedRetryAfterAnAttemptTimeoutIsNotRecordedByTheBreaker() {
+            RouteRuntime unanswering = route(upstream.actualPort());
+
+            GatewayException rejection = rejectionOf(dispatchPost(unanswering));
+
+            assertAll("a POST whose attempt timed out",
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, rejection.getEventType()),
+                    () -> assertEquals(1, breakerFailures.get(), "the attempt timeout is recorded exactly once"),
+                    () -> assertEquals(0, breakerSuccesses.get(),
+                            "the retry that is not taken must not be recorded by the breaker at all"));
+        }
+
+        /** A retry-enabled proxy route to {@code port} on loopback, guarded by the production-shaped guard. */
+        private RouteRuntime route(int port) {
+            return RouteRuntime.builder()
+                    .id("vetoed-retry")
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, port, ""))
+                    .httpClient(upstreamClient)
+                    .retryEnabled(true)
+                    .resilienceGuard(guard)
+                    .build();
+        }
+
+        /** Runs one streamed POST dispatch to the held path on a virtual thread, as the edge does. */
+        private Future<HttpClientResponse> dispatchPost(RouteRuntime route) {
+            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.POST, HELD_PATH, Map.of(),
+                    new TestReadStream(), DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH)));
+        }
+    }
+
     @Nested
     @DisplayName("asset terminal-action serving")
     class AssetServing {
@@ -1068,7 +1455,7 @@ class DispatchStageTest {
                     .httpClient(interceptingClient(upstreamClient, stall::hold))
                     .resilienceGuard(Guard.create()
                             .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                            .abortOn(GatewayException.class).done()
+                            .whenException(DispatchStage::allowsRetryAfter).done()
                             .build())
                     .build();
             DispatchStage stage = new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));

@@ -78,6 +78,9 @@ import org.yaml.snakeyaml.nodes.Node;
  * bundled JSON Schemas, and binds the valid trees to the immutable
  * {@link de.cuioss.sheriff.gateway.config.model} records. Every problem is collected —
  * never fail on the first — and raised together as a {@link ConfigLoadException}.
+ * {@link #load(Consumer)} runs the same pass and additionally reports every
+ * {@code ${VAR:-default}} placeholder that fell back to its in-file default, as a
+ * {@link DefaultedPlaceholder} naming the file, the JSON pointer and the variable — never a value.
  * <p>
  * Every file is read <em>exactly once</em> into a snapshot bounded by
  * {@link #MAX_CONFIG_FILE_BYTES}; the expansion-bomb pre-pass and the bind both consume that one
@@ -180,6 +183,9 @@ public final class ConfigLoader {
     private static final int MAX_SCHEMA_REF_HOPS = 10;
     private static final List<String> SECRET_POINTERS = List.of(
             "/oidc/client_secret", "/oidc/session/encryption_key");
+    private static final Consumer<DefaultedPlaceholder> IGNORE_DEFAULTED = defaulted -> {
+        // The plain load() overload does not report applied in-file defaults.
+    };
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;
@@ -219,10 +225,33 @@ public final class ConfigLoader {
      *                             error discovered in this pass
      */
     public LoadedConfig load() throws ConfigLoadException {
+        return load(IGNORE_DEFAULTED);
+    }
+
+    /**
+     * Loads and binds the configuration exactly as {@link #load()} does, and reports every
+     * {@code ${VAR:-default}} placeholder that fell back to its in-file default.
+     * <p>
+     * Each fallback reaches {@code defaultedSink} as one {@link DefaultedPlaceholder} carrying the
+     * same file and JSON pointer a {@link ConfigError} on that scalar would carry, plus the variable
+     * name — never the default or any value. Entries are emitted in walk order ({@code gateway.yaml}
+     * first, then the endpoint files in sorted order) and are emitted whether or not the load later
+     * fails, so a caller sees every fallback of the pass even when it also sees violations. Nothing is
+     * logged; violations, schema validation and binding are unaffected by the sink.
+     *
+     * @param defaultedSink receives one entry per variable whose in-file default was applied, per
+     *                      scalar
+     * @return the bound gateway document and endpoints
+     * @throws ConfigLoadException aggregating every schema, secret, and binding
+     *                             error discovered in this pass
+     * @since 1.0
+     */
+    public LoadedConfig load(Consumer<DefaultedPlaceholder> defaultedSink) throws ConfigLoadException {
+        Objects.requireNonNull(defaultedSink, "defaultedSink");
         List<ConfigError> errors = new ArrayList<>();
 
-        GatewayConfig gateway = loadGateway(errors);
-        List<EndpointConfig> endpoints = loadEndpoints(errors);
+        GatewayConfig gateway = loadGateway(errors, defaultedSink);
+        List<EndpointConfig> endpoints = loadEndpoints(errors, defaultedSink);
 
         if (!errors.isEmpty()) {
             throw new ConfigLoadException(errors);
@@ -230,13 +259,14 @@ public final class ConfigLoader {
         return new LoadedConfig(Objects.requireNonNull(gateway, "gateway"), List.copyOf(endpoints));
     }
 
-    private @Nullable GatewayConfig loadGateway(List<ConfigError> errors) {
+    private @Nullable GatewayConfig loadGateway(List<ConfigError> errors,
+            Consumer<DefaultedPlaceholder> defaultedSink) {
         JsonNode node = readYaml(configDir.resolve(GATEWAY_FILE), GATEWAY_FILE, errors);
         if (node == null) {
             return null;
         }
         validateSecretReferences(node, errors);
-        substitute(node, gatewaySchemaTree, GATEWAY_FILE, "", errors);
+        substitute(node, new DocumentPass(gatewaySchemaTree, GATEWAY_FILE, errors, defaultedSink), "");
         if (hasErrorsFor(GATEWAY_FILE, errors)) {
             return null;
         }
@@ -283,10 +313,11 @@ public final class ConfigLoader {
         }
     }
 
-    private List<EndpointConfig> loadEndpoints(List<ConfigError> errors) {
+    private List<EndpointConfig> loadEndpoints(List<ConfigError> errors,
+            Consumer<DefaultedPlaceholder> defaultedSink) {
         List<EndpointConfig> endpoints = new ArrayList<>();
         for (Path path : listEndpointFiles(errors)) {
-            EndpointConfig endpoint = loadEndpoint(path, errors);
+            EndpointConfig endpoint = loadEndpoint(path, errors, defaultedSink);
             if (endpoint != null) {
                 endpoints.add(endpoint);
             }
@@ -294,13 +325,14 @@ public final class ConfigLoader {
         return endpoints;
     }
 
-    private @Nullable EndpointConfig loadEndpoint(Path path, List<ConfigError> errors) {
+    private @Nullable EndpointConfig loadEndpoint(Path path, List<ConfigError> errors,
+            Consumer<DefaultedPlaceholder> defaultedSink) {
         String file = ENDPOINTS_DIR + "/" + path.getFileName();
         JsonNode root = readYaml(path, file, errors);
         if (root == null) {
             return null;
         }
-        substitute(root, endpointSchemaTree, file, "", errors);
+        substitute(root, new DocumentPass(endpointSchemaTree, file, errors, defaultedSink), "");
         if (hasErrorsFor(file, errors)) {
             return null;
         }
@@ -441,21 +473,20 @@ public final class ConfigLoader {
         }
     }
 
-    private void substitute(JsonNode node, JsonNode schemaTree, String file, String pointer,
-            List<ConfigError> errors) {
+    private void substitute(JsonNode node, DocumentPass pass, String pointer) {
         switch (node) {
             case ObjectNode object -> {
                 List<String> names = new ArrayList<>();
                 object.fieldNames().forEachRemaining(names::add);
                 for (String name : names) {
-                    substituteChild(object.get(name), schemaTree, file, pointer + "/" + name, errors,
+                    substituteChild(object.get(name), pass, pointer + "/" + name,
                             resolved -> object.set(name, resolved));
                 }
             }
             case ArrayNode array -> {
                 for (int index = 0; index < array.size(); index++) {
                     int position = index;
-                    substituteChild(array.get(index), schemaTree, file, pointer + "/" + index, errors,
+                    substituteChild(array.get(index), pass, pointer + "/" + index,
                             resolved -> array.set(position, resolved));
                 }
             }
@@ -489,15 +520,22 @@ public final class ConfigLoader {
      * <p>
      * The recorded {@link ConfigError} names the pointer and the rule and never echoes the resolved
      * value, which at an allow-list pointer is topology intelligence.
+     * <p>
+     * Every {@code ${VAR:-default}} fallback applied while resolving the scalar is reported to the
+     * pass's {@link DocumentPass#defaultedSink()} with this scalar's file and pointer — the location a
+     * violation on the scalar would carry — before any refusal below is decided.
      */
-    private void substituteChild(JsonNode child, JsonNode schemaTree, String file, String pointer,
-            List<ConfigError> errors, Consumer<JsonNode> replacer) {
+    private void substituteChild(JsonNode child, DocumentPass pass, String pointer, Consumer<JsonNode> replacer) {
         if (!child.isTextual() || !secretResolver.hasReference(child.asText())) {
-            substitute(child, schemaTree, file, pointer, errors);
+            substitute(child, pass, pointer);
             return;
         }
+        String file = pass.file();
+        List<ConfigError> errors = pass.errors();
         try {
-            String resolved = secretResolver.resolve(child.asText());
+            String resolved = secretResolver.resolve(child.asText(),
+                    name -> pass.defaultedSink().accept(new DefaultedPlaceholder(file, pointer, name)));
+            JsonNode schemaTree = pass.schemaTree();
             String declared = declaredType(schemaTree, pointer);
             if (OBJECT_TYPE.equals(declared) && coversSecretPointer(pointer)) {
                 errors.add(new ConfigError(file, pointer,
@@ -907,6 +945,16 @@ public final class ConfigLoader {
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read bundled schema resource: " + resource, e);
         }
+    }
+
+    /**
+     * The per-document state the substitution walk threads through {@link #substitute} and
+     * {@link #substituteChild}: the bundled schema the document is typed against, the file every
+     * error and fallback is attributed to, the pass's error collection, and the sink receiving each
+     * applied in-file default.
+     */
+    private record DocumentPass(JsonNode schemaTree, String file, List<ConfigError> errors,
+    Consumer<DefaultedPlaceholder> defaultedSink) {
     }
 
     /**

@@ -27,8 +27,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -145,6 +148,20 @@ class ConfigProducerTest {
 
     /** An anchor declaring a body cap exactly AT {@link #FRAMEWORK_LIMIT_BYTES} — reachable, so boot is clean. */
     private static final String GATEWAY_WITH_CAP_AT_FRAMEWORK_LIMIT = gatewayDeclaringBodyCap(1024);
+
+    /** An enabled proxy endpoint whose {@code base_url} alias is the single format argument. */
+    private static final String PROXY_ENDPOINT = """
+            endpoint:
+              id: web
+              enabled: true
+              base_url: %s
+              auth:
+                require: none
+              routes:
+                - id: proxied
+                  match:
+                    path_prefix: /web
+            """;
 
     private static String gatewayDeclaringBodyCap(int maxBodyBytes) {
         return """
@@ -653,5 +670,47 @@ class ConfigProducerTest {
         ConfigProducer producer = producerForValidConfig();
 
         assertTrue(producer.portalCatalog().entries().isEmpty());
+    }
+
+    /**
+     * An unresolvable topology alias aborts boot through the one violation path every pipeline
+     * refusal shares: one {@code ApiSheriff-200} entry naming {@code topology.properties} and the
+     * alias, then the {@code ApiSheriff-201} summary counting it.
+     */
+    @Test
+    void shouldReportAnUnresolvableTopologyAliasAsAViolationEntry() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+        writeEndpoint(PROXY_ENDPOINT.formatted("MISSING_ALIAS"));
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "an unresolvable enabled-endpoint alias must abort boot");
+
+        assertEquals("Refusing to start — 1 configuration violation(s)", exception.getMessage());
+        LogAsserts.assertLogMessagePresent(TestLogLevel.ERROR,
+                ConfigLogMessages.ERROR.CONFIG_VALIDATION_FAILED.format("topology.properties", "MISSING_ALIAS",
+                        "Unresolved topology alias 'MISSING_ALIAS' referenced by enabled endpoint 'web'"));
+        LogAsserts.assertLogMessagePresent(TestLogLevel.ERROR,
+                ConfigLogMessages.ERROR.CONFIG_STARTUP_ABORTED.format("1 configuration violation(s)"));
+    }
+
+    /**
+     * The boot resolves placeholders through the producer's {@code secretResolver} field — the same
+     * injection seam the offline configuration check's parity test drives — not through a resolver
+     * it builds privately over the process environment.
+     */
+    @Test
+    void shouldResolvePlaceholdersThroughTheInjectedSecretResolver() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+        producer.secretResolver = new EnvSecretResolver(
+                Map.of("SHERIFF_TEST_PRODUCER_WEB_URL", "https://injected.internal:7443")::get);
+        writeTopology("WEB_BACKEND=${SHERIFF_TEST_PRODUCER_WEB_URL}\n");
+        writeEndpoint(PROXY_ENDPOINT.formatted("WEB_BACKEND"));
+
+        producer.onStartup(null);
+
+        ResolvedUpstream upstream = producer.resolvedTopology().lookup("WEB_BACKEND").orElseThrow();
+        assertEquals("injected.internal", upstream.host(), "the injected lookup supplied the topology value");
+        assertEquals(7443, upstream.port());
     }
 }
