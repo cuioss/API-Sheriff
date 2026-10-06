@@ -218,7 +218,7 @@ doc-only or build-light plan for the second and third slots.
     enumerated rather than sampled) and needs no action. **This entry must survive into the successor
     epic** — 0.2.0 cannot close it, and closing it here would silently convert "not yet due" into
     "done".
-11. **LOW, traceability — the deleted `doc/archive/others/excluded.adoc` traces to nothing live.**
+11. **LOW, traceability — OWNER: `PLAN-V02-22` D3 (2026-10-06) — the deleted `doc/archive/others/excluded.adoc` traces to nothing live.**
     Opened 2026-08-09 by `PLAN-V02-03` D1. Its content (Apiman, WSO2 and other
     considered-but-not-evaluated gateways) has no live design document behind it —
     `doc/features-analysis.adoc` distils only the six *evaluated* gateways. Zero inbound refs and git
@@ -238,14 +238,14 @@ doc-only or build-light plan for the second and third slots.
    it inside 0.1.0; the operator ruled it out of the release track 2026-07-27. **0.1.0 and 0.1.1 both
    ship with this leak.** OWNER: `PLAN-V02-05` D1. *Re-grounded 2026-08-08: still present, and the
    fix must cover **both** relay paths — `relay`:84 and `relayWithTrailers`:118.*
-2. **MEDIUM, developer trap.** `demo-client/playwright.config.js` routes three variables through
+2. **MEDIUM, developer trap — OWNER: `PLAN-V02-22` D2 (2026-10-06).** `demo-client/playwright.config.js` routes three variables through
    `required()` at module scope while `demo-client/pom.xml` supplies them only for the Maven
    execution, so the copy-pasteable `cd demo-client && npm run test` aborts at config load. The
    README was fixed to export them first, but `start-dev-environment.sh`:289 still prints that exact
    command. **Keep the generalizable check**: for any doc offering run-it-directly beside
    run-it-through-the-build, enumerate what the build supplies that the direct path does not —
    environment, working directory, classpath.
-3. **MEDIUM — divergent readiness contract.** `demo-client/scripts/start-dev-environment.sh` gates on
+3. **MEDIUM — divergent readiness contract — OWNER: `PLAN-V02-22` D2 (2026-10-06).** `demo-client/scripts/start-dev-environment.sh` gates on
    `/q/health/live` with an unmeasured 30-attempt budget while `start-integration-container.sh` gates
    on readiness with a measured one (PLAN-42 D2 proved the live→ready delta is 0.00s across six
    instances under contention). Deliberate scoping at the time and disclosed in-tree, but it is the
@@ -287,13 +287,13 @@ doc-only or build-light plan for the second and third slots.
   (ADR-0061 § Risks). Declined in #387 because it reaches the TLS, JWKS, BFF and portal refusal paths.
   Stage a plan when the hand-kept list drifts or the refusal paths are touched anyway.
 
-- **ISSUE #189 REMAINDER, NONE STAGED** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
+- **ISSUE #189 REMAINDER — STAGED AS `PLAN-V02-22` D1 (2026-10-06)** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
   a demo-client panel (`demo-client/src/main/resources/spa/index.html`, `app.js`) that fires each
   rejection variant and reports status, `Content-Type` and redirect; `doc/variants/01-base-gateway.adoc`;
   `demo-client/doc/integration-sample.adoc`; and the PROHIBITED ASSERTION scope wording in
   `demo-client/doc/playwright-suite.adoc`. The issue comment also names `doc/plan/04-request-pipeline.adoc`,
   which no longer exists — discharged. Stage a small plan when wanted.
-- **ADR-0059 AND ADR-0060 ARE `Proposed`** (added 2026-10-04; ADR-0060 added 2026-10-05). Both
+- **ADR-0059 AND ADR-0060 ARE `Proposed` — OWNER: `PLAN-V02-04` D3's status sweep** (added 2026-10-04; ADR-0060 added 2026-10-05). Both
   decisions are shipped — the ROUTING problem category (#383) and bodyless-method dispatch with exact
   declared-length framing (#385). Each record needs an acceptance decision. Operator call, or
   `PLAN-V02-04`'s status sweep.
@@ -303,7 +303,7 @@ doc-only or build-light plan for the second and third slots.
   not in this ledger; read it in that plan's archived findings. `DispatchStage` is shared with live
   work, so decide before another plan touches the edge relay.
 
-- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08`, NONE STAGED** (added 2026-10-03; the plan's claims,
+- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08` — FOLDED 2026-10-06: the refresh-revocation, nonce-retry and two status-code items into `PLAN-V02-01` D7; the same-key-file refusal and the `cnf` cookie size into `PLAN-V02-20` D3a; the canonical-form check into `PLAN-V02-12` D4; login rate limiting to kidicap `PLAN-21`; the three imprecise texts and the conformance-suite run stay here, unstaged** (added 2026-10-03; the plan's claims,
   each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
   which now drives one outbound pushed request per call (threat model `BFF-20`) — owned by the sibling
   epic `kidicap-gateway-requirements` as its staged `PLAN-21` (login-flood pending records), so not a

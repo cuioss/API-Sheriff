@@ -192,7 +192,12 @@ they must land together. D5 and D7 stay together: the audit runs over the store 
      and post-logout URLs.
    - **Token lifecycle inside the session** — refresh-token theft and rotation-reuse handling,
      concurrent refresh races, a refused token response discarding instead of revoking, tokens kept
-     after the session ends.
+     after the session ends, and the engine's nonce-retry gaps — the last three left open by
+     `PLAN-V02-08` (#377).
+   - **Two answers `PLAN-V02-08` chose conservatively at its merge** — a refused push on the
+     interactive widening re-drive answers `502` (the alternative is the widening's terminal `403`),
+     and an unbound token on a widening callback answers `400` with ApiSheriff-134. Decide whether
+     each status leaks or hides something an attacker or a client needs, and record the verdict.
    - **Logout correctness** — back-channel logout token validation (`iss`, `aud`, `iat`, `jti`
      replay, `events`, no `nonce`), forged or replayed logout tokens, logout that misses a session,
      and races between logout and refresh or widening.
