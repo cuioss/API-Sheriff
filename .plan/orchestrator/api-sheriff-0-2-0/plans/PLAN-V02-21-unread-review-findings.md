@@ -11,10 +11,10 @@ workstream: WS-05
 
 ## Objective
 
-Fix the review findings that still hold on `main` (all six were found and checked), and record an explicit decline with its reason for
-the parts that do not. The fixes are small and local: one log level in the cookie-mode session
-binding, the integration start script's polling loops, three properties of the integration compose
-stack, and the image name in one integration test.
+Fix the review findings that still hold on `main`, and record an explicit decline with its reason
+for the parts that do not. The fixes are small and local: one log level in the cookie-mode session
+binding, the integration start script's polling loops and literals, three properties of the
+integration compose stack, the image name in one integration test, and two claims in ADR-0031.
 
 ## Findings and their dispositions
 
@@ -28,6 +28,8 @@ stack, and the image name in one integration test.
 | 4c | No shared hardening anchor (#100) | **Holds.** `security_opt: no-new-privileges`, `cap_drop` and `read_only` are repeated on all 12 gateway services | **Fix** — D3 |
 | 5a | `"mTLS enabled"` is an ad-hoc `LOGGER.debug` (#100) | **Holds, but is compliant.** The project rule asks for a `LogRecord` at INFO, WARN and ERROR only; a DEBUG line may be ad hoc | **Declined** — no rule is broken. Raising the boot-time mTLS posture to an INFO `LogRecord` is a separate operator choice |
 | 5b | Test keystores such as `mtls-client.p12` are committed (#100) | **Holds, and is deliberate.** They are integration-test fixtures under `integration-tests/src/main/docker/`; `mismatched-tls-backend` must chain to anchors the committed `upstream-truststore.p12` holds, which generated material would not. None of them reaches a shipped artifact | **Declined** — test-only fixtures by design |
+| 1b | ADR-0031 says the whole probe target is derived and "no host […] is restated in the script", while the scripts build every probe URL on the literal host `localhost` (#147, CodeRabbit "Narrow the probe-URL derivation claim") | **Holds.** `start-integration-container.sh` builds `KEYCLOAK_HEALTH_URL` and `GATEWAY_MGMT_URL` on `localhost`; `demo-client/scripts/start-dev-environment.sh` and `deployment/compose-sample/scripts/start-sample.sh` do the same. The go-httpbin and nginx-static waits also restate their published ports (`18080`, `18081`) | **Fix** — D5: the code is right and the ADR is narrowed. A host-side probe runs on the Docker host, and the management interfaces serve a bundle issued for `localhost`, so the host is a fixed invariant, not a derivation target |
+| 1c | ADR-0031's retry-budget wording does not match the script's literal `120` and `30` (#147, CodeRabbit "Align the retry-budget rule with the implementation") | **Holds** as part of finding 3 | **Fix** — D2 names one constant per gate, D5 makes the ADR say so |
 | 6 | `ImageMetadataIT` hardcodes the image name `api-sheriff:distroless` (#199) | **Holds.** `IMAGE = "api-sheriff:distroless"`, while the start script selects the image from the declared `SHERIFF_IMAGE_TYPE` (`distroless` or `jfr`) | **Fix** — D4 |
 
 ## Deliverables
@@ -41,7 +43,9 @@ stack, and the image name in one integration test.
    service name for the log hint. Name the attempt counts (Keycloak `120`, the backends `30`) as
    variables at the top of the script. Behaviour, messages and exit codes stay as they are; the
    Keycloak probe keeps its `-f` and certificate options. Derive the printed Keycloak URL from the
-   same compose discovery the health URL uses, instead of the literal port `1443`.
+   same compose discovery the health URL uses, instead of the literal port `1443`. Derive the
+   go-httpbin and nginx-static published ports from the compose model too, instead of the literals
+   `18080` and `18081`.
 3. **Three compose fixes in `integration-tests/docker-compose.yml`.**
    - Add `passthrough-backend` and `toxiproxy` to the `depends_on` of every gateway service whose
      routes reach them, with `condition: service_healthy` (both have healthchecks). Find the services
@@ -59,6 +63,13 @@ stack, and the image name in one integration test.
    declaration the start script uses (`SHERIFF_IMAGE_TYPE`, passed as a system property or
    environment variable from `integration-tests/pom.xml`), so the test cannot inspect a stale image
    of the other type. Keep the failure messages naming the image.
+5. **Make ADR-0031 say what the scripts do.** Amend it in place (summary line, title if needed, and
+   the "Derive the whole probe target" rule): the scheme, the published port and the management
+   context path are derived from the compose model; the host is the fixed host-side invariant
+   `localhost`, and say why (the probe runs on the Docker host, and the management interfaces serve a
+   bundle issued for `localhost`). Align the retry-budget wording with D2: one named constant per
+   gate, not one constant for every site. Check that all three bring-up scripts match the amended
+   text.
 
 ## Claim Labels
 
@@ -67,6 +78,7 @@ stack, and the image name in one integration test.
 - OBSERVED: the `api-sheriff` service's `depends_on` names `keycloak`, `go-httpbin`, `asset-origin` and `grpc-echo` only, and `passthrough-backend` runs `apk add --no-cache openssl` at start — read at `integration-tests/docker-compose.yml` § `api-sheriff` and § `passthrough-backend`
 - HYPOTHESIS: some gateway services route to `passthrough-backend` or `toxiproxy` at test time, so starting them first matters — confirm/refute at `integration-tests/src/main/docker/sheriff-config*/gateway.yaml` § passthrough and upstream targets (verify-at-outline)
 - HYPOTHESIS: every parser of the compose file in the test code resolves YAML merge keys — confirm/refute at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ItProfileConfigBindingWiringTest.java` § its compose reader (verify-at-outline)
+- OBSERVED: ADR-0031 states that "no host and no *published* host port is restated in the script", while the three bring-up scripts build every probe URL on `localhost` and the backend waits restate `18080` and `18081` — read at `doc/adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc` § the derivation rule, `integration-tests/scripts/start-integration-container.sh` § `KEYCLOAK_HEALTH_URL` and the backend waits, `demo-client/scripts/start-dev-environment.sh` § `IDP_HEALTH_URL`, `deployment/compose-sample/scripts/start-sample.sh` § `MGMT_URL`
 - OBSERVED: `ImageMetadataIT` declares `IMAGE = "api-sheriff:distroless"` while the start script resolves the image from `SHERIFF_IMAGE_TYPE` — read at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ImageMetadataIT.java` § `IMAGE` and `integration-tests/scripts/start-integration-container.sh` § `resolve_image_tag`
 
 ## Expected Surface
@@ -78,12 +90,14 @@ stack, and the image name in one integration test.
 - OBSERVED: `integration-tests/docker-compose.yml` — D3
 - HYPOTHESIS: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ItProfileConfigBindingWiringTest.java` — D3, only if its compose reader needs merge-key support (verify-at-outline)
 - OBSERVED: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ImageMetadataIT.java`, `integration-tests/pom.xml` — D4
+- OBSERVED: `doc/adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc` — D5
 
 ## Dependencies and Sequencing
 
 - Depends on: none.
 - Overlaps with: `PLAN-V02-01` (its D7 audits `bff/**`, including the cookie binding) and
-  `PLAN-V02-20` (the cookie key). The disjointness gate decides at emit time; `PLAN-V02-01` runs alone
+  `PLAN-V02-20` (the cookie key), and `PLAN-V02-04` (it audits the ADR corpus D5 edits). The
+  disjointness gate decides at emit time; `PLAN-V02-01` runs alone
   in any case.
 - `docker-compose*.yml` is a gate-requiring path, so D3 runs the full pre-commit process, including
   `-Pintegration-tests`.
