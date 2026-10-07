@@ -57,6 +57,12 @@ downstream claim:
 > | D1, D2, D6, D9 | unchanged | D6 additionally still has no 504 edge test, and since `5ddf8081` a framing rejection retires the HTTP/1.x connection or ends the h2 stream — pin that answer |
 >
 > Net: **8 deliverables live** (D1, D2, D3, D4, D6, D7, D8, D9), one obsolete (D10), one partly blocked (D5).
+>
+> Re-checked 2026-10-06 at `6788bdae` (0.2.4 released, trunk 0.2.5-SNAPSHOT): every row above still holds.
+> The IT tree and `integration-tests/docker-compose.yml` are unchanged since `35f2bb37` except for the new
+> `ValidateConfigImageIT` (#387), which pins none of the ten properties. For D6, #386 tightened the breaker
+> and framing paths and ADR-0060 now records the dispatch-framing rule — read it before pinning the 503/504
+> answers.
 
 
 Each row is one deliverable: an integration test (or load test) at the stated level, plus whatever fixture
@@ -116,22 +122,22 @@ Split guard: 8 live deliverables (10 filed, D10 obsolete, D5 partly blocked) —
 - OBSERVED: the filing is a per-property audit against this repository at tag 0.2.3, naming for each
   property the exact existing test (or its absence) — it is evidence-bearing rather than a wish list, and
   the orchestrator accepted it on that basis.
-  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: the named tests exist at HEAD; five of the six pinned ITs are unchanged - only the two M-58 methods were renamed by e8db85bf
+  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: IT tree unchanged since 35f2bb37 apart from the new ValidateConfigImageIT; the named pinning tests exist, the two M-58 methods under their e8db85bf names
 - HYPOTHESIS: every per-row state above ("unit only", "no fixture sets either key", "accepts
   `502 || 503 || 504`") still holds at HEAD. Measured by the downstream at **0.2.3**, and six plans have
   landed since — confirm/refute at each named test class before writing anything, e.g.
   `integration-tests/src/test/java/…/HtmlErrorPageIT.java` § `unreachableUpstream` for the status
   disjunction (verify-at-outline). ⛔ A row that turns out already covered is CLOSED with the covering
   test named, never re-tested.
-  - verdict: contradicted | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: not every cited state holds at HEAD: M-58 renamed; the BffRefreshReuseIT javadoc is already accurate (D10 obsolete); 35f2bb37 guards now block the M-50/M-52 fixtures
+  - verdict: contradicted | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: still not every cited state holds: M-58 renamed, the BffRefreshReuseIT javadoc already accurate (D10 obsolete), ItProfileConfigBindingWiringTest still blocks the M-50/M-52 fixtures - all absorbed in the deliverables banner
 - HYPOTHESIS: toxiproxy in the existing compose stack can produce both the 5xx of deliverable 4 and the
   upstream timeout of deliverable 6 — confirm/refute at `integration-tests/src/main/docker/` § the
   toxiproxy service and its current use (verify-at-outline).
-  - verdict: unverifiable | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: toxiproxy 2.12.0 is at compose:87 with admin 8474 but only PassthroughFaultIT uses it and nothing fronts Keycloak; the IdP leg is pinned to keycloak:8443 so feasibility is unproven
+  - verdict: unverifiable | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: docker-compose.yml unchanged since 35f2bb37: toxiproxy 2.12.0 present, only PassthroughFaultIT uses it, nothing fronts Keycloak; feasibility for the IdP leg stays unproven
 - HYPOTHESIS: a second gateway instance on 10452 already exists in the compose stack for deliverable 8
   (the filing names the ports) — confirm/refute at `integration-tests/src/main/docker/` § the instance
   definitions (verify-at-outline).
-  - verdict: corroborated | checked_at: 35f2bb37 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: api-sheriff-refresh publishes 10452:8443 (docker-compose.yml:1373) in server/memory mode and the primary 10443 is also server/memory
+  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): api-sheriff-refresh publishes 10452:8443 (docker-compose.yml:1373) in server/memory mode and the primary 10443 is also server/memory
 
 ## Expected Surface
 

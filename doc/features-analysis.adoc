@@ -264,7 +264,7 @@ link:fapi_next_steps.adoc[FAPI 2.0 Next Steps] for what remains open.
   re-drive the browser through the authorization-code flow with the elevated parameters, returning
   it to the URL of the request that was challenged (`StepUpCoordinator`). The coordinator has a
   silent-satisfaction seam that would first try to elevate without a redirect, but
-  `BffRuntimeProducer` binds it to a no-op at the 0.2.3 cut, so every challenge re-drives.
+  `BffRuntimeProducer` binds it to a no-op at the 0.2.4 cut, so every challenge re-drives.
   Structurally impossible for validation-only gateways.
 
 | *Datastore-free distributed configuration* (deferred)

@@ -17,10 +17,12 @@ package de.cuioss.sheriff.gateway.edge;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
+import io.vertx.core.Future;
 import io.vertx.core.http.HttpServerResponse;
 
 /**
@@ -108,20 +110,23 @@ public final class GrpcStatusMapper {
      * @param response      the client response
      * @param eventType     the rejection event type
      * @param stageHeaders  the stage-0 security headers accumulated on the request
+     * @return the future completing once the rejection has been written, or empty when the response
+     *         was left untouched; a caller that ends the stream afterwards waits for it
      */
-    public void renderRejection(HttpServerResponse response, EventType eventType, Map<String, String> stageHeaders) {
+    public Optional<Future<Void>> renderRejection(HttpServerResponse response, EventType eventType,
+            Map<String, String> stageHeaders) {
         Objects.requireNonNull(response, "response");
         Objects.requireNonNull(eventType, "eventType");
         Objects.requireNonNull(stageHeaders, "stageHeaders");
         if (response.ended() || response.headWritten()) {
-            return;
+            return Optional.empty();
         }
         response.setStatusCode(GRPC_HTTP_STATUS);
         stageHeaders.forEach(response::putHeader);
         response.putHeader("content-type", GRPC_CONTENT_TYPE);
         response.putHeader(GRPC_STATUS_HEADER, Integer.toString(toGrpcStatus(eventType)));
         response.putHeader(GRPC_MESSAGE_HEADER, grpcMessage(eventType));
-        response.end();
+        return Optional.of(response.end());
     }
 
     private static String grpcMessage(EventType eventType) {

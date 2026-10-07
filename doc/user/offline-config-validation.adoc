@@ -55,7 +55,7 @@ docker run --rm --network none \
   exits `2`.
 * Replace the `-e` line with the variables *your* deployment sets -- see <<_placeholder_policy>>. The
   example shows the one variable the compose sample's `gateway.yaml` requires.
-* The flag is part of the binary from the release after 0.2.3 onwards. An older image does not know
+* The flag is part of the binary from 0.2.4 onwards. An older image does not know
   the token and does not run the check, so pin a release that carries it.
 
 The container-specific flags and the image's other prerequisites are covered in
