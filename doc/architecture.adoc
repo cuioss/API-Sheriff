@@ -1161,7 +1161,7 @@ The consolidated status mapping:
 | `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is ended, and the connection and its other streams carry on | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
-| `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
+| `503` | Circuit breaker open -- the upstream was not called. The response carries `Retry-After` with the seconds the breaker stays open: the fixed `5` the gateway's upstream guard applies, whatever `circuit_breaker.reset_ms` a route declares | `UPSTREAM`
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
 |===
 
