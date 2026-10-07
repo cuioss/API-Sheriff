@@ -17,8 +17,7 @@
  * The asset terminal action (decision: ADR-0014) — serving static content through
  * the gateway instead of proxying to an upstream.
  * <p>
- * The package is organized around three cooperating pieces, all framework-agnostic
- * (ADR-0005):
+ * The package is organized around three cooperating pieces, all framework-agnostic:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.asset.PathConfinement} — the canonicalize-and-
  *       confine boundary that turns an untrusted request sub-path into a target proven

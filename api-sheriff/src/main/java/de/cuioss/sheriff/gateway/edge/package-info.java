@@ -20,8 +20,8 @@
  * table into immutable {@link de.cuioss.sheriff.gateway.routing.RouteRuntime} instances with
  * deduplicated heavy collaborators.
  * <p>
- * This package is framework-coupled (Vert.x, SmallRye Fault-Tolerance) and is therefore
- * outside the ADR-0005 framework-agnostic arch-gate rule set.
+ * This package is framework-coupled (Vert.x, SmallRye Fault-Tolerance) by design. The
+ * framework-free gate covers the pre-boot configuration packages only (ADR-0062).
  *
  * @author API Sheriff Team
  * @since 1.0

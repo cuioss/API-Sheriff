@@ -31,8 +31,7 @@ import lombok.experimental.UtilityClass;
  * logger directly and are not catalogued here.
  * <p>
  * The catalogue lives in the framework-agnostic {@code ...config} package because
- * the cui-tools {@link LogRecord} abstraction carries no framework dependency
- * (ADR-0005).
+ * the cui-tools {@link LogRecord} abstraction carries no framework dependency.
  *
  * @author API Sheriff Team
  * @since 1.0

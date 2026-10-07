@@ -24,8 +24,10 @@
  * forwarded trust-all rejection, CORS wildcard-with-credentials rejection, and
  * session-mode conditionals — collecting every violation in a single pass.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> The validator and its rules
- * carry no framework imports; the rule set is supplied at construction.
+ * <strong>Pre-boot seam (ADR-0061, ADR-0062).</strong> The validator and its rules
+ * carry no framework imports, because the offline configuration check runs them
+ * before the framework starts. {@code PreBootFrameworkFreeArchTest} enforces that.
+ * The rule set is supplied at construction.
  *
  * @author API Sheriff Team
  * @since 1.0

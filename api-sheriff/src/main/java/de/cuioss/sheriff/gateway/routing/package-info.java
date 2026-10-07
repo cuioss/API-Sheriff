@@ -23,12 +23,9 @@
  * {@link de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry} triad selects and shares
  * the protocol strategy, rejecting unsupported protocols at boot.
  * <p>
- * <strong>Deliberately framework-coupled (operator resolution 2026-07-19).</strong> Because
- * {@code RouteRuntime} holds the shared Vert.x {@code HttpClient} reference and the per-route
- * SmallRye Fault-Tolerance guard directly, this package is <em>excluded</em> from the ADR-0005
- * framework-agnostic arch-gate rule set (which covers {@code config.model},
- * {@code config.validation}, {@code events}, {@code forward}, and {@code pipeline} only). The
- * deviation is recorded in {@code architecture.adoc}.
+ * <strong>Framework-coupled by design.</strong> {@code RouteRuntime} holds the shared Vert.x
+ * {@code HttpClient} reference and the per-route SmallRye Fault-Tolerance guard directly. The
+ * framework-free gate covers the pre-boot configuration packages only (ADR-0062).
  *
  * @author API Sheriff Team
  * @since 1.0

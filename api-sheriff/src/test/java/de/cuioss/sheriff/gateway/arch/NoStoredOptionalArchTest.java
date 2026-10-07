@@ -72,7 +72,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * This is a plain JUnit 5 test (no ArchUnit {@code @AnalyzeClasses} runner) so it runs in both
  * {@code test} and {@code verify -Ppre-commit}, wiring the guard into the quality gate — the same
- * arrangement {@link FrameworkAgnosticArchTest} uses.
+ * arrangement {@link PreBootFrameworkFreeArchTest} uses.
  *
  * @author API Sheriff Team
  * @since 1.0

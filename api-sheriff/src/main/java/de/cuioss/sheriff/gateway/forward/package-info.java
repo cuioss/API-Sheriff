@@ -39,8 +39,8 @@
  * <strong>Framework-agnostic.</strong> The package operates on the agnostic
  * {@link de.cuioss.sheriff.gateway.pipeline.PipelineRequest} (the immediate peer address is supplied by
  * the edge) and carries no {@code io.vertx..} / {@code io.quarkus..} / {@code jakarta..} /
- * {@code org.eclipse.microprofile..} / {@code io.micrometer..} imports, so it stays inside the
- * ADR-0005 framework-agnostic arch-gate rule set.
+ * {@code org.eclipse.microprofile..} / {@code io.micrometer..} imports. That is its current state
+ * and not a gated rule (ADR-0062).
  *
  * @author API Sheriff Team
  * @since 1.0

@@ -26,8 +26,10 @@
  * placeholder makes the environment override visible in-file); the removed
  * convention-named enablement resolver no longer participates.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> The resolver takes its
- * substitution engine as a constructor parameter and carries no framework imports.
+ * <strong>Pre-boot seam (ADR-0061, ADR-0062).</strong> The resolver takes its
+ * substitution engine as a constructor parameter and carries no framework imports,
+ * because the offline configuration check runs this package before the framework
+ * starts. {@code PreBootFrameworkFreeArchTest} enforces that.
  *
  * @author API Sheriff Team
  * @since 1.0

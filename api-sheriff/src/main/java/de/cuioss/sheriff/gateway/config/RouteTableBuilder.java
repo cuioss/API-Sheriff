@@ -86,8 +86,9 @@ import org.jspecify.annotations.Nullable;
  * route is emitted to the boot log; a non-auth override that replaces an
  * anchor-provided block is logged as a boot WARN.
  * <p>
- * Framework-agnostic (ADR-0005): the collaborators are supplied as method
- * arguments and the builder carries no framework imports.
+ * The collaborators are supplied as method arguments and the builder carries no
+ * framework imports: the offline configuration check runs it through
+ * {@code ConfigBootPipeline} before the framework starts (ADR-0061).
  *
  * @author API Sheriff Team
  * @since 1.0

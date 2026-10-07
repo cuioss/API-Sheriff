@@ -41,8 +41,8 @@ import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * The framework-bound edge (ADR-0005 seam) that assembles the file-based
- * configuration once, at boot, and exposes the immutable result as CDI beans.
+ * The framework-bound producer that assembles the file-based configuration once,
+ * at boot, and exposes the immutable result as CDI beans.
  * <p>
  * It runs the framework-agnostic boot pipeline through the shared
  * {@link ConfigBootPipeline} seam — load, endpoint-enablement filter, topology resolution,
@@ -75,8 +75,9 @@ public class ConfigProducer {
 
     /**
      * The Vert.x request-body ceiling the framework enforces in a root handler in front of the
-     * gateway router. Injected here — the ADR-0005 framework-bound edge — rather than in the
-     * framework-agnostic {@code ConfigValidator}, so Quarkus-key knowledge stays at this seam.
+     * gateway router. Injected here rather than in {@code ConfigValidator}, which runs on the
+     * pre-boot path and carries no framework dependency (ADR-0062), so Quarkus-key knowledge stays
+     * at this seam.
      */
     @ConfigProperty(name = "quarkus.http.limits.max-body-size")
     MemorySize frameworkBodyLimit;

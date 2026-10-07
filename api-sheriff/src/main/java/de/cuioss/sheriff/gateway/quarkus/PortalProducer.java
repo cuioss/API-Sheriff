@@ -35,8 +35,8 @@ import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * CDI producer of the application portal's {@link PortalEndpoint} — the ADR-0005 framework seam that
- * assembles the framework-agnostic portal handler once, at boot.
+ * CDI producer of the application portal's {@link PortalEndpoint}: it assembles the portal handler
+ * once, at boot.
  * <p>
  * With a {@code portal} block in {@code gateway.yaml} the producer builds the {@link PortalRenderer}
  * — over the operator template {@code <template_dir>/portal.html} when {@code portal.template_dir}

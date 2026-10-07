@@ -59,7 +59,8 @@ import lombok.experimental.UtilityClass;
  * skip any endpoint whose {@code enabled} flag is {@code false}, so a disabled endpoint is never
  * evaluated whichever list a caller supplies. A refusal message never echoes the offending value.
  * <p>
- * Framework-agnostic (ADR-0005) and stateless.
+ * Stateless, and free of framework dependencies as the pre-boot rule requires of this package
+ * (ADR-0062).
  *
  * @author API Sheriff Team
  * @since 1.0

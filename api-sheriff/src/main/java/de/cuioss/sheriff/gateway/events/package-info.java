@@ -24,10 +24,9 @@
  * {@link de.cuioss.sheriff.gateway.events.GatewayException} is the typed failure the HTTP edge
  * maps to a status and problem type.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> This package carries no CDI, Quarkus,
- * Vert.x, MicroProfile, or Micrometer imports — enforced by
- * {@code FrameworkAgnosticArchTest}. The framework-bound rendering lives in the edge and
- * {@code quarkus} packages.
+ * <strong>No framework imports.</strong> This package carries no CDI, Quarkus, Vert.x,
+ * MicroProfile, or Micrometer imports. That is its current state and not a gated rule
+ * (ADR-0062). The framework-bound rendering lives in the edge and {@code quarkus} packages.
  *
  * @author API Sheriff Team
  * @since 1.0
