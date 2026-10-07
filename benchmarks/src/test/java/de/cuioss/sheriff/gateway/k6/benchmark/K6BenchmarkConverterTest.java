@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.k6.benchmark;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import de.cuioss.benchmarking.common.model.BenchmarkData;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -427,6 +429,100 @@ class K6BenchmarkConverterTest {
         JsonObject overview = json.getAsJsonObject("overview");
         assertEquals("bearerProxied", overview.get("throughputBenchmarkName").getAsString(),
                 "without the mediation aspect the overview leads with the first parsed benchmark");
+    }
+
+    @Test
+    void directoryWithAnUnpublishedSummaryConvertsTheOrdinaryBenchmarkOnly() throws Exception {
+        writeSummary("proxiedStatic", 9000.0);
+        Path k6Dir = tempDir.resolve(K6ResultPostProcessor.K6_RESULTS_SUBDIRECTORY);
+        Files.writeString(k6Dir.resolve(FLOOD_BENCHMARK + "-summary.json"), floodSummary("\"published\": false,"));
+
+        JsonObject json = processAndReadJson();
+
+        assertAll("a run holding one ordinary and one unpublished summary",
+                () -> assertEquals(1, json.getAsJsonArray("benchmarks").size(),
+                        "the unpublished summary contributes no benchmark"),
+                () -> assertNotNull(benchmarkNamed(json, "proxiedStatic"), "the ordinary benchmark is reported"),
+                () -> assertNull(benchmarkNamed(json, FLOOD_BENCHMARK),
+                        "the unpublished benchmark reaches neither the report nor the history"),
+                () -> assertEquals("proxiedStatic",
+                        json.getAsJsonObject("overview").get("throughputBenchmarkName").getAsString(),
+                        "the overview is headed by a published benchmark"));
+    }
+
+    @Test
+    void singleUnpublishedSummaryConvertsToAnEmptyBenchmarkList() throws Exception {
+        Path summary = writeFloodSummary("\"published\": false,");
+
+        BenchmarkData converted = new K6BenchmarkConverter().convert(summary);
+
+        assertTrue(converted.getBenchmarks().isEmpty(),
+                "a summary marked published: false must produce no benchmark");
+    }
+
+    @Test
+    void sameSummaryWithoutThePublishedMemberIsConverted() throws Exception {
+        Path summary = writeFloodSummary("");
+
+        BenchmarkData converted = new K6BenchmarkConverter().convert(summary);
+
+        assertEquals(List.of(FLOOD_BENCHMARK), benchmarkNames(converted),
+                "control: the document that is left out when marked converts once the member is removed");
+    }
+
+    @Test
+    void sameSummaryMarkedPublishedTrueIsConverted() throws Exception {
+        Path summary = writeFloodSummary("\"published\": true,");
+
+        BenchmarkData converted = new K6BenchmarkConverter().convert(summary);
+
+        assertEquals(List.of(FLOOD_BENCHMARK), benchmarkNames(converted),
+                "control: published: true converts like a document without the member");
+    }
+
+    @Test
+    void onlyTheJsonBooleanFalseLeavesASummaryOut() throws Exception {
+        for (String value : List.of("\"false\"", "0", "null", "[false]")) {
+            Path summary = writeFloodSummary("\"published\": " + value + ",");
+
+            BenchmarkData converted = new K6BenchmarkConverter().convert(summary);
+
+            assertEquals(List.of(FLOOD_BENCHMARK), benchmarkNames(converted),
+                    "published: " + value + " is not the boolean false, so the summary must convert");
+        }
+    }
+
+    /** The benchmark name of the summary the unpublished cases are built from. */
+    private static final String FLOOD_BENCHMARK = "pendingLoginFlood";
+
+    /**
+     * One complete summary document, identical in every case but for the member line handed in.
+     *
+     * @param publishedMember the {@code published} member with its trailing comma, or empty for none
+     * @return the document
+     */
+    private static String floodSummary(String publishedMember) {
+        return """
+                {
+                  "benchmark_name": "%s",
+                  "gateway_target": "api-sheriff",
+                  %s
+                  "start_time": "2026-07-19T10:00:00Z",
+                  "end_time": "2026-07-19T10:01:00Z",
+                  "requests_per_second": 1200.0,
+                  "error_rate": 0.0,
+                  "latency_ms": {"avg": 2.5, "p50": 2.0, "p99": 9.0}
+                }
+                """.formatted(FLOOD_BENCHMARK, publishedMember);
+    }
+
+    /** Writes {@link #floodSummary(String)} as a single file outside the {@code k6} directory. */
+    private Path writeFloodSummary(String publishedMember) throws IOException {
+        return Files.writeString(tempDir.resolve(FLOOD_BENCHMARK + "-summary.json"), floodSummary(publishedMember));
+    }
+
+    private static List<String> benchmarkNames(BenchmarkData converted) {
+        return converted.getBenchmarks().stream().map(BenchmarkData.Benchmark::getName).toList();
     }
 
     /**

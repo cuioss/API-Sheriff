@@ -94,6 +94,13 @@ public final class K6BenchmarkLogMessages {
                 .identifier(6)
                 .template("Passthrough empty-mode no-regression check passed within the %s noise band")
                 .build();
+
+        /** Logged once per k6 summary file the converter leaves out because it is marked unpublished. */
+        public static final LogRecord SUMMARY_NOT_PUBLISHED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(7)
+                .template("Left out the k6 summary for benchmark '%s': it is marked published: false")
+                .build();
     }
 
     /**
