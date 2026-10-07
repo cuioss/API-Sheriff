@@ -193,6 +193,11 @@ List<String> scopes,
      *                      the single declared number driving BOTH the seal-time
      *                      budget and the gateway's pre-route {@code Cookie}
      *                      header-value cap
+     * @param idleTimeoutSeconds how long a session may go without a request let through on a
+     *                      session-protected route before it ends, in seconds; {@code null}
+     *                      when omitted. Read it through
+     *                      {@link Session#effectiveIdleTimeoutSeconds()}, which resolves the
+     *                      omitted case — never directly
      * @author API Sheriff Team
      * @since 1.0
      */
@@ -207,7 +212,8 @@ List<String> scopes,
     @Nullable Csrf csrf,
     @Nullable Refresh refresh,
     @Nullable Integer maxSessions,
-    @Nullable Integer maxCookieSize) {
+    @Nullable Integer maxCookieSize,
+    @Nullable Integer idleTimeoutSeconds) {
 
         /** The stateless cookie session mode, in its one canonical spelling. */
         public static final String MODE_COOKIE = "cookie";
@@ -226,6 +232,13 @@ List<String> scopes,
          * not use.
          */
         public static final int DEFAULT_TTL_SECONDS = 3600;
+
+        /**
+         * The idle timeout applied when {@code idle_timeout_seconds} is omitted, in seconds — unless
+         * the effective {@code ttl_seconds} is shorter, in which case that lifetime is the idle
+         * timeout too (see {@link #effectiveIdleTimeoutSeconds()}).
+         */
+        public static final int DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
 
         /**
          * Canonical constructor canonicalizing {@link #mode()} to its lower-case, trimmed
@@ -274,6 +287,27 @@ List<String> scopes,
         }
 
         /**
+         * Resolves the idle timeout in force — the one resolution boot validation and the runtime
+         * share, so the validator cannot reason about an idle timeout the runtime does not use.
+         * <p>
+         * A declared {@code idle_timeout_seconds} is taken as declared; boot validation refuses a
+         * declared value below {@code 1} or above the effective {@code ttl_seconds}. An omitted
+         * key resolves to the smaller of {@link #DEFAULT_IDLE_TIMEOUT_SECONDS} and the effective
+         * {@code ttl_seconds}, so a deployment whose {@code ttl_seconds} is below the default keeps
+         * booting and keeps its lifetime. No value switches the idle timeout off; declaring it
+         * equal to {@code ttl_seconds} has that effect.
+         *
+         * @return the idle timeout in force, in seconds
+         */
+        public int effectiveIdleTimeoutSeconds() {
+            if (idleTimeoutSeconds != null) {
+                return idleTimeoutSeconds;
+            }
+            int effectiveTtlSeconds = ttlSeconds == null ? DEFAULT_TTL_SECONDS : ttlSeconds;
+            return Math.min(DEFAULT_IDLE_TIMEOUT_SECONDS, effectiveTtlSeconds);
+        }
+
+        /**
          * Overridden to redact {@link #encryptionKey()}. The default record
          * {@code toString()} would otherwise print the resolved cookie-encryption key
          * value verbatim into any log line, exception message, or debugger view that
@@ -283,9 +317,9 @@ List<String> scopes,
          */
         @Override
         public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s]"
+            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s, idleTimeoutSeconds=%s]"
                     .formatted(mode, store, cookieName, redact(encryptionKey), ttlSeconds, csrf,
-                            refresh, maxSessions, maxCookieSize);
+                            refresh, maxSessions, maxCookieSize, idleTimeoutSeconds);
         }
     }
 

@@ -114,7 +114,8 @@ class StepUpEndpointTest {
             seamCalls.add(new SeamCall(scopes, silent));
             return redirect;
         }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
-        sessionStore = new InMemorySessionStore(16);
+        // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
+        sessionStore = new InMemorySessionStore(16, SESSION_TTL);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
         endpoint = new StepUpEndpoint(sessionWidening, sessionBinding, returnTargetScopes(), GATEWAY_ORIGIN,
@@ -149,8 +150,10 @@ class StepUpEndpointTest {
                 .activeScopes(active)
                 .grantedScopes(granted)
                 .build();
-        sessionStore.create(session, T0);
-        return sessionCodec.toSetCookieHeader(sessionId).split(";", 2)[0];
+        // The cookie carries an opaque handle of its own, never the session id.
+        String cookieHandle = Generators.letterStrings(32, 43).next();
+        sessionStore.create(session, cookieHandle, T0);
+        return sessionCodec.toSetCookieHeader(cookieHandle).split(";", 2)[0];
     }
 
     private String liveSessionCookie(Set<String> granted) {

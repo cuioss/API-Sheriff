@@ -450,7 +450,8 @@ class GatewayEdgeErrorPageTest {
                 .build();
         PortalConfig portal = PortalConfig.builder().path("/portal").title("Portal").errorPages(errorPages).build();
         BffRuntime runtime = GatewayEdgeRouteBffWiringTest.activeRuntime(
-                GatewayEdgeRouteBffWiringTest.serverBinding(new InMemorySessionStore(16)));
+                GatewayEdgeRouteBffWiringTest.serverBinding(
+                        new InMemorySessionStore(16, GatewayEdgeRouteBffWiringTest.NO_IDLE_EFFECT)));
         PortalEndpoint portalEndpoint = PortalEndpoint.of(portal, new PortalCatalog(List.of()),
                 PortalRenderer.builtIn(), runtime::sessionIdentity, oidc, true, "/");
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),

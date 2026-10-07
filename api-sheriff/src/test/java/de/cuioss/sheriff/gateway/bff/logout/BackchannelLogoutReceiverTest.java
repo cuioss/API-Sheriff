@@ -31,7 +31,10 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver.BackchannelResult;
+import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
@@ -148,6 +151,71 @@ class BackchannelLogoutReceiverTest {
             assertEquals(0, result.destroyed());
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "0 session(s) destroyed");
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, BackchannelLogoutReceiver.class);
+        }
+    }
+
+    /**
+     * A step-up or a scope widening re-issues the server-mode cookie value. The store's {@code sid} and
+     * {@code sub} indexes are keyed on the stable session id, so a back-channel logout still reaches the
+     * session whatever cookie value currently resolves to it. These cases run the receiver over the real
+     * server-mode binding, because the property under test is that binding's.
+     */
+    @Nested
+    @DisplayName("Session whose cookie value was re-issued (server mode)")
+    class ReissuedSession {
+
+        private static final Duration SESSION_TTL = Duration.ofHours(8);
+
+        private final ServerSessionBinding serverBinding = new ServerSessionBinding(
+                new InMemorySessionStore(16, SESSION_TTL),
+                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
+
+        /** Binds a session, re-issues its cookie value and returns the request cookie now in force. */
+        private String boundAndReissued() {
+            SessionRecord session = SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken("access-token")
+                    .idToken("id-token")
+                    .sub(SUB)
+                    .sid(SID)
+                    .expiresAt(NOW.plus(SESSION_TTL))
+                    .build();
+            serverBinding.bind(session, NOW);
+            String reissued = serverBinding.persistReissuingCookie(session, NOW).orElseThrow()
+                    .setCookieHeaders().getFirst();
+            return reissued.substring(0, reissued.indexOf(';'));
+        }
+
+        @Test
+        @DisplayName("Should end a session whose cookie value was re-issued, by sid")
+        void shouldEndReissuedSessionBySid() {
+            String reissuedCookie = boundAndReissued();
+            assertTrue(serverBinding.resolve(reissuedCookie, NOW).isPresent(), "precondition: the session is live");
+
+            BackchannelResult result = new BackchannelLogoutReceiver(raw -> new IdTokenContent(logoutClaims(), raw),
+                    validator, serverBinding).receive(RAW, NOW);
+
+            assertTrue(result.accepted());
+            assertEquals(1, result.destroyed(), "the logout found the session under its sid");
+            assertTrue(serverBinding.resolve(reissuedCookie, NOW).isEmpty(),
+                    "the re-issued cookie value resolves nothing after the logout");
+        }
+
+        @Test
+        @DisplayName("Should end a session whose cookie value was re-issued, by sub")
+        void shouldEndReissuedSessionBySub() {
+            String reissuedCookie = boundAndReissued();
+            Map<String, ClaimValue> claims = logoutClaims();
+            claims.remove("sid");
+            claims.put("sub", ClaimValue.forPlainString(SUB));
+
+            BackchannelResult result = new BackchannelLogoutReceiver(raw -> new IdTokenContent(claims, raw),
+                    validator, serverBinding).receive(RAW, NOW);
+
+            assertTrue(result.accepted());
+            assertEquals(1, result.destroyed(), "the logout found the session under its sub");
+            assertTrue(serverBinding.resolve(reissuedCookie, NOW).isEmpty(),
+                    "the re-issued cookie value resolves nothing after the logout");
         }
     }
 
@@ -276,7 +344,17 @@ class BackchannelLogoutReceiverTest {
         }
 
         @Override
-        public String clearingSetCookieHeader() {
+        public Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now) {
+            throw new UnsupportedOperationException("the back-channel path never re-issues a cookie");
+        }
+
+        @Override
+        public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
+            throw new UnsupportedOperationException("the back-channel path never records an access");
+        }
+
+        @Override
+        public List<String> clearingSetCookieHeaders() {
             throw new UnsupportedOperationException("the back-channel path emits no Set-Cookie");
         }
     }

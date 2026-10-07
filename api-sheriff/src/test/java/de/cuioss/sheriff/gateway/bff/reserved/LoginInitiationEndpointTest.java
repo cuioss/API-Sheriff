@@ -77,7 +77,9 @@ class LoginInitiationEndpointTest {
     private static final Duration SESSION_TTL = Duration.ofHours(8);
     private static final String GATEWAY_ORIGIN = "https://gw.example.com";
     private static final String AUTHORIZATION_URL = "https://idp.example.com/authorize?client_id=api-sheriff";
-    private static final String SESSION_ID = "opaque-session-1";
+    private static final String SESSION_ID = "internal-session-1";
+    /** The opaque value the session cookie carries — never the session id. */
+    private static final String COOKIE_HANDLE = "opaque-cookie-handle-1";
     private static final String SUBJECT = "user-sub-1";
     /** A configured {@code oidc.login.default_return_url} distinct from {@code /}. */
     private static final String CONFIGURED_DEFAULT = "/home";
@@ -111,7 +113,8 @@ class LoginInitiationEndpointTest {
         };
         loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
 
-        sessionStore = new InMemorySessionStore(16);
+        // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
+        sessionStore = new InMemorySessionStore(16, SESSION_TTL);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         endpoint = new LoginInitiationEndpoint(loginFlow, new ServerSessionBinding(sessionStore, sessionCodec),
                 GATEWAY_ORIGIN, returnTargetScopes());
@@ -141,8 +144,8 @@ class LoginInitiationEndpointTest {
                 .acr(null)
                 .authTime(null)
                 .build();
-        sessionStore.create(session, T0);
-        return sessionCodec.toSetCookieHeader(SESSION_ID).split(";", 2)[0];
+        sessionStore.create(session, COOKIE_HANDLE, T0);
+        return sessionCodec.toSetCookieHeader(COOKIE_HANDLE).split(";", 2)[0];
     }
 
     /** Consumes the pending record bound by the binding cookie the fresh flow set. */

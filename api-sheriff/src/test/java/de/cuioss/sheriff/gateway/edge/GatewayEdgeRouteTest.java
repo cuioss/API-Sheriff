@@ -33,7 +33,10 @@ import java.lang.reflect.RecordComponent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,13 +51,18 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.crypto.spec.SecretKeySpec;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
@@ -86,6 +94,7 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
+import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -993,6 +1002,51 @@ class GatewayEdgeRouteTest {
         }
 
         /**
+         * The headroom has to cover every cookie the browser sends beside the session cookie. This case
+         * builds the largest such {@code Cookie} header value the gateway's own cookies can produce — a
+         * session cookie value at the full default budget, the login binding cookie and the activity
+         * cookie, each from its own codec — and holds it against the cap a default cookie-mode gateway
+         * derives. The cap itself is unchanged by the activity cookie; this pins that it still suffices.
+         */
+        @Test
+        @DisplayName("the default cookie cap admits a full-budget session cookie, the binding cookie and the activity cookie together")
+        void defaultCookieCapAdmitsEveryGatewayCookieTogether() {
+            byte[] activityKey = new byte[32];
+            Arrays.fill(activityKey, (byte) 0x44);
+            SessionActivityCookieCodec activityCodec = new SessionActivityCookieCodec(
+                    SessionCookieCodec.DEFAULT_COOKIE_NAME, new SecretKeySpec(activityKey, "AES"), (byte) 2);
+            String sessionIdentity = Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[16]);
+            String sessionPair = SessionCookieCodec.DEFAULT_COOKIE_NAME + "="
+                    + "v".repeat(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+            String bindingSetCookie = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL)
+                    .toSetCookieHeader(PendingAuthorizationRecord.create(
+                            FlowContext.create("https://gw.example.com/auth/callback"), "/", List.of("openid"),
+                            Instant.now()).id());
+            String bindingPair = bindingSetCookie.substring(0, bindingSetCookie.indexOf(';'));
+            String activityPair = activityCodec.cookieName() + "="
+                    + activityCodec.seal(sessionIdentity, Instant.now());
+            String cookieHeaderValue = String.join("; ", sessionPair, bindingPair, activityPair);
+            SecurityConfiguration baseline = SecurityProfile.STRICT.preset();
+
+            SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+                    cookieModeGateway(), activeCookieRuntime(), baseline);
+
+            assertNotNull(carveOut, "an active cookie-mode BFF gets a carve-out");
+            assertAll("the three gateway cookies fit under the default cap with headroom to spare",
+                    () -> assertEquals(DEFAULT_COOKIE_HEADER_CAP, carveOut.maxHeaderValueLength(),
+                            "the activity cookie did not change the cap"),
+                    () -> assertEquals(104, activityPair.length(), "the activity cookie's name=value pair"),
+                    () -> assertTrue(cookieHeaderValue.length() > baseline.maxHeaderValueLength(),
+                            "control precondition: the header would not pass the strict baseline on its own"),
+                    () -> assertTrue(cookieHeaderValue.length() <= carveOut.maxHeaderValueLength(),
+                            "the full-budget header of " + cookieHeaderValue.length() + " characters passes the cap of "
+                                    + carveOut.maxHeaderValueLength()),
+                    () -> assertTrue(carveOut.maxHeaderValueLength() - cookieHeaderValue.length() >= 256,
+                            "and at least half of the 512-byte headroom is left for the proxied applications' "
+                                    + "own cookies: " + (carveOut.maxHeaderValueLength() - cookieHeaderValue.length())));
+        }
+
+        /**
          * Exhaustive component sweep: every {@link SecurityConfiguration} record component except
          * {@code maxHeaderValueLength} must carry the resolved baseline's value. Reflection rather
          * than a hand-written list so a component added by a cui-http upgrade is covered here the
@@ -1040,7 +1094,8 @@ class GatewayEdgeRouteTest {
 
         private BffRuntime activeCookieRuntime() {
             return GatewayEdgeRouteBffWiringTest.activeRuntime(
-                    GatewayEdgeRouteBffWiringTest.serverBinding(new InMemorySessionStore(16)));
+                    GatewayEdgeRouteBffWiringTest.serverBinding(
+                            new InMemorySessionStore(16, GatewayEdgeRouteBffWiringTest.NO_IDLE_EFFECT)));
         }
     }
 
@@ -1458,7 +1513,8 @@ class GatewayEdgeRouteTest {
             GatewayConfig withOidc = GatewayConfig.builder().version(1).oidc(oidc()).build();
             GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), withOidc,
                     GatewayEdgeRouteBffWiringTest.activeRuntime(
-                            GatewayEdgeRouteBffWiringTest.serverBinding(new InMemorySessionStore(16))),
+                            GatewayEdgeRouteBffWiringTest.serverBinding(
+                                    new InMemorySessionStore(16, GatewayEdgeRouteBffWiringTest.NO_IDLE_EFFECT))),
                     portal(USER_INFO_PATH));
 
             // Act

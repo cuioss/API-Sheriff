@@ -33,6 +33,9 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -50,9 +53,15 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -95,6 +104,8 @@ import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.http.WebSocketFrame;
 import io.vertx.core.http.WebSocketFrameType;
+import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -1396,6 +1407,211 @@ class WebSocketRelayStageTest {
             return "lsof unavailable (interrupted: " + cause + ")";
         } catch (IOException cause) {
             return "lsof unavailable (" + cause + ")";
+        }
+    }
+
+    /**
+     * A {@code require: session} WebSocket route on a cookie-mode gateway, over the full edge.
+     * <p>
+     * The session stage counts the upgrade as one access and hands the binding's activity cookie to the
+     * response cookies. Whether that cookie then reaches the browser on the {@code 101} is a property of
+     * the WebSocket relay, so it is read off the wire here rather than assumed: the {@code 101} carries
+     * it. The plain HTTP route on the same edge, with the same session cookie, is the control: it shows
+     * that the stage did issue an activity cookie for this session at this instant, so what the upgrade
+     * response carries is attributable to the upgrade path and not to the stage.
+     */
+    @Nested
+    @DisplayName("session route in cookie mode — the activity cookie and the upgrade response")
+    class SessionActivityCookieOnUpgrade {
+
+        private static final String ACTIVITY_COOKIE_PREFIX = SessionCookieCodec.DEFAULT_COOKIE_NAME + "-activity=";
+        private static final Duration SESSION_TTL = Duration.ofHours(1);
+        private static final Duration IDLE_TIMEOUT = Duration.ofMinutes(30);
+
+        private HttpServer httpUpstream;
+        private HttpServer sessionFront;
+        private HttpClient httpClient;
+        private String sessionCookie;
+
+        @BeforeEach
+        void startSessionEdge() throws Exception {
+            httpUpstream = Awaits.connect(vertx.createHttpServer()
+                    .requestHandler(request -> request.response().end("upstream"))
+                    .listen(0, LoopbackHost.ADDRESS), "the stub HTTP upstream server to start listening");
+
+            byte[] key = new byte[32];
+            Arrays.fill(key, (byte) 0x11);
+            byte[] salt = new byte[32];
+            Arrays.fill(salt, (byte) 0x22);
+            byte[] activityKey = new byte[32];
+            Arrays.fill(activityKey, (byte) 0x44);
+            CookieSessionBinding binding = new CookieSessionBinding(
+                    new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                            SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"),
+                            (byte) 1),
+                    salt,
+                    new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                            new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                    IDLE_TIMEOUT);
+            // The session was bound two minutes ago and carries no activity cookie, so its last access is
+            // older than the binding's 60 s interval: the next request let through earns an activity cookie.
+            Instant login = Instant.now().minusSeconds(120);
+            String setCookie = binding.bind(SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(Generators.letterStrings(16, 32).next())
+                    .idToken(Generators.letterStrings(16, 32).next())
+                    .sub(Generators.letterStrings(8, 16).next())
+                    .expiresAt(login.plus(SESSION_TTL))
+                    .build(), login).setCookieHeaders().getFirst();
+            sessionCookie = setCookie.substring(0, setCookie.indexOf(';'));
+
+            RouteTable table = new RouteTable(List.of(
+                    wsRoute("wssession", "/ws-session", Require.SESSION, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
+                            positiveListNamingNothing()),
+                    ResolvedRoute.builder()
+                            .id("httpsession")
+                            .protocol(Protocol.HTTP)
+                            .match(MatchConfig.builder().pathPrefix("/http-session").build())
+                            .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                            .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                            .effectiveSecurityHeaders(securityHeaders())
+                            .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, httpUpstream.actualPort(), ""))
+                            .build()));
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(table,
+                    GatewayConfig.builder().version(1).securityHeaders(securityHeaders()).build(),
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    GatewayEdgeRouteBffWiringTest.activeRuntime(binding), EgressTrustProfiles.unconsulted(),
+                    PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson(),
+                    relayTimeline.observer(RelayObserver.NO_OP));
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            sessionFront = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the session edge front server to start listening");
+            httpClient = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void stopSessionEdge() throws Exception {
+            Awaits.teardown(httpClient.close(), "the HTTP client to close");
+            Awaits.teardown(sessionFront.close(), "the session edge front server to close");
+            Awaits.teardown(httpUpstream.close(), "the stub HTTP upstream server to close");
+        }
+
+        private List<String> activityCookiesOf(MultiMap responseHeaders) {
+            return responseHeaders.getAll("Set-Cookie").stream()
+                    .filter(header -> header.startsWith(ACTIVITY_COOKIE_PREFIX))
+                    .toList();
+        }
+
+        private List<String> activityCookiesOfProxiedGet() throws Exception {
+            return Awaits.connect(httpClient
+                    .request(io.vertx.core.http.HttpMethod.GET, sessionFront.actualPort(), LoopbackHost.ADDRESS,
+                            "/http-session/page")
+                    .compose(request -> request.putHeader("Cookie", sessionCookie).send())
+                    .map(response -> {
+                        assertEquals(200, response.statusCode(), "precondition: the session request is proxied");
+                        return activityCookiesOf(response.headers());
+                    }), "the proxied response of the HTTP session route");
+        }
+
+        private WebSocket upgradeWithSession() throws Exception {
+            WebSocketConnectOptions options = new WebSocketConnectOptions()
+                    .setHost(LoopbackHost.ADDRESS).setPort(sessionFront.actualPort()).setURI("/ws-session/room")
+                    .addHeader("Origin", ALLOWED_ORIGIN).addHeader("Cookie", sessionCookie);
+            relayTimeline.startUpgrade();
+            return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to /ws-session/room");
+        }
+
+        @Test
+        @DisplayName("control: the same session's proxied HTTP response carries the activity cookie")
+        void proxiedHttpResponseCarriesTheActivityCookie() throws Exception {
+            assertEquals(1, activityCookiesOfProxiedGet().size(),
+                    "the stage issued an activity cookie for this session and the edge wrote it");
+        }
+
+        @Test
+        @DisplayName("an upgrade with a live session is accepted and relays frames")
+        void sessionUpgradeIsAcceptedAndRelays() throws Exception {
+            WebSocket socket = upgradeWithSession();
+            CompletableFuture<String> echoed = new CompletableFuture<>();
+            socket.textMessageHandler(echoed::complete);
+
+            writeRelayed(socket, "session-frame");
+
+            assertEquals("session-frame", awaitRelayed(echoed, "the echoed frame to return through the relay"));
+        }
+
+        /**
+         * Performs the upgrade handshake over a plain TCP socket and returns the response head as the
+         * gateway wrote it. The WebSocket client hands a test no handshake response headers once the
+         * upgrade has completed, so the {@code 101} is read off the wire instead.
+         */
+        private List<String> upgradeResponseHeadLines() throws Exception {
+            NetClient netClient = vertx.createNetClient();
+            try {
+                NetSocket socket = Awaits.connect(
+                        netClient.connect(sessionFront.actualPort(), LoopbackHost.ADDRESS),
+                        "the TCP connection to the session edge");
+                CompletableFuture<String> head = new CompletableFuture<>();
+                StringBuilder received = new StringBuilder();
+                socket.handler(buffer -> {
+                    received.append(buffer.toString(StandardCharsets.ISO_8859_1));
+                    int endOfHead = received.indexOf("\r\n\r\n");
+                    if (endOfHead >= 0) {
+                        head.complete(received.substring(0, endOfHead));
+                    }
+                });
+                socket.write(String.join("\r\n",
+                        "GET /ws-session/room HTTP/1.1",
+                        "Host: " + LoopbackHost.ADDRESS + ":" + sessionFront.actualPort(),
+                        "Upgrade: websocket",
+                        "Connection: Upgrade",
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+                        "Sec-WebSocket-Version: 13",
+                        "Origin: " + ALLOWED_ORIGIN,
+                        "Cookie: " + sessionCookie,
+                        "", ""));
+                return List.of(Awaits.connect(head, "the head of the upgrade response").split("\r\n"));
+            } finally {
+                Awaits.teardown(netClient.close(), "the raw TCP client to close");
+            }
+        }
+
+        @Test
+        @DisplayName("the 101 of a session upgrade carries the activity cookie")
+        void upgradeResponseCarriesTheActivityCookie() throws Exception {
+            List<String> head = upgradeResponseHeadLines();
+
+            List<String> activityCookies = head.stream()
+                    .filter(line -> line.regionMatches(true, 0, "set-cookie:", 0, "set-cookie:".length()))
+                    .map(line -> line.substring("set-cookie:".length()).strip())
+                    .filter(value -> value.startsWith(ACTIVITY_COOKIE_PREFIX))
+                    .toList();
+
+            assertAll("the upgrade response as the gateway wrote it: " + head,
+                    () -> assertTrue(head.getFirst().startsWith("HTTP/1.1 101"),
+                            "the upgrade is accepted: " + head.getFirst()),
+                    () -> assertEquals(1, activityCookies.size(), "the activity cookies on the 101"));
+        }
+
+        @Test
+        @DisplayName("an upgrade without a session cookie is rejected before the upstream is dialed")
+        void upgradeWithoutSessionIsRejected() {
+            WebSocketConnectOptions options = new WebSocketConnectOptions()
+                    .setHost(LoopbackHost.ADDRESS).setPort(sessionFront.actualPort()).setURI("/ws-session/room")
+                    .addHeader("Origin", ALLOWED_ORIGIN);
+            int connectsBefore = upstreamConnects.get();
+
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> Awaits.connect(wsClient.connect(options), "the unauthenticated upgrade to be rejected"));
+
+            UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
+            assertEquals(401, rejected.getStatus(), "a session route answers an upgrade without a session 401");
+            assertEquals(connectsBefore, upstreamConnects.get(), "the upstream is never dialed");
         }
     }
 

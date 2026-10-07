@@ -213,8 +213,10 @@ public class GatewayEdgeRoute {
     /**
      * Headroom added to the configured sealed-cookie budget when deriving the pre-route
      * {@code Cookie} header-value cap. The header value carries {@code <name>=<value>} and may carry
-     * co-resident cookies (the short-lived binding cookie) alongside the session cookie, so the cap
-     * cannot be the bare value budget. The sum stays far below the gateway's 16 KiB inbound
+     * co-resident cookies alongside the session cookie — the short-lived binding cookie and, in cookie
+     * mode, the activity cookie that remembers the session's last access — so the cap cannot be the
+     * bare value budget. The headroom is shared by every cookie the browser sends beside the session
+     * cookie, the proxied applications' own included. The sum stays far below the gateway's 16 KiB inbound
      * header-block limit ({@link EdgeHardeningOptions}) even at the configurable budget ceiling.
      */
     private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;

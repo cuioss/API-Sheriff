@@ -23,6 +23,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -67,6 +69,7 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -96,6 +99,8 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.virtual.threads.VirtualThreads;
+import io.vertx.core.Vertx;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
@@ -221,7 +226,25 @@ import org.jspecify.annotations.Nullable;
  * session terminated while the refresh was in flight, it is revoked, best-effort, through the engine's
  * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
  * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
- * failing request never waits for the revocation endpoint.
+ * failing request never waits for the revocation endpoint. A fourth outcome carries no session and
+ * ends none: the refresh leader could not resolve a session from the request's own cookie a second
+ * time. It answers the refresh-failure response <em>without</em> a clearing cookie, because in server
+ * mode that cookie value may just have been re-issued by a step-up while the session lives on.
+ * <p>
+ * <strong>Idle timeout, in both modes.</strong> {@code oidc.session.idle_timeout_seconds} is resolved
+ * once through {@link OidcConfig.Session#effectiveIdleTimeoutSeconds()} — the resolution boot
+ * validation shares — and handed to whichever binding is assembled: to the store behind the
+ * server-mode binding, which keeps each session's last access beside its record, and to the cookie-mode
+ * binding together with the activity-cookie codec built from the same key material, which keeps the
+ * last access in a separate sealed cookie.
+ * <p>
+ * <strong>Periodic sweep, server mode only.</strong> A server-mode runtime registers one Vert.x
+ * periodic timer that runs the store's {@code sweepExpired} every {@link #SESSION_SWEEP_INTERVAL}, so
+ * an expired session leaves memory within that interval whether or not anything looks it up. The timer
+ * fires on an event loop and only <em>dispatches</em>: the sweep itself runs on the Quarkus-managed
+ * virtual-thread executor, so the store's monitor is never taken on an event loop. The timer is
+ * cancelled when the application shuts down. Cookie mode holds no sessions and a bearer-only gateway
+ * builds no runtime, so neither registers a timer.
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
@@ -259,6 +282,14 @@ public class BffRuntimeProducer {
      * absent key means <em>on</em> and only an explicit {@code false} turns the path off.
      */
     private static final boolean DEFAULT_REFRESH_ENABLED = true;
+    /**
+     * How often the server-mode session store is swept for expired sessions. Fixed: it bounds how long
+     * an expired session can stay in memory unseen, and is unrelated to when a session expires — a
+     * lookup evicts an expired session at once. Not configurable.
+     */
+    static final Duration SESSION_SWEEP_INTERVAL = Duration.ofSeconds(60);
+    /** The value of {@link #sessionSweepTimer} while no sweep timer is registered; never a Vert.x timer id. */
+    private static final long NO_SWEEP_TIMER = -1L;
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
@@ -286,6 +317,12 @@ public class BffRuntimeProducer {
     private final JwksTrustProfileResolver trustProfileResolver;
     private final ExecutorService virtualThreadExecutor;
     private final GatewayJson gatewayJson;
+    private final Vertx vertx;
+    /**
+     * The id of the periodic session-sweep timer, {@link #NO_SWEEP_TIMER} while none is registered —
+     * always so in cookie mode and on a bearer-only gateway. Held so shutdown can cancel the timer.
+     */
+    private final AtomicLong sessionSweepTimer = new AtomicLong(NO_SWEEP_TIMER);
     /**
      * The resolved global {@code egress_tls} block, read once here for the same reason
      * {@code TokenValidatorProducer} resolves its own key once (ADR-0040): the keys are gateway-global
@@ -309,15 +346,21 @@ public class BffRuntimeProducer {
      *                              name to concrete trust anchors, consulted only on the active path and
      *                              only when a profile is named
      * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor a best-effort refresh-token
-     *                              revocation is dispatched on, off the request path
+     *                              revocation is dispatched on, off the request path, and the periodic
+     *                              session sweep runs on, off the event loop
      * @param gatewayJson           the serializer the runtime renders its gateway-authored JSON bodies
      *                              through
+     * @param vertx                 the Quarkus-managed Vert.x instance the periodic session-sweep timer
+     *                              is registered on, in server mode only
      */
+    // Each parameter is one independently injected collaborator of the runtime assembly; a parameter
+    // object would only regroup CDI injection points without removing one.
+    @SuppressWarnings("java:S107")
     public BffRuntimeProducer(GatewayConfig gatewayConfig, RouteTable routeTable,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
             Instance<SignatureOnlyTokenVerifier> logoutTokenVerifier,
             JwksTrustProfileResolver trustProfileResolver,
-            @VirtualThreads ExecutorService virtualThreadExecutor, GatewayJson gatewayJson) {
+            @VirtualThreads ExecutorService virtualThreadExecutor, GatewayJson gatewayJson, Vertx vertx) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
@@ -325,6 +368,7 @@ public class BffRuntimeProducer {
         this.trustProfileResolver = Objects.requireNonNull(trustProfileResolver, "trustProfileResolver");
         this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
         this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
+        this.vertx = Objects.requireNonNull(vertx, "vertx");
         EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
         this.egressTls = declaredEgressTls == null ? EgressTlsConfig.defaults() : declaredEgressTls;
     }
@@ -441,12 +485,20 @@ public class BffRuntimeProducer {
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
         // selects only which implementation is assembled — everything below is mode-independent.
-        SessionBinding sessionBinding = session.isCookieMode()
-                ? cookieSessionBinding(session, cookieName, sessionTtl)
-                : new ServerSessionBinding(new InMemorySessionStore(maxSessions),
-                new SessionCookieCodec(cookieName, sessionTtl));
-        PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
+        // The idle timeout is resolved through the one method boot validation shares, and reaches the
+        // binding of either mode: the store behind the server binding, or the cookie binding itself.
+        Duration idleTimeout = Duration.ofSeconds(session.effectiveIdleTimeoutSeconds());
         Clock clock = Clock.systemUTC();
+        SessionBinding sessionBinding;
+        if (session.isCookieMode()) {
+            sessionBinding = cookieSessionBinding(session, cookieName, sessionTtl, idleTimeout);
+        } else {
+            SessionStore sessionStore = new InMemorySessionStore(maxSessions, idleTimeout);
+            sessionBinding = new ServerSessionBinding(sessionStore, new SessionCookieCodec(cookieName, sessionTtl));
+            // Server mode only: cookie mode holds no session to sweep.
+            registerSessionSweep(sessionStore, clock);
+        }
+        PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
 
         // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
         // widening, the step-up endpoint and the RFC 9470 step-up re-drive all fall back to the same
@@ -950,8 +1002,13 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Maps a coordinator outcome onto the stage's three dispositions. The switch has no {@code default}
+     * Maps a coordinator outcome onto the stage's four dispositions. The switch has no {@code default}
      * arm on purpose: a later outcome kind fails compilation here instead of being mediated silently.
+     * <p>
+     * {@code NO_SESSION} is kept apart from {@code FAILED} all the way to the stage: {@code FAILED} means
+     * the coordinator ended the session and the browser's cookie must go, {@code NO_SESSION} means it
+     * found none for this request and ended nothing, so the browser's cookie — possibly one a step-up
+     * has just re-issued — must stay.
      */
     private static SessionAuthenticationStage.RefreshResult refreshResult(
             TokenRefreshCoordinator.RefreshOutcome outcome) {
@@ -961,7 +1018,51 @@ public class BffRuntimeProducer {
                             outcome.setCookieHeaders()));
             case FAILED -> SessionAuthenticationStage.RefreshResult.sessionEnded();
             case UNAVAILABLE -> SessionAuthenticationStage.RefreshResult.requestFailed();
+            case NO_SESSION -> SessionAuthenticationStage.RefreshResult.noSession();
         };
+    }
+
+    /**
+     * Registers the periodic sweep of the server-mode session store.
+     * <p>
+     * The Vert.x timer fires on an event loop, where the store's monitor must never be taken — a sweep
+     * over a large store, or one waiting behind a request, would stall every connection that loop
+     * serves. The timer handler therefore only hands the sweep to the virtual-thread executor. A
+     * dispatch the executor refuses — it is shutting down — is dropped: the timer is about to be
+     * cancelled, and expiry does not depend on the sweep.
+     *
+     * @param sessionStore the server-mode store to sweep
+     * @param clock        the clock a sweep reads its reference instant from
+     */
+    private void registerSessionSweep(SessionStore sessionStore, Clock clock) {
+        long timerId = vertx.setPeriodic(SESSION_SWEEP_INTERVAL.toMillis(), ignored -> {
+            try {
+                virtualThreadExecutor.execute(() -> sweepSessions(sessionStore, clock));
+            } catch (RejectedExecutionException shuttingDown) {
+                LOGGER.debug(shuttingDown, "Session sweep not dispatched — the executor no longer accepts tasks");
+            }
+        });
+        cancelTimer(sessionSweepTimer.getAndSet(timerId));
+    }
+
+    private static void sweepSessions(SessionStore sessionStore, Clock clock) {
+        int swept = sessionStore.sweepExpired(clock.instant());
+        LOGGER.debug("Periodic session sweep removed %s expired session(s)", swept);
+    }
+
+    /**
+     * Cancels the periodic session sweep when the application shuts down. A no-op when no timer was
+     * registered — cookie mode, a bearer-only gateway, or a runtime that was never produced.
+     */
+    @PreDestroy
+    void cancelSessionSweep() {
+        cancelTimer(sessionSweepTimer.getAndSet(NO_SWEEP_TIMER));
+    }
+
+    private void cancelTimer(long timerId) {
+        if (timerId != NO_SWEEP_TIMER) {
+            vertx.cancelTimer(timerId);
+        }
     }
 
     /**
@@ -1065,9 +1166,13 @@ public class BffRuntimeProducer {
      * The codec's seal-time size budget comes from {@code oidc.session.max_cookie_size} — the single
      * declared number that also drives the edge's pre-route {@code Cookie} header-value cap, so the
      * two ends of the round trip cannot drift apart.
+     * <p>
+     * The activity-cookie codec is built from the same key material, over a key derived for that cookie
+     * alone, and handed to the binding together with the resolved idle timeout. It exists in cookie
+     * mode only: server mode keeps the last access in its store.
      */
     private static SessionBinding cookieSessionBinding(OidcConfig.Session session, String cookieName,
-            Duration sessionTtl) {
+            Duration sessionTtl, Duration idleTimeout) {
         CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(session.encryptionKey());
         Integer declaredMaxCookieSize = session.maxCookieSize();
         int maxCookieSize = declaredMaxCookieSize == null
@@ -1076,7 +1181,7 @@ public class BffRuntimeProducer {
         LOGGER.debug("Cookie-mode key material resolved: mode=%s, maxCookieSize=%s",
                 keyMaterial.mode().diagnosticName(), maxCookieSize);
         return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
-                keyMaterial.identitySalt());
+                keyMaterial.identitySalt(), keyMaterial.activityCodec(cookieName), idleTimeout);
     }
 
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,

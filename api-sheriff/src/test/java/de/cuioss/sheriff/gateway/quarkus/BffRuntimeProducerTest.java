@@ -34,7 +34,10 @@ import java.io.UncheckedIOException;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InaccessibleObjectException;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.math.BigInteger;
 import java.net.URI;
 import java.net.URLDecoder;
@@ -78,6 +81,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.logging.LogRecord;
@@ -95,8 +99,10 @@ import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
@@ -134,6 +140,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
@@ -169,6 +176,8 @@ import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import io.vertx.core.Handler;
+import io.vertx.core.Vertx;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Vetoed;
 import jakarta.enterprise.util.TypeLiteral;
@@ -1167,9 +1176,15 @@ class BffRuntimeProducerTest {
         /** The granted scope set {@code S} of the scope-seam sessions: one scope more than their active set. */
         private static final Set<String> GRANTED_SCOPES = Set.of(OPENID_SCOPE, "orders:read");
 
-        private final InMemorySessionStore store = new InMemorySessionStore(16);
+        /** The idle timeout equals the absolute lifetime, so it is not in play in these seam decisions. */
+        private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL);
         private final SessionBinding binding = new ServerSessionBinding(store,
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
+
+        /** The cookie handle a session of these cases is stored under — derived from, never equal to, its id. */
+        private static String handleOf(SessionRecord live) {
+            return "handle-of-" + live.sessionId();
+        }
 
         @Test
         @DisplayName("Should hand the engine's exchange through untouched when refresh is enabled")
@@ -1433,7 +1448,7 @@ class BffRuntimeProducerTest {
                     .activeScopes(Set.of(OPENID_SCOPE))
                     .grantedScopes(GRANTED_SCOPES)
                     .build();
-            store.create(live, NOW);
+            store.create(live, handleOf(live), NOW);
             return live;
         }
 
@@ -1453,12 +1468,12 @@ class BffRuntimeProducerTest {
 
         private SessionRecord storedSession(@Nullable String refreshToken) {
             SessionRecord live = session(refreshToken);
-            store.create(live, NOW);
+            store.create(live, handleOf(live), NOW);
             return live;
         }
 
         private static String cookieHeader(SessionRecord live) {
-            return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + live.sessionId();
+            return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + handleOf(live);
         }
 
         private static SessionRecord session(@Nullable String refreshToken) {
@@ -1963,7 +1978,7 @@ class BffRuntimeProducerTest {
             super(gatewayConfig, new RouteTable(List.of()), new SingletonInstance<>(tokenValidator),
                     new SingletonInstance<>(logoutTokenVerifier),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
-                    new GatewayJson(new ObjectMapper()));
+                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx());
         }
 
         @Override
@@ -4140,10 +4155,264 @@ class BffRuntimeProducerTest {
 
     private BffRuntimeProducer producer(@Nullable OidcConfig oidc, @Nullable EgressTlsConfig egressTls,
             TestTlsConfigurationRegistry registry, RouteTable routeTable) {
+        return producer(oidc, egressTls, registry, routeTable, new RecordingTimers());
+    }
+
+    /** A producer whose periodic timers are recorded by {@code timers} instead of being scheduled. */
+    private BffRuntimeProducer producer(@Nullable OidcConfig oidc, @Nullable EgressTlsConfig egressTls,
+            TestTlsConfigurationRegistry registry, RouteTable routeTable, RecordingTimers timers) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
         return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(tokenValidator),
                 new SingletonInstance<>(logoutTokenVerifier), new JwksTrustProfileResolver(registry),
-                REVOCATION_EXECUTOR, new GatewayJson(new ObjectMapper()));
+                REVOCATION_EXECUTOR, new GatewayJson(new ObjectMapper()), timers.vertx());
+    }
+
+    /**
+     * Stands in for the Quarkus-managed Vert.x instance the producer registers its periodic session
+     * sweep on. It records every periodic timer and every cancellation and schedules nothing, so a test
+     * fires the timer itself instead of waiting for the sweep interval. Every other Vert.x operation is
+     * unreachable from the producer and says so.
+     */
+    private static final class RecordingTimers implements InvocationHandler {
+
+        /** One periodic timer the producer registered. */
+        record Periodic(long id, long delayMillis, Handler<?> handler) {
+        }
+
+        private final List<Periodic> registered = new CopyOnWriteArrayList<>();
+        private final List<Long> cancelled = new CopyOnWriteArrayList<>();
+        private final AtomicLong timerIds = new AtomicLong(100);
+        private final Vertx vertx = (Vertx) Proxy.newProxyInstance(Vertx.class.getClassLoader(),
+                new Class<?>[]{Vertx.class}, this);
+
+        Vertx vertx() {
+            return vertx;
+        }
+
+        List<Periodic> registered() {
+            return registered;
+        }
+
+        List<Long> cancelled() {
+            return cancelled;
+        }
+
+        /** Fires the one registered periodic timer once, on the calling thread, as an event loop would. */
+        void fireOnce() {
+            assertEquals(1, registered.size(), "exactly one periodic timer must be registered to fire it");
+            Periodic periodic = registered.getFirst();
+            try {
+                Handler.class.getMethod("handle", Object.class).invoke(periodic.handler(), periodic.id());
+            } catch (ReflectiveOperationException e) {
+                throw new AssertionError("the periodic timer handler could not be fired", e);
+            }
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) {
+            if ("setPeriodic".equals(method.getName())) {
+                long id = timerIds.incrementAndGet();
+                registered.add(new Periodic(id, (Long) args[args.length - 2], (Handler<?>) args[args.length - 1]));
+                return id;
+            }
+            if ("cancelTimer".equals(method.getName())) {
+                cancelled.add((Long) args[0]);
+                return Boolean.TRUE;
+            }
+            throw new UnsupportedOperationException(
+                    "the producer must not use Vertx#" + method.getName() + " — only the periodic sweep timer");
+        }
+    }
+
+    /**
+     * The session lifetime the producer wires: the resolved idle timeout reaches the binding of either
+     * mode, a server-mode runtime sweeps its store on a periodic timer that is cancelled at shutdown, and
+     * the activity-cookie codec exists in cookie mode only.
+     */
+    @Nested
+    @DisplayName("Session lifetime wiring — idle timeout, periodic sweep, activity cookie")
+    class SessionLifetimeWiring {
+
+        private static final Instant LOGIN = Instant.parse("2026-07-25T10:00:00Z");
+
+        private final RecordingTimers timers = new RecordingTimers();
+
+        private BffRuntimeProducer producerFor(@Nullable OidcConfig oidc) {
+            return producer(oidc, null, TestTlsConfigurationRegistry.empty(), new RouteTable(List.of()), timers);
+        }
+
+        private static OidcConfig oidc(String mode, int ttlSeconds, @Nullable Integer idleTimeoutSeconds) {
+            byte[] key = new byte[32];
+            Arrays.fill(key, (byte) 0x11);
+            OidcConfig.Session session = OidcConfig.Session.builder()
+                    .mode(mode)
+                    .ttlSeconds(ttlSeconds)
+                    .idleTimeoutSeconds(idleTimeoutSeconds)
+                    .encryptionKey("cookie".equals(mode) ? Base64.getEncoder().encodeToString(key) : null)
+                    .build();
+            return OidcConfig.builder()
+                    .issuer(ISSUER)
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(session)
+                    .build();
+        }
+
+        private static SessionRecord sessionExpiringAt(Instant expiresAt) {
+            return SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(token())
+                    .idToken(token())
+                    .sub(SUBJECT)
+                    .expiresAt(expiresAt)
+                    .build();
+        }
+
+        private static <T> T theOne(List<T> found, String what) {
+            assertEquals(1, found.size(), "exactly one " + what + " must be reachable from the assembled runtime");
+            return found.getFirst();
+        }
+
+        /** The three ways the idle timeout is resolved: declared, omitted under a long ttl, omitted under a short one. */
+        static Stream<Arguments> idleTimeouts() {
+            return Stream.of(
+                    Arguments.of("declared 120 s under ttl 3600 s", 3600, 120, 120),
+                    Arguments.of("omitted under ttl 7200 s resolves to 1800 s", 7200, null, 1800),
+                    Arguments.of("omitted under ttl 600 s resolves to the ttl", 600, null, 600));
+        }
+
+        @ParameterizedTest(name = "server mode: {0}")
+        @MethodSource("idleTimeouts")
+        @DisplayName("Should hand the resolved idle timeout to the store behind the server-mode binding")
+        void shouldHandIdleTimeoutToTheServerModeStore(String label, int ttlSeconds, @Nullable Integer declared,
+                int expectedIdleSeconds) {
+            BffRuntime runtime = producerFor(oidc("server", ttlSeconds, declared)).bffRuntime();
+            InMemorySessionStore store = theOne(reachableInstancesOf(runtime, InMemorySessionStore.class),
+                    "session store");
+            // The absolute expiry lies far beyond every idle deadline here, so only the idle timeout decides.
+            store.create(sessionExpiringAt(LOGIN.plus(Duration.ofDays(1))), "cookie-handle", LOGIN);
+            Instant idleDeadline = LOGIN.plusSeconds(expectedIdleSeconds);
+
+            assertAll(label,
+                    () -> assertTrue(store.resolve("cookie-handle", idleDeadline.minusSeconds(1)).isPresent(),
+                            "the session is live up to the resolved idle deadline"),
+                    () -> assertTrue(store.resolve("cookie-handle", idleDeadline).isEmpty(),
+                            "and gone at it"));
+        }
+
+        @ParameterizedTest(name = "cookie mode: {0}")
+        @MethodSource("idleTimeouts")
+        @DisplayName("Should hand the resolved idle timeout to the cookie-mode binding")
+        void shouldHandIdleTimeoutToTheCookieModeBinding(String label, int ttlSeconds, @Nullable Integer declared,
+                int expectedIdleSeconds) {
+            BffRuntime runtime = producerFor(oidc("cookie", ttlSeconds, declared)).bffRuntime();
+            CookieSessionBinding binding = theOne(reachableInstancesOf(runtime, CookieSessionBinding.class),
+                    "cookie-mode binding");
+            String setCookie = binding.bind(sessionExpiringAt(LOGIN.plusSeconds(ttlSeconds)), LOGIN)
+                    .setCookieHeaders().getFirst();
+            String cookie = setCookie.substring(0, setCookie.indexOf(';'));
+            Instant idleDeadline = LOGIN.plusSeconds(expectedIdleSeconds);
+
+            assertAll(label,
+                    () -> assertTrue(binding.resolve(cookie, idleDeadline.minusSeconds(1)).isPresent(),
+                            "the session is live up to the resolved idle deadline"),
+                    () -> assertTrue(binding.resolve(cookie, idleDeadline).isEmpty(), "and gone at it"));
+        }
+
+        @Test
+        @DisplayName("Should register one periodic sweep timer at the sweep interval in server mode")
+        void shouldRegisterTheSweepTimerInServerMode() {
+            producerFor(oidc("server", 3600, null)).bffRuntime();
+
+            assertEquals(1, timers.registered().size(), "a server-mode runtime sweeps its store periodically");
+            assertEquals(BffRuntimeProducer.SESSION_SWEEP_INTERVAL.toMillis(),
+                    timers.registered().getFirst().delayMillis(), "at the fixed sweep interval");
+            assertEquals(60_000L, BffRuntimeProducer.SESSION_SWEEP_INTERVAL.toMillis(),
+                    "an expired session leaves memory within 60 s");
+            assertTrue(timers.cancelled().isEmpty(), "and the timer stays registered while the gateway runs");
+        }
+
+        @Test
+        @DisplayName("Should register no sweep timer in cookie mode and on a bearer-only gateway")
+        void shouldRegisterNoSweepTimerOutsideServerMode() {
+            BffRuntime cookieMode = producerFor(oidc("cookie", 3600, null)).bffRuntime();
+            BffRuntime bearerOnly = producerFor(null).bffRuntime();
+
+            assertTrue(cookieMode.isActive(), "precondition: the cookie-mode runtime was assembled");
+            assertFalse(bearerOnly.isActive(), "precondition: a gateway without oidc builds no runtime");
+            assertTrue(timers.registered().isEmpty(), "neither holds a session to sweep");
+        }
+
+        @Test
+        @DisplayName("Should cancel the sweep timer at shutdown, once")
+        void shouldCancelTheSweepTimerAtShutdown() {
+            BffRuntimeProducer serverMode = producerFor(oidc("server", 3600, null));
+            serverMode.bffRuntime();
+            long timerId = timers.registered().getFirst().id();
+
+            serverMode.cancelSessionSweep();
+            serverMode.cancelSessionSweep();
+
+            assertEquals(List.of(timerId), timers.cancelled(),
+                    "the registered timer is cancelled, and a second shutdown call cancels nothing more");
+        }
+
+        @Test
+        @DisplayName("Should cancel nothing at shutdown when no sweep timer was registered")
+        void shouldCancelNothingWithoutASweepTimer() {
+            BffRuntimeProducer cookieMode = producerFor(oidc("cookie", 3600, null));
+            cookieMode.bffRuntime();
+
+            cookieMode.cancelSessionSweep();
+
+            assertTrue(timers.cancelled().isEmpty());
+        }
+
+        /**
+         * The session is never looked up: it is created already expired and only the timer is fired. The
+         * sweep runs on the executor the producer was given, off the thread that fired the timer, so the
+         * removal is awaited as a condition.
+         */
+        @Test
+        @DisplayName("Should remove an expired session through the periodic task alone, without any lookup")
+        void shouldSweepAnExpiredSessionWithoutALookup() throws Exception {
+            BffRuntime runtime = producerFor(oidc("server", 3600, null)).bffRuntime();
+            InMemorySessionStore store = theOne(reachableInstancesOf(runtime, InMemorySessionStore.class),
+                    "session store");
+            Instant wallClock = Instant.now();
+            store.create(sessionExpiringAt(wallClock.minusSeconds(1)), "expired-handle", wallClock.minusSeconds(120));
+            store.create(sessionExpiringAt(wallClock.plus(Duration.ofHours(1))), "live-handle", wallClock);
+            assertEquals(2, store.size(), "precondition: the expired session still occupies memory");
+
+            timers.fireOnce();
+
+            Awaits.until(() -> store.size() == 1, "the periodic sweep to remove the expired session",
+                    Awaits.TEARDOWN_CEILING_SECONDS);
+            assertTrue(store.resolve("live-handle", wallClock).isPresent(), "the live session is untouched");
+        }
+
+        @Test
+        @DisplayName("Should wire the activity-cookie codec in cookie mode only")
+        void shouldWireTheActivityCodecInCookieModeOnly() {
+            BffRuntime cookieMode = producerFor(oidc("cookie", 3600, null)).bffRuntime();
+            BffRuntime serverMode = producerFor(oidc("server", 3600, null)).bffRuntime();
+
+            List<SessionActivityCookieCodec> inCookieMode =
+                    reachableInstancesOf(cookieMode, SessionActivityCookieCodec.class);
+            List<SessionActivityCookieCodec> inServerMode =
+                    reachableInstancesOf(serverMode, SessionActivityCookieCodec.class);
+
+            assertAll(
+                    () -> assertEquals(1, inCookieMode.size(), "cookie mode keeps the last access in a cookie"),
+                    () -> assertTrue(inCookieMode.getFirst().cookieName().endsWith("-activity"),
+                            inCookieMode.getFirst().cookieName()),
+                    () -> assertTrue(inServerMode.isEmpty(), "server mode keeps the last access in its store"),
+                    () -> assertEquals(1, reachableInstancesOf(serverMode, InMemorySessionStore.class).size(),
+                            "control: the walk does see the server-mode runtime's store, so the absence above "
+                                    + "is the wiring's and not the walk's"));
+        }
     }
 
     /**

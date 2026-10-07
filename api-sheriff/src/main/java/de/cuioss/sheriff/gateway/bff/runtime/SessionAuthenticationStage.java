@@ -66,6 +66,11 @@ import org.jspecify.annotations.Nullable;
  *         <li>{@link RefreshResult.RequestFailed request failed} — the session is still live but this
  *             request has no valid token to mediate, so the stage applies the refresh-failure response
  *             <em>without</em> clearing the cookie: the next request can still use the session.</li>
+ *         <li>{@link RefreshResult.NoSession no session for this request} — the seam could not resolve a
+ *             session from this request's {@code Cookie} header a second time. Nothing was destroyed,
+ *             and the session may well be alive under a cookie value a step-up re-issued meanwhile, so
+ *             the stage applies the refresh-failure response <em>without</em> a clearing cookie: a
+ *             clearing cookie here would delete the cookie the browser has just been given.</li>
  *       </ul>
  *       The refresh-failure response is the {@link OnFailure} policy
  *       ({@code oidc.session.refresh.on_failure}): {@link OnFailure#REAUTHENTICATE} re-drives the same
@@ -84,7 +89,18 @@ import org.jspecify.annotations.Nullable;
  *       never disclosed to the browser up to this point; the forward stage renders the bearer and the
  *       session cookie never crosses. The token recorded here is sender-constrained, and the
  *       constraint is not forwarded — see the next paragraph.</li>
+ *   <li>reports the access to the binding ({@link SessionBinding#recordAccess}) and adds any cookie it
+ *       returns to the response cookies — see <em>Idle timeout</em> below.</li>
  * </ol>
+ * <strong>Idle timeout.</strong> A session ends when it has not been accessed for the idle timeout, and
+ * this stage is the one place an access is counted: once per request, at the point the request is let
+ * through to its route. A request that is refused, redirected into a login or a widening, or left
+ * without a token by a refresh is not an access. The binding's {@code resolve} enforces the deadline,
+ * so an idle-expired session reaches this stage as no session at all and is answered like any
+ * unauthenticated request, with no clearing cookie. A long-lived response — a WebSocket, a stream —
+ * counts as the one access at its start; it neither keeps the session alive afterwards nor is closed
+ * when the session expires.
+ * <p>
  * <strong>The mediated access token is DPoP-bound, and the binding ends at the gateway
  * (ADR-0058).</strong> Every access token the gateway obtains is bound to its DPoP proof key, so that
  * token carries a {@code cnf} claim whose {@code jkt} member names that key. The gateway forwards it
@@ -230,7 +246,7 @@ public final class SessionAuthenticationStage {
         }
 
         RefreshResult refreshed = tokenRefresh.refreshIfNeeded(resolved.get(), cookieHeader, now);
-        // A pattern switch over the sealed result: javac rejects it the moment a fourth disposition appears.
+        // A pattern switch over the sealed result: javac rejects it the moment a further disposition appears.
         switch (refreshed) {
             case RefreshResult.Mediate(SessionBinding.BoundSession bound) -> {
                 emitSetCookies(request, bound.setCookieHeaders());
@@ -241,6 +257,11 @@ public final class SessionAuthenticationStage {
                 // The identity provider never processed the refresh and the access token has expired: the
                 // session is still live, so the cookie is deliberately NOT cleared — the next request can
                 // retry the refresh once the back-off has elapsed.
+                challengeRefreshFailure(request, route, now);
+            case RefreshResult.NoSession() ->
+                // The seam resolved no session from this request's cookie and destroyed nothing. The
+                // browser may already hold a re-issued cookie for the same, living session, so no
+                // clearing cookie is sent: it would delete that new cookie.
                 challengeRefreshFailure(request, route, now);
         }
     }
@@ -259,7 +280,7 @@ public final class SessionAuthenticationStage {
         SessionRecord session = mediated.session();
         Set<String> missing = missingScopes(route, session);
         if (missing.isEmpty()) {
-            relay(request, route, session);
+            relay(request, route, session, cookieHeader, now);
             return;
         }
         // A re-bind that produced a cookie rotated the binding the request's own Cookie header names,
@@ -279,7 +300,7 @@ public final class SessionAuthenticationStage {
                 SessionRecord kept = bound.session();
                 Set<String> stillMissing = missingScopes(route, kept);
                 if (stillMissing.isEmpty()) {
-                    relay(request, route, kept);
+                    relay(request, route, kept, cookieHeader, now);
                 } else {
                     // The session is kept but the refresh did not obtain the set — a narrower grant, a
                     // refresh that is backing off, or no refresh path at all. It is never relayed short.
@@ -288,18 +309,27 @@ public final class SessionAuthenticationStage {
             }
             case RefreshResult.SessionEnded() -> endSession(request, route, now);
             case RefreshResult.RequestFailed() -> challengeRefreshFailure(request, route, now);
+            // As on the near-expiry leg: nothing was destroyed, so nothing is cleared.
+            case RefreshResult.NoSession() -> challengeRefreshFailure(request, route, now);
         }
     }
 
     /**
-     * Lets a session that carries every needed scope through. {@code token_relay: false} keeps the
-     * session fully in force — resolved, refreshed, scope-checked and required — but withholds the
-     * access token from the upstream: no {@code Authorization}.
+     * Lets a session that carries every needed scope through, and counts the request as an access.
+     * {@code token_relay: false} keeps the session fully in force — resolved, refreshed, scope-checked
+     * and required — but withholds the access token from the upstream: no {@code Authorization}.
+     * <p>
+     * This is the only place an access is reported to the binding, so it is the only place the idle
+     * deadline moves. Every path that does not end here — a challenge, a redirect, a refusal — leaves
+     * the deadline where it was. Any cookie the binding returns for the access joins the response
+     * cookies; the edge writes them on the response head before the upstream is contacted.
      */
-    private static void relay(PipelineRequest request, RouteRuntime route, SessionRecord session) {
+    private void relay(PipelineRequest request, RouteRuntime route, SessionRecord session,
+            @Nullable String cookieHeader, Instant now) {
         if (route.getEffectiveAuth().effectiveTokenRelay()) {
             request.mediatedBearer(session.accessToken());
         }
+        emitSetCookies(request, sessionBinding.recordAccess(session, cookieHeader, now));
     }
 
     /**
@@ -352,13 +382,14 @@ public final class SessionAuthenticationStage {
      * the seam found it already gone: it expired, or, in server mode, a logout terminated it while the
      * refresh was in flight and the seam did not write it back. Mediating the pre-refresh token would
      * keep serving an ended session, so the
-     * clearing cookie drops the browser's stale copy first. On the reauthenticate navigation branch the
-     * login challenge adds its own binding cookie for a DIFFERENT cookie name, so both must reach the
-     * browser on this one response — hence the multi-valued Set-Cookie accumulator rather than a
-     * single-valued header slot.
+     * clearing cookies drop the browser's stale copies first — every cookie the binding sets, which in
+     * cookie mode is the session cookie and its activity cookie. On the reauthenticate navigation
+     * branch the login challenge adds its own binding cookie for a DIFFERENT cookie name, so all of them
+     * must reach the browser on this one response — hence the multi-valued Set-Cookie accumulator
+     * rather than a single-valued header slot.
      */
     private void endSession(PipelineRequest request, RouteRuntime route, Instant now) {
-        emitSetCookies(request, List.of(sessionBinding.clearingSetCookieHeader()));
+        emitSetCookies(request, sessionBinding.clearingSetCookieHeaders());
         challengeRefreshFailure(request, route, now);
     }
 
@@ -457,9 +488,10 @@ public final class SessionAuthenticationStage {
          * @return {@link RefreshResult.Mediate mediate} carrying the session to mediate from — the
          *         same one, or a refreshed copy carrying the rotated token material — plus any
          *         {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
-         *         ended} when the seam destroyed the session or found it already gone; or
+         *         ended} when the seam destroyed the session or found it already gone at its write;
          *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
-         *         request has no valid token
+         *         request has no valid token; or {@link RefreshResult.NoSession no session} when
+         *         {@code cookieHeader} resolved no session a second time and nothing was destroyed
          */
         RefreshResult refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader, Instant now);
     }
@@ -494,9 +526,10 @@ public final class SessionAuthenticationStage {
          * @return {@link RefreshResult.Mediate mediate} carrying the session that was kept — refreshed
          *         and carrying the set, or unchanged or narrower when the set was not obtained — plus
          *         any {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
-         *         ended} when the seam destroyed the session or found it already gone; or
+         *         ended} when the seam destroyed the session or found it already gone at its write;
          *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
-         *         request has no valid token
+         *         request has no valid token; or {@link RefreshResult.NoSession no session} when
+         *         {@code cookieHeader} resolved no session a second time and nothing was destroyed
          */
         RefreshResult refreshForScopes(SessionRecord session, @Nullable String cookieHeader,
                 Set<String> requestedScopes, Instant now);
@@ -535,6 +568,14 @@ public final class SessionAuthenticationStage {
         }
 
         /**
+         * @return the result for a request whose {@code Cookie} header resolved no session when the seam
+         *         resolved it again, with nothing destroyed
+         */
+        static RefreshResult noSession() {
+            return new NoSession();
+        }
+
+        /**
          * The session is kept: emit the re-bind's cookies.
          *
          * @param boundSession the kept session plus the re-bind's {@code Set-Cookie} values
@@ -569,6 +610,24 @@ public final class SessionAuthenticationStage {
          * @since 1.0
          */
         record RequestFailed() implements RefreshResult {
+        }
+
+        /**
+         * The request's {@code Cookie} header resolved no session when the seam resolved it again, and
+         * the seam destroyed nothing: apply the {@link OnFailure} policy <strong>without</strong> a
+         * clearing cookie.
+         * <p>
+         * It is deliberately not {@link SessionEnded}. In server mode a step-up or a scope widening
+         * re-issues the cookie value while the session lives on, so a request still in flight with the
+         * previous value resolves nothing although nothing ended; a clearing cookie on its answer would
+         * delete the cookie the browser was just given. A session that really expired between the
+         * stage's resolve and the seam's needs no clearing cookie either — the stage sends none for a
+         * request that resolves no session in the first place.
+         *
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        record NoSession() implements RefreshResult {
         }
     }
 

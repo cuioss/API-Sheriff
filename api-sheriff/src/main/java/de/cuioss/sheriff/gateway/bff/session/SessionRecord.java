@@ -37,13 +37,16 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Session identity.</strong> {@link #sessionId()} is the one identity model the seam
  * defines: a stable per-session identity every {@link SessionBinding} populates, and the key the
- * refresh coordinator uses for single-flight coalescing. Login always mints one with
- * {@link #newSessionId()} before the mode-neutral {@link SessionBinding#bind}, but only server mode
- * keeps it:
+ * refresh coordinator uses for single-flight coalescing. It is the session's internal identity in
+ * both modes and is <strong>never the cookie value</strong>: it does not change for the life of the
+ * session, also not when a step-up or a scope widening re-issues the cookie. Login always mints one
+ * with {@link #newSessionId()} before the mode-neutral {@link SessionBinding#bind}, but only server
+ * mode keeps it:
  * <ul>
- *   <li><strong>server mode</strong>: the minted id becomes the opaque store key, and the session
- *       cookie carries it <em>in the clear</em> — the cookie value IS this identity, which is why it
- *       is itself a bearer credential;</li>
+ *   <li><strong>server mode</strong>: the minted id becomes the store key. The session cookie does
+ *       not carry it — the browser holds a separate opaque cookie handle the store resolves to this
+ *       id, and it is that handle, not this id, that is the bearer credential and that is replaced
+ *       when the cookie is re-issued;</li>
  *   <li><strong>cookie mode</strong>: the minted id is <em>discarded</em> — it is not among the
  *       fields sealed into the cookie. The binding replaces it with an identity <em>derived</em>
  *       from the sealed payload (a salted digest over the login instant, {@code sub} and the
@@ -60,6 +63,11 @@ import org.jspecify.annotations.Nullable;
  * two logins by the same subject inside one clock second would derive the same identity and
  * cross-wire the refresh coordinator's single-flight keying. It is redacted from
  * {@link #toString()} because it keys the derived identity.
+ * <p>
+ * <strong>Last access is not a component.</strong> The idle timeout is measured from the session's
+ * last access, and that instant deliberately lives outside this record: beside the record in the
+ * store in server mode, and in a separate activity cookie in cookie mode. Recording an access
+ * therefore never rewrites the token material.
  * <p>
  * {@link #sid()} and {@link #sub()} back a server-mode store's secondary index for O(1)
  * back-channel logout destruction.
@@ -166,7 +174,8 @@ Set<String> grantedScopes) {
 
     /**
      * Generates a 256-bit URL-safe opaque session id — the <strong>server-mode</strong> session
-     * identity, which is also the value carried in that mode's session cookie.
+     * identity and store key. It is not the value carried in that mode's session cookie: the binding
+     * mints a separate cookie handle for the browser.
      * <p>
      * Login calls this before the mode-neutral {@link SessionBinding#bind}, so a cookie-mode login
      * mints one too — but that binding discards it and derives its own identity from the sealed
@@ -193,7 +202,7 @@ Set<String> grantedScopes) {
     /**
      * Overridden to redact every credential — the session id, all three tokens, and the session
      * nonce that keys the cookie-mode derived identity. The default
-     * record {@code toString()} would otherwise print the bearer session id and the raw token
+     * record {@code toString()} would otherwise print the internal session id and the raw token
      * material into any log line, exception message, or debugger view. The active and granted scope
      * names are not credentials and are printed as-is.
      *

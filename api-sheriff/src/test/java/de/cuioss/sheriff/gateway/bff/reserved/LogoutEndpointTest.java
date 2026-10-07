@@ -15,14 +15,21 @@
  */
 package de.cuioss.sheriff.gateway.bff.reserved;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
+import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.TokenRevocation;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint.LogoutOutcome;
@@ -36,6 +43,8 @@ import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Tests for {@link LogoutEndpoint}, focused on the invariant that local logout ALWAYS succeeds. When
@@ -53,51 +62,135 @@ class LogoutEndpointTest {
     private static final Duration STATE_TTL = Duration.ofSeconds(60);
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
 
+    private static final Duration SESSION_TTL = Duration.ofHours(8);
+    /** The opaque value the server-mode session cookie carries — never the session id. */
+    private static final String COOKIE_HANDLE = "opaque-cookie-handle";
+    private static final String UNREGISTERED_RETURN = "https://evil.example.com/steal";
+
     private InMemorySessionStore store;
     private SessionBinding binding;
     private EndSessionFlow endSessionFlow;
-    private String sessionId;
     private String cookieHeader;
 
     @BeforeEach
     void setUp() {
-        store = new InMemorySessionStore(16);
+        store = new InMemorySessionStore(16, SESSION_TTL);
         binding = new ServerSessionBinding(store,
-                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(8)));
+                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
         endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(REGISTERED_RETURN)));
-        sessionId = SessionRecord.newSessionId();
-        SessionRecord session = SessionRecord.builder()
-                .sessionId(sessionId)
+        store.create(session(), COOKIE_HANDLE, NOW);
+        cookieHeader = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + COOKIE_HANDLE;
+    }
+
+    private static SessionRecord session() {
+        return SessionRecord.builder()
+                .sessionId(SessionRecord.newSessionId())
                 .accessToken("mediated-access-token")
                 .idToken("raw-id-token")
                 .sub("user-sub-1")
-                .expiresAt(NOW.plus(Duration.ofHours(8)))
+                .expiresAt(NOW.plus(SESSION_TTL))
                 .build();
-        store.create(session, NOW);
-        cookieHeader = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
     }
 
     private LogoutEndpoint endpoint(String postLogoutRedirectUri) {
+        return endpoint(postLogoutRedirectUri, binding);
+    }
+
+    private LogoutEndpoint endpoint(String postLogoutRedirectUri, SessionBinding sessionBinding) {
         TokenRevocation revocation = ignored -> {
         };
         RpInitiatedLogout logout = new RpInitiatedLogout(endSessionFlow, revocation, END_SESSION,
                 postLogoutRedirectUri, FINAL_REDIRECT, STATE_TTL);
-        return new LogoutEndpoint(logout, binding);
+        return new LogoutEndpoint(logout, sessionBinding);
+    }
+
+    /** The stateless binding, which sets two cookies: the session cookie and its activity cookie. */
+    private static SessionBinding cookieBinding() {
+        byte[] key = new byte[32];
+        Arrays.fill(key, (byte) 0x11);
+        byte[] salt = new byte[32];
+        Arrays.fill(salt, (byte) 0x22);
+        byte[] activityKey = new byte[32];
+        Arrays.fill(activityKey, (byte) 0x44);
+        return new CookieSessionBinding(
+                new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                        SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"), (byte) 1),
+                salt,
+                new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                        new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                SESSION_TTL);
+    }
+
+    /**
+     * The three ways a logout request ends: on the IdP redirect, on the fallback after the IdP redirect
+     * could not be built, and on the direct landing of a request that carried no live session.
+     */
+    enum LogoutPath {
+        IDP_REDIRECT(REGISTERED_RETURN, true),
+        INITIATION_FAILURE(UNREGISTERED_RETURN, true),
+        NO_LIVE_SESSION(REGISTERED_RETURN, false);
+
+        private final String postLogoutRedirectUri;
+        private final boolean carriesSession;
+
+        LogoutPath(String postLogoutRedirectUri, boolean carriesSession) {
+            this.postLogoutRedirectUri = postLogoutRedirectUri;
+            this.carriesSession = carriesSession;
+        }
+    }
+
+    @ParameterizedTest(name = "cookie mode, {0}")
+    @EnumSource(LogoutPath.class)
+    @DisplayName("Should clear the session cookie and the activity cookie on every logout path in cookie mode")
+    void shouldClearBothCookiesOnEveryPathInCookieMode(LogoutPath path) {
+        SessionBinding cookieBinding = cookieBinding();
+        String setCookie = cookieBinding.bind(session(), NOW).setCookieHeaders().getFirst();
+        String sealedCookie = setCookie.substring(0, setCookie.indexOf(';'));
+        LogoutEndpoint endpoint = endpoint(path.postLogoutRedirectUri, cookieBinding);
+
+        LogoutOutcome outcome = endpoint.logout(path.carriesSession ? sealedCookie : null, NOW);
+
+        List<String> clearing = cookieBinding.clearingSetCookieHeaders();
+        assertAll(path.name(),
+                () -> assertEquals(2, clearing.size(), "precondition: the cookie-mode binding sets two cookies"),
+                () -> assertTrue(outcome.setCookieHeaders().containsAll(clearing),
+                        "every clearing cookie of the binding is emitted: " + outcome.setCookieHeaders()),
+                () -> assertTrue(outcome.setCookieHeaders().contains(
+                                SessionCookieCodec.DEFAULT_COOKIE_NAME + "-activity=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax"),
+                        "the activity cookie is cleared by name"));
+    }
+
+    @ParameterizedTest(name = "server mode, {0}")
+    @EnumSource(LogoutPath.class)
+    @DisplayName("Should clear exactly the one session cookie on every logout path in server mode")
+    void shouldClearTheSessionCookieOnEveryPathInServerMode(LogoutPath path) {
+        LogoutEndpoint endpoint = endpoint(path.postLogoutRedirectUri);
+
+        LogoutOutcome outcome = endpoint.logout(path.carriesSession ? cookieHeader : null, NOW);
+
+        List<String> clearing = binding.clearingSetCookieHeaders();
+        assertAll(path.name(),
+                () -> assertEquals(1, clearing.size(), "precondition: the server-mode binding sets one cookie"),
+                () -> assertTrue(outcome.setCookieHeaders().containsAll(clearing)),
+                () -> assertEquals(1, outcome.setCookieHeaders().stream()
+                                .filter(header -> header.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME)).count(),
+                        "no activity cookie is cleared in server mode: " + outcome.setCookieHeaders()));
     }
 
     @Test
     @DisplayName("Should destroy the local session and clear the cookie when end-session redirect construction fails")
     void shouldAlwaysLogOutLocallyOnInitiationFailure() {
         // An unregistered post_logout_redirect_uri makes the engine validator throw inside initiate().
-        LogoutEndpoint endpoint = endpoint("https://evil.example.com/steal");
+        LogoutEndpoint endpoint = endpoint(UNREGISTERED_RETURN);
 
         LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
 
         assertTrue(outcome.isRedirect(), "local logout must still land the browser on a safe redirect");
         assertEquals(FINAL_REDIRECT, outcome.location(),
                 "a failed IdP redirect falls back to final_redirect");
-        assertTrue(store.resolve(sessionId, NOW).isEmpty(),
+        assertTrue(store.resolve(COOKIE_HANDLE, NOW).isEmpty(),
                 "the server-side session is destroyed even when the IdP redirect could not be built");
+        assertEquals(0, store.size(), "nothing is left in the store");
         assertTrue(outcome.setCookieHeaders().stream().anyMatch(header -> header.contains("Max-Age=0")),
                 "the session cookie is cleared on the fallback path");
     }
@@ -112,7 +205,8 @@ class LogoutEndpointTest {
         assertTrue(outcome.isRedirect());
         assertTrue(outcome.location().startsWith(END_SESSION),
                 "a registered return URI yields the IdP end-session redirect");
-        assertTrue(store.resolve(sessionId, NOW).isEmpty(), "the server-side session is destroyed");
+        assertTrue(store.resolve(COOKIE_HANDLE, NOW).isEmpty(), "the server-side session is destroyed");
+        assertEquals(0, store.size(), "nothing is left in the store");
     }
 
     @Test

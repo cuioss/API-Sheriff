@@ -25,14 +25,19 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.OnFailure;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.RefreshResult;
@@ -50,6 +55,7 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -61,7 +67,16 @@ class SessionAuthenticationStageTest {
     private static final Instant SESSION_EXPIRY = NOW.plusSeconds(3600);
     static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
-    private static final String SESSION_ID = "opaque-session-id";
+    /** The session's internal identity — never the cookie value. */
+    private static final String SESSION_ID = "internal-session-id";
+    /** The opaque value the session cookie carries, which the store resolves to the session. */
+    private static final String COOKIE_HANDLE = "opaque-cookie-handle";
+    /**
+     * The idle timeout of the fixture store. It equals the fixture session's lifetime, so with the fixed
+     * {@link #CLOCK} the idle deadline is not in play; the {@code IdleTimeout} cases set their own.
+     */
+    private static final Duration NO_IDLE_EFFECT = Duration.ofHours(1);
+    private static final Duration IDLE_TIMEOUT = Duration.ofSeconds(600);
     private static final String MEDIATED_TOKEN = "mediated-access-token";
     private static final String REFRESHED_TOKEN = "refreshed-access-token";
     private static final String NEEDED_SCOPE = "orders:read";
@@ -215,7 +230,7 @@ class SessionAuthenticationStageTest {
 
             assertThrows(GatewayException.class, () -> stage.process(request));
 
-            assertEquals(List.of(binding.clearingSetCookieHeader()), request.responseSetCookies());
+            assertEquals(binding.clearingSetCookieHeaders(), request.responseSetCookies());
         }
 
         @Test
@@ -350,7 +365,7 @@ class SessionAuthenticationStageTest {
 
             assertThrows(GatewayException.class, () -> stage.process(request));
 
-            assertEquals(List.of(binding.clearingSetCookieHeader()), request.responseSetCookies(),
+            assertEquals(binding.clearingSetCookieHeaders(), request.responseSetCookies(),
                     "the stale cookie is cleared so the browser stops presenting a destroyed session");
         }
 
@@ -363,7 +378,8 @@ class SessionAuthenticationStageTest {
 
             stage.process(request);
 
-            assertEquals(List.of(binding.clearingSetCookieHeader(), BINDING_COOKIE), request.responseSetCookies(),
+            assertEquals(List.of(binding.clearingSetCookieHeaders().getFirst(), BINDING_COOKIE),
+                    request.responseSetCookies(),
                     "both Set-Cookie values must reach the browser: the clearing cookie drops the revoked "
                             + "session's cookie, the binding cookie carries the new login — they name different "
                             + "cookies, so neither may overwrite or truncate the other");
@@ -419,7 +435,7 @@ class SessionAuthenticationStageTest {
             assertEquals(EventType.TOKEN_MISSING, thrown.getEventType(),
                     "on_failure: reject answers 401 problem+json instead of redirecting into login");
             assertTrue(request.shortCircuitStatus().isEmpty(), "reject never short-circuits into a login redirect");
-            assertEquals(List.of(binding.clearingSetCookieHeader()), request.responseSetCookies(),
+            assertEquals(binding.clearingSetCookieHeaders(), request.responseSetCookies(),
                     "the destroyed session's cookie is cleared under reject too, and no login binding cookie is minted");
             assertTrue(request.mediatedBearer().isEmpty(), "no bearer is mediated from the destroyed session");
         }
@@ -662,6 +678,355 @@ class SessionAuthenticationStageTest {
         }
     }
 
+    /**
+     * The idle timeout: the stage is the one place an access is counted — once per request it lets
+     * through — and the binding's resolve enforces the deadline, so an idle session reaches the stage
+     * as no session at all.
+     */
+    @Nested
+    @DisplayName("Idle timeout")
+    class IdleTimeout {
+
+        @Test
+        @DisplayName("extends the idle deadline for a request it lets through")
+        void letThroughRequestExtendsTheIdleDeadline() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN), IDLE_TIMEOUT);
+            Instant access = NOW.plusSeconds(500);
+            stageAt(clockAt(access), binding, identityRefresh()).process(sessionRequest(Set.of(), xhrHeaders()));
+            PipelineRequest afterTheOriginalDeadline = sessionRequest(Set.of(), xhrHeaders());
+
+            stageAt(clockAt(NOW.plusSeconds(1000)), binding, identityRefresh()).process(afterTheOriginalDeadline);
+
+            assertEquals(Optional.of(MEDIATED_TOKEN), afterTheOriginalDeadline.mediatedBearer(),
+                    "the access at 500 s moved the deadline from 600 s to 1100 s, so the request at 1000 s is live");
+        }
+
+        @Test
+        @DisplayName("ends the session one idle timeout after the last request it let through")
+        void sessionEndsOneIdleTimeoutAfterTheLastAccess() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN), IDLE_TIMEOUT);
+            Instant access = NOW.plusSeconds(500);
+            stageAt(clockAt(access), binding, identityRefresh()).process(sessionRequest(Set.of(), xhrHeaders()));
+            SessionAuthenticationStage atTheMovedDeadline =
+                    stageAt(clockAt(access.plus(IDLE_TIMEOUT)), binding, identityRefresh());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> atTheMovedDeadline.process(request));
+
+            assertEquals(EventType.TOKEN_MISSING, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("does not extend the idle deadline for a request it refuses")
+        void refusedRequestDoesNotExtendTheIdleDeadline() {
+            // The session carries no scope, so a route needing one refuses the request 403.
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN), IDLE_TIMEOUT);
+            SessionAuthenticationStage early = stageAt(clockAt(NOW.plusSeconds(500)), binding, identityRefresh());
+            PipelineRequest refused = sessionRequest(Set.of(NEEDED_SCOPE), xhrHeaders());
+            GatewayException refusal = assertThrows(GatewayException.class, () -> early.process(refused));
+            assertEquals(EventType.SCOPE_MISSING, refusal.getEventType(), "precondition: the request was refused");
+            SessionAuthenticationStage atTheDeadline = stageAt(clockAt(NOW.plus(IDLE_TIMEOUT)), binding,
+                    identityRefresh());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> atTheDeadline.process(request));
+
+            assertEquals(EventType.TOKEN_MISSING, thrown.getEventType(),
+                    "the refused request was no access: the session ended one idle timeout after its creation");
+        }
+
+        @Test
+        @DisplayName("does not extend the idle deadline for a request it redirects into a login")
+        void redirectedRequestDoesNotExtendTheIdleDeadline() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN), IDLE_TIMEOUT);
+            PipelineRequest redirected = sessionRequest(Set.of(), navigationHeaders());
+            stageAt(clockAt(NOW.plusSeconds(500)), binding, requestFailedRefresh()).process(redirected);
+            assertEquals(Optional.of(302), redirected.shortCircuitStatus(), "precondition: the request was redirected");
+            SessionAuthenticationStage atTheDeadline = stageAt(clockAt(NOW.plus(IDLE_TIMEOUT)), binding,
+                    identityRefresh());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> atTheDeadline.process(request));
+
+            assertEquals(EventType.TOKEN_MISSING, thrown.getEventType(),
+                    "the redirected request was no access: the session ended one idle timeout after its creation");
+        }
+
+        @Test
+        @DisplayName("treats an idle session as no session and sends no clearing cookie on a 401")
+        void idleSessionIsNoSessionOnXhr() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN), IDLE_TIMEOUT);
+            SessionAuthenticationStage stage = stageAt(clockAt(NOW.plus(IDLE_TIMEOUT)), binding, identityRefresh());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll("an idle-expired request gets the ordinary unauthenticated answer",
+                    () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType()),
+                    () -> assertTrue(request.responseSetCookies().isEmpty(), "no clearing cookie is sent"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty()));
+        }
+
+        @Test
+        @DisplayName("redirects a navigation of an idle session into login with the login cookie alone")
+        void idleSessionIsNoSessionOnNavigation() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN), IDLE_TIMEOUT);
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
+
+            stageAt(clockAt(NOW.plus(IDLE_TIMEOUT)), binding, identityRefresh()).process(request);
+
+            assertAll(
+                    () -> assertEquals(Optional.of(302), request.shortCircuitStatus()),
+                    () -> assertEquals(List.of(BINDING_COOKIE), request.responseSetCookies(),
+                            "only the login binding cookie — no clearing cookie for the idle session"));
+        }
+    }
+
+    /** Cookie mode: the access is remembered in the activity cookie, which the stage has to pass on. */
+    @Nested
+    @DisplayName("Activity cookie (cookie mode)")
+    class ActivityCookie {
+
+        private static final String ACTIVITY_COOKIE_PREFIX = SessionCookieCodec.DEFAULT_COOKIE_NAME + "-activity=";
+
+        private SessionBinding cookieBinding;
+        private String sessionCookie;
+
+        @BeforeEach
+        void bindCookieModeSession() {
+            byte[] key = new byte[32];
+            Arrays.fill(key, (byte) 0x11);
+            byte[] salt = new byte[32];
+            Arrays.fill(salt, (byte) 0x22);
+            byte[] activityKey = new byte[32];
+            Arrays.fill(activityKey, (byte) 0x44);
+            cookieBinding = new CookieSessionBinding(
+                    new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1),
+                            SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"),
+                            (byte) 1),
+                    salt,
+                    new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                            new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                    IDLE_TIMEOUT);
+            String setCookie = cookieBinding.bind(session(MEDIATED_TOKEN), NOW).setCookieHeaders().getFirst();
+            sessionCookie = setCookie.substring(0, setCookie.indexOf(';'));
+        }
+
+        @Test
+        @DisplayName("adds the activity cookie to the response cookies of a request it lets through")
+        void activityCookieReachesTheResponseCookies() {
+            PipelineRequest request = sessionRequest(Set.of(), headersWith(sessionCookie, "application/json"));
+
+            stageAt(clockAt(NOW.plusSeconds(60)), cookieBinding, identityRefresh()).process(request);
+
+            assertAll(
+                    () -> assertEquals(Optional.of(MEDIATED_TOKEN), request.mediatedBearer()),
+                    () -> assertEquals(1, request.responseSetCookies().size(),
+                            "the access is remembered by exactly one cookie"),
+                    () -> assertTrue(request.responseSetCookies().getFirst().startsWith(ACTIVITY_COOKIE_PREFIX),
+                            "and that cookie is the activity cookie, never the session cookie"));
+        }
+
+        @Test
+        @DisplayName("sets no cookie for an access younger than the activity interval")
+        void noCookieBeforeTheInterval() {
+            PipelineRequest request = sessionRequest(Set.of(), headersWith(sessionCookie, "application/json"));
+
+            stageAt(clockAt(NOW.plusSeconds(59)), cookieBinding, identityRefresh()).process(request);
+
+            assertTrue(request.responseSetCookies().isEmpty());
+        }
+
+        @Test
+        @DisplayName("keeps the session alive through the activity cookie it set")
+        void activityCookieExtendsTheSession() {
+            PipelineRequest first = sessionRequest(Set.of(), headersWith(sessionCookie, "application/json"));
+            stageAt(clockAt(NOW.plusSeconds(500)), cookieBinding, identityRefresh()).process(first);
+            String activitySetCookie = first.responseSetCookies().getFirst();
+            String cookies = sessionCookie + "; " + activitySetCookie.substring(0, activitySetCookie.indexOf(';'));
+            PipelineRequest second = sessionRequest(Set.of(), headersWith(cookies, "application/json"));
+
+            stageAt(clockAt(NOW.plusSeconds(1000)), cookieBinding, identityRefresh()).process(second);
+
+            assertEquals(Optional.of(MEDIATED_TOKEN), second.mediatedBearer(),
+                    "with the activity cookie the request past the login-measured deadline is live");
+        }
+
+        @Test
+        @DisplayName("adds the activity cookie after the cookies of a refresh re-bind, replacing none of them")
+        void activityCookieJoinsTheRebindCookies() {
+            SessionAuthenticationStage.TokenRefresh resealing = (session, cookieHeader, now) -> RefreshResult
+                    .mediate(new SessionBinding.BoundSession(session, List.of(RESEAL_COOKIE)));
+            PipelineRequest request = sessionRequest(Set.of(), headersWith(sessionCookie, "application/json"));
+
+            stageAt(clockAt(NOW.plusSeconds(60)), cookieBinding, resealing).process(request);
+
+            assertAll(
+                    () -> assertEquals(2, request.responseSetCookies().size()),
+                    () -> assertEquals(RESEAL_COOKIE, request.responseSetCookies().getFirst()),
+                    () -> assertTrue(request.responseSetCookies().get(1).startsWith(ACTIVITY_COOKIE_PREFIX)));
+        }
+
+        @Test
+        @DisplayName("counts the access under token_relay: false as well")
+        void relayOffStillCountsTheAccess() {
+            PipelineRequest request = sessionRequest(Set.of(), headersWith(sessionCookie, "application/json"), false);
+
+            stageAt(clockAt(NOW.plusSeconds(60)), cookieBinding, identityRefresh()).process(request);
+
+            assertAll(
+                    () -> assertTrue(request.mediatedBearer().isEmpty()),
+                    () -> assertEquals(1, request.responseSetCookies().size()),
+                    () -> assertTrue(request.responseSetCookies().getFirst().startsWith(ACTIVITY_COOKIE_PREFIX)));
+        }
+
+        @Test
+        @DisplayName("sets no activity cookie for a request it refuses")
+        void refusedRequestSetsNoActivityCookie() {
+            SessionAuthenticationStage stage = stageAt(clockAt(NOW.plusSeconds(60)), cookieBinding, identityRefresh());
+            PipelineRequest request = sessionRequest(Set.of(NEEDED_SCOPE),
+                    headersWith(sessionCookie, "application/json"));
+
+            assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertTrue(request.responseSetCookies().isEmpty(), "a refused request is not an access");
+        }
+
+        @Test
+        @DisplayName("clears both cookies of the binding when the refresh ended the session")
+        void endedSessionClearsEveryCookieOfTheBinding() {
+            SessionAuthenticationStage stage = stageAt(clockAt(NOW), cookieBinding, sessionEndedRefresh());
+            PipelineRequest request = sessionRequest(Set.of(), headersWith(sessionCookie, "application/json"));
+
+            assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll(
+                    () -> assertEquals(2, request.responseSetCookies().size(),
+                            "the session cookie and the activity cookie are both cleared"),
+                    () -> assertEquals(cookieBinding.clearingSetCookieHeaders(), request.responseSetCookies()));
+        }
+
+        @Test
+        @DisplayName("clears both cookies and adds the login cookie when an ended session is re-driven into login")
+        void endedSessionOnNavigationClearsBothAndAddsTheLoginCookie() {
+            PipelineRequest request = sessionRequest(Set.of(), headersWith(sessionCookie, "text/html,application/xhtml+xml"));
+
+            stageAt(clockAt(NOW), cookieBinding, sessionEndedRefresh()).process(request);
+
+            List<String> clearing = cookieBinding.clearingSetCookieHeaders();
+            assertEquals(List.of(clearing.get(0), clearing.get(1), BINDING_COOKIE), request.responseSetCookies());
+        }
+    }
+
+    /**
+     * The fourth refresh disposition: the seam resolved no session from the request's cookie a second
+     * time and destroyed nothing. The request is answered as unauthenticated and no cookie is cleared.
+     */
+    @Nested
+    @DisplayName("No session for this request")
+    class NoSessionForThisRequest {
+
+        @Test
+        @DisplayName("answers an XHR 401 without a clearing cookie")
+        void answersXhrWithoutClearingCookie() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage stage = stage(binding, noSessionRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll(
+                    () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType()),
+                    () -> assertTrue(request.responseSetCookies().isEmpty(),
+                            "a clearing cookie would delete a cookie value the browser may just have been given"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty()));
+        }
+
+        @Test
+        @DisplayName("redirects a navigation into login with the login cookie alone")
+        void redirectsNavigationWithoutClearingCookie() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
+
+            stage(binding, noSessionRefresh(), redirectLogin()).process(request);
+
+            assertAll(
+                    () -> assertEquals(Optional.of(302), request.shortCircuitStatus()),
+                    () -> assertEquals(List.of(BINDING_COOKIE), request.responseSetCookies(),
+                            "only the login binding cookie is emitted"));
+        }
+
+        @Test
+        @DisplayName("answers 401 without any cookie under reject, even for a navigation")
+        void rejectsWithoutAnyCookie() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage stage = stage(binding, noSessionRefresh(), redirectLogin(), OnFailure.REJECT);
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll(
+                    () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType()),
+                    () -> assertTrue(request.shortCircuitStatus().isEmpty()),
+                    () -> assertTrue(request.responseSetCookies().isEmpty()));
+        }
+
+        @Test
+        @DisplayName("leaves the session in place, so the next request with the live cookie succeeds")
+        void leavesTheSessionInPlace() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage answeringNoSession = stage(binding, noSessionRefresh(), redirectLogin());
+            PipelineRequest first = sessionRequest(Set.of(), xhrHeaders());
+            assertThrows(GatewayException.class, () -> answeringNoSession.process(first));
+            PipelineRequest next = sessionRequest(Set.of(), xhrHeaders());
+
+            stage(binding, identityRefresh(), redirectLogin()).process(next);
+
+            assertEquals(Optional.of(MEDIATED_TOKEN), next.mediatedBearer(),
+                    "nothing was destroyed: the one unauthenticated answer is followed by a served request");
+        }
+
+        @Test
+        @DisplayName("answers a request still carrying a re-issued-away cookie value 401 without a clearing cookie, and serves the new value")
+        void previousCookieValueIsUnauthenticatedOnce() {
+            ServerSessionBinding binding = new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT), CODEC);
+            SessionRecord live = session(MEDIATED_TOKEN);
+            String previousSetCookie = binding.bind(live, NOW).setCookieHeaders().getFirst();
+            String reissuedSetCookie = binding.persistReissuingCookie(live, NOW).orElseThrow()
+                    .setCookieHeaders().getFirst();
+            String previousCookie = previousSetCookie.substring(0, previousSetCookie.indexOf(';'));
+            String reissuedCookie = reissuedSetCookie.substring(0, reissuedSetCookie.indexOf(';'));
+            SessionAuthenticationStage stage = stage(binding, identityRefresh(), redirectLogin());
+            PipelineRequest inFlight = sessionRequest(Set.of(), headersWith(previousCookie, "application/json"));
+            PipelineRequest next = sessionRequest(Set.of(), headersWith(reissuedCookie, "application/json"));
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(inFlight));
+            stage.process(next);
+
+            assertAll("a step-up costs a request in flight one unauthenticated answer and nothing else",
+                    () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType()),
+                    () -> assertTrue(inFlight.responseSetCookies().isEmpty(),
+                            "no clearing cookie: it would delete the cookie value the browser was just given"),
+                    () -> assertEquals(Optional.of(MEDIATED_TOKEN), next.mediatedBearer(),
+                            "the request carrying the re-issued value is served"));
+        }
+
+        @Test
+        @DisplayName("does not count the request as an access")
+        void doesNotCountAsAccess() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN), IDLE_TIMEOUT);
+            SessionAuthenticationStage early = stageAt(clockAt(NOW.plusSeconds(500)), binding, noSessionRefresh());
+            PipelineRequest unanswered = sessionRequest(Set.of(), xhrHeaders());
+            assertThrows(GatewayException.class, () -> early.process(unanswered));
+            SessionAuthenticationStage atTheDeadline = stageAt(clockAt(NOW.plus(IDLE_TIMEOUT)), binding,
+                    identityRefresh());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            assertThrows(GatewayException.class, () -> atTheDeadline.process(request),
+                    "the session was idle from its creation, so it ended at the idle deadline");
+        }
+    }
+
     private static SessionAuthenticationStage stage(SessionBinding binding,
             SessionAuthenticationStage.TokenRefresh refresh, SessionAuthenticationStage.LoginInitiation login) {
         return stage(binding, refresh, login, OnFailure.REAUTHENTICATE);
@@ -714,12 +1079,17 @@ class SessionAuthenticationStageTest {
     }
 
     private static SessionBinding emptyBinding() {
-        return new ServerSessionBinding(new InMemorySessionStore(16), CODEC);
+        return new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT), CODEC);
     }
 
     static SessionBinding bindingWith(SessionRecord session) {
-        InMemorySessionStore store = new InMemorySessionStore(16);
-        store.create(session, NOW);
+        return bindingWith(session, NO_IDLE_EFFECT);
+    }
+
+    /** A server-mode binding holding {@code session} under {@link #COOKIE_HANDLE}, created at {@link #NOW}. */
+    private static SessionBinding bindingWith(SessionRecord session, Duration idleTimeout) {
+        InMemorySessionStore store = new InMemorySessionStore(16, idleTimeout);
+        store.create(session, COOKIE_HANDLE, NOW);
         return new ServerSessionBinding(store, CODEC);
     }
 
@@ -781,7 +1151,27 @@ class SessionAuthenticationStageTest {
     }
 
     private static String cookie() {
-        return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID;
+        return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + COOKIE_HANDLE;
+    }
+
+    /** A refresh seam whose second resolve found no session for the request and that destroyed nothing. */
+    private static SessionAuthenticationStage.TokenRefresh noSessionRefresh() {
+        return (session, cookieHeader, now) -> RefreshResult.noSession();
+    }
+
+    /** A stage over an explicit clock, for the cases that move time between two requests. */
+    private static SessionAuthenticationStage stageAt(Clock clock, SessionBinding binding,
+            SessionAuthenticationStage.TokenRefresh refresh) {
+        return new SessionAuthenticationStage(binding, refresh, unreachableScopeRefresh(), redirectLogin(),
+                unreachableWidening(), OnFailure.REAUTHENTICATE, null, clock);
+    }
+
+    private static Clock clockAt(Instant instant) {
+        return Clock.fixed(instant, ZoneOffset.UTC);
+    }
+
+    private static Map<String, List<String>> headersWith(String cookieHeader, String accept) {
+        return Map.of("cookie", List.of(cookieHeader), "accept", List.of(accept));
     }
 
     private static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers) {

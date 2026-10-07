@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -44,6 +45,7 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
@@ -136,7 +138,8 @@ class CallbackEndpointTest {
     void setUp() {
         pendingStore = new PendingAuthorizationStore.InMemory(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-        sessionStore = new InMemorySessionStore(16);
+        // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
+        sessionStore = new InMemorySessionStore(16, SESSION_TTL);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
         wideningCalls = new ArrayList<>();
@@ -238,10 +241,15 @@ class CallbackEndpointTest {
         Arrays.fill(key, (byte) 0x11);
         byte[] salt = new byte[32];
         Arrays.fill(salt, (byte) 0x22);
+        byte[] activityKey = new byte[32];
+        Arrays.fill(activityKey, (byte) 0x44);
         return new CookieSessionBinding(
                 new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
                         SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"), (byte) 1),
-                salt);
+                salt,
+                new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                        new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                SESSION_TTL);
     }
 
     /**
@@ -289,6 +297,16 @@ class CallbackEndpointTest {
         }
 
         @Override
+        public Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now) {
+            return delegate.persistReissuingCookie(updated, now);
+        }
+
+        @Override
+        public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
+            return delegate.recordAccess(session, cookieHeader, now);
+        }
+
+        @Override
         public void destroy(SessionRecord session) {
             delegate.destroy(session);
         }
@@ -309,8 +327,8 @@ class CallbackEndpointTest {
         }
 
         @Override
-        public String clearingSetCookieHeader() {
-            return delegate.clearingSetCookieHeader();
+        public List<String> clearingSetCookieHeaders() {
+            return delegate.clearingSetCookieHeaders();
         }
     }
 
@@ -491,8 +509,8 @@ class CallbackEndpointTest {
         void shouldStoreSession() {
             CallbackOutcome outcome = endpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
 
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            Optional<SessionRecord> session = sessionStore.resolve(sessionId, T0);
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            Optional<SessionRecord> session = sessionStore.resolve(cookieHandle, T0);
 
             assertTrue(session.isPresent(), "the session was created under the opaque id from the cookie");
             SessionRecord sessionRecord = session.get();
@@ -501,6 +519,31 @@ class CallbackEndpointTest {
             assertEquals(SUBJECT, sessionRecord.sub());
             assertEquals(IDP_SID, sessionRecord.sid());
             assertEquals(T0.plus(SESSION_TTL), sessionRecord.expiresAt(), "the session TTL is absolute from login");
+        }
+
+        @Test
+        @DisplayName("Should mint a fresh session id per login, keep it out of the cookie, and give the cookie the full ttl")
+        void shouldMintFreshSessionIdPerLogin() {
+            CallbackOutcome first = endpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
+            FlowContext secondFlow = FlowContext.create(CALLBACK_URI);
+            PendingAuthorizationRecord secondPending =
+                    PendingAuthorizationRecord.create(secondFlow, RETURN_URL, REQUESTED_SCOPES, T0);
+            pendingStore.store(secondPending);
+            CallbackOutcome second = endpoint.handle("code=auth-code&state=" + secondFlow.state(),
+                    cookiePair(bindingCodec.toSetCookieHeader(secondPending.id())), T0);
+
+            SessionRecord firstSession = storedSessionOf(first);
+            SessionRecord secondSession = storedSessionOf(second);
+            String firstSetCookie = first.setCookieHeaders().getFirst();
+
+            assertAll("a login creates a session of its own",
+                    () -> assertNotEquals(firstSession.sessionId(), secondSession.sessionId(),
+                            "each login mints a fresh session id"),
+                    () -> assertEquals(2, sessionStore.size(), "two logins are two sessions"),
+                    () -> assertFalse(firstSetCookie.contains(firstSession.sessionId()),
+                            "the session id never reaches the browser"),
+                    () -> assertTrue(firstSetCookie.contains("; Max-Age=" + SESSION_TTL.toSeconds() + ";"),
+                            "the login cookie carries the full ttl: " + firstSetCookie));
         }
 
         /**
@@ -540,8 +583,8 @@ class CallbackEndpointTest {
         }
 
         private SessionRecord storedSessionOf(CallbackOutcome outcome) {
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            return sessionStore.resolve(sessionId, T0).orElseThrow();
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(cookieHandle, T0).orElseThrow();
         }
 
         @Test
@@ -561,8 +604,8 @@ class CallbackEndpointTest {
             CallbackEndpoint scoped = endpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim), sessionBinding);
             CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
             assertTrue(outcome.isRedirect(), "the login completes");
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            return sessionStore.resolve(sessionId, T0).orElseThrow();
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(cookieHandle, T0).orElseThrow();
         }
 
         @Test
@@ -609,8 +652,8 @@ class CallbackEndpointTest {
             CallbackEndpoint scoped = endpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim), sessionBinding);
             CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
             assertTrue(outcome.isRedirect(), "the login completes");
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            return sessionStore.resolve(sessionId, T0).orElseThrow();
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(cookieHandle, T0).orElseThrow();
         }
 
         @Test
@@ -766,6 +809,18 @@ class CallbackEndpointTest {
             return sessionBinding.resolve(sessionCookie, CALLBACK_AT).orElseThrow();
         }
 
+        /**
+         * Does what a browser does with a widening's answer: it replaces the session cookie it holds by
+         * the one the answer set, when it set one. A server-mode widening re-issues the cookie value, so
+         * every later request of the test has to carry the returned one.
+         */
+        private void followReissuedCookie(CallbackOutcome outcome) {
+            outcome.setCookieHeaders().stream()
+                    .filter(header -> header.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "="))
+                    .findFirst()
+                    .ifPresent(header -> sessionCookie = cookiePair(header));
+        }
+
         private static void assertRefused(CallbackOutcome outcome) {
             assertEquals(403, outcome.status());
             assertNull(outcome.location(), "a refusal never redirects the browser round the widening again");
@@ -894,8 +949,22 @@ class CallbackEndpointTest {
 
                 assertEquals(302, outcome.status());
                 assertEquals(WIDEN_RETURN_URL, outcome.location());
-                assertEquals(List.of(bindingCodec.toClearingSetCookieHeader()), outcome.setCookieHeaders(),
-                        "the server-mode handle is unchanged, so only the binding cookie is cleared");
+                assertEquals(2, outcome.setCookieHeaders().size(), "the re-issued session cookie + the binding clear");
+                assertEquals(bindingCodec.toClearingSetCookieHeader(), outcome.setCookieHeaders().get(1));
+                String previousCookie = sessionCookie;
+                followReissuedCookie(outcome);
+                String reissuedSetCookie = outcome.setCookieHeaders().getFirst();
+                assertAll("the widening re-issued the cookie value",
+                        () -> assertNotEquals(previousCookie, sessionCookie,
+                                "the browser is handed a cookie value that differs from the one it sent"),
+                        () -> assertTrue(sessionBinding.resolve(previousCookie, CALLBACK_AT).isEmpty(),
+                                "the value the request carried no longer resolves"),
+                        () -> assertTrue(
+                                reissuedSetCookie.contains("; Max-Age=" + SESSION_TTL.minusSeconds(30).toSeconds() + ";"),
+                                "the re-issued cookie lives as long as the session still does: " + reissuedSetCookie),
+                        () -> assertFalse(reissuedSetCookie.contains(live.sessionId()),
+                                "the session id is not the cookie value"),
+                        () -> assertEquals(1, sessionStore.size(), "the widening created no second session"));
                 SessionRecord merged = resolveServerSession();
                 assertAll("merged into the live session",
                         () -> assertEquals(live.sessionId(), merged.sessionId(), "the same session, never a new one"),
@@ -919,8 +988,9 @@ class CallbackEndpointTest {
                 bindLive(sessionBinding);
                 pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
 
-                endpoint(grant(SUBJECT, ClaimValue.forPlainString("openid orders:read")), sessionBinding)
-                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+                followReissuedCookie(
+                        endpoint(grant(SUBJECT, ClaimValue.forPlainString("openid orders:read")), sessionBinding)
+                                .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT));
 
                 SessionRecord merged = resolveServerSession();
                 assertEquals(Set.of("openid", "orders:read"), merged.activeScopes(), "A is what the token carries");
@@ -938,6 +1008,7 @@ class CallbackEndpointTest {
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
 
                 assertTrue(outcome.isRedirect());
+                followReissuedCookie(outcome);
                 SessionRecord merged = resolveServerSession();
                 assertEquals(WIDENING_REQUEST, merged.activeScopes());
                 assertEquals(WIDENING_REQUEST, merged.grantedScopes());
@@ -953,6 +1024,7 @@ class CallbackEndpointTest {
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
 
                 assertTrue(outcome.isRedirect());
+                followReissuedCookie(outcome);
                 assertEquals(live.sessionId(), resolveServerSession().sessionId());
                 assertEquals(WIDENING_REQUEST, resolveServerSession().activeScopes());
             }
@@ -1131,6 +1203,7 @@ class CallbackEndpointTest {
                 CallbackOutcome outcome = endpoint(fullGrant(), interleaved)
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
 
+                followReissuedCookie(outcome);
                 SessionRecord merged = resolveServerSession();
                 assertAll("the same widening merges when the session is still there at the persist",
                         () -> assertEquals(302, outcome.status()),
@@ -1158,8 +1231,10 @@ class CallbackEndpointTest {
             /** Runs one widening round for {@link #WIDENING_REQUEST} answered by {@code exchange}. */
             private CallbackOutcome widenWith(CodeExchange exchange) {
                 pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
-                return endpoint(exchange, sessionBinding).handle("code=widen-code&state=" + wideningState,
-                        requestCookies(), CALLBACK_AT);
+                CallbackOutcome outcome = endpoint(exchange, sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+                followReissuedCookie(outcome);
+                return outcome;
             }
 
             @Test
@@ -1225,6 +1300,7 @@ class CallbackEndpointTest {
                 CallbackOutcome outcome = endpoint(exchange, sessionBinding)
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
                 assertEquals(302, outcome.status(), "precondition: the widening is merged");
+                followReissuedCookie(outcome);
             }
 
             /** Delivers a spec-shaped, sid-only back-channel logout token naming {@code sid}. */

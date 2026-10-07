@@ -4406,4 +4406,92 @@ class ConfigValidatorTest {
                     () -> errors.getFirst().message());
         }
     }
+
+    /**
+     * The session idle-timeout rule, in both session modes: a declared
+     * {@code oidc.session.idle_timeout_seconds} below {@code 1} or above the effective
+     * {@code ttl_seconds} refuses the boot, and an omitted one is accepted under any {@code ttl_seconds}.
+     * <p>
+     * Every case reads the refusals at the key's own pointer through the default rule set, so the group
+     * goes red when the rule is taken out of the validator. The numbers are literals: each is the
+     * boundary the rule states.
+     */
+    @Nested
+    @DisplayName("oidc.session.idle_timeout_seconds")
+    class SessionIdleTimeout {
+
+        private static final String POINTER = "/oidc/session/idle_timeout_seconds";
+
+        private List<ConfigError> idleTimeoutRefusals(String mode, @Nullable Integer ttlSeconds,
+                @Nullable Integer idleTimeoutSeconds) {
+            OidcConfig.Session session = OidcConfig.Session.builder().mode(mode).ttlSeconds(ttlSeconds)
+                    .idleTimeoutSeconds(idleTimeoutSeconds).build();
+            GatewayConfig gateway = validGateway().oidc(OidcConfig.builder().session(session).build()).build();
+            return validator.validate(gateway, List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        @ParameterizedTest(name = "mode {0}")
+        @ValueSource(strings = {OidcConfig.Session.MODE_SERVER, OidcConfig.Session.MODE_COOKIE})
+        @DisplayName("Should refuse a declared idle timeout above the effective ttl_seconds")
+        void shouldRefuseAnIdleTimeoutAboveTheTtl(String mode) {
+            List<ConfigError> refusals = idleTimeoutRefusals(mode, 600, 601);
+
+            assertEquals(1, refusals.size(), () -> "exactly one refusal at the key, got: " + refusals);
+            assertTrue(refusals.getFirst().message().contains("idle_timeout_seconds 601 exceeds the effective ttl_seconds 600"),
+                    () -> refusals.getFirst().message());
+        }
+
+        @Test
+        @DisplayName("Should compare a declared idle timeout with the default ttl_seconds when that is omitted")
+        void shouldCompareWithTheDefaultTtl() {
+            List<ConfigError> aboveTheDefault = idleTimeoutRefusals(OidcConfig.Session.MODE_SERVER, null, 3601);
+            List<ConfigError> atTheDefault = idleTimeoutRefusals(OidcConfig.Session.MODE_SERVER, null, 3600);
+
+            assertAll(
+                    () -> assertEquals(1, aboveTheDefault.size(), () -> "3601 exceeds the default 3600: " + aboveTheDefault),
+                    () -> assertEquals(List.of(), atTheDefault, "a value equal to the effective ttl is in range"));
+        }
+
+        @ParameterizedTest(name = "idle_timeout_seconds: {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Should refuse a non-positive declared idle timeout")
+        void shouldRefuseANonPositiveIdleTimeout(int nonPositive) {
+            List<ConfigError> refusals = idleTimeoutRefusals(OidcConfig.Session.MODE_SERVER, 3600, nonPositive);
+
+            assertEquals(1, refusals.size(), () -> "exactly one refusal at the key, got: " + refusals);
+            assertTrue(refusals.getFirst().message().contains("must be at least 1, but was " + nonPositive),
+                    () -> refusals.getFirst().message());
+        }
+
+        @ParameterizedTest(name = "ttl_seconds: {0}")
+        @ValueSource(ints = {1, 60, 600, 1800, 3600, 86400})
+        @DisplayName("Should accept an omitted idle timeout under any ttl_seconds")
+        void shouldAcceptAnOmittedIdleTimeout(int ttlSeconds) {
+            assertEquals(List.of(), idleTimeoutRefusals(OidcConfig.Session.MODE_SERVER, ttlSeconds, null),
+                    "an omitted key resolves to a value inside the range by construction");
+        }
+
+        @Test
+        @DisplayName("Should accept a declared idle timeout inside the range, at both boundaries (matched control)")
+        void shouldAcceptADeclaredIdleTimeoutInsideTheRange() {
+            assertAll("the refusals above are about the range, not about declaring the key",
+                    () -> assertEquals(List.of(), idleTimeoutRefusals(OidcConfig.Session.MODE_SERVER, 600, 1)),
+                    () -> assertEquals(List.of(), idleTimeoutRefusals(OidcConfig.Session.MODE_COOKIE, 600, 600)));
+        }
+
+        @Test
+        @DisplayName("Should record no idle-timeout refusal once the rule is absent from the rule set (the rule is what refuses)")
+        void shouldAttributeTheRefusalToTheRule() {
+            OidcConfig.Session session = OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER)
+                    .ttlSeconds(600).idleTimeoutSeconds(601).build();
+            GatewayConfig gateway = validGateway().oidc(OidcConfig.builder().session(session).build()).build();
+
+            List<ConfigError> withoutAnyRule = new ConfigValidator(List.of()).validate(gateway, List.of(), topologyWith());
+
+            assertEquals(List.of(), withoutAnyRule,
+                    "control: the model itself refuses nothing, so the refusal above is the validator rule's");
+        }
+    }
 }

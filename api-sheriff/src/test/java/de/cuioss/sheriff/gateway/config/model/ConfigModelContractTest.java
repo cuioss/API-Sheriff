@@ -34,6 +34,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
@@ -1944,6 +1945,65 @@ class ConfigModelContractTest {
                     () -> assertTrue(rendered.contains(KEY_FILE), "the key-file path is a location and is rendered"),
                     () -> assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted"),
                     () -> assertFalse(rendered.contains(SECRET), "the client-secret value must never appear"));
+        }
+    }
+
+    /**
+     * {@code oidc.session.idle_timeout_seconds}: the record keeps the declared value as declared and an
+     * omitted one absent, and {@code effectiveIdleTimeoutSeconds()} is the one resolution boot validation
+     * and the runtime share. The numbers are literals on purpose — each is the documented boundary.
+     */
+    @Nested
+    @DisplayName("OidcConfig.Session idle timeout")
+    class SessionIdleTimeout {
+
+        private static OidcConfig.Session session(@Nullable Integer ttlSeconds, @Nullable Integer idleTimeoutSeconds) {
+            return OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER).ttlSeconds(ttlSeconds)
+                    .idleTimeoutSeconds(idleTimeoutSeconds).build();
+        }
+
+        @Test
+        @DisplayName("keeps a declared idle timeout as declared and an omitted one absent")
+        void keepsTheDeclaredValueAndAnAbsentOneAbsent() {
+            assertAll("the record applies no default of its own",
+                    () -> assertEquals(120, session(3600, 120).idleTimeoutSeconds()),
+                    () -> assertNull(session(3600, null).idleTimeoutSeconds(),
+                            "an omitted idle_timeout_seconds stays absent; the effective value is resolved"));
+        }
+
+        @Test
+        @DisplayName("resolves a declared idle timeout to itself")
+        void resolvesADeclaredValueToItself() {
+            assertAll(
+                    () -> assertEquals(120, session(3600, 120).effectiveIdleTimeoutSeconds()),
+                    () -> assertEquals(3600, session(3600, 3600).effectiveIdleTimeoutSeconds(),
+                            "declaring it equal to ttl_seconds is how the idle timeout is switched off"));
+        }
+
+        @Test
+        @DisplayName("resolves an omitted idle timeout to the smaller of 1800 and the effective ttl_seconds")
+        void resolvesAnOmittedValue() {
+            assertAll("the default never exceeds the lifetime it is measured inside",
+                    () -> assertEquals(1800, OidcConfig.Session.DEFAULT_IDLE_TIMEOUT_SECONDS),
+                    () -> assertEquals(1800, session(7200, null).effectiveIdleTimeoutSeconds(),
+                            "a ttl above the default leaves the default"),
+                    () -> assertEquals(1800, session(1800, null).effectiveIdleTimeoutSeconds()),
+                    () -> assertEquals(600, session(600, null).effectiveIdleTimeoutSeconds(),
+                            "a ttl below the default is the idle timeout too, so such a deployment keeps booting"),
+                    () -> assertEquals(1800, session(null, null).effectiveIdleTimeoutSeconds(),
+                            "an omitted ttl_seconds is compared as its default of 3600"));
+        }
+
+        @Test
+        @DisplayName("renders the idle timeout in toString and still redacts the encryption key")
+        void rendersTheIdleTimeoutInToString() {
+            String key = "resolved-cookie-encryption-key";
+            String rendered = OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE)
+                    .encryptionKey(key).idleTimeoutSeconds(120).build().toString();
+
+            assertAll(
+                    () -> assertTrue(rendered.contains("idleTimeoutSeconds=120"), rendered),
+                    () -> assertFalse(rendered.contains(key), "the encryption key must never appear"));
         }
     }
 }

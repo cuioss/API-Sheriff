@@ -118,7 +118,8 @@ class SessionScopeTruthfulnessFlowTest {
     private record WideningCall(Set<String> scopes, boolean silent, FlowContext context) {
     }
 
-    private final InMemorySessionStore store = new InMemorySessionStore(16);
+    /** The idle timeout equals the absolute lifetime, so it is not in play in these flows. */
+    private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL);
     private final SessionBinding binding = new ServerSessionBinding(store,
             new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
     private final PendingAuthorizationStore.InMemory pendingStore = new PendingAuthorizationStore.InMemory(8);
@@ -189,10 +190,12 @@ class SessionScopeTruthfulnessFlowTest {
         bindLive(null);
         SessionAuthenticationStage stage = stage(OPENID);
         PipelineRequest firstNavigation = request(NAVIGATION_ACCEPT);
-        PipelineRequest secondNavigation = request(NAVIGATION_ACCEPT);
 
         stage.process(firstNavigation);
         CallbackOutcome firstRound = followWidening(firstNavigation, OPENID);
+        // Built only now: the merged widening re-issued the session cookie, and the browser's next
+        // navigation carries the value that widening returned.
+        PipelineRequest secondNavigation = request(NAVIGATION_ACCEPT);
         stage.process(secondNavigation);
         CallbackOutcome secondRound = followWidening(secondNavigation, OPENID);
 
@@ -268,7 +271,15 @@ class SessionScopeTruthfulnessFlowTest {
         String state = wideningCalls.getLast().context().state();
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> authorizationGrant(grantScope),
                 pendingStore, bindingCodec, binding, SESSION_TTL, sessionWidening);
-        return callback.handle("code=widening-code&state=" + state, bindingCookie + "; " + sessionCookie, NOW);
+        CallbackOutcome outcome = callback.handle("code=widening-code&state=" + state,
+                bindingCookie + "; " + sessionCookie, NOW);
+        // A merged widening re-issues the session cookie value; the browser holds the returned one from
+        // here on, and the previous value resolves nothing.
+        outcome.setCookieHeaders().stream()
+                .filter(header -> header.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "="))
+                .findFirst()
+                .ifPresent(header -> sessionCookie = cookiePair(header));
+        return outcome;
     }
 
     /** Binds the live session: {@code openid} active, both needed scopes granted. */

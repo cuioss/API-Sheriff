@@ -42,10 +42,12 @@ import org.jspecify.annotations.Nullable;
  * {@link RpInitiatedLogout#initiate} (which calls its token-revocation seam and builds the
  * {@code end_session_endpoint} redirect carrying the {@code id_token_hint}, the exact
  * {@code post_logout_redirect_uri}, and the single-use logout-state cookie), then destroys the
- * session ({@link SessionBinding#destroy}) and clears the session cookie. The local session
+ * session ({@link SessionBinding#destroy}) and clears every cookie the binding sets
+ * ({@link SessionBinding#clearingSetCookieHeaders()} — in cookie mode the session cookie and its
+ * activity cookie). The local session
  * destruction is the authoritative, immediately-effective logout; the IdP round-trip is layered on
  * top. A logout request that carries <em>no</em> live session is already logged out — the endpoint
- * clears any stale session cookie and lands the browser on
+ * clears any stale cookie of the binding and lands the browser on
  * {@link RpInitiatedLogout#finalRedirect()} directly, bypassing the IdP round-trip (there is no
  * {@code id_token_hint} to send).
  * <p>
@@ -98,7 +100,7 @@ public final class LogoutEndpoint {
         if (resolved.isEmpty()) {
             LOGGER.debug("RP-initiated logout without a live session — already logged out, landing on final_redirect");
             return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
-                    List.of(sessionBinding.clearingSetCookieHeader()));
+                    sessionBinding.clearingSetCookieHeaders());
         }
         SessionRecord session = resolved.get();
 
@@ -115,11 +117,11 @@ public final class LogoutEndpoint {
             LOGGER.debug(initiationFailure,
                     "RP-initiated logout — end-session redirect construction failed; local session destroyed, landing on final_redirect");
             return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
-                    List.of(sessionBinding.clearingSetCookieHeader()));
+                    sessionBinding.clearingSetCookieHeaders());
         }
         sessionBinding.destroy(session);
         List<String> setCookies = new ArrayList<>(redirect.setCookieHeaders());
-        setCookies.add(sessionBinding.clearingSetCookieHeader());
+        setCookies.addAll(sessionBinding.clearingSetCookieHeaders());
         LOGGER.debug("RP-initiated logout — session destroyed, redirecting to the IdP end_session_endpoint");
         return LogoutOutcome.redirect(redirect.location(), setCookies);
     }

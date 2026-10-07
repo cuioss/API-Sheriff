@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.Set;
+import javax.crypto.spec.SecretKeySpec;
 
 
 import org.junit.jupiter.api.DisplayName;
@@ -118,6 +119,73 @@ class CookieKeyMaterialTest {
 
             assertEquals(32, first.length, "the salt is a full SHA-256 digest");
             assertFalse(Arrays.equals(first, second), "the salt is bound to the sealing key");
+        }
+    }
+
+    /**
+     * The activity key has no accessor, so its separation from the sealing key is proven through what
+     * the two codecs accept from each other.
+     */
+    @Nested
+    @DisplayName("Activity key")
+    class ActivityKey {
+
+        private static final String SESSION_IDENTITY =
+                Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[16]);
+
+        @Test
+        @DisplayName("Should derive the same activity key for the same sealing key")
+        void shouldDeriveTheSameActivityKeyForTheSameSealingKey() {
+            SessionActivityCookieCodec first = CookieKeyMaterial.resolve(CURRENT_KEY_B64).activityCodec(COOKIE_NAME);
+            SessionActivityCookieCodec second = CookieKeyMaterial.resolve(CURRENT_KEY_B64).activityCodec(COOKIE_NAME);
+
+            String sealed = first.seal(SESSION_IDENTITY, LOGIN);
+
+            assertEquals(Optional.of(new SessionActivityCookieCodec.Activity(SESSION_IDENTITY, LOGIN)),
+                    second.unseal(sealed, LOGIN),
+                    "two deployments holding the same sealing key read each other's activity cookie");
+        }
+
+        @Test
+        @DisplayName("Should derive another activity key for another sealing key")
+        void shouldDeriveAnotherActivityKeyForAnotherSealingKey() {
+            SessionActivityCookieCodec current = CookieKeyMaterial.resolve(CURRENT_KEY_B64).activityCodec(COOKIE_NAME);
+            SessionActivityCookieCodec other = CookieKeyMaterial.resolve(OTHER_KEY_B64).activityCodec(COOKIE_NAME);
+
+            assertTrue(current.unseal(other.seal(SESSION_IDENTITY, LOGIN), LOGIN).isEmpty(),
+                    "replacing the sealing key replaces the activity key with it");
+        }
+
+        @Test
+        @DisplayName("Should seal the activity cookie under a key that is not the sealing key")
+        void shouldNotSealUnderTheSealingKey() {
+            CookieKeyMaterial material = CookieKeyMaterial.resolve(CURRENT_KEY_B64);
+            byte[] sealingKeyBytes = Base64.getDecoder().decode(CURRENT_KEY_B64);
+            String sealedByMaterial = material.activityCodec(COOKIE_NAME).seal(SESSION_IDENTITY, LOGIN);
+            byte stampedKeyId = keyIdOf(sealedByMaterial);
+            // A codec over the sealing key itself, stamped with the very id the derived codec uses, so the
+            // key-id gate lets the value through and only the key decides.
+            SessionActivityCookieCodec overSealingKey = new SessionActivityCookieCodec(COOKIE_NAME,
+                    new SecretKeySpec(sealingKeyBytes, "AES"), stampedKeyId);
+
+            assertTrue(overSealingKey.unseal(sealedByMaterial, LOGIN).isEmpty(),
+                    "the sealing key does not open a value the activity codec sealed");
+            assertTrue(material.activityCodec(COOKIE_NAME)
+                    .unseal(overSealingKey.seal(SESSION_IDENTITY, LOGIN), LOGIN).isEmpty(),
+                    "and the activity codec does not open a value sealed under the sealing key");
+        }
+
+        @Test
+        @DisplayName("Should keep the sealed session cookie and the activity cookie unreadable by each other's codec")
+        void shouldKeepTheTwoCodecsApart() throws Exception {
+            CookieKeyMaterial material = CookieKeyMaterial.resolve(CURRENT_KEY_B64);
+            SealedSessionCookieCodec sessionCodec = material.codec(COOKIE_NAME, TTL, BUDGET);
+            SessionActivityCookieCodec activityCodec = material.activityCodec(COOKIE_NAME);
+
+            assertTrue(activityCodec.unseal(sessionCodec.seal(payload()), LOGIN).isEmpty(),
+                    "a sealed session value is no activity cookie");
+            assertTrue(sessionCodec.unseal(activityCodec.seal(SESSION_IDENTITY, LOGIN)).isEmpty(),
+                    "a sealed activity value is no session");
         }
     }
 

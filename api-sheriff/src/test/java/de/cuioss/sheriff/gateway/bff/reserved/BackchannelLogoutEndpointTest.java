@@ -33,6 +33,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
@@ -90,7 +91,7 @@ class BackchannelLogoutEndpointTest {
 
     /** The store-backed binding — {@code SUPPORTED} IdP destruction, so the gate stays open. */
     private static SessionBinding serverBinding() {
-        return new ServerSessionBinding(new InMemorySessionStore(16),
+        return new ServerSessionBinding(new InMemorySessionStore(16, Duration.ofHours(8)),
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(8)));
     }
 
@@ -101,9 +102,13 @@ class BackchannelLogoutEndpointTest {
         SecretKey sealingKey = new SecretKeySpec(key, "AES");
         byte[] salt = new byte[32];
         Arrays.fill(salt, (byte) 0x22);
+        byte[] activityKey = new byte[32];
+        Arrays.fill(activityKey, (byte) 0x44);
         return new CookieSessionBinding(
                 new SealedSessionCookieCodec(COOKIE_NAME, Duration.ofHours(8),
-                        SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, sealingKey, CURRENT_KEY_ID), salt);
+                        SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, sealingKey, CURRENT_KEY_ID), salt,
+                new SessionActivityCookieCodec(COOKIE_NAME, new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                Duration.ofHours(8));
     }
 
     private BackchannelLogoutEndpoint endpoint(AtomicBoolean verifierInvoked) {

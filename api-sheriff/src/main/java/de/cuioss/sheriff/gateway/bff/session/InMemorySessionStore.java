@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.session;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,35 +30,45 @@ import java.util.Set;
  * The single-node in-memory {@link SessionStore} — the only supported store for
  * {@code mode: server} (D3).
  * <p>
- * Sessions are keyed by their opaque id in a primary map. Two secondary indexes — by IdP
- * {@code sid} and by {@code sub} — give O(1) back-channel logout destruction without scanning
- * the primary map. Every removal path (direct destroy, back-channel destroy, lazy TTL eviction,
- * at-capacity sweep, and the eviction of the record a write replaces) keeps the indexes consistent
- * through a single {@link #removeInternal} seam.
+ * Sessions are keyed by their stable session id in a primary map. Beside each record the store holds
+ * the session's current cookie handle and its last-access instant; a second map resolves a cookie
+ * handle to the session id. Two secondary indexes — by IdP {@code sid} and by {@code sub} — give O(1)
+ * back-channel logout destruction without scanning the primary map. Every removal path (direct
+ * destroy, back-channel destroy, lazy eviction on resolve, the sweep, and the eviction of the record a
+ * write replaces) keeps the handle map and the indexes consistent through a single
+ * {@link #removeInternal} seam, so a removed session never leaves a handle behind.
  * <p>
- * <strong>Two writes.</strong> {@link #create} stores a new session and is the login's write.
- * {@link #replaceIfPresent} updates a session that already exists — the write a refresh or a
- * widening makes — and stores nothing when the id is not held, so a write that was in flight while
- * the session was destroyed does not bring it back. The presence check and the replacement run
- * under the same monitor as {@link #destroyById}, {@link #destroyBySid} and {@link #destroyBySub},
- * so no destruction can take effect between them.
+ * <strong>Three writes.</strong> {@link #create} stores a new session and is the login's write.
+ * {@link #replaceIfPresent} updates a session that already exists — the write a refresh makes — and
+ * keeps the handle the store holds for it. {@link #replaceAndReissueHandle} updates it and swaps the
+ * handle — the write a step-up or a widening makes. Neither updating write stores anything when the id
+ * is not held, so a write that was in flight while the session was destroyed does not bring it back.
+ * In each of them the presence check and the write run under the same monitor as
+ * {@link #destroyById}, {@link #destroyBySid} and {@link #destroyBySub}, so no destruction can take
+ * effect between them.
  * <p>
- * The absolute TTL is enforced two ways, with <strong>no per-session timer threads, no scheduler,
- * and no periodic task</strong>: lazily on {@link #resolve} (an expired session is evicted as it is
- * looked up) and opportunistically by {@link #sweepExpired}, whose one automatic trigger is a
- * <em>capacity-consuming</em> {@link #create} — one introducing a session id the store does not yet
- * hold — finding the store at its {@code maxSessions} bound. A write that replaces an already-stored
- * id — {@link #replaceIfPresent}, or a {@link #create} naming an id the store holds — replaces a
- * record already counted against the bound, so it consumes no capacity and never sweeps.
+ * <strong>The handle is store-side state, not a component of the record.</strong> A refresh that
+ * resolved the session before a re-issue and replaces the record after it writes the record only: the
+ * handle it leaves in place is the one read under the monitor at that moment, which is the re-issued
+ * one. It cannot put the previous handle back.
  * <p>
- * That trigger is what makes the bound a ceiling on <em>live</em> sessions rather than on
- * accumulated ones. An expired session that nothing has resolved since it lapsed still occupies its
- * slot, so without a reclaiming trigger a store could sit permanently full of dead sessions and
- * refuse every login. A capacity-consuming creation therefore sweeps once at the bound and re-tests
- * it; only a store still full of live sessions afterwards is refused, fail-closed.
+ * <strong>Two deadlines.</strong> A session is expired at the earlier of its absolute lifetime and its
+ * idle deadline, the last access plus the idle timeout. {@link #recordAccess} moves the last access
+ * and writes that instant alone, never the record, so it cannot overwrite token material a concurrent
+ * refresh has just stored. Expiry is enforced two ways: lazily on {@link #resolve} (an expired session
+ * is evicted as it is looked up) and by {@link #sweepExpired}, which the session runtime's periodic
+ * task calls and which a <em>capacity-consuming</em> {@link #create} — one introducing a session id
+ * the store does not yet hold — calls on finding the store at its {@code maxSessions} bound. This
+ * store itself starts no thread and no timer. A write that replaces an already-stored id — either
+ * updating write, or a {@link #create} naming an id the store holds — replaces a record already
+ * counted against the bound, so it consumes no capacity and never sweeps.
+ * <p>
+ * The sweep at the bound is what makes the bound a ceiling on <em>live</em> sessions rather than on
+ * accumulated ones: a capacity-consuming creation sweeps once at the bound and re-tests it; only a
+ * store still full of live sessions afterwards is refused, fail-closed.
  * <p>
  * <strong>Thread safety.</strong> Every operation is guarded by the instance monitor, so each one is
- * atomic with respect to every other.
+ * atomic with respect to every other. No operation is split across two calls.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -65,30 +76,41 @@ import java.util.Set;
 public final class InMemorySessionStore implements SessionStore {
 
     private final int maxSessions;
-    private final Map<String, SessionRecord> byId = new HashMap<>();
+    private final Duration idleTimeout;
+    private final Map<String, HeldSession> byId = new HashMap<>();
+    private final Map<String, String> idByHandle = new HashMap<>();
     private final Map<String, Set<String>> bySid = new HashMap<>();
     private final Map<String, Set<String>> bySub = new HashMap<>();
 
     /**
-     * Creates a store bounded to {@code maxSessions} live sessions.
+     * Creates a store bounded to {@code maxSessions} live sessions, each ending after
+     * {@code idleTimeout} without a recorded access.
      *
      * @param maxSessions the hard capacity bound; must be positive
-     * @throws IllegalArgumentException when {@code maxSessions} is not positive
+     * @param idleTimeout how long a session may go without a recorded access before it is expired;
+     *                    must be positive
+     * @throws IllegalArgumentException when {@code maxSessions} or {@code idleTimeout} is not positive
      */
-    public InMemorySessionStore(int maxSessions) {
+    public InMemorySessionStore(int maxSessions, Duration idleTimeout) {
         if (maxSessions <= 0) {
             throw new IllegalArgumentException("maxSessions must be positive, but was " + maxSessions);
         }
+        Objects.requireNonNull(idleTimeout, "idleTimeout");
+        if (idleTimeout.isZero() || idleTimeout.isNegative()) {
+            throw new IllegalArgumentException("idleTimeout must be positive, but was " + idleTimeout);
+        }
         this.maxSessions = maxSessions;
+        this.idleTimeout = idleTimeout;
     }
 
     @Override
-    public synchronized void create(SessionRecord session, Instant now) {
+    public synchronized void create(SessionRecord session, String cookieHandle, Instant now) {
         Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(cookieHandle, "cookieHandle");
         Objects.requireNonNull(now, "now");
         // An id the store already holds names a record already counted against the bound, so storing
         // it consumes no new capacity and is not refused at the ceiling. A rotated or widened session
-        // does not take this path — it is written through replaceIfPresent, which never creates.
+        // does not take this path — it is written through an updating write, which never creates.
         if (!byId.containsKey(session.sessionId()) && byId.size() >= maxSessions) {
             // Sweep once, then re-test: expired sessions still hold their slots until something
             // reclaims them, and reaching the bound is the trigger. A store still at the bound after
@@ -98,7 +120,7 @@ public final class InMemorySessionStore implements SessionStore {
                 throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
             }
         }
-        store(session);
+        store(session, cookieHandle, now);
     }
 
     @Override
@@ -108,45 +130,93 @@ public final class InMemorySessionStore implements SessionStore {
         // logout or a back-channel logout either ran before the check — and nothing is written — or
         // runs after the replacement and removes it. There is no window in which a destroyed session
         // is written back.
-        if (!byId.containsKey(session.sessionId())) {
+        HeldSession held = byId.get(session.sessionId());
+        if (held == null) {
             return false;
         }
-        store(session);
+        // The handle is the one held NOW, read under the monitor: a re-issue that ran since the caller
+        // resolved the session stays in force.
+        store(session, held.cookieHandle, held.lastAccess);
         return true;
     }
 
+    @Override
+    public synchronized boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle) {
+        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(newCookieHandle, "newCookieHandle");
+        // One atomic step with every destroy method, exactly as replaceIfPresent: a session destroyed
+        // before the check is not written back and its new handle is never registered.
+        HeldSession held = byId.get(session.sessionId());
+        if (held == null) {
+            return false;
+        }
+        // store() drops the previous handle through removeInternal before it registers the new one, so
+        // the previous cookie value resolves nothing from here on. Last access is carried over: a
+        // re-issue is not an access.
+        store(session, newCookieHandle, held.lastAccess);
+        return true;
+    }
+
+    @Override
+    public synchronized void recordAccess(String sessionId, Instant now) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(now, "now");
+        HeldSession held = byId.get(sessionId);
+        // Only the instant is written, never the record: the record a concurrent refresh stored under
+        // this monitor a moment ago stays exactly as that refresh left it.
+        if (held != null && now.isAfter(held.lastAccess)) {
+            held.lastAccess = now;
+        }
+    }
+
     /**
-     * Stores {@code session} under its id, replacing any record already held there, and brings both
-     * secondary indexes in line with it. Callers hold the instance monitor.
+     * Stores {@code session} under its id with {@code cookieHandle} and {@code lastAccess} beside it,
+     * replacing any record — and dropping any handle — already held there, and brings both secondary
+     * indexes in line with it. Callers hold the instance monitor.
+     *
+     * @throws IllegalStateException when {@code cookieHandle} resolves to a different session
      */
-    private void store(SessionRecord session) {
+    private void store(SessionRecord session, String cookieHandle, Instant lastAccess) {
+        String sessionId = session.sessionId();
+        String owner = idByHandle.get(cookieHandle);
+        if (owner != null && !owner.equals(sessionId)) {
+            // Handles are 256 random bits, so this is not reachable by chance. Refusing it keeps a
+            // caller that passed a handle twice from re-pointing another session's cookie.
+            throw new IllegalStateException("cookie handle already resolves to another session");
+        }
         // The record may carry a different sub or sid than the one it replaces, and a deindex is
         // only ever keyed by the record's OWN sub/sid — so the previous record leaves through the
         // same removeInternal seam every other removal path uses. Left indexed, its stale sub/sid
         // would keep resolving to this id, and a later destroyBySub/destroyBySid on that stale key
-        // would destroy the replacement and report a phantom deletion.
-        removeInternal(session.sessionId());
-        byId.put(session.sessionId(), session);
-        index(bySub, session.sub(), session.sessionId());
+        // would destroy the replacement and report a phantom deletion. The same seam drops the
+        // previous handle.
+        removeInternal(sessionId);
+        byId.put(sessionId, new HeldSession(session, cookieHandle, lastAccess));
+        idByHandle.put(cookieHandle, sessionId);
+        index(bySub, session.sub(), sessionId);
         String sid = session.sid();
         if (sid != null) {
-            index(bySid, sid, session.sessionId());
+            index(bySid, sid, sessionId);
         }
     }
 
     @Override
-    public synchronized Optional<SessionRecord> resolve(String sessionId, Instant now) {
-        Objects.requireNonNull(sessionId, "sessionId");
+    public synchronized Optional<SessionRecord> resolve(String cookieHandle, Instant now) {
+        Objects.requireNonNull(cookieHandle, "cookieHandle");
         Objects.requireNonNull(now, "now");
-        SessionRecord session = byId.get(sessionId);
-        if (session == null) {
+        String sessionId = idByHandle.get(cookieHandle);
+        if (sessionId == null) {
             return Optional.empty();
         }
-        if (session.isExpired(now)) {
+        HeldSession held = byId.get(sessionId);
+        if (held == null) {
+            return Optional.empty();
+        }
+        if (isExpired(held, now)) {
             removeInternal(sessionId);
             return Optional.empty();
         }
-        return Optional.of(session);
+        return Optional.of(held.session);
     }
 
     @Override
@@ -171,8 +241,8 @@ public final class InMemorySessionStore implements SessionStore {
     public synchronized int sweepExpired(Instant now) {
         Objects.requireNonNull(now, "now");
         List<String> expired = new ArrayList<>();
-        for (Map.Entry<String, SessionRecord> entry : byId.entrySet()) {
-            if (entry.getValue().isExpired(now)) {
+        for (Map.Entry<String, HeldSession> entry : byId.entrySet()) {
+            if (isExpired(entry.getValue(), now)) {
                 expired.add(entry.getKey());
             }
         }
@@ -181,10 +251,18 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     /**
-     * @return the current number of live sessions
+     * @return the current number of stored sessions
      */
     public synchronized int size() {
         return byId.size();
+    }
+
+    /**
+     * Whether a held session is expired at {@code now}: past its absolute lifetime, or idle for the
+     * idle timeout or longer — the earlier of the two deadlines. Both are inclusive of the boundary.
+     */
+    private boolean isExpired(HeldSession held, Instant now) {
+        return held.session.isExpired(now) || !now.isBefore(held.lastAccess.plus(idleTimeout));
     }
 
     // java:S2589 — bySub/bySid.get() returns null for an unknown sub/sid, so the null guard is
@@ -200,10 +278,12 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     private void removeInternal(String sessionId) {
-        SessionRecord session = byId.remove(sessionId);
-        if (session == null) {
+        HeldSession held = byId.remove(sessionId);
+        if (held == null) {
             return;
         }
+        idByHandle.remove(held.cookieHandle);
+        SessionRecord session = held.session;
         deindex(bySub, session.sub(), sessionId);
         String sid = session.sid();
         if (sid != null) {
@@ -223,6 +303,23 @@ public final class InMemorySessionStore implements SessionStore {
         sessionIds.remove(sessionId);
         if (sessionIds.isEmpty()) {
             map.remove(key);
+        }
+    }
+
+    /**
+     * One stored session: the record, plus the two pieces of store-side state that are deliberately
+     * not components of it. Read and written only under the store's monitor.
+     */
+    private static final class HeldSession {
+
+        private final SessionRecord session;
+        private final String cookieHandle;
+        private Instant lastAccess;
+
+        HeldSession(SessionRecord session, String cookieHandle, Instant lastAccess) {
+            this.session = session;
+            this.cookieHandle = cookieHandle;
+            this.lastAccess = lastAccess;
         }
     }
 }
