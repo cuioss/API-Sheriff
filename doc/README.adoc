@@ -180,6 +180,8 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
 | link:adr/0005-module-structure.adoc[ADR-0005]
 | One Quarkus module for now (no separate core module yet); keep the framework-agnostic seam
   clean by package layout + an arch-gate, so a core module is cheap to extract later.
+  *(Status: superseded by
+  link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062].)*
 
 | link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]
 | Stream data-plane bodies with backpressure; use the `HttpResult<T>` materialize-the-body
@@ -296,10 +298,17 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   the resulting health state is liveness -- readiness stays asserted where
   link:adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031]
   puts it. *(Status: accepted.)*
+
+| link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+| Where the Quarkus platform already supplies a mechanism the gateway uses it, and a hand-rolled
+  component stays only with a recorded reason. Supersedes
+  link:adr/0005-module-structure.adoc[ADR-0005]: the framework-agnostic core rule and its
+  six-package gate are retired, and a narrowed gate keeps the five pre-boot configuration packages
+  free of framework dependencies. *(Status: accepted.)*
 |===
 
 NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035, ADR-0038, and every ADR from
-ADR-0040 on are recorded in link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
+ADR-0040 through ADR-0061 are recorded in link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
 table as a curated entry point; a missing row is index drift, never a withdrawn decision.
 
 == Reading Order

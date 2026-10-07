@@ -21,9 +21,10 @@ to *run* the finished gateway).
   forwarded-header resolution), `token-sheriff-validation`, `token-sheriff-client`, logging and
   testing -- and how they are wired in.
 
-| link:../adr/0005-module-structure.adoc[ADR-0005 -- Module Structure]
-| Why the project is one Quarkus module today, with a package-layout + arch-gate seam kept
-  clean so a core module is cheap to extract later.
+| link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062 -- Platform Mechanisms Before Hand-Rolled Ones]
+| The module rule: where the Quarkus platform already supplies a mechanism, use it; a hand-rolled
+  component stays only with a recorded reason. The ADR lists the components that stay and why, and
+  defines the one package rule still enforced, the pre-boot gate.
 
 | link:sonar-quality-gate.adoc[SonarCloud Quality Gate -- Compliance Policy]
 | The rules around the authoritative, blocking SonarCloud gate -- zero new findings, never
@@ -179,8 +180,11 @@ Documents in `doc/development/` cover:
   `demo-client`) and the canonical build commands.
 * *Test* -- the unit, module, and integration test layers, the CUI test generator, and the
   coverage floor.
-* *Module layout* -- package structure, the framework-agnostic seam
-  (link:../adr/0005-module-structure.adoc[ADR-0005]), and the arch-gate that guards it.
+* *Module layout* -- package structure, the platform-first rule
+  (link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]),
+  and the narrowed pre-boot gate `PreBootFrameworkFreeArchTest`, which keeps the five pre-boot
+  configuration packages free of framework dependencies
+  (link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[the narrowed pre-boot rule]).
 * *Conventions* -- the project-wide rules recorded in `CLAUDE.md` (build commands, the
   pre-commit process, the pre-1.0 rules, and the code, logging, testing and Javadoc standards).
 
