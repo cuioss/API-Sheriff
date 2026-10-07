@@ -29,7 +29,6 @@ import java.util.Optional;
 import java.util.Set;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -171,7 +170,7 @@ class CookieKeyMaterialTest {
             assertTrue(overSealingKey.unseal(sealedByMaterial, LOGIN).isEmpty(),
                     "the sealing key does not open a value the activity codec sealed");
             assertTrue(material.activityCodec(COOKIE_NAME)
-                    .unseal(overSealingKey.seal(SESSION_IDENTITY, LOGIN), LOGIN).isEmpty(),
+                            .unseal(overSealingKey.seal(SESSION_IDENTITY, LOGIN), LOGIN).isEmpty(),
                     "and the activity codec does not open a value sealed under the sealing key");
         }
 

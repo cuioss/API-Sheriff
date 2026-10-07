@@ -55,7 +55,6 @@ import java.util.stream.Stream;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -232,12 +231,12 @@ class TokenRefreshCoordinatorTest {
 
     private SessionRecord storedSession() {
         SessionRecord live = session(CURRENT_REFRESH);
-        create(store,live, NOW);
+        create(store, live, NOW);
         return live;
     }
 
     private boolean sessionResolvable(Instant at) {
-        return resolveById(store,SESSION_ID, at).isPresent();
+        return resolveById(store, SESSION_ID, at).isPresent();
     }
 
     private static RefreshExchange throwing(RuntimeException failure) {
@@ -276,7 +275,7 @@ class TokenRefreshCoordinatorTest {
         void shouldReturnCurrentWhenNoRefreshToken() {
             AtomicInteger calls = new AtomicInteger();
             SessionRecord live = session(null);
-            create(store,live, NOW);
+            create(store, live, NOW);
             TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> {
                 calls.incrementAndGet();
                 return rotation();
@@ -325,7 +324,7 @@ class TokenRefreshCoordinatorTest {
             coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(1, calls.get());
-            SessionRecord persisted = resolveById(store,SESSION_ID, NOW).orElseThrow();
+            SessionRecord persisted = resolveById(store, SESSION_ID, NOW).orElseThrow();
             assertEquals(ROTATED_ACCESS, persisted.accessToken(), "the store now serves the rotated token");
         }
     }
@@ -366,7 +365,7 @@ class TokenRefreshCoordinatorTest {
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
             assertEquals(ACTIVE_SCOPES, rotatedScopes(outcome));
-            assertEquals(ACTIVE_SCOPES, resolveById(store,SESSION_ID, NOW).orElseThrow().activeScopes(),
+            assertEquals(ACTIVE_SCOPES, resolveById(store, SESSION_ID, NOW).orElseThrow().activeScopes(),
                     "the persisted session carries the new A to the next request");
         }
 
@@ -410,7 +409,7 @@ class TokenRefreshCoordinatorTest {
             });
 
             coordinator.refresh(live, COOKIE_HEADER, NOW);
-            SessionRecord rotated = resolveById(store,SESSION_ID, NOW).orElseThrow();
+            SessionRecord rotated = resolveById(store, SESSION_ID, NOW).orElseThrow();
             coordinator.refresh(rotated, COOKIE_HEADER, NOW);
 
             assertEquals(List.of(ACTIVE_SCOPES, Set.of("openid")), requested,
@@ -450,7 +449,7 @@ class TokenRefreshCoordinatorTest {
                     rotation("openid profile email orders:read", RotationResult.ScopeDelta.EQUAL));
 
             assertEquals(GRANTED_SCOPES, rotated.grantedScopes());
-            assertEquals(GRANTED_SCOPES, resolveById(store,SESSION_ID, NOW).orElseThrow().grantedScopes(),
+            assertEquals(GRANTED_SCOPES, resolveById(store, SESSION_ID, NOW).orElseThrow().grantedScopes(),
                     "the persisted session carries S unchanged to the next request");
         }
 
@@ -492,8 +491,8 @@ class TokenRefreshCoordinatorTest {
             byte[] salt = new byte[32];
             Arrays.fill(salt, (byte) 0x22);
             CookieSessionBinding cookieBinding = new CookieSessionBinding(new SealedSessionCookieCodec(
-                    SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
-                    SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, key, (byte) 1), salt, activityCodec(),
+                            SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                            SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, key, (byte) 1), salt, activityCodec(),
                     SESSION_TTL);
             String setCookie = cookieBinding.bind(session(CURRENT_REFRESH), NOW).setCookieHeaders().getFirst();
             String cookieHeader = setCookie.substring(0, setCookie.indexOf(';'));
@@ -635,7 +634,7 @@ class TokenRefreshCoordinatorTest {
                     NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF));
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, recovered.kind());
-            assertEquals(ROTATED_ACCESS, resolveById(store,SESSION_ID, NOW).orElseThrow().accessToken());
+            assertEquals(ROTATED_ACCESS, resolveById(store, SESSION_ID, NOW).orElseThrow().accessToken());
         }
     }
 
@@ -727,7 +726,7 @@ class TokenRefreshCoordinatorTest {
                             "its still-valid access token is mediated"),
                     () -> assertEquals(RefreshOutcome.Kind.UNAVAILABLE, onceExpired.kind(),
                             "an access token that expired inside the window leaves the request without one"),
-                    () -> assertTrue(resolveById(saturationStore,"untracked", NOW.plusSeconds(4)).isPresent(),
+                    () -> assertTrue(resolveById(saturationStore, "untracked", NOW.plusSeconds(4)).isPresent(),
                             "the overflow window never ends a session"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
         }
@@ -753,7 +752,7 @@ class TokenRefreshCoordinatorTest {
         void shouldKeepPerSessionBehaviourForTrackedSession() {
             TokenRefreshCoordinator coordinator = failingCoordinator(NEAR);
             saturate(coordinator);
-            SessionRecord tracked = resolveById(saturationStore,SATURATING_PREFIX + 0, NOW).orElseThrow();
+            SessionRecord tracked = resolveById(saturationStore, SATURATING_PREFIX + 0, NOW).orElseThrow();
             Instant overflowOpened = NOW.plusSeconds(3);
             Instant ownWindowElapsed = NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF);
             refresh(coordinator, stored("overflowing"), overflowOpened);
@@ -830,7 +829,7 @@ class TokenRefreshCoordinatorTest {
                     () -> assertTrue(outcomes.stream().allMatch(o -> o.kind() == RefreshOutcome.Kind.DEFERRED),
                             "every contender keeps its session with a still-valid access token: " + outcomes),
                     () -> assertTrue(contenders.stream().allMatch(
-                                    c -> resolveById(saturationStore,c.sessionId(), windowElapsed).isPresent()),
+                                    c -> resolveById(saturationStore, c.sessionId(), windowElapsed).isPresent()),
                             "no contender's session was ended"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
         }
@@ -939,7 +938,7 @@ class TokenRefreshCoordinatorTest {
                     () -> assertTrue(outcomes.stream().allMatch(o -> o.kind() == RefreshOutcome.Kind.DEFERRED),
                             "every contender keeps its session with a still-valid access token: " + outcomes),
                     () -> assertTrue(contenders.stream().allMatch(
-                                    c -> resolveById(saturationStore,c.sessionId(), insideSaturatingWindows).isPresent()),
+                                    c -> resolveById(saturationStore, c.sessionId(), insideSaturatingWindows).isPresent()),
                             "no contender's session was ended"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_DEFERRED_ID);
         }
@@ -1023,7 +1022,7 @@ class TokenRefreshCoordinatorTest {
         private void refailTracked(TokenRefreshCoordinator coordinator, Instant at) {
             TestLogLevel.ERROR.addLogger(TokenRefreshCoordinator.class);
             for (int i = 0; i < TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES; i++) {
-                refresh(coordinator, resolveById(saturationStore,SATURATING_PREFIX + i, at).orElseThrow(), at);
+                refresh(coordinator, resolveById(saturationStore, SATURATING_PREFIX + i, at).orElseThrow(), at);
             }
             TestLogLevel.INFO.addLogger(TokenRefreshCoordinator.class);
             TestLoggerFactory.getTestHandler().clearRecords();
@@ -1452,7 +1451,7 @@ class TokenRefreshCoordinatorTest {
                     .activeScopes(ACTIVE_SCOPES)
                     .grantedScopes(GRANTED_SCOPES)
                     .build();
-            create(store,live, NOW);
+            create(store, live, NOW);
             return live;
         }
 
@@ -1532,7 +1531,7 @@ class TokenRefreshCoordinatorTest {
             assertAll("the same stub refreshes when the session is still there at the persist",
                     () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
                     () -> assertEquals(1, calls.get()),
-                    () -> assertEquals(ROTATED_ACCESS, resolveById(store,SESSION_ID, NOW).orElseThrow().accessToken()),
+                    () -> assertEquals(ROTATED_ACCESS, resolveById(store, SESSION_ID, NOW).orElseThrow().accessToken()),
                     () -> assertTrue(revoked.isEmpty(), "a persisted rotation revokes nothing"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
         }
@@ -1550,7 +1549,7 @@ class TokenRefreshCoordinatorTest {
             assertAll("the same stub obtains the scope when the session is still there at the persist",
                     () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
                     () -> assertEquals(1, calls.get()),
-                    () -> assertEquals(REQUESTED, resolveById(store,SESSION_ID, NOW).orElseThrow().activeScopes()),
+                    () -> assertEquals(REQUESTED, resolveById(store, SESSION_ID, NOW).orElseThrow().activeScopes()),
                     () -> assertTrue(revoked.isEmpty(), "a persisted rotation revokes nothing"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
         }
@@ -1654,7 +1653,7 @@ class TokenRefreshCoordinatorTest {
             assertEquals(RefreshOutcome.Kind.REFRESHED, run.leader().kind());
             assertEquals(RefreshOutcome.Kind.REFRESHED, run.follower().kind(),
                     "the coalesced follower shares the successful refresh");
-            assertEquals(ROTATED_ACCESS, resolveById(store,SESSION_ID, NOW).orElseThrow().accessToken());
+            assertEquals(ROTATED_ACCESS, resolveById(store, SESSION_ID, NOW).orElseThrow().accessToken());
         }
 
         @Test
@@ -2266,7 +2265,7 @@ class TokenRefreshCoordinatorTest {
 
             RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
 
-            SessionRecord persisted = resolveById(store,SESSION_ID, NOW).orElseThrow();
+            SessionRecord persisted = resolveById(store, SESSION_ID, NOW).orElseThrow();
             assertAll("the leg refreshes regardless of the access token's remaining lifetime",
                     () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
                     () -> assertEquals(List.of(REQUESTED), requested,
@@ -2307,14 +2306,14 @@ class TokenRefreshCoordinatorTest {
                     .activeScopes(ACTIVE_SCOPES)
                     .grantedScopes(Set.of("openid", "profile", "email", "orders:read", MISSING, unrequested))
                     .build();
-            create(store,live, NOW);
+            create(store, live, NOW);
             // The response returns neither the missing scope nor 'orders:read', which was active before.
             TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR,
                     (_, _) -> rotation("openid profile email", RotationResult.ScopeDelta.NARROWED));
 
             RefreshOutcome refused = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
 
-            SessionRecord persisted = resolveById(store,SESSION_ID, NOW).orElseThrow();
+            SessionRecord persisted = resolveById(store, SESSION_ID, NOW).orElseThrow();
             assertAll("S records what the identity provider was just shown to grant",
                     () -> assertEquals(RefreshOutcome.Kind.SCOPE_REFUSED, refused.kind()),
                     () -> assertEquals(Set.of("openid", "profile", "email"), persisted.activeScopes(),
@@ -2332,8 +2331,8 @@ class TokenRefreshCoordinatorTest {
             byte[] salt = new byte[32];
             Arrays.fill(salt, (byte) 0x22);
             CookieSessionBinding cookieBinding = new CookieSessionBinding(new SealedSessionCookieCodec(
-                    SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
-                    SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, key, (byte) 1), salt, activityCodec(),
+                            SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                            SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, key, (byte) 1), salt, activityCodec(),
                     SESSION_TTL);
             String setCookie = cookieBinding.bind(session(CURRENT_REFRESH), NOW).setCookieHeaders().getFirst();
             String cookieHeader = setCookie.substring(0, setCookie.indexOf(';'));
@@ -2364,7 +2363,7 @@ class TokenRefreshCoordinatorTest {
             });
 
             RefreshOutcome refused = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
-            SessionRecord persisted = resolveById(store,SESSION_ID, NOW).orElseThrow();
+            SessionRecord persisted = resolveById(store, SESSION_ID, NOW).orElseThrow();
             RefreshOutcome followUp = coordinator.refresh(persisted, COOKIE_HEADER, NOW);
 
             assertAll("a narrower grant keeps the rotated session and leaves the next refresh unthrottled",
@@ -2407,7 +2406,7 @@ class TokenRefreshCoordinatorTest {
             assertAll("an unclassifiable scope refusal keeps the session and backs off like any pre-redemption failure",
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, refused.kind()),
                     () -> assertEquals(live, refused.session(), "the unchanged session, still short of the scope"),
-                    () -> assertEquals(GRANTED_SCOPES, resolveById(store,SESSION_ID, NOW).orElseThrow().grantedScopes(),
+                    () -> assertEquals(GRANTED_SCOPES, resolveById(store, SESSION_ID, NOW).orElseThrow().grantedScopes(),
                             "a grant the provider never processed proves nothing about the scope, so S is unchanged"),
                     () -> assertTrue(sessionResolvable(NOW), "the session is kept"),
                     () -> assertTrue(revoked.isEmpty(), "nothing was redeemed"),
@@ -2448,7 +2447,7 @@ class TokenRefreshCoordinatorTest {
                     .activeScopes(REQUESTED)
                     .grantedScopes(GRANTED_SCOPES)
                     .build();
-            create(store,covering, NOW);
+            create(store, covering, NOW);
             AtomicInteger calls = new AtomicInteger();
             TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
                 calls.incrementAndGet();
@@ -2468,7 +2467,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should return SCOPE_REFUSED with no engine call when the session carries no refresh token")
         void shouldRefuseWithoutRefreshToken() {
             SessionRecord live = session(null);
-            create(store,live, NOW);
+            create(store, live, NOW);
             AtomicInteger calls = new AtomicInteger();
             TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
                 calls.incrementAndGet();

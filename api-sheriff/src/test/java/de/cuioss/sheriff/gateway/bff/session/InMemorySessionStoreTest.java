@@ -37,7 +37,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
-
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -124,18 +123,18 @@ class InMemorySessionStoreTest {
         @DisplayName("Should resolve a created session and drop it after destroy-by-id")
         void shouldCreateResolveDestroy() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", "sid1", FUTURE), T0);
+            create(store, session("s1", "sub1", "sid1", FUTURE), T0);
 
-            assertTrue(resolve(store,"s1", T0).isPresent());
+            assertTrue(resolve(store, "s1", T0).isPresent());
             store.destroyById("s1");
-            assertTrue(resolve(store,"s1", T0).isEmpty(), "a destroyed session no longer resolves");
+            assertTrue(resolve(store, "s1", T0).isEmpty(), "a destroyed session no longer resolves");
         }
 
         @Test
         @DisplayName("Should return empty for an unknown session id")
         void shouldReturnEmptyForUnknownId() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            assertTrue(resolve(store,"nope", T0).isEmpty());
+            assertTrue(resolve(store, "nope", T0).isEmpty());
         }
 
         @Test
@@ -155,9 +154,9 @@ class InMemorySessionStoreTest {
         @DisplayName("Should evict an expired session lazily on resolve")
         void shouldEvictExpiredLazily() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", null, T0.plusSeconds(10)), T0);
+            create(store, session("s1", "sub1", null, T0.plusSeconds(10)), T0);
 
-            assertTrue(resolve(store,"s1", T0.plusSeconds(11)).isEmpty(), "an expired session is refused");
+            assertTrue(resolve(store, "s1", T0.plusSeconds(11)).isEmpty(), "an expired session is refused");
             assertEquals(0, store.size(), "the expired session was evicted lazily on resolve");
         }
 
@@ -166,24 +165,24 @@ class InMemorySessionStoreTest {
         void shouldTreatBoundaryAsExpired() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
             Instant expiry = T0.plusSeconds(10);
-            create(store,session("s1", "sub1", null, expiry), T0);
+            create(store, session("s1", "sub1", null, expiry), T0);
 
-            assertTrue(resolve(store,"s1", expiry).isEmpty(), "expiry is inclusive of the boundary");
+            assertTrue(resolve(store, "s1", expiry).isEmpty(), "expiry is inclusive of the boundary");
         }
 
         @Test
         @DisplayName("Should sweep every expired session and leave live ones untouched")
         void shouldSweepExpired() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("dead1", "sub1", null, T0.plusSeconds(5)), T0);
-            create(store,session("dead2", "sub2", null, T0.plusSeconds(5)), T0);
-            create(store,session("live", "sub3", null, FUTURE), T0);
+            create(store, session("dead1", "sub1", null, T0.plusSeconds(5)), T0);
+            create(store, session("dead2", "sub2", null, T0.plusSeconds(5)), T0);
+            create(store, session("live", "sub3", null, FUTURE), T0);
 
             int swept = store.sweepExpired(T0.plusSeconds(10));
 
             assertEquals(2, swept, "both expired sessions were swept");
             assertEquals(1, store.size());
-            assertTrue(resolve(store,"live", T0.plusSeconds(10)).isPresent());
+            assertTrue(resolve(store, "live", T0.plusSeconds(10)).isPresent());
         }
     }
 
@@ -195,33 +194,33 @@ class InMemorySessionStoreTest {
         @DisplayName("Should destroy every session carrying the given sid")
         void shouldDestroyBySid() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", "A", FUTURE), T0);
-            create(store,session("s2", "sub2", "A", FUTURE), T0);
-            create(store,session("s3", "sub3", "B", FUTURE), T0);
+            create(store, session("s1", "sub1", "A", FUTURE), T0);
+            create(store, session("s2", "sub2", "A", FUTURE), T0);
+            create(store, session("s3", "sub3", "B", FUTURE), T0);
 
             assertEquals(2, store.destroyBySid("A"));
-            assertTrue(resolve(store,"s1", T0).isEmpty());
-            assertTrue(resolve(store,"s2", T0).isEmpty());
-            assertTrue(resolve(store,"s3", T0).isPresent(), "an unrelated sid is untouched");
+            assertTrue(resolve(store, "s1", T0).isEmpty());
+            assertTrue(resolve(store, "s2", T0).isEmpty());
+            assertTrue(resolve(store, "s3", T0).isPresent(), "an unrelated sid is untouched");
         }
 
         @Test
         @DisplayName("Should destroy every session for the given subject")
         void shouldDestroyBySub() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("s1", "user-x", null, FUTURE), T0);
-            create(store,session("s2", "user-x", null, FUTURE), T0);
-            create(store,session("s3", "user-y", null, FUTURE), T0);
+            create(store, session("s1", "user-x", null, FUTURE), T0);
+            create(store, session("s2", "user-x", null, FUTURE), T0);
+            create(store, session("s3", "user-y", null, FUTURE), T0);
 
             assertEquals(2, store.destroyBySub("user-x"));
-            assertTrue(resolve(store,"s3", T0).isPresent(), "an unrelated subject is untouched");
+            assertTrue(resolve(store, "s3", T0).isPresent(), "an unrelated subject is untouched");
         }
 
         @Test
         @DisplayName("Should report zero and clean the index when the sid is already gone")
         void shouldReturnZeroForUnknownSidAndCleanIndex() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", "A", FUTURE), T0);
+            create(store, session("s1", "sub1", "A", FUTURE), T0);
 
             assertEquals(1, store.destroyBySid("A"));
             assertEquals(0, store.destroyBySid("A"), "the secondary index was cleaned after the destroy");
@@ -232,14 +231,14 @@ class InMemorySessionStoreTest {
         @DisplayName("Should drop the previous subject's index entry when an upsert changes sub")
         void shouldRepairSubIndexOnUpsert() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("s1", "old-sub", null, FUTURE), T0);
+            create(store, session("s1", "old-sub", null, FUTURE), T0);
 
-            create(store,session("s1", "new-sub", null, FUTURE), T0);
+            create(store, session("s1", "new-sub", null, FUTURE), T0);
 
             assertEquals(0, store.destroyBySub("old-sub"),
                     "the replaced record's subject must not keep resolving to the session id — otherwise a"
                             + " back-channel logout for the old subject destroys the replacement");
-            assertTrue(resolve(store,"s1", T0).isPresent(), "the replacement survived the stale-subject destroy");
+            assertTrue(resolve(store, "s1", T0).isPresent(), "the replacement survived the stale-subject destroy");
             assertEquals(1, store.destroyBySub("new-sub"), "the replacement is reachable under its own subject");
         }
 
@@ -247,13 +246,13 @@ class InMemorySessionStoreTest {
         @DisplayName("Should drop the previous sid's index entry when an upsert changes sid")
         void shouldRepairSidIndexOnUpsert() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", "old-sid", FUTURE), T0);
+            create(store, session("s1", "sub1", "old-sid", FUTURE), T0);
 
-            create(store,session("s1", "sub1", "new-sid", FUTURE), T0);
+            create(store, session("s1", "sub1", "new-sid", FUTURE), T0);
 
             assertEquals(0, store.destroyBySid("old-sid"),
                     "a create replacing a stored id must not leave the old sid destroying the new record");
-            assertTrue(resolve(store,"s1", T0).isPresent(), "the replacement survived the stale-sid destroy");
+            assertTrue(resolve(store, "s1", T0).isPresent(), "the replacement survived the stale-sid destroy");
             assertEquals(1, store.destroyBySid("new-sid"), "the replacement is reachable under its own sid");
         }
     }
@@ -266,11 +265,11 @@ class InMemorySessionStoreTest {
         @DisplayName("Should free capacity once expired sessions are swept")
         void shouldFreeCapacityAfterSweep() {
             InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", null, T0.plusSeconds(5)), T0);
-            create(store,session("s2", "sub2", null, FUTURE), T0);
+            create(store, session("s1", "sub1", null, T0.plusSeconds(5)), T0);
+            create(store, session("s2", "sub2", null, FUTURE), T0);
 
             store.sweepExpired(T0.plusSeconds(10));
-            create(store,session("s3", "sub3", null, FUTURE), T0);
+            create(store, session("s3", "sub3", null, FUTURE), T0);
 
             assertEquals(2, store.size());
         }
@@ -279,28 +278,28 @@ class InMemorySessionStoreTest {
         @DisplayName("Should reclaim an expired session's slot when a create reaches the bound")
         void shouldReclaimExpiredCapacityOnCreate() {
             InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", null, T0.plusSeconds(5)), T0);
-            create(store,session("s2", "sub2", null, T0.plusSeconds(5)), T0);
+            create(store, session("s1", "sub1", null, T0.plusSeconds(5)), T0);
+            create(store, session("s2", "sub2", null, T0.plusSeconds(5)), T0);
 
             // Driven through create() alone — sweepExpired is deliberately never called by hand here.
             // Calling it would merely re-test "Should free capacity once expired sessions are swept"
             // above; what this case exists to prove is that reaching the bound is itself the trigger.
-            create(store,session("s3", "sub3", null, FUTURE), T0.plusSeconds(10));
+            create(store, session("s3", "sub3", null, FUTURE), T0.plusSeconds(10));
 
             assertEquals(1, store.size(), "both expired sessions released their slots, leaving only the new one");
-            assertTrue(resolve(store,"s3", T0.plusSeconds(10)).isPresent(), "the reclaiming create was admitted");
+            assertTrue(resolve(store, "s3", T0.plusSeconds(10)).isPresent(), "the reclaiming create was admitted");
         }
 
         @Test
         @DisplayName("Should still refuse a create at the bound when every stored session is live")
         void shouldRefuseWhenBoundIsFullOfLiveSessions() {
             InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", null, FUTURE), T0);
-            create(store,session("s2", "sub2", null, FUTURE), T0);
+            create(store, session("s1", "sub1", null, FUTURE), T0);
+            create(store, session("s2", "sub2", null, FUTURE), T0);
 
             SessionRecord overflow = session("s3", "sub3", null, FUTURE);
             Instant afterExpiry = T0.plusSeconds(10);
-            assertThrows(IllegalStateException.class, () -> create(store,overflow, afterExpiry),
+            assertThrows(IllegalStateException.class, () -> create(store, overflow, afterExpiry),
                     "the at-capacity sweep reclaims nothing while every session is live, so the DoS"
                             + " guard must still refuse — reclamation may not become a way around the bound");
             assertEquals(2, store.size(), "the refused create left the store untouched");
@@ -310,10 +309,10 @@ class InMemorySessionStoreTest {
         @DisplayName("Should admit an upsert of an already-stored session id at the bound")
         void shouldAdmitUpsertAtCapacity() {
             InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
-            create(store,session("s1", "sub1", null, FUTURE), T0);
-            create(store,session("s2", "sub2", null, FUTURE), T0);
+            create(store, session("s1", "sub1", null, FUTURE), T0);
+            create(store, session("s2", "sub2", null, FUTURE), T0);
 
-            assertDoesNotThrow(() -> create(store,session("s1", "sub1", null, FUTURE), T0),
+            assertDoesNotThrow(() -> create(store, session("s1", "sub1", null, FUTURE), T0),
                     "a create naming an already-stored id replaces a record already counted against the"
                             + " bound, so it consumes no new capacity");
             assertEquals(2, store.size(), "the upsert replaced in place rather than adding an entry");
@@ -447,23 +446,23 @@ class InMemorySessionStoreTest {
                     .sessionId("s1").accessToken("at").idToken("it").sub("sub1").expiresAt(FUTURE)
                     .activeScopes(scopes).build();
 
-            create(store,scoped, T0);
+            create(store, scoped, T0);
 
-            assertEquals(scopes, resolve(store,"s1", T0).orElseThrow().activeScopes());
+            assertEquals(scopes, resolve(store, "s1", T0).orElseThrow().activeScopes());
         }
 
         @Test
         @DisplayName("Should resolve the replaced active scope set after a replacement")
         void shouldReplaceActiveScopesOnReplacement() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
+            create(store, SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
                     .expiresAt(FUTURE).activeScopes(Set.of("openid", "orders:read")).build(), T0);
 
             boolean replaced = store.replaceIfPresent(SessionRecord.builder().sessionId("s1").accessToken("at2")
                     .idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(Set.of("openid")).build());
 
             assertTrue(replaced, "the session is stored, so the refresh's write replaces it");
-            assertEquals(Set.of("openid"), resolve(store,"s1", T0).orElseThrow().activeScopes(),
+            assertEquals(Set.of("openid"), resolve(store, "s1", T0).orElseThrow().activeScopes(),
                     "a refresh persisted through a replacement carries the narrowed set to the next request");
         }
 
@@ -473,9 +472,9 @@ class InMemorySessionStoreTest {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
             Set<String> granted = Set.of("openid", "orders:read");
             Set<String> widened = Set.of("openid", "orders:read", "orders:write");
-            create(store,SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
+            create(store, SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
                     .expiresAt(FUTURE).activeScopes(granted).grantedScopes(granted).build(), T0);
-            SessionRecord created = resolve(store,"s1", T0).orElseThrow();
+            SessionRecord created = resolve(store, "s1", T0).orElseThrow();
 
             boolean replaced = store.replaceIfPresent(SessionRecord.builder().sessionId("s1").accessToken("at2")
                     .idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(widened).grantedScopes(widened)
@@ -483,7 +482,7 @@ class InMemorySessionStoreTest {
 
             assertTrue(replaced, "the session is stored, so the widening's write replaces it");
             assertEquals(granted, created.grantedScopes());
-            assertEquals(widened, resolve(store,"s1", T0).orElseThrow().grantedScopes(),
+            assertEquals(widened, resolve(store, "s1", T0).orElseThrow().grantedScopes(),
                     "a widening persisted through a replacement carries the widened S to the next request");
         }
     }
@@ -500,7 +499,7 @@ class InMemorySessionStoreTest {
         @DisplayName("Should replace a stored record in place and report the replacement")
         void shouldReplaceStoredRecord() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             SessionRecord replacement = SessionRecord.builder().sessionId(SESSION_ID).accessToken("rotated-access")
                     .idToken("rotated-id").sub(OLD_SUB).sid(OLD_SID).expiresAt(FUTURE).build();
 
@@ -508,7 +507,7 @@ class InMemorySessionStoreTest {
 
             assertTrue(replaced, "a stored id is replaced");
             assertEquals(1, store.size(), "the replacement took the stored record's place, adding no entry");
-            assertEquals(replacement, resolve(store,SESSION_ID, T0).orElseThrow(),
+            assertEquals(replacement, resolve(store, SESSION_ID, T0).orElseThrow(),
                     "the next resolve sees the replacement");
         }
 
@@ -521,7 +520,7 @@ class InMemorySessionStoreTest {
 
             assertFalse(replaced, "nothing is stored under the id, so nothing is replaced");
             assertEquals(0, store.size(), "the conditional write never creates");
-            assertTrue(resolve(store,SESSION_ID, T0).isEmpty(), "no session resolves afterwards");
+            assertTrue(resolve(store, SESSION_ID, T0).isEmpty(), "no session resolves afterwards");
             assertEquals(0, store.destroyBySid(OLD_SID), "the refused record was not indexed by sid");
             assertEquals(0, store.destroyBySub(OLD_SUB), "the refused record was not indexed by sub");
         }
@@ -530,30 +529,30 @@ class InMemorySessionStoreTest {
         @DisplayName("Should find a replacement carrying another sid and sub under the new keys only")
         void shouldReindexWhenSidAndSubChange() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
 
             boolean replaced = store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
 
             assertTrue(replaced);
             assertEquals(0, store.destroyBySid(OLD_SID), "the previous sid no longer resolves to the session");
             assertEquals(0, store.destroyBySub(OLD_SUB), "the previous sub no longer resolves to the session");
-            assertTrue(resolve(store,SESSION_ID, T0).isPresent(),
+            assertTrue(resolve(store, SESSION_ID, T0).isPresent(),
                     "a destroy on the previous keys left the replacement in place");
             assertEquals(1, store.destroyBySid(NEW_SID), "the new sid destroys the session");
-            assertTrue(resolve(store,SESSION_ID, T0).isEmpty());
+            assertTrue(resolve(store, SESSION_ID, T0).isEmpty());
         }
 
         @Test
         @DisplayName("Should destroy a replaced session through its new sub")
         void shouldDestroyReplacedSessionByNewSub() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
 
             int destroyed = store.destroyBySub(NEW_SUB);
 
             assertEquals(1, destroyed, "the new sub destroys the session");
-            assertTrue(resolve(store,SESSION_ID, T0).isEmpty());
+            assertTrue(resolve(store, SESSION_ID, T0).isEmpty());
             assertEquals(0, store.destroyBySid(NEW_SID), "the sid index was cleaned with the session");
         }
 
@@ -570,22 +569,22 @@ class InMemorySessionStoreTest {
         @DisplayName("Should not write a destroyed session back, however it was destroyed")
         void shouldNotRecreateDestroyedSession(String label, Consumer<InMemorySessionStore> destruction) {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
-            create(store,session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             destruction.accept(store);
 
             boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE));
 
             assertFalse(replaced, () -> "after " + label + " there is no record to replace");
             assertEquals(0, store.size(), () -> label + " must not be undone by a write that was in flight");
-            assertTrue(resolve(store,SESSION_ID, T0).isEmpty(), () -> "the session stays gone after " + label);
+            assertTrue(resolve(store, SESSION_ID, T0).isEmpty(), () -> "the session stays gone after " + label);
         }
 
         @Test
         @DisplayName("Should replace at the max-session bound without sweeping and without refusing")
         void shouldReplaceAtTheBound() {
             InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
-            create(store,session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
-            create(store,session("expired", "sub2", null, T0.plusSeconds(5)), T0);
+            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, session("expired", "sub2", null, T0.plusSeconds(5)), T0);
 
             boolean replaced = store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
 
@@ -599,12 +598,12 @@ class InMemorySessionStoreTest {
         void shouldReplaceLapsedRecordWithoutRevivingIt() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
             Instant expiry = T0.plusSeconds(5);
-            create(store,session(SESSION_ID, OLD_SUB, OLD_SID, expiry), T0);
+            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, expiry), T0);
 
             boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, expiry));
 
             assertTrue(replaced, "the check is on presence, not on liveness");
-            assertTrue(resolve(store,SESSION_ID, T0.plusSeconds(10)).isEmpty(),
+            assertTrue(resolve(store, SESSION_ID, T0.plusSeconds(10)).isEmpty(),
                     "the absolute TTL is still enforced on resolve against the expiry the replacement carries");
         }
 
