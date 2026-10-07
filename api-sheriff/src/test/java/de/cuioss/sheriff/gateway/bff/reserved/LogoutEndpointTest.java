@@ -29,7 +29,6 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -78,7 +77,8 @@ class LogoutEndpointTest {
 
     @BeforeEach
     void setUp() {
-        store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { });
+        store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
+        });
         binding = new ServerSessionBinding(store,
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
         endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(REGISTERED_RETURN)));

@@ -96,7 +96,8 @@ class InMemorySessionStoreTest {
      */
     private static final int NO_SUBJECT_BOUND = Integer.MAX_VALUE;
     /** A listener that ignores every report, for the cases that do not look at what the store ends. */
-    private static final SessionEndListener NO_LISTENER = sessionId -> { };
+    private static final SessionEndListener NO_LISTENER = sessionId -> {
+    };
     /** The three destruction paths, shared by the conditional-replace and the handle-re-issue cases. */
     private static final String DESTRUCTIONS =
             "de.cuioss.sheriff.gateway.bff.session.InMemorySessionStoreTest$ConditionalReplace#destructions";

@@ -43,7 +43,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
@@ -180,7 +179,8 @@ class GatewayEdgeRouteBffWiringTest {
      * the sessions it ends. A case that looks at what ends with a session builds its own store.
      */
     static InMemorySessionStore newStore() {
-        return new InMemorySessionStore(16, NO_IDLE_EFFECT, Integer.MAX_VALUE, sessionId -> { });
+        return new InMemorySessionStore(16, NO_IDLE_EFFECT, Integer.MAX_VALUE, sessionId -> {
+        });
     }
 
     /**
@@ -2085,7 +2085,7 @@ class GatewayEdgeRouteBffWiringTest {
         EndSessionFlow endSessionFlow = new EndSessionFlow(
                 new PostLogoutRedirectValidator(Set.of(ORIGIN + LOGOUT_RETURN_PATH)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow, session -> {
-        }, () -> Optional.of("https://idp.example.com/logout"), ORIGIN + LOGOUT_RETURN_PATH, "/",
+                }, () -> Optional.of("https://idp.example.com/logout"), ORIGIN + LOGOUT_RETURN_PATH, "/",
                 Duration.ofMinutes(1));
         return new LogoutEndpoint(rpInitiatedLogout, binding);
     }

@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver.BackchannelResult;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -185,7 +184,8 @@ class BackchannelLogoutReceiverTest {
         private static final Duration SESSION_TTL = Duration.ofHours(8);
 
         private final ServerSessionBinding serverBinding = new ServerSessionBinding(
-                new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { }),
+                new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
+                }),
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
 
         /** Binds a session, re-issues its cookie value and returns the request cookie now in force. */
@@ -340,7 +340,8 @@ class BackchannelLogoutReceiverTest {
         @DisplayName("Should leave a session of the subject alone that began after the token was acted on")
         void shouldNotEndLaterSessionOnRepeat() {
             ServerSessionBinding serverBinding = new ServerSessionBinding(
-                    new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { }),
+                    new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
+                    }),
                     new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
             Map<String, ClaimValue> claims = logoutClaims();
             claims.remove("sid");

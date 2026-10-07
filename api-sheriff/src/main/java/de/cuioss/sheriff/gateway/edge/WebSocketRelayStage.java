@@ -22,7 +22,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -250,7 +249,7 @@ public final class WebSocketRelayStage {
      * @param sessionRelay     the handle the relay is tracked under with its session
      */
     private record RelayLifetime(Context clientContext, Runnable releaseAdmission,
-            SessionRelayRegistry.Tracked sessionRelay) {
+    SessionRelayRegistry.Tracked sessionRelay) {
     }
 
     private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs,

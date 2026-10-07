@@ -34,7 +34,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -802,15 +801,15 @@ class GatewayEdgeGatewayCookieTest {
                 .setHost(OIDC_HOST).setPort(requireFront().actualPort())
                 .setMethod(method).setURI(uri);
         return Awaits.connect(via.request(options)
-                .compose(request -> {
-                    headers.forEach(request::putHeader);
-                    return body == null ? request.send() : request.send(body);
-                })
-                .compose(response -> response.body().map(buffer -> new Answer(response.statusCode(),
-                        List.copyOf(response.headers().getAll(CACHE_CONTROL)),
-                        List.copyOf(response.headers().getAll(SET_COOKIE)),
-                        List.copyOf(response.headers().getAll(REFERRER_POLICY)),
-                        response.getHeader("Location"), buffer.toString()))),
+                        .compose(request -> {
+                            headers.forEach(request::putHeader);
+                            return body == null ? request.send() : request.send(body);
+                        })
+                        .compose(response -> response.body().map(buffer -> new Answer(response.statusCode(),
+                                List.copyOf(response.headers().getAll(CACHE_CONTROL)),
+                                List.copyOf(response.headers().getAll(SET_COOKIE)),
+                                List.copyOf(response.headers().getAll(REFERRER_POLICY)),
+                                response.getHeader("Location"), buffer.toString()))),
                 "the edge response to " + method + " " + uri);
     }
 

@@ -31,7 +31,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -115,7 +114,8 @@ class StepUpEndpointTest {
             return redirect;
         }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
-        sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { });
+        sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
+        });
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
         endpoint = new StepUpEndpoint(sessionWidening, sessionBinding, returnTargetScopes(), GATEWAY_ORIGIN,

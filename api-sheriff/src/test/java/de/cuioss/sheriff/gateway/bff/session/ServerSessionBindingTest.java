@@ -29,7 +29,6 @@ import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,7 +71,8 @@ class ServerSessionBindingTest {
 
     @BeforeEach
     void setUp() {
-        store = new InMemorySessionStore(16, IDLE_TIMEOUT, Integer.MAX_VALUE, sessionId -> { });
+        store = new InMemorySessionStore(16, IDLE_TIMEOUT, Integer.MAX_VALUE, sessionId -> {
+        });
         cookieCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         binding = new ServerSessionBinding(store, cookieCodec);
     }

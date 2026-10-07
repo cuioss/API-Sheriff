@@ -41,7 +41,6 @@ import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -141,7 +140,8 @@ class CallbackEndpointTest {
         pendingStore = new PendingAuthorizationStore.InMemory(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
-        sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { });
+        sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
+        });
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
         wideningCalls = new ArrayList<>();
@@ -537,7 +537,8 @@ class CallbackEndpointTest {
         @DisplayName("Should end the presented session before binding: a store of one takes the new session")
         void shouldEndBeforeBinding() {
             InMemorySessionStore storeOfOne = new InMemorySessionStore(1, SESSION_TTL, Integer.MAX_VALUE,
-                    sessionId -> { });
+                    sessionId -> {
+                    });
             SessionBinding binding = new ServerSessionBinding(storeOfOne, sessionCodec);
             String earlier = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));
 
@@ -552,7 +553,8 @@ class CallbackEndpointTest {
         @DisplayName("Control: the same full store refuses a login that presents no session")
         void fullStoreRefusesLoginPresentingNoSession() {
             InMemorySessionStore storeOfOne = new InMemorySessionStore(1, SESSION_TTL, Integer.MAX_VALUE,
-                    sessionId -> { });
+                    sessionId -> {
+                    });
             SessionBinding binding = new ServerSessionBinding(storeOfOne, sessionCodec);
             String earlier = earlierSession(binding, "another-subject", T0.plus(SESSION_TTL));
 
@@ -651,7 +653,8 @@ class CallbackEndpointTest {
         @Test
         @DisplayName("Should end the subject's oldest session when a login from another browser exceeds a bound of one")
         void shouldEndOldestSessionOfTheSubjectAtItsBound() {
-            InMemorySessionStore boundOfOne = new InMemorySessionStore(16, SESSION_TTL, 1, sessionId -> { });
+            InMemorySessionStore boundOfOne = new InMemorySessionStore(16, SESSION_TTL, 1, sessionId -> {
+            });
             SessionBinding binding = new ServerSessionBinding(boundOfOne, sessionCodec);
             String otherBrowser = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));
 
@@ -668,7 +671,8 @@ class CallbackEndpointTest {
         @Test
         @DisplayName("Should not count the session the same browser presented towards the subject's bound")
         void shouldNotCountThePresentedSessionTowardsTheBound() {
-            InMemorySessionStore boundOfTwo = new InMemorySessionStore(16, SESSION_TTL, 2, sessionId -> { });
+            InMemorySessionStore boundOfTwo = new InMemorySessionStore(16, SESSION_TTL, 2, sessionId -> {
+            });
             SessionBinding binding = new ServerSessionBinding(boundOfTwo, sessionCodec);
             String otherBrowser = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));
             String thisBrowser = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));

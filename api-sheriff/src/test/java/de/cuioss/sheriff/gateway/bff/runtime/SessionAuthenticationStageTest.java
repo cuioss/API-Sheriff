@@ -35,7 +35,6 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -1075,7 +1074,8 @@ class SessionAuthenticationStageTest {
         @DisplayName("answers a request still carrying a re-issued-away cookie value 401 without a clearing cookie, and serves the new value")
         void previousCookieValueIsUnauthenticatedOnce() {
             ServerSessionBinding binding = new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT,
-                    Integer.MAX_VALUE, sessionId -> { }), CODEC);
+                    Integer.MAX_VALUE, sessionId -> {
+                    }), CODEC);
             SessionRecord live = session(MEDIATED_TOKEN);
             String previousSetCookie = binding.bind(live, NOW).setCookieHeaders().getFirst();
             String reissuedSetCookie = binding.persistReissuingCookie(live, NOW).orElseThrow()
@@ -1166,7 +1166,8 @@ class SessionAuthenticationStageTest {
 
     private static SessionBinding emptyBinding() {
         return new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT,
-                    Integer.MAX_VALUE, sessionId -> { }), CODEC);
+                Integer.MAX_VALUE, sessionId -> {
+                }), CODEC);
     }
 
     static SessionBinding bindingWith(SessionRecord session) {
@@ -1175,7 +1176,8 @@ class SessionAuthenticationStageTest {
 
     /** A server-mode binding holding {@code session} under {@link #COOKIE_HANDLE}, created at {@link #NOW}. */
     private static SessionBinding bindingWith(SessionRecord session, Duration idleTimeout) {
-        InMemorySessionStore store = new InMemorySessionStore(16, idleTimeout, Integer.MAX_VALUE, sessionId -> { });
+        InMemorySessionStore store = new InMemorySessionStore(16, idleTimeout, Integer.MAX_VALUE, sessionId -> {
+        });
         store.create(session, COOKIE_HANDLE, NOW);
         return new ServerSessionBinding(store, CODEC);
     }

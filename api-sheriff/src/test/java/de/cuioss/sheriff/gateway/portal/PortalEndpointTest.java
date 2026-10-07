@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
-
 import de.cuioss.sheriff.gateway.bff.reserved.ClaimAllowlistFilter;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
@@ -390,7 +389,8 @@ class PortalEndpointTest {
         @BeforeEach
         void createSession() {
             // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
-            sessionStore = new InMemorySessionStore(4, TTL, Integer.MAX_VALUE, sessionId -> { });
+            sessionStore = new InMemorySessionStore(4, TTL, Integer.MAX_VALUE, sessionId -> {
+            });
             sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, TTL);
             sessionStore.create(SessionRecord.builder()
                     .sessionId(SESSION_ID)

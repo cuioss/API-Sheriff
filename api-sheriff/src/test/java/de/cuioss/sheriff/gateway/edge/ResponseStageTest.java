@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -340,9 +339,9 @@ class ResponseStageTest {
 
         private Relayed relayed(String path) throws Exception {
             return Awaits.connect(client
-                    .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, path)
-                    .compose(HttpClientRequest::send)
-                    .compose(resp -> resp.body().map(body -> new Relayed(resp.headers(), resp.trailers()))),
+                            .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, path)
+                            .compose(HttpClientRequest::send)
+                            .compose(resp -> resp.body().map(body -> new Relayed(resp.headers(), resp.trailers()))),
                     "the relayed response to " + path);
         }
 

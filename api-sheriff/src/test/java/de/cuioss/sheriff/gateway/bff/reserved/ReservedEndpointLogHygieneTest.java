@@ -29,7 +29,6 @@ import java.util.Set;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -105,7 +104,8 @@ class ReservedEndpointLogHygieneTest {
         pendingStore = new PendingAuthorizationStore.InMemory(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         sessionBinding = new ServerSessionBinding(
-                new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { }),
+                new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
+                }),
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
         FlowContext flow = FlowContext.create(CALLBACK_URI);
         state = flow.state();
@@ -253,10 +253,12 @@ class ReservedEndpointLogHygieneTest {
         String cookie = pair(sessionBinding.bind(session, NOW).setCookieHeaders().getFirst());
         EndSessionFlow endSessionFlow = new EndSessionFlow(
                 new PostLogoutRedirectValidator(Set.of(ORIGIN + "/auth/logout/return")));
-        LogoutEndpoint withEndpoint = new LogoutEndpoint(new RpInitiatedLogout(endSessionFlow, ended -> { },
+        LogoutEndpoint withEndpoint = new LogoutEndpoint(new RpInitiatedLogout(endSessionFlow, ended -> {
+                },
                 () -> Optional.of("https://idp.example.com/logout"), ORIGIN + "/auth/logout/return", "/",
                 Duration.ofMinutes(1)), sessionBinding);
-        LogoutEndpoint withoutEndpoint = new LogoutEndpoint(new RpInitiatedLogout(endSessionFlow, ended -> { },
+        LogoutEndpoint withoutEndpoint = new LogoutEndpoint(new RpInitiatedLogout(endSessionFlow, ended -> {
+                },
                 Optional::empty, ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1)), sessionBinding);
 
         LogoutEndpoint.LogoutOutcome toProvider = withEndpoint.logout(cookie, NOW);

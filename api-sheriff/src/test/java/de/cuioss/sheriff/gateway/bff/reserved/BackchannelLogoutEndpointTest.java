@@ -32,7 +32,6 @@ import java.util.function.Supplier;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -105,7 +104,8 @@ class BackchannelLogoutEndpointTest {
     /** The store-backed binding — {@code SUPPORTED} IdP destruction, so the gate stays open. */
     private static SessionBinding serverBinding() {
         return new ServerSessionBinding(
-                new InMemorySessionStore(16, Duration.ofHours(8), Integer.MAX_VALUE, sessionId -> { }),
+                new InMemorySessionStore(16, Duration.ofHours(8), Integer.MAX_VALUE, sessionId -> {
+                }),
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(8)));
     }
 

@@ -28,7 +28,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.logging.LogRecord;
 
-
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
@@ -77,7 +76,8 @@ class TokenRefreshLogHygieneTest {
     private final String cookieHeader = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + handle;
 
     private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE,
-            ended -> { });
+            ended -> {
+            });
     private final SessionBinding binding = new ServerSessionBinding(store,
             new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
     private final List<String> revoked = new ArrayList<>();

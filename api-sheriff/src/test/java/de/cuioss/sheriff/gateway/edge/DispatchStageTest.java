@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -50,7 +51,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
@@ -1459,7 +1459,7 @@ class DispatchStageTest {
                             .build())
                     .build();
             DispatchStage stage = new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
-            ResponseStage responseStage = new ResponseStage(java.util.Set.of());
+            ResponseStage responseStage = new ResponseStage(Set.of());
             front = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
                 // As GatewayEdgeRoute does: pause the inbound request on its event loop, capture that
                 // loop's context, and run the dispatch on a virtual thread.

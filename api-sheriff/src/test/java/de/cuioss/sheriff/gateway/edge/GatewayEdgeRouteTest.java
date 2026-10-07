@@ -53,7 +53,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -61,7 +60,6 @@ import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
-import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
@@ -432,7 +430,7 @@ class GatewayEdgeRouteTest {
                     .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
-                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, () -> new ResponseStage(java.util.Set.of())
+                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, () -> new ResponseStage(Set.of())
                             .relay(ended, ctx.response(), false, null, Map.of(), Map.of()))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),

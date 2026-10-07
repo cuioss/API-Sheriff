@@ -31,7 +31,6 @@ import java.util.Set;
 import java.util.stream.Stream;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -74,7 +73,8 @@ class GatewayCookieContractTest {
     private static final String BINDING_COOKIE_NAME = "__Host-sheriff-binding";
 
     private final InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, Integer.MAX_VALUE,
-            sessionId -> { });
+            sessionId -> {
+            });
     private final SessionBinding serverBinding = new ServerSessionBinding(store,
             new SessionCookieCodec(SESSION_COOKIE_NAME, SESSION_TTL));
     private final SessionBinding cookieBinding = cookieBinding();
@@ -110,7 +110,8 @@ class GatewayCookieContractTest {
     private static LogoutEndpoint logoutEndpoint(SessionBinding binding) {
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(
                 new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(ORIGIN + "/auth/logout/return"))),
-                session -> { }, () -> Optional.of("https://idp.example.com/logout"),
+                session -> {
+                }, () -> Optional.of("https://idp.example.com/logout"),
                 ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1));
         return new LogoutEndpoint(rpInitiatedLogout, binding);
     }
@@ -163,7 +164,7 @@ class GatewayCookieContractTest {
         @DisplayName("the five cookies are all collected: session (both modes), activity, login-binding, logout-state")
         void collectsAllFiveCookies() {
             assertEquals(List.of(SESSION_COOKIE_NAME, SESSION_COOKIE_NAME, ACTIVITY_COOKIE_NAME, BINDING_COOKIE_NAME,
-                    RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME),
+                            RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME),
                     settingLines().stream().map(GatewayCookieContractTest::nameOf).toList());
         }
 

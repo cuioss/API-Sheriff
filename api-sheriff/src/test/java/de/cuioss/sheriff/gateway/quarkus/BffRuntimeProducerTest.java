@@ -87,7 +87,6 @@ import java.util.function.Supplier;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
-
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -524,7 +523,7 @@ class BffRuntimeProducerTest {
                             "no server-side store is wired (the server-mode cases above find theirs)"),
                     () -> assertFalse(relay.sessionEnded(), "a session nothing holds server-side is not reported gone"),
                     () -> assertTrue(untilExpiry.compareTo(Duration.ofSeconds(3600)) <= 0
-                                    && untilExpiry.compareTo(Duration.ofSeconds(3500)) > 0,
+                            && untilExpiry.compareTo(Duration.ofSeconds(3500)) > 0,
                             "the time left is the session's own: " + untilExpiry));
         }
 
@@ -1427,7 +1426,8 @@ class BffRuntimeProducerTest {
 
         /** The idle timeout equals the absolute lifetime, so it is not in play in these seam decisions. */
         private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE,
-                sessionId -> { });
+                sessionId -> {
+                });
         private final SessionBinding binding = new ServerSessionBinding(store,
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
 
