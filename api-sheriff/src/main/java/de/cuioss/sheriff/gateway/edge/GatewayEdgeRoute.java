@@ -831,7 +831,8 @@ public class GatewayEdgeRoute {
     /**
      * Ends the HTTP/2 stream of a request marked under {@link #END_STREAM_KEY}, once its response has
      * been written, and leaves its connection open; a no-op for every other request. Called by the
-     * gateway-originated error writers on the event loop with the future of the call that ended the
+     * gateway-originated error writers — the problem document's, the HTML error page's and the gRPC
+     * trailers-only status's — on the event loop with the future of the call that ended the
      * response.
      * <p>
      * The stream is reset with {@code NO_ERROR} after the complete response (RFC 9113 §8.1.1): the
@@ -1848,7 +1849,10 @@ public class GatewayEdgeRoute {
             List<String> setCookies = request.responseSetCookies();
             ctx.vertx().runOnContext(v -> {
                 applyStageSetCookies(ctx.response(), setCookies);
-                grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders);
+                // A framing rejection ends its stream on a gRPC route as on every other: the
+                // trailers-only status first, then the reset.
+                grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders)
+                        .ifPresent(written -> endMarkedStreamOnceWritten(ctx, written));
             });
             return;
         }

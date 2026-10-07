@@ -17,13 +17,17 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientResponse;
@@ -210,6 +214,32 @@ class GrpcStatusMapperTest {
                     "an unmapped event renders gRPC UNKNOWN");
             assertEquals("unknown", response.getHeader("grpc-message"),
                     "a null-category event renders the 'unknown' grpc-message fallback");
+        }
+
+        @Test
+        @DisplayName("hands back the write future when it renders, and nothing when the response is already ended")
+        void handsBackTheWriteFutureOnlyWhenItRenders() throws Exception {
+            // Arrange — render once, then render again on the response the first call ended
+            CompletableFuture<Optional<Future<Void>>> rendered = new CompletableFuture<>();
+            CompletableFuture<Optional<Future<Void>>> renderedAgain = new CompletableFuture<>();
+            server = Awaits.connect(vertx.createHttpServer()
+                    .requestHandler(req -> {
+                        rendered.complete(mapper.renderRejection(req.response(), EventType.SCOPE_MISSING, Map.of()));
+                        renderedAgain.complete(
+                                mapper.renderRejection(req.response(), EventType.SCOPE_MISSING, Map.of()));
+                    })
+                    .listen(0, LoopbackHost.ADDRESS), "the rendering server to start listening");
+
+            // Act
+            Awaits.connect(client.request(HttpMethod.POST, server.actualPort(), LoopbackHost.ADDRESS,
+                    "/svc.Service/Method").compose(req -> req.send()), "the rendered gRPC rejection response");
+            Optional<Future<Void>> written = Awaits.connect(rendered, "the first render to return");
+            Optional<Future<Void>> untouched = Awaits.connect(renderedAgain, "the second render to return");
+
+            // Assert
+            assertTrue(written.isPresent(), "a render that writes hands back its write future");
+            Awaits.connect(written.get(), "the rejection to be written");
+            assertTrue(untouched.isEmpty(), "a response that is already ended is left untouched");
         }
 
         private HttpClientResponse render(EventType eventType, Map<String, String> stageHeaders) throws Exception {
