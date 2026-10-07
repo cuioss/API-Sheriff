@@ -24,8 +24,42 @@
  * {@code tls.passthrough_sni} is empty the front listener is never started, so the default
  * single-listener topology is unchanged (zero-overhead default).
  * <p>
- * This package is framework-coupled (Vert.x) and is therefore outside the ADR-0005
- * framework-agnostic arch-gate rule set, like {@code edge} and {@code routing}.
+ * This package is bound to the platform: it uses Vert.x, the Quarkus TLS registry and CDI types
+ * directly. ADR-0062 keeps a hand-written component only with a recorded reason, and this package
+ * has one such component, {@link ClientHelloSniParser}. Its reason is recorded below.
+ *
+ * <h2>Which classes are CDI beans</h2>
+ *
+ * Eight classes are {@code @ApplicationScoped} beans, each because the container has to find it or
+ * call it:
+ * <ul>
+ * <li>{@link TlsServerCustomizer}, {@link MtlsServerCustomizer} and {@link ServerTlsDeclarationGate}
+ * implement {@code HttpServerOptionsCustomizer}; Quarkus looks these up as beans and calls them
+ * before it builds the listeners.</li>
+ * <li>{@link TerminatedListenerTlsAudit}, {@link ManagementPlainHttpAudit} and
+ * {@link DefaultTrustSourceAudit} observe the startup event and read the injected TLS registry.</li>
+ * <li>{@link TlsEdgeProducer} observes the startup and the shutdown event and owns the lifecycle of
+ * the front listener.</li>
+ * <li>{@link EgressTrustProfileResolver} resolves a named trust profile through the injected TLS
+ * registry.</li>
+ * </ul>
+ * Four classes are not beans. {@link SniFrontListener}, {@link PassthroughRelay} and
+ * {@link ClientHelloSniParser} are created only when {@code tls.passthrough_sni} is non-empty:
+ * {@link TlsEdgeProducer} creates the listener and the relay, and the listener creates the parser. As
+ * beans they would exist in every deployment, including the default one that starts no front
+ * listener. {@code ResolvedServerTlsMaterial} is a static utility with no state.
+ *
+ * <h2>Why {@code ClientHelloSniParser} is hand-written</h2>
+ *
+ * The review of this package against ADR-0062 confirmed the parser from the code; it is not replaced.
+ * Vert.x exposes the SNI only on a connection it has terminated: {@code NetSocket#indicatedServerName()}
+ * is filled by the TLS handshake of an SSL-enabled server. A passthrough connection must not be
+ * terminated, because the gateway relays it unchanged at L4 and the backend presents its own
+ * certificate to the client (ADR-0017). {@link SniFrontListener} is therefore a plain-TCP
+ * {@code NetServer}. It hands the bytes buffered so far to the parser, which reads the
+ * {@code server_name} extension out of the cleartext ClientHello before any handshake, and
+ * {@link PassthroughRelay} then replays the same bytes to the chosen target. No platform API yields
+ * the name at that point.
  *
  * @author API Sheriff Team
  * @since 1.0
