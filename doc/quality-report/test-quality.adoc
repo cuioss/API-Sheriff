@@ -117,6 +117,17 @@ The gap: no descriptor guard asserts the declared values (`ttl_seconds: 3600`,
 `leeway_seconds: 30`) and no IT forces a refresh at the leeway boundary — deleting either key
 would turn nothing red.
 
+*Narrowed for the lifetime, on one descriptor.*
+`BffSessionAbsoluteTtlIT.sessionEndsAtItsDeclaredLifetimeWhateverTheRefreshDid` pins the absolute
+end at integration level: a one-off gateway declaring `ttl_seconds: 40` refuses a session 43
+seconds after its login although the session was refreshed in between, while the Compose instance
+`api-sheriff-refresh`, under `ttl_seconds: 3600`, still serves a session of the same age. The
+short-lifetime descriptor is derived from `sheriff-config-refresh/gateway.yaml`, and the derivation
+asserts that this file declares `ttl_seconds: 3600` exactly once, so removing or changing that key
+there turns the suite red. The finding stands for every other descriptor's `ttl_seconds`, and for
+`leeway_seconds` everywhere: the suites that wait into the refresh window state the 30 seconds as a
+constant of their own and assert no boundary.
+
 === TST-6 — `allowed_claims` negative leg missing at IT level only
 
 [cols="1,4"]
@@ -221,6 +232,146 @@ Zero Mockito/PowerMock/Hamcrest imports across all three modules (grep-verified)
 `@Disabled`. Zero `System.out` (one suppression-annotated `IO.println` boot print in
 `BaseIntegrationTest:45`). Test doubles are hand-rolled fakes; throwing providers are used as
 neutralised fixtures — a technique, not a smell.
+
+== Downstream-documented properties pinned at integration level
+
+A downstream consumer documents gateway behaviour to its operators, and points each statement at a
+test. It filed seventeen properties, each under an id of its own: six it found pinned at integration
+level, eleven proven at unit level only. Those eleven are pinned here, ten in Failsafe suites of
+`integration-tests` and one as a k6 run of `benchmarks`. The ids are the downstream's. A refactoring that removes one of the tests below un-proves a statement another
+project makes to its operators, so the rows are recorded where a reviewer will look.
+
+=== Pinned by the suites added for them
+
+[cols="1,3,4"]
+|===
+|Id |Property |Pinned by
+
+|M-40
+|The reserved `/auth` paths win over a proxy route whose prefix contains them, and of the pipeline
+stages only the baseline security filter applies to a reserved path.
+|`BffReservedPathPrecedenceIT`: `aPathBelowTheOverlapThatIsNotReservedIsProxied` (control),
+`aReservedPathIsNotProxied` (each of the eight reserved paths),
+`theAssertedPathsAreTheReservedPathsOfTheDescriptor`, `theBaselineFilterAppliesToAReservedPath`,
+`theVerbGateDoesNotApplyToAReservedPath`, `thePostRouteParameterChecksDoNotApplyToAReservedPath`
+
+|M-41
+|Pending logins are bounded at 10 000, and the oldest is evicted at the limit.
+|The k6 script `benchmarks/src/main/resources/k6-scripts/pending_login_flood.js`, run as the last
+goal of the benchmark lane. Its run is a bound proof and not a throughput figure: its summary is
+written, marked unpublished, and left out of the published benchmark report.
+`K6BenchmarkConverterTest` holds the unpublished case at unit level.
+
+|M-42
+|Concurrent requests on one session whose access token is near expiry cause one refresh grant at
+the identity provider.
+|`BffRefreshSingleFlightIT.concurrentRequestsShareOneRefresh`
+
+|M-44
+|The refresh grant carries a `scope` parameter equal to the session's active scope set.
+|`BffRefreshScopeWireIT.refreshGrantsCarryTheSessionScopeOnTheWire`
+
+|M-50
+|With the key-set relaxation alone, token validation works and a login is refused.
+|`BffTlsRelaxationIT.theKeySetRelaxationAloneDoesNotAdmitTheBackChannel`
+
+|M-51
+|The gateway's own `503` (open circuit) and `504` (upstream timeout) are rendered as the HTML error
+page for a navigation and as a problem document for JSON.
+|`HtmlErrorPageIT.openCircuit` and `HtmlErrorPageIT.upstreamTimeout`.
+`HtmlErrorPageIT.unreachableUpstream` now asserts `502` alone, where it accepted any of three
+statuses. The open-circuit leg found the `Retry-After` header the architecture document promises
+missing from the answer. By operator decision the gateway was corrected to send it, and
+`GatewayEdgeRouteRetryAfterTest` holds that at unit level.
+
+|M-52
+|With both relaxations, a full login, a mediated call and a refresh succeed against an identity
+provider whose certificate does not name the dialled host.
+|`BffTlsRelaxationIT.bothRelaxationsAdmitATrustedCertificateThatDoesNotNameTheHost`
+
+|M-54
+|A server-mode session ends `ttl_seconds` after its login, and a refresh does not extend it.
+|`BffSessionAbsoluteTtlIT.sessionEndsAtItsDeclaredLifetimeWhateverTheRefreshDid`
+
+|M-55
+|With a memory session store, an instance does not accept the session cookie of another instance.
+|`BffSessionInstanceIsolationIT.aSessionCookieIsNotASessionOnAnotherInstance`
+
+|M-59
+|Both relaxations together still refuse a certificate chain the trust store does not hold.
+|`BffTlsRelaxationIT.neitherRelaxationReachesChainTrust`
+
+|M-60
+|A refresh that fails before the identity provider processed it keeps the session, and is retried
+after the back-off.
+|`BffRefreshTransientFailureIT.serviceUnavailableKeepsTheSessionAndRetriesAfterTheBackOff` and
+`BffRefreshTransientFailureIT.connectionResetKeepsTheSessionAndRetriesAfterTheBackOff`
+|===
+
+No leg has been stopped as a finding. One correction to the gateway is recorded in the M-51 row.
+M-41 has no recorded run; see <<native-run-state>>.
+
+=== Already pinned when the filing was read
+
+[cols="1,3,4"]
+|===
+|Id |Property |Pinned by
+
+|M-47
+|A terminal refresh failure (`invalid_grant`) ends the session.
+|`BffTokenRefreshIT.failedOutcomeRejectsXhrAndClearsTheSession` and
+`BffTokenRefreshIT.failedOutcomeRedirectsNavigationAndClearsTheSession`
+
+|M-48
+|An identity provider that becomes reachable only after the gateway started is picked up without a
+restart.
+|`JwksLateIdpReadinessIT.lateIdentityProviderTurnsReadinessUpAndItsTokensAreAccepted`
+
+|M-49
+|Back-channel logout ends the server-mode session.
+|`BffBackchannelLogoutIT.idpInitiatedBackchannelLogoutDestroysTheGatewayHeldSession`
+
+|M-53
+|An anchor's `security_headers` block replaces the global block wholesale.
+|`RoutingAndResponseHeadersIT.SecurityHeaders.proxyResponseCarriesAnchorBlockWholesale`
+
+|M-56
+|`upstream_verify_hostname: false` relaxes the name check only; an untrusted chain is still refused.
+|`UpstreamHostnameVerificationIT.verifyOffInstanceStillRefusesAnUntrustedChain`
+
+|M-58
+|A login is granted `oidc.scopes` together with the scopes of the endpoint it starts on.
+|`BffEndpointScopesIT.navigationOnScopedRouteIsGrantedTheUnitedScopeSet` and
+`BffEndpointScopesIT.loginInitiationForScopedTargetIsGrantedTheEndpointScope`. Both observe the
+granted scope, not the requested one: the authorization request is pushed, so its scope does not
+appear in the authorization URL.
+|===
+
+The filing also asked for a correction of the `BffRefreshReuseIT` class Javadoc, on the reading that
+it denies any client a `backchannel.logout.url`. That request was dropped as obsolete: the Javadoc
+already says which two clients lack the URL, and it is accurate.
+
+[#native-run-state]
+=== What has run against the native image
+
+A Failsafe suite proves its row only where it has passed against the native image. The state on
+2026-10-07 is recorded here because one row has no run at all.
+
+* *Passed in a full run of the lane, in the form in which they are committed:* M-40, M-42, M-44,
+  M-50, M-51 (all three legs), M-52, M-54, M-55, M-59 and both legs of M-60. The run was
+  `verify -Pintegration-tests -pl integration-tests -am` on the developer build host, not in CI, on
+  the sources as this change commits them: 301 tests, no failure, no error, none skipped.
+  `JwksLateIdpReadinessIT` (M-48) and `JwksEgressMismatchIT`, whose gateway start this change also
+  altered, passed in the same run.
+* *M-41:* no run of the benchmark lane with the flood script is recorded. Until one is, the row
+  rests on the script as written and on `K6BenchmarkConverterTest`.
+
+The full run before that one, on the same day, failed six tests in the suites of M-42, M-44, M-50,
+M-59 and M-60. None failed at an assertion about its property: each failed at the start of its rig,
+on a host port number that was dead on the build host. The cause, and the rule every test-started
+container follows since, are in
+link:../development/integration-test-topology.adoc#test-started-host-ports[the topology note]. The
+harness was changed to that rule between the two runs, and the green run is the first of the rule.
 
 == Coverage map
 
