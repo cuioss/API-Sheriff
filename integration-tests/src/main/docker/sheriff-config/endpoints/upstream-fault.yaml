@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The upstream-fault route of HtmlErrorPageIT: a proxy route whose upstream the test can make slow or
+# unreachable, so the gateway's own 504 (upstream timeout) and 503 (open circuit) answers can be
+# observed on a running instance.
+#
+# base_url resolves the FAULT_UPSTREAM alias, which topology.properties points at a Toxiproxy listen
+# endpoint. No such proxy exists until a test creates it through Toxiproxy's admin API, in front of
+# the go-httpbin echo backend; the test deletes it again when it is done. Outside those tests the
+# alias names a port nothing listens on, and the route is never requested.
+#
+# WHY THE FAULT IS INJECTED BY TOXIPROXY AND NOT BY A KEY OF THIS ROUTE. There is no such key. The
+# guard the gateway puts around an upstream is fixed, not configured (GatewayEdgeRoute.guardFor): a
+# 30-second timeout, and a circuit breaker per upstream host and port with a 20-request window, a
+# 50 percent failure ratio and a 5-second open delay. A route can therefore not ask for a short
+# timeout or an eager breaker, and the only way to reach either answer is to make the upstream
+# itself misbehave: held silent past the timeout for the 504, failing fast often enough to fill the
+# window for the 503. Because the breaker is keyed by host and port, this route's upstream gets a
+# breaker of its own — toxiproxy:8667 is dialled by no other route — so opening it cannot disturb
+# another suite's route to go-httpbin.
+#
+# WHY THE ROUTE SITS UNDER /proxy. For the reason endpoints/untrusted.yaml records: this file is
+# mounted into every gateway instance, and a path outside an existing anchor would need a new anchor
+# in every committed gateway document, the matched pairs included. The 'api' anchor is public and
+# carries no auth block, so the endpoint declares the require: none posture itself.
+#
+# The file declares no limit-shaped key, and none may be added without a Coverage Matrix row in
+# doc/development/declared-limit-assertion-coverage.adoc.
+endpoint:
+  id: upstream-fault
+  enabled: true
+  base_url: FAULT_UPSTREAM
+  anchor: api
+  auth:
+    require: none
+  routes:
+    # upstream.path names go-httpbin's echo, so a request through a healthy proxy is answered 200 with
+    # the echoed request — the state each test establishes before it injects its fault. No forward
+    # block: what is forwarded does not matter to an assertion about the gateway's own error answer.
+    - id: upstream-fault
+      anchor: api
+      match:
+        path_prefix: /proxy/fault
+      upstream:
+        path: /anything/fault

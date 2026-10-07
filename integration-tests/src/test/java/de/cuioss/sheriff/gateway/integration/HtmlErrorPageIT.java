@@ -22,6 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.function.Function;
 
@@ -47,8 +54,23 @@ import org.junit.jupiter.api.Test;
  * </ul>
  * The status is identical on both legs: negotiation changes the body, never the status. The error
  * classes exercised are the ones the IT stack can reach: an unrouted address ({@code 404}), a body
- * over the route cap ({@code 413}), an upstream the gateway cannot dial ({@code 5xx}), a directory-asset
- * miss ({@code 404}), a bearer token missing the endpoint scope ({@code 403}) and a failed OIDC callback.
+ * over the route cap ({@code 413}), an upstream the gateway cannot dial ({@code 502}), an upstream that
+ * does not answer in time ({@code 504}), an open circuit ({@code 503}), a directory-asset miss
+ * ({@code 404}), a bearer token missing the endpoint scope ({@code 403}) and a failed OIDC callback.
+ * <p>
+ * <strong>The two upstream-fault tests.</strong> {@code 504} and {@code 503} are answers the gateway
+ * gives about an upstream that misbehaves, so both tests misbehave one: the {@code upstream-fault}
+ * route dials a Toxiproxy listen port, and each test creates the proxy behind it through Toxiproxy's
+ * admin API, in front of the echo backend, and deletes it again. Each first drives the route through
+ * the healthy proxy until it has answered {@code 200} as often as the circuit breaker's window is long,
+ * so neither starts on failures the other, or an earlier run, left in that window, and neither depends
+ * on the order the two run in. What the guard around an upstream is — a 30-second timeout and a breaker
+ * that opens on failures and stays open for five seconds — is fixed in the gateway, not declared by the
+ * route; {@code endpoints/upstream-fault.yaml} records it.
+ * <p>
+ * <strong>The open circuit's {@code Retry-After}.</strong> The {@code 503} of an open circuit carries
+ * {@code Retry-After: 5} — the seconds the breaker stays open — on the HTML page and on the problem
+ * document alike; the open-circuit test asserts it on both legs.
  * <p>
  * <strong>The two controls.</strong> A wildcard {@code Accept: *}{@code /*} — what {@code fetch()},
  * XHR and REST clients send — never qualifies for HTML; and a response <em>relayed from an origin</em>
@@ -104,6 +126,41 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     /** The {@code api} anchor's own policy, which a relayed {@code /proxy} response carries. */
     private static final String API_ANCHOR_CSP = "default-src 'self'";
 
+    /**
+     * The {@code upstream-fault} route. Its upstream is the Toxiproxy listen port the
+     * {@code FAULT_UPSTREAM} alias names, behind which {@link FaultProxy} places the echo backend.
+     */
+    private static final String FAULT_PATH = "/proxy/fault";
+
+    /**
+     * How many consecutive {@code 200} answers make the route healthy for a test: the length of the
+     * circuit breaker's rolling window, so that window then holds no failure from before the test.
+     */
+    private static final int BREAKER_WINDOW = 20;
+
+    /**
+     * How many fast failures the open-circuit test sends at most before the circuit must have opened.
+     * The breaker opens once half of its window has failed; twice the window is a bound, not the count.
+     */
+    private static final int FAST_FAILURE_LIMIT = 2 * BREAKER_WINDOW;
+
+    /** The response header on which an open circuit's {@code 503} says when to try again. */
+    private static final String RETRY_AFTER = "Retry-After";
+
+    /**
+     * The {@code Retry-After} value of an open circuit: the five seconds the breaker stays open, as the
+     * error contract in {@code doc/architecture.adoc} states it.
+     */
+    private static final String BREAKER_OPEN_SECONDS = "5";
+
+    /**
+     * How long the route may take to become healthy. It covers the five seconds an open circuit stays
+     * open and the trial requests that close it.
+     */
+    private static final Duration HEALTHY_TIMEOUT = Duration.ofSeconds(60);
+
+    private static final long HEALTHY_POLL_INTERVAL_MILLIS = 250L;
+
     @Test
     @DisplayName("an unrouted address: HTML for a navigation, problem+json for JSON, same 404")
     void unroutedAddress() {
@@ -133,15 +190,67 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("an upstream the gateway cannot dial: HTML for a navigation, problem+json for JSON, same 5xx")
+    @DisplayName("an upstream the gateway cannot dial: HTML for a navigation, problem+json for JSON, same 502")
     void unreachableUpstream() {
         ExtractableResponse<Response> json = send(JSON_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
-        int status = json.statusCode();
-        assertTrue(status == 502 || status == 503 || status == 504,
-                "the refused dial must be a gateway-originated 502/503/504; was " + status + ", body: "
-                        + json.asString());
+        assertEquals(502, json.statusCode(),
+                () -> "the refused dial must be the gateway's own 502; body: " + json.asString());
 
-        assertNegotiated(status, true, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
+        assertNegotiated(502, true, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
+    }
+
+    @Test
+    @DisplayName("an upstream that does not answer in time: HTML for a navigation, problem+json for JSON, same 504")
+    void upstreamTimeout() {
+        try (FaultProxy proxy = FaultProxy.create()) {
+            awaitHealthyFaultRoute();
+            proxy.holdAnswersBack();
+
+            // A POST with a body, because the gateway never re-sends one: a bodyless GET would be
+            // attempted three times, and each leg would take three timeouts instead of one.
+            assertNegotiated(504, true,
+                    spec -> spec.contentType("text/plain").body("upstream-timeout").when().post(FAULT_PATH));
+        }
+    }
+
+    @Test
+    @DisplayName("an open circuit: HTML for a navigation, problem+json for JSON, same 503 with Retry-After, and the upstream is not dialled")
+    void openCircuit() {
+        try (FaultProxy proxy = FaultProxy.create()) {
+            awaitHealthyFaultRoute();
+            proxy.setEnabled(false);
+
+            int failedFast = 0;
+            int status = faultRouteStatus();
+            while (status == 502 && failedFast < FAST_FAILURE_LIMIT) {
+                failedFast++;
+                status = faultRouteStatus();
+            }
+            int firstOther = status;
+            int countedFailures = failedFast;
+            assertAll("requests through the disabled proxy",
+                    () -> assertTrue(countedFailures > 0, "the first requests must fail fast with the gateway's "
+                            + "own 502, the failures that open the circuit; the first answer was " + firstOther),
+                    () -> assertEquals(503, firstOther, () -> "after " + countedFailures + " fast failures the "
+                            + "circuit must open and the next request be answered 503"));
+
+            // The upstream is reachable again from here on. A request the gateway dialled would be
+            // answered 200, so a 503 below is the open circuit and nothing else.
+            proxy.setEnabled(true);
+            ExtractableResponse<Response> html = send(BROWSER_ACCEPT, spec -> spec.when().get(FAULT_PATH));
+            ExtractableResponse<Response> json = send(JSON_ACCEPT, spec -> spec.when().get(FAULT_PATH));
+
+            assertHtmlErrorPage(html, 503);
+            assertCurrentShape(json, 503, true);
+            assertAll("Retry-After of the open circuit",
+                    () -> assertEquals(BREAKER_OPEN_SECONDS, html.header(RETRY_AFTER),
+                            "the HTML error page names the seconds the breaker stays open"),
+                    () -> assertEquals(BREAKER_OPEN_SECONDS, json.header(RETRY_AFTER),
+                            "the problem document names the seconds the breaker stays open"));
+
+            // Closing control: the circuit closes again on its own, so the 503 was the breaker's.
+            awaitHealthyFaultRoute();
+        }
     }
 
     @Test
@@ -276,5 +385,146 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     private static Response bogusCallback(RequestSpecification spec) {
         return spec.queryParam("code", "bogus-code").queryParam("state", "bogus-state")
                 .when().get(CALLBACK_PATH);
+    }
+
+    /** One bodyless request on the fault route, as a JSON client; the status it is answered with. */
+    private static int faultRouteStatus() {
+        return send(JSON_ACCEPT, spec -> spec.when().get(FAULT_PATH)).statusCode();
+    }
+
+    /**
+     * Drives the fault route until it has answered {@code 200} {@value #BREAKER_WINDOW} times in a row.
+     * A circuit an earlier test left open answers {@code 503} until it closes, which restarts the count.
+     */
+    @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded poll of a circuit breaker closing
+    private static void awaitHealthyFaultRoute() {
+        long deadline = System.nanoTime() + HEALTHY_TIMEOUT.toNanos();
+        int consecutive = 0;
+        int lastStatus = 0;
+        while (consecutive < BREAKER_WINDOW && System.nanoTime() < deadline) {
+            lastStatus = faultRouteStatus();
+            if (lastStatus == 200) {
+                consecutive++;
+                continue;
+            }
+            consecutive = 0;
+            try {
+                Thread.sleep(HEALTHY_POLL_INTERVAL_MILLIS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while waiting for the fault route", interrupted);
+            }
+        }
+        int answered = consecutive;
+        int last = lastStatus;
+        assertEquals(BREAKER_WINDOW, answered, () -> "through a healthy proxy " + FAULT_PATH + " must answer 200 "
+                + BREAKER_WINDOW + " times in a row within " + HEALTHY_TIMEOUT.toSeconds() + "s; the last answer was "
+                + last);
+    }
+
+    /**
+     * The Toxiproxy proxy behind the fault route: it listens on the port the {@code FAULT_UPSTREAM}
+     * alias names and forwards to the echo backend. Created healthy; closing it deletes it, whatever
+     * the outcome of the test, so the alias names a port nothing listens on again.
+     * <p>
+     * Driven through Toxiproxy's admin API with the JDK HTTP client, as {@code PassthroughFaultIT}
+     * drives its own proxy. The two share neither a proxy name nor a listen port.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    private static final class FaultProxy implements AutoCloseable {
+
+        private static final String NAME = "html-error-upstream-fault";
+
+        /** The port of the {@code FAULT_UPSTREAM} alias in {@code topology.properties}. */
+        private static final String LISTEN = "0.0.0.0:8667";
+
+        /** The echo backend, as Toxiproxy reaches it on the compose network. */
+        private static final String UPSTREAM = "go-httpbin:8080";
+
+        private static final String HELD_BACK_TOXIC = "html-error-answers-held-back";
+
+        /**
+         * How long an answer is held back: longer than the 30 seconds the gateway waits for one. A
+         * latency toxic, because it holds the connection for exactly that long; behind Toxiproxy's
+         * timeout toxic the echo backend closes the connection after five seconds, and the gateway
+         * answers a closed connection with a 502.
+         */
+        private static final long HELD_BACK_MILLIS = 45_000L;
+
+        private static final Duration ADMIN_TIMEOUT = Duration.ofSeconds(10);
+
+        private final HttpClient admin = HttpClient.newBuilder().connectTimeout(ADMIN_TIMEOUT).build();
+
+        private FaultProxy() {
+            // created through create()
+        }
+
+        /**
+         * @return the proxy, enabled and without a toxic; a proxy an aborted earlier run left behind
+         *         is replaced
+         */
+        static FaultProxy create() {
+            FaultProxy proxy = new FaultProxy();
+            proxy.close();
+            proxy.call("POST", "/proxies", "{\"name\":\"" + NAME + "\",\"listen\":\"" + LISTEN + "\",\"upstream\":\""
+                    + UPSTREAM + "\",\"enabled\":true}", 201);
+            return proxy;
+        }
+
+        /** Holds every answer of the echo backend back for longer than the gateway waits for one. */
+        void holdAnswersBack() {
+            call("POST", "/proxies/" + NAME + "/toxics", "{\"name\":\"" + HELD_BACK_TOXIC + "\",\"type\":\"latency\","
+                    + "\"stream\":\"downstream\",\"attributes\":{\"latency\":" + HELD_BACK_MILLIS + ",\"jitter\":0}}",
+                    200);
+        }
+
+        /**
+         * @param enabled whether the proxy listens; a disabled proxy refuses every connection at once
+         */
+        void setEnabled(boolean enabled) {
+            call("POST", "/proxies/" + NAME, "{\"enabled\":" + enabled + "}", 200);
+        }
+
+        /** Deletes the proxy. An absent proxy is not an error, and no failure here fails the caller. */
+        @Override
+        public void close() {
+            try {
+                send("DELETE", "/proxies/" + NAME, "");
+            } catch (IOException unreachable) {
+                // Teardown must not mask the outcome of the test the proxy served.
+            }
+        }
+
+        private void call(String method, String path, String body, int expectedStatus) {
+            HttpResponse<String> response;
+            try {
+                response = send(method, path, body);
+            } catch (IOException e) {
+                throw new UncheckedIOException("Toxiproxy's admin API did not answer " + method + " " + path, e);
+            }
+            assertEquals(expectedStatus, response.statusCode(),
+                    () -> "Toxiproxy refused " + method + " " + path + ": " + response.body());
+        }
+
+        private HttpResponse<String> send(String method, String path, String body) throws IOException {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(adminOrigin() + path))
+                    .timeout(ADMIN_TIMEOUT)
+                    .header("Content-Type", "application/json")
+                    .method(method, HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            try {
+                return admin.send(request, HttpResponse.BodyHandlers.ofString());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while calling Toxiproxy's admin API", e);
+            }
+        }
+
+        /** The published admin origin, the one {@code PassthroughFaultIT} drives. */
+        private static String adminOrigin() {
+            return System.getProperty("test.toxiproxy.url", "http://localhost:8474");
+        }
     }
 }
