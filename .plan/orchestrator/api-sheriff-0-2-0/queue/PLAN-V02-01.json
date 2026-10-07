@@ -2,8 +2,8 @@
   "id": "PLAN-V02-01",
   "slug": "adr-0005-reversal-quarkus-adoption",
   "workstream": "WS-01",
-  "status": "launched",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "plan-v02-01-adr-0005-reversal-quarkus-adoption",
   "pr": "",
   "landing": "",
   "seq": 1

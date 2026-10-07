@@ -506,12 +506,15 @@ this knowledge exists.** These are instance-specific cautions; the process itsel
   return.
 - **The merge of the version bump IS the release.** `.github/project.yml` `current-version` is the
   trigger; editing that file is by construction a release trigger.
-- **The guard is proven in both directions but NOT isolated.** It fired correctly at 0.1.1 (run
-  31157727796) and refused correctly at PLAN-51 (run 31256991225) — **but the refusal observation
-  cannot distinguish a working guard from one stuck on `unchanged` OR stuck on `changed`**, because
-  `current-version` was tagged and both refusal predicates were simultaneously true. **Still owed**:
-  read the pinned reusable workflow's checkout depth. That, not another control run, settles the
-  mechanism.
+- **The guard is proven in both directions.** It fired correctly at 0.1.1 (run 31157727796) and
+  refused correctly at PLAN-51 (run 31256991225). In that refusal both predicates were true
+  (`current-version` stayed `0.1.1`, tag `0.1.1` existed), so the job rendering alone cannot tell
+  them apart — **but the guard log can**: it reads `unchanged at 0.1.1`, and the guard checks
+  "unchanged" before "already tagged", so a guard stuck on `changed` would have logged the tag reason.
+  A guard stuck on `unchanged` would log the same line; that direction fails safe. The mechanism is
+  settled: the pinned guard job (v0.36.0) checks out with `fetch-depth: 0` and `fetch-tags: true`.
+  `doc/development/release-process.adoc` still says a refusal announces no reason and rests its
+  claims on the job rendering; **owner: `PLAN-V02-22` D4**.
 
 ## Standing Rules Inherited from the `api-sheriff-roadmap` Close-Out
 

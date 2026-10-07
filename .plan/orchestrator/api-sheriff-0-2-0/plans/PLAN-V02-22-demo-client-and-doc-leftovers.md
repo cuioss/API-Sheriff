@@ -5,14 +5,16 @@ workstream: WS-02
 
 > Staged plan spec — one shippable unit of work, ready for `/plan-marshall` hand-off.
 > The orchestrator EMITS the command below; it never launches the plan inline.
-> Source: four open items no plan owned — the remainder of GitHub issue #189 after `PLAN-V02-13`
-> (#383), and epic Open Defects 2, 3 and 11.
+> Source: open items no plan owned — the remainder of GitHub issue #189 after `PLAN-V02-13`
+> (#383), epic Open Defects 2, 3 and 11, and the release guard's evidence claims in
+> `doc/development/release-process.adoc` (a telemetry finding, 2026-10-07).
 
 ## Objective
 
 Close the small demo-client and documentation items that have stayed open because no plan owned
 them: the demo panel and documents issue #189 still asks for, two traps in the demo client's
-development start script, and one over-reaching claim in the documentation index.
+development start script, one over-reaching claim in the documentation index, and the release
+process document's account of what the release guard's negative control proves.
 
 ## Deliverables
 
@@ -44,6 +46,25 @@ development start script, and one over-reaching claim in the documentation index
    considered and not evaluated) has no live counterpart. Either narrow the sentence to what was
    adapted, or restore that list in `doc/features-analysis.adoc`. Git history holds the old file.
 
+4. **Make the release guard's evidence claims match the evidence.** In
+   `doc/development/release-process.adoc`:
+   - `[#guard-refusal-predicates]` says "a refusal announces neither of them". That is false. The
+     pinned guard (`cuioss-organization` `release-guard`, v0.36.0) returns a `reason` and logs it
+     (`Release guard: SKIP — release.current-version unchanged at …` or `… changed to …, but a tag
+     for … already exists`). What does not name the reason is the downstream rendering:
+     `released-version` empty and the skipped jobs. Say that precisely.
+   - `[#guard-negative-control-limits]`: the four-row signature alone cannot tell which condition
+     refused, because both were true in the control run (`current-version` stayed `0.1.1`, and tag
+     `0.1.1` already existed). The run's guard log can: it says `unchanged at 0.1.1`, and the guard
+     checks "unchanged" before "already tagged", so a guard stuck on "changed" would have logged the
+     tag reason. Rewrite "the control therefore proves the guard *refused*" and "it is the one this
+     control covers" so the claims rest on that reason line, cite it as the evidence, and keep the
+     stuck-on-"unchanged" caveat (a guard stuck there logs the same line).
+   - The section says the checkout depth "settles the mechanism" but never states it. State it: the
+     guard job checks out with `fetch-depth: 0` and `fetch-tags: true`, and the guard refuses to run
+     if the parent commit is missing.
+   - Cite the pinned guard by version and path, so the text has to be re-checked when the pin moves.
+
 ## Claim Labels
 
 - OBSERVED: issue #189 is open and its last comment lists the demo-client panel, `doc/variants/01-base-gateway.adoc`, `demo-client/doc/integration-sample.adoc`, the PROHIBITED ASSERTION wording and `doc/plan/04-request-pipeline.adoc` as still open — read at GitHub issue #189 § the latest comment, 2026-10-04
@@ -53,6 +74,9 @@ development start script, and one over-reaching claim in the documentation index
 - HYPOTHESIS: `start-dev-environment.sh` still gates on `/q/health/live` — confirm/refute at `demo-client/scripts/start-dev-environment.sh` § the gateway wait (verify-at-outline)
 - HYPOTHESIS: `doc/README.adoc` still carries the "fully adapted" claim — confirm/refute at `doc/README.adoc` § the archive paragraph (verify-at-outline)
 
+- OBSERVED: control run `31256991225` (PR #196, merge `963e422`): `current-version` is `0.1.1` at the merge and at its parent, tag `0.1.1` was created 2026-08-07, and the `release / guard` log reads `Release guard: SKIP — release.current-version unchanged at 0.1.1` — read with `gh run view 31256991225 --log` and `git show 963e422:.github/project.yml`
+- OBSERVED: the guard decides "unchanged" before "already tagged" and returns a `reason` for each — read at `cuioss/cuioss-organization` `.github/actions/release-guard/release-guard.py` § `decide`, at `c43c22f9`; the guard job checks out with `fetch-depth: 0` and `fetch-tags: true` — read at `.github/workflows/reusable-maven-release.yml` § `guard`, at `b2de4107` (v0.36.0, the pin in `release.yml`)
+
 ## Expected Surface
 
 - OBSERVED: `demo-client/src/main/resources/spa/index.html`, `demo-client/src/main/resources/spa/app.js` — D1
@@ -60,6 +84,7 @@ development start script, and one over-reaching claim in the documentation index
 - OBSERVED: `demo-client/tests/*.spec.js` — D1, a spec for the new panel
 - OBSERVED: `demo-client/scripts/start-dev-environment.sh`, `demo-client/playwright.config.js` — D2
 - OBSERVED: `doc/README.adoc` — D3
+- OBSERVED: `doc/development/release-process.adoc` — D4
 - HYPOTHESIS: `doc/features-analysis.adoc` — D3, only if the list is restored (verify-at-outline)
 
 ## Dependencies and Sequencing
