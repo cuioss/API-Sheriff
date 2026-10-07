@@ -1943,7 +1943,7 @@ public class GatewayEdgeRoute {
      * of the upstream.
      * <p>
      * Package-private rather than private so the header is asserted directly by
-     * {@code GatewayEdgeRouteTest}, matching the precedent {@link #problemBody} sets.
+     * {@code GatewayEdgeRouteRetryAfterTest}, matching the precedent {@link #problemBody} sets.
      *
      * @param request   the rejected request, {@code null} for a rejection answered before one was
      *                  built — such a rejection is never an open circuit and gets no header

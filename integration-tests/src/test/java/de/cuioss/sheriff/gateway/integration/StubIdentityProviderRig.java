@@ -73,10 +73,8 @@ import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -954,42 +952,18 @@ final class StubIdentityProviderRig implements AutoCloseable {
     /**
      * One request the stub recorded.
      *
-     * @param method         the HTTP method
-     * @param headers        the request headers, keyed by lower-cased name; a header sent several times
-     *                       is rendered as WireMock's journal renders it
      * @param body           the request body, empty when the request carried none
      * @param loggedAtMillis when the stub recorded the request, in epoch milliseconds
      * @author API Sheriff Team
      * @since 1.0
      */
-    record RecordedRequest(String method, Map<String, String> headers, String body, long loggedAtMillis) {
-
-        /**
-         * Canonical constructor defensively copying the headers.
-         */
-        RecordedRequest {
-            headers = Map.copyOf(headers);
-        }
+    record RecordedRequest(String body, long loggedAtMillis) {
 
         private static RecordedRequest of(Map<String, Object> logged) {
-            Map<String, String> headers = new LinkedHashMap<>();
-            if (logged.get("headers") instanceof Map<?, ?> sent) {
-                sent.forEach((name, value) ->
-                        headers.put(String.valueOf(name).toLowerCase(Locale.ROOT), String.valueOf(value)));
-            }
             Object body = logged.get("body");
             Number loggedDate = assertInstanceOf(Number.class, logged.get("loggedDate"),
                     "a journal entry carries its loggedDate");
-            return new RecordedRequest(String.valueOf(logged.get("method")), headers,
-                    body == null ? "" : body.toString(), loggedDate.longValue());
-        }
-
-        /**
-         * @param name the header name, in any letter case
-         * @return the value of that header, empty when the request did not carry it
-         */
-        Optional<String> header(String name) {
-            return Optional.ofNullable(headers.get(name.toLowerCase(Locale.ROOT)));
+            return new RecordedRequest(body == null ? "" : body.toString(), loggedDate.longValue());
         }
 
         /**
