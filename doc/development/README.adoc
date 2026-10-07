@@ -109,7 +109,7 @@ to *run* the finished gateway).
   inbound path, so a moved application context path must be reflected in `gateway.yaml`.
 
 | link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
-| Which declared gateway limit has a boundary assertion and which does not -- the twenty-six-file
+| Which declared gateway limit has a boundary assertion and which does not -- the twenty-eight-file
   descriptor surface, the strict preset's resolved caps that appear in no yaml, one row per limit
   naming its enforcing component and its asserting test, the standing gap remainder, and the two
   report-only findings -- that the body-cap wiring guard's glob never reaches the `endpoints/` tree,
