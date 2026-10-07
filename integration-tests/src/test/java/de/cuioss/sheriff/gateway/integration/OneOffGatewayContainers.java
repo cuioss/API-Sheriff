@@ -56,7 +56,9 @@ import io.restassured.response.Response;
  *   <li>{@link #startBffGateway(BffGateway)} — a BFF gateway over the <em>shared</em>
  *       {@code sheriff-config} directory with one overlay descriptor, exactly as a compose variant
  *       instance is mounted. Its application listener is published on a fixed loopback port, because
- *       the descriptor of a BFF names its own origin; its management port stays ephemeral.</li>
+ *       the descriptor of a BFF names its own origin; its management port stays ephemeral.
+ *       {@link #startBffGatewayWithSigningKeys(BffGateway)} is the same gateway with the stack's
+ *       signing-key directory mounted as well.</li>
  * </ul>
  * <p>
  * Not instantiable; every member is a stateless static helper. Docker container names are global to
@@ -92,6 +94,9 @@ final class OneOffGatewayContainers {
             SHERIFF_CONFIG.resolve(Path.of("endpoints", "assets-secure.yaml"));
     private static final Path ASSETS = DOCKER.resolve("assets");
 
+    /** The signing-key directory every compose gateway mounts at {@code /app/signing-keys}. */
+    private static final Path SIGNING_KEYS = DOCKER.resolve("signing-keys");
+
     /** The demo SPA the {@code /assets/demo} route of the shared configuration serves, as compose mounts it. */
     private static final Path DEMO_SPA = Path.of("..", "demo-client", "src", "main", "resources", "spa");
 
@@ -104,6 +109,9 @@ final class OneOffGatewayContainers {
     private static final String READINESS_CHECK = "gateway-readiness";
 
     private static final long POLL_INTERVAL_MILLIS = 500L;
+
+    /** Upper bound on one readiness request, connection and answer each. */
+    private static final int READINESS_REQUEST_TIMEOUT_SECONDS = 5;
 
     /** Upper bound on any single docker call. */
     private static final long DOCKER_TIMEOUT_SECONDS = 60L;
@@ -194,6 +202,27 @@ final class OneOffGatewayContainers {
      * @param gateway what to start
      */
     static void startBffGateway(BffGateway gateway) {
+        startBffGateway(gateway, false);
+    }
+
+    /**
+     * Starts a one-off BFF gateway exactly as {@link #startBffGateway(BffGateway)} does, and
+     * additionally mounts the stack's signing-key directory at {@code /app/signing-keys}, as every
+     * compose gateway instance has it.
+     * <p>
+     * This is the shape of a gateway whose descriptor is derived from a compose instance's descriptor
+     * and keeps that instance's client: it names the client-authentication key file and the DPoP proof
+     * key file the compose instance names, so both must be present. Keycloak verifies the client
+     * assertion of such a gateway against the key set the primary {@code api-sheriff} instance
+     * publishes, which is the public half of the very same client-authentication key file.
+     *
+     * @param gateway what to start
+     */
+    static void startBffGatewayWithSigningKeys(BffGateway gateway) {
+        startBffGateway(gateway, true);
+    }
+
+    private static void startBffGateway(BffGateway gateway, boolean mountSigningKeys) {
         assertReadableByTheGatewayUser(gateway.descriptor());
         List<String> arguments = new ArrayList<>(List.of("run", "-d",
                 "--name", gateway.name(),
@@ -211,6 +240,9 @@ final class OneOffGatewayContainers {
         for (String entry : gateway.environment()) {
             arguments.add("-e");
             arguments.add(entry);
+        }
+        if (mountSigningKeys) {
+            arguments.addAll(List.of("-v", SIGNING_KEYS.toAbsolutePath() + ":/app/signing-keys:ro"));
         }
         arguments.addAll(List.of(
                 "-v", CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro",
@@ -339,7 +371,12 @@ final class OneOffGatewayContainers {
      */
     @SuppressWarnings("java:S1130") // NOSONAR java:S1130 - RestAssured rethrows IOException undeclared (Groovy)
     private static Response readiness(String managementOrigin) throws IOException {
+        // Bounded per request, so the poll's own deadline is reached even when the port accepts the
+        // connection and then stays silent: an abandoned read is an IOException like every other
+        // "not answering yet".
         return given()
+                .config(BffKeycloakLoginFlow.clientDeadlines(READINESS_REQUEST_TIMEOUT_SECONDS,
+                        READINESS_REQUEST_TIMEOUT_SECONDS))
                 .relaxedHTTPSValidation()
                 .baseUri(managementOrigin)
                 .basePath("")

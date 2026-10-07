@@ -26,6 +26,8 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import io.restassured.RestAssured;
+import io.restassured.config.RestAssuredConfig;
 import io.restassured.http.Cookie;
 import io.restassured.http.Cookies;
 import io.restassured.response.Response;
@@ -219,6 +221,16 @@ final class BffKeycloakLoginFlow {
      */
     static final int BROWSER_COOKIE_BUDGET_BYTES = 4096;
 
+    /** How long a connection to the gateway or to Keycloak may take to be established. */
+    static final int CONNECT_TIMEOUT_SECONDS = 10;
+
+    /**
+     * How long the gateway or Keycloak may stay silent on a request of this helper. No request it
+     * issues is answered slowly by design: a login step, a session-route request and a logout are each
+     * answered well inside a second on a healthy stack.
+     */
+    static final int RESPONSE_TIMEOUT_SECONDS = 30;
+
     /** Matches the Keycloak username/password form's {@code login-actions/authenticate} action URL. */
     private static final Pattern FORM_ACTION =
             Pattern.compile("action=\"([^\"]*login-actions/authenticate[^\"]*)\"");
@@ -322,8 +334,37 @@ final class BffKeycloakLoginFlow {
         return login(startPath, gatewayOrigin, Map.of(), username, password);
     }
 
+    /**
+     * Runs the full auth-code flow from an empty cookie jar and presents {@code callbackOnlyCookies}
+     * on the callback navigation alone.
+     * <p>
+     * This is the browser that starts a login while it holds no session cookie the gateway is shown —
+     * and then arrives at the callback holding one: the session of another tab that logged in in the
+     * meantime, or a cookie planted between the two navigations. A cookie handed to
+     * {@link #login(String, String, Map)} is sent from the first navigation on, where a live session
+     * is simply served and no login starts; only this shape reaches the callback with a session cookie
+     * the gateway resolves.
+     *
+     * @param startPath           the gateway path to navigate to (a require:session route)
+     * @param gatewayOrigin       the browser-facing gateway origin to drive
+     * @param callbackOnlyCookies the gateway cookies added to the jar immediately before the callback
+     *                            navigation; the session cookie the callback sets replaces an entry
+     *                            of the same name
+     * @return the established gateway {@link Session}
+     */
+    static Session loginPresentingAtCallback(String startPath, String gatewayOrigin,
+            Map<String, String> callbackOnlyCookies) {
+        return login(startPath, gatewayOrigin, Map.of(), callbackOnlyCookies, USERNAME, PASSWORD);
+    }
+
     private static Session login(String startPath, String gatewayOrigin,
             Map<String, String> initialGatewayCookies, String username, String password) {
+        return login(startPath, gatewayOrigin, initialGatewayCookies, Map.of(), username, password);
+    }
+
+    private static Session login(String startPath, String gatewayOrigin,
+            Map<String, String> initialGatewayCookies, Map<String, String> callbackOnlyCookies, String username,
+            String password) {
         Map<String, String> gatewayCookies = new HashMap<>(initialGatewayCookies);
         Map<String, String> keycloakCookies = new HashMap<>();
 
@@ -374,6 +415,7 @@ final class BffKeycloakLoginFlow {
         // urlEncodingEnabled(false) is load-bearing here, as it is on the keycloak() spec: the Location
         // Keycloak emitted is already percent-encoded, and REST Assured's default re-encoding would
         // double-encode the code/state/iss values and the gateway would reject the callback.
+        gatewayCookies.putAll(callbackOnlyCookies);
         Response callback = gateway(gatewayCookies, gatewayOrigin)
                 .urlEncodingEnabled(false)
                 .header("Accept", "text/html")
@@ -495,7 +537,37 @@ final class BffKeycloakLoginFlow {
         // REST Assured to encode them. The ONE call that must NOT re-encode is the Step 4 callback
         // navigation, which replays a Location Keycloak already percent-encoded; that call opts out
         // locally with urlEncodingEnabled(false) rather than flipping the default for every caller.
-        return given().relaxedHTTPSValidation().baseUri(gatewayOrigin).cookies(cookies);
+        return given().config(clientDeadlines(CONNECT_TIMEOUT_SECONDS, RESPONSE_TIMEOUT_SECONDS))
+                .relaxedHTTPSValidation().baseUri(gatewayOrigin).cookies(cookies);
+    }
+
+    /**
+     * A REST Assured configuration whose HTTP client gives up instead of waiting without end: on a
+     * connection that is not established within {@code connectSeconds}, and on a read — the TLS
+     * handshake included — that receives nothing for {@code responseSeconds}.
+     * <p>
+     * <strong>Why every request of this helper carries it.</strong> The client REST Assured builds has
+     * no timeout of its own, so a peer that accepts the connection and then stays silent blocks the
+     * calling thread for the rest of the build. That is not hypothetical on a developer machine: the
+     * stack publishes its ports on the wildcard address, and a foreign process holding the same port
+     * as a {@code 127.0.0.1}-specific listener receives every IPv4 loopback connection in its place
+     * and never answers the TLS ClientHello. With the deadlines the request fails with a
+     * {@link java.net.SocketTimeoutException} that names the read, and the run reports the failure
+     * instead of being cut off by its outer time budget.
+     * <p>
+     * It is passed to {@code given().config(...)} <em>before</em> any call that derives from the
+     * specification's configuration, such as {@code relaxedHTTPSValidation()}: {@code config(...)}
+     * replaces the configuration as a whole.
+     *
+     * @param connectSeconds  how long establishing the connection may take
+     * @param responseSeconds how long the peer may stay silent before a read is abandoned
+     * @return the configuration, derived from the static REST Assured configuration
+     */
+    static RestAssuredConfig clientDeadlines(int connectSeconds, int responseSeconds) {
+        RestAssuredConfig base = RestAssured.config();
+        return base.httpClient(base.getHttpClientConfig()
+                .setParam("http.connection.timeout", connectSeconds * 1000)
+                .setParam("http.socket.timeout", responseSeconds * 1000));
     }
 
     /**
@@ -509,7 +581,8 @@ final class BffKeycloakLoginFlow {
         // urlEncodingEnabled(false): the authorization URL (and the login-form action) are already
         // percent-encoded by the gateway/Keycloak, and REST Assured's default re-encoding would encode
         // them a second time. Disabling it sends the URL verbatim.
-        return given().relaxedHTTPSValidation().urlEncodingEnabled(false).cookies(cookies);
+        return given().config(clientDeadlines(CONNECT_TIMEOUT_SECONDS, RESPONSE_TIMEOUT_SECONDS))
+                .relaxedHTTPSValidation().urlEncodingEnabled(false).cookies(cookies);
     }
 
     /**

@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *twenty-six files* under `integration-tests/src/main/docker/`.
+The declared surface is *twenty-seven files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -65,10 +65,11 @@ disk without touching this table and the guard fails.
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 13
+| 14
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-scoped.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`,
+  `sheriff-config/endpoints/bff-session-websocket.yaml`,
   `sheriff-config/endpoints/bff-unassigned-scope.yaml`, `sheriff-config/endpoints/grpc.yaml`,
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
   `sheriff-config/endpoints/portal-hidden.yaml`,
@@ -108,7 +109,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all twenty-six files it returns hits in exactly sixteen of them:
+Over all twenty-seven files it returns hits in exactly seventeen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -123,6 +124,7 @@ Over all twenty-six files it returns hits in exactly sixteen of them:
 * `sheriff-config-refresh/gateway.yaml`
 * `sheriff-config-ws-admission/gateway.yaml`
 * `sheriff-config/endpoints/bff-session.yaml`
+* `sheriff-config/endpoints/bff-session-websocket.yaml`
 * `sheriff-config/endpoints/grpc.yaml`
 * `sheriff-config/endpoints/httpbin.yaml`
 * `sheriff-config/endpoints/secure.yaml`
@@ -135,7 +137,7 @@ The remaining ten -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/portal-hidden.yaml`,
 `sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
 `sheriff-config/portal/portal.html` and `sheriff-config/topology.properties` -- declare none.
-That complement is the other half of the same claim, so asserting the sixteen exactly asserts both
+That complement is the other half of the same claim, so asserting the seventeen exactly asserts both
 halves at once.
 
 `sheriff-config/endpoints/bff-unassigned-scope.yaml` is limit-free for the same reason as
@@ -166,13 +168,13 @@ Matrix row.
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the sixteen limit-bearing paths -- and uses them
+runtime -- the inventory table, the sweep pattern and the seventeen limit-bearing paths -- and uses them
 as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-sixteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+seventeen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -437,10 +439,12 @@ declaration's *existence* is proven while its *boundary* is not.
 | `BffCsrfIT` (403 / 403 with a 401 control)
 
 | `websocket.allowed_origins`
-  `sheriff-config/endpoints/websocket.yaml:31,44`
+  `sheriff-config/endpoints/websocket.yaml:31,44`,
+  `sheriff-config/endpoints/bff-session-websocket.yaml:29`
 | `OriginValidationStage` (fail-closed, before the upstream dial)
 | COVERED
-| `WebSocketProxyIT` (CSWSH rejection, GW-09)
+| `WebSocketProxyIT` (CSWSH rejection, GW-09); `BffSessionWebSocketIT` (a foreign Origin refused 403
+  on the session route, with a live session)
 
 | `websocket.idle_timeout_seconds: 2`
   `sheriff-config/endpoints/websocket.yaml:55`
@@ -779,11 +783,11 @@ enlarge exactly the hole this note has chosen to report.
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
 paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
-sixteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+seventeen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
 *boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
 so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *sixteen already limit-bearing* files
+The consequence: adding a limit-shaped key to one of the *seventeen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
 row is forced. Only a key that makes one of the remaining ten --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
@@ -792,8 +796,8 @@ row is forced. Only a key that makes one of the remaining ten --
 `sheriff-config/endpoints/portal-hidden.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
 `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Sixteen of twenty-six is the *majority* of the surface,
-so this is the ordinary case rather than an edge one: for those sixteen files the "add its row here
+Seventeen of twenty-seven is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those seventeen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
 `hsts.max_age` and the CORS allow lists are limit-shaped, the base file was already limit-bearing, and
@@ -821,14 +825,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (twenty-six files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (twenty-seven files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the sixteen limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the seventeen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the sixteen/ten partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the seventeen/ten partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -837,7 +841,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the twenty-six files, add its row here in the same change --
+When you add a limit-shaped key to any of the twenty-seven files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
