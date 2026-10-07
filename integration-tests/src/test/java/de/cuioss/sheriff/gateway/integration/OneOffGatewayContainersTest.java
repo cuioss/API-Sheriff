@@ -196,7 +196,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("a bearer-only gateway publishes its application port on every interface and one port on loopback")
-        void bearerOnlyGatewayHasOneLoopbackPublication() throws IOException {
+        void bearerOnlyGatewayHasOneLoopbackPublication() throws Exception {
             Path descriptor = writeReadableByOthers("bearer-only/descriptor.yaml", DESCRIPTOR_CONTENT);
 
             List<String> arguments = OneOffGatewayContainers.gatewayRunArguments("harness-test-bearer-gateway",
@@ -211,7 +211,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("a BFF gateway joins exactly one network")
-        void bffGatewayJoinsOneNetwork() throws IOException {
+        void bffGatewayJoinsOneNetwork() throws Exception {
             Path descriptor = writeReadableByOthers("one-network/descriptor.yaml", DESCRIPTOR_CONTENT);
 
             List<String> arguments = OneOffGatewayContainers.bffGatewayRunArguments(
@@ -261,7 +261,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("a publish option is spelled in the harness, its test and the stub rig, and nowhere else")
-        void publishOptionsAreSpelledWhereTheHarnessSeesThem() throws IOException {
+        void publishOptionsAreSpelledWhereTheHarnessSeesThem() throws Exception {
             Set<String> expected = Set.of("OneOffGatewayContainers.java", "OneOffGatewayContainersTest.java",
                     "StubIdentityProviderRig.java");
 
@@ -275,7 +275,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("a raw network connect is spelled in the harness and the late-provider suite, and nowhere else")
-        void rawNetworkConnectsAreSpelledWhereTheyAreKnown() throws IOException {
+        void rawNetworkConnectsAreSpelledWhereTheyAreKnown() throws Exception {
             Set<String> expected = Set.of("OneOffGatewayContainers.java", "JwksLateIdpReadinessIT.java");
 
             Set<String> naming = new TreeSet<>(sourcesNaming("\"network\", \"connect\""));
@@ -288,7 +288,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("the harness's network attachment is called by the two rigs that borrow the compose echo container")
-        void networkAttachmentIsCalledByTheRigsThatBorrowAComposeContainer() throws IOException {
+        void networkAttachmentIsCalledByTheRigsThatBorrowAComposeContainer() throws Exception {
             Set<String> expected = Set.of("OneOffGatewayContainers.java", "OneOffGatewayContainersTest.java",
                     "StubIdentityProviderRig.java", "BffTlsRelaxationIT.java");
 
@@ -323,7 +323,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("copies the shared configuration, writes the descriptor and adds the extra endpoint file")
-        void shouldAssembleACompleteConfigurationDirectory() throws IOException {
+        void shouldAssembleACompleteConfigurationDirectory() throws Exception {
             Path descriptor = writeReadableByOthers("complete/input/descriptor.yaml", DESCRIPTOR_CONTENT);
             Path extra = writeReadableByOthers("complete/input/" + EXTRA_ENDPOINT, "# extra endpoint\n");
             List<String> committedBefore = listing(COMMITTED_CONFIGURATION);
@@ -345,10 +345,10 @@ class OneOffGatewayContainersTest {
                     () -> assertEquals(DESCRIPTOR_CONTENT, Files.readString(assembled.resolve("gateway.yaml")),
                             "gateway.yaml must carry the descriptor's content"),
                     () -> assertTrue(entries.stream().allMatch(entry -> permissionsOf(entry)
-                            .contains(PosixFilePermission.OTHERS_READ)),
+                                    .contains(PosixFilePermission.OTHERS_READ)),
                             "every assembled entry must be readable by others"),
                     () -> assertTrue(entries.stream().filter(Files::isDirectory).allMatch(entry -> permissionsOf(entry)
-                            .contains(PosixFilePermission.OTHERS_EXECUTE)),
+                                    .contains(PosixFilePermission.OTHERS_EXECUTE)),
                             "every assembled directory must be traversable by others"),
                     () -> assertEquals(committedBefore, listing(COMMITTED_CONFIGURATION),
                             "assembling must leave the committed sheriff-config listing unchanged"));
@@ -356,7 +356,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("clears a previous assembly at the same destination")
-        void shouldClearAPreviousAssembly() throws IOException {
+        void shouldClearAPreviousAssembly() throws Exception {
             Path descriptor = writeReadableByOthers("cleared/input/descriptor.yaml", DESCRIPTOR_CONTENT);
             writeReadableByOthers("cleared/assembled/endpoints/stale.yaml", "# left by an earlier run\n");
 
@@ -370,7 +370,7 @@ class OneOffGatewayContainersTest {
         @ParameterizedTest(name = "refuses {0}")
         @ValueSource(strings = {"target", "target/../one-off-gateway-harness-escape"})
         @DisplayName("refuses a destination that is not strictly below target/")
-        void shouldRefuseADestinationOutsideTheBuildDirectory(String destination) throws IOException {
+        void shouldRefuseADestinationOutsideTheBuildDirectory(String destination) throws Exception {
             Path descriptor = writeReadableByOthers("refused/input/descriptor.yaml", DESCRIPTOR_CONTENT);
             Path refused = MODULE.resolve(destination);
             List<Path> noExtraFiles = List.of();
@@ -425,7 +425,7 @@ class OneOffGatewayContainersTest {
         @ParameterizedTest(name = "refuses an extra mount at {0}")
         @ValueSource(strings = {"/app/sheriff-config/endpoints/extra.yaml", "/app/certificates"})
         @DisplayName("refuses an extra mount inside a harness mount before any argument is produced")
-        void shouldRefuseAnExtraMountInsideAHarnessMount(String containerPath) throws IOException {
+        void shouldRefuseAnExtraMountInsideAHarnessMount(String containerPath) throws Exception {
             Path descriptor = writeReadableByOthers("refused-mount/descriptor.yaml", DESCRIPTOR_CONTENT);
             BffGateway gateway = gatewayOver(descriptor);
             List<ReadOnlyMount> mounts = List.of(new ReadOnlyMount(WORK, containerPath));
@@ -440,7 +440,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("publishes the application port on every interface and the management port on loopback only")
-        void shouldPublishTheApplicationPortOnEveryInterface() throws IOException {
+        void shouldPublishTheApplicationPortOnEveryInterface() throws Exception {
             Path descriptor = writeReadableByOthers("published/descriptor.yaml", DESCRIPTOR_CONTENT);
 
             List<String> arguments = OneOffGatewayContainers.bffGatewayRunArguments(
@@ -453,7 +453,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("mounts an overlay descriptor over the shared configuration directory")
-        void shouldMountAnOverlayDescriptorOverTheSharedDirectory() throws IOException {
+        void shouldMountAnOverlayDescriptorOverTheSharedDirectory() throws Exception {
             Path descriptor = writeReadableByOthers("overlay/descriptor.yaml", DESCRIPTOR_CONTENT);
 
             List<String> arguments = OneOffGatewayContainers.bffGatewayRunArguments(
@@ -461,10 +461,10 @@ class OneOffGatewayContainersTest {
 
             assertAll("overlay mounts",
                     () -> assertTrue(arguments.contains(
-                            COMMITTED_CONFIGURATION.toAbsolutePath() + ":" + CONFIGURATION_MOUNT + ":ro"),
+                                    COMMITTED_CONFIGURATION.toAbsolutePath() + ":" + CONFIGURATION_MOUNT + ":ro"),
                             () -> "the shared directory must be mounted: " + arguments),
                     () -> assertTrue(arguments.contains(
-                            descriptor.toAbsolutePath() + ":" + CONFIGURATION_MOUNT + "/gateway.yaml:ro"),
+                                    descriptor.toAbsolutePath() + ":" + CONFIGURATION_MOUNT + "/gateway.yaml:ro"),
                             () -> "the descriptor must be mounted as the overlay: " + arguments),
                     () -> assertEquals(OneOffGatewayContainers.IMAGE, arguments.getLast(),
                             "without process arguments the image ends the command"));
@@ -472,7 +472,7 @@ class OneOffGatewayContainersTest {
 
         @Test
         @DisplayName("mounts an assembled directory whole, in place of the shared one and its overlay")
-        void shouldMountAnAssembledDirectoryWhole() throws IOException {
+        void shouldMountAnAssembledDirectoryWhole() throws Exception {
             Path descriptor = writeReadableByOthers("whole/input/descriptor.yaml", DESCRIPTOR_CONTENT);
             Path assembled = OneOffGatewayContainers.assembleConfigurationDirectory(
                     WORK.resolve("whole/assembled"), descriptor, List.of());
@@ -484,16 +484,16 @@ class OneOffGatewayContainersTest {
                     () -> assertTrue(arguments.contains(assembled + ":" + CONFIGURATION_MOUNT + ":ro"),
                             () -> "the assembled directory must be mounted whole: " + arguments),
                     () -> assertTrue(arguments.stream().noneMatch(
-                            argument -> argument.contains(":" + CONFIGURATION_MOUNT + "/")),
+                                    argument -> argument.contains(":" + CONFIGURATION_MOUNT + "/")),
                             () -> "nothing may be mounted inside the configuration directory: " + arguments),
                     () -> assertTrue(arguments.stream().noneMatch(
-                            argument -> argument.startsWith(COMMITTED_CONFIGURATION.toAbsolutePath() + ":")),
+                                    argument -> argument.startsWith(COMMITTED_CONFIGURATION.toAbsolutePath() + ":")),
                             () -> "the committed directory must not be a mount source: " + arguments));
         }
 
         @Test
         @DisplayName("appends extra mounts read-only and the process arguments verbatim after the image")
-        void shouldAppendExtraMountsAndProcessArguments() throws IOException {
+        void shouldAppendExtraMountsAndProcessArguments() throws Exception {
             Path descriptor = writeReadableByOthers("extras/descriptor.yaml", DESCRIPTOR_CONTENT);
             Path keys = Files.createDirectories(WORK.resolve("extras/signing-keys"));
             List<String> processArguments = List.of("-Dharness.test.first=a b", "--second");
@@ -505,7 +505,7 @@ class OneOffGatewayContainersTest {
             assertAll("extra mount and process arguments",
                     () -> assertTrue(image > 0, () -> "the image must be named: " + arguments),
                     () -> assertTrue(arguments.subList(0, image).contains(
-                            keys.toAbsolutePath() + ":/app/signing-keys:ro"),
+                                    keys.toAbsolutePath() + ":/app/signing-keys:ro"),
                             () -> "the extra mount must precede the image, read-only: " + arguments),
                     () -> assertEquals(processArguments, arguments.subList(image + 1, arguments.size()),
                             "the process arguments must follow the image verbatim"));

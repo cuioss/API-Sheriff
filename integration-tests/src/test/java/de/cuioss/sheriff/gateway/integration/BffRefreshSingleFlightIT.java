@@ -127,7 +127,7 @@ class BffRefreshSingleFlightIT {
 
     @Test
     @DisplayName("concurrent requests on one near-expiry session cause one refresh grant and relay its token")
-    void concurrentRequestsShareOneRefresh() throws InterruptedException, ExecutionException, TimeoutException {
+    void concurrentRequestsShareOneRefresh() throws Exception {
         try (StubIdentityProviderRig rig = StubIdentityProviderRig.start()) {
             Session session = rig.login(MEDIATED_PATH, INSIDE_THE_LEEWAY);
             assertEquals(0, rig.refreshGrants().size(), "the login itself must not have refreshed");

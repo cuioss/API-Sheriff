@@ -432,7 +432,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when().get(redirectUri + "?code=" + UUID.randomUUID() + "&state="
-                        + URLEncoder.encode(state, StandardCharsets.UTF_8))
+                + URLEncoder.encode(state, StandardCharsets.UTF_8))
                 .then().extract().response();
         assertEquals(302, callback.statusCode(), () -> "the gateway must accept the stubbed login at its callback. "
                 + OneOffGatewayContainers.gatewayLog(GATEWAY));

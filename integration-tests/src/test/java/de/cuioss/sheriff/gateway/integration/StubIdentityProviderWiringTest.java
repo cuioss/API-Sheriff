@@ -116,7 +116,7 @@ class StubIdentityProviderWiringTest {
 
     @Test
     @DisplayName("the stub image is named by no compose file and no production build input")
-    void imageIsNamedByNoComposeFileAndNoProductionBuildInput() throws IOException {
+    void imageIsNamedByNoComposeFileAndNoProductionBuildInput() throws Exception {
         List<Path> productionInputs = productionInputs();
 
         List<Path> naming = new ArrayList<>();
@@ -133,7 +133,7 @@ class StubIdentityProviderWiringTest {
 
     @Test
     @DisplayName("control: the absence scan finds the image name in the rig's own source")
-    void absenceScanFindsTheNameWhereItIsDeclared() throws IOException {
+    void absenceScanFindsTheNameWhereItIsDeclared() throws Exception {
         Path rigSource = MODULE.resolve(RIG_SOURCE);
         assertTrue(Files.isRegularFile(rigSource), () -> "the rig source was not found at " + rigSource
                 + "; point this guard at its new location rather than leaving the control vacuous");
