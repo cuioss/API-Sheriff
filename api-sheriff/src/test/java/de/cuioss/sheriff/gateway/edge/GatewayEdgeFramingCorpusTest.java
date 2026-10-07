@@ -69,6 +69,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
@@ -156,6 +157,8 @@ class GatewayEdgeFramingCorpusTest {
     private static final String TRANSFER_ENCODING = "Transfer-Encoding";
     private static final String SECURITY_FILTER_VIOLATION = "SECURITY_FILTER_VIOLATION";
     private static final Pattern STATUS_LINE = Pattern.compile("HTTP/1\\.1 (\\d{3}) ");
+    /** An HTTP/2 stream window, in bytes, smaller than any problem document the gateway writes. */
+    private static final int STARVED_STREAM_WINDOW = 16;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -651,6 +654,36 @@ class GatewayEdgeFramingCorpusTest {
     @DisplayName("HTTP/2 — a bodyless method never carries a body upstream: its stream alone is refused 400")
     void bodylessMethodNeverCarriesABodyUpstreamOnHttp2(String method) throws Exception {
         assertBodylessMethodRefused(frontPort, meterRegistry, method);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a rejection held back by flow control arrives whole before its stream is reset")
+    void rejectionHeldBackByFlowControlArrivesWholeBeforeTheReset() throws Exception {
+        // A stream window smaller than the problem document: the transport can hand over only part of
+        // it and holds the rest until the client grants more window. A reset written while that
+        // remainder is still held back would discard it.
+        HttpClient http2Client = vertx.createHttpClient(new HttpClientOptions()
+                .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false)
+                .setInitialSettings(new Http2Settings().setInitialWindowSize(STARVED_STREAM_WINDOW)));
+        httpClients.add(http2Client);
+        HttpClientRequest refused = open(http2Client, frontPort, "GET", "/echo" + HELD + "-starved");
+        CompletableFuture<Throwable> streamEnded = new CompletableFuture<>();
+        refused.exceptionHandler(streamEnded::complete);
+        refused.setChunked(true);
+        Awaits.connect(refused.write(Generators.letterStrings(4, 12).next()), "the stream to send body bytes");
+
+        Answer answer = Awaits.connect(answerOf(refused), "the rejection to arrive whole");
+        Throwable streamEnd = Awaits.connect(streamEnded, "the edge to end the refused stream");
+        awaitUpstreamSettled();
+
+        assertAll("a rejection held back by flow control",
+                () -> assertEquals(400, answer.response().statusCode(), answer.body()),
+                () -> assertTrue(answer.body().length() > STARVED_STREAM_WINDOW,
+                        () -> "the problem document must exceed the stream window to be held back: " + answer.body()),
+                () -> assertTrue(answer.body().contains(PROBLEM_JSON_400),
+                        () -> "the problem document must arrive whole: " + answer.body()),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
+                        "the refused stream must be reset with NO_ERROR"));
     }
 
     @Test
